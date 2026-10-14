@@ -9,7 +9,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Data, Typed};
+use super::{Data, Field, Typed};
 use crate::{InvariantError, Service, ServiceName};
 
 /// What the update is for.
@@ -106,6 +106,26 @@ impl UpdateState {
     /// differ, since versions come in too many spellings to order.
     pub fn differs(installed: Option<&str>, latest: Option<&str>) -> bool {
         matches!((installed, latest), (Some(installed), Some(latest)) if installed != latest)
+    }
+}
+
+/// What an update has beside whether there is one.
+pub(crate) fn fields(_caps: &UpdateCapabilities) -> Vec<Field> {
+    vec![
+        Field::text("installed_version"),
+        Field::text("latest_version"),
+        Field::bool("in_progress"),
+        Field::number("progress"),
+    ]
+}
+
+pub(crate) fn field(state: &UpdateState, name: &str) -> Option<Typed> {
+    match name {
+        "installed_version" => state.installed_version.clone().map(Typed::Text),
+        "latest_version" => state.latest_version.clone().map(Typed::Text),
+        "in_progress" => Some(Typed::Bool(state.in_progress)),
+        "progress" => state.progress.map(Typed::Number),
+        _ => None,
     }
 }
 

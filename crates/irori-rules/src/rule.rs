@@ -181,6 +181,10 @@ pub enum LimitedMode {
 pub enum Trigger {
     State {
         entity: EntityId,
+        /// One of the entity's values beside its main one, by name: a blind's `position`, a
+        /// thermostat's `current_temperature`. Left out, it's the main value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field: Option<ObjectId>,
         /// The value it changes from, or any one of several.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         from: Option<Values>,
@@ -287,6 +291,10 @@ impl Trigger {
 pub enum Condition {
     State {
         entity: EntityId,
+        /// One of the entity's values beside its main one, by name: a blind's `position`, a
+        /// thermostat's `current_temperature`. Left out, it's the main value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field: Option<ObjectId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is: Option<TypedValue>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -554,6 +562,10 @@ pub struct ChooseOption {
 pub enum WaitUntil {
     State {
         entity: EntityId,
+        /// One of the entity's values beside its main one, by name: a blind's `position`, a
+        /// thermostat's `current_temperature`. Left out, it's the main value.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        field: Option<ObjectId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         is: Option<TypedValue>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -91,6 +91,46 @@ pub enum ValueShape {
     Text,
 }
 
+/// A value an entity has beside its primary one: a blind's `position`, a thermostat's
+/// `current_temperature`. Automations read it by name, `num(id, 'position')`
+/// (`docs/specs/rules.md` §5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    pub name: &'static str,
+    pub shape: ValueShape,
+}
+
+impl Field {
+    pub(crate) const fn bool(name: &'static str) -> Self {
+        Self {
+            name,
+            shape: ValueShape::Bool,
+        }
+    }
+
+    pub(crate) const fn number(name: &'static str) -> Self {
+        Self {
+            name,
+            shape: ValueShape::Number,
+        }
+    }
+
+    pub(crate) const fn text(name: &'static str) -> Self {
+        Self {
+            name,
+            shape: ValueShape::Text,
+        }
+    }
+}
+
+/// A name-only enum as the text it's written as: a fan's `forward`, a thermostat's `heating`.
+pub(crate) fn named<T: serde::Serialize>(value: &T) -> Option<Typed> {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(name)) => Some(Typed::Text(name)),
+        _ => None,
+    }
+}
+
 /// Whether a service takes `data`, and whether it can do without.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Data {
@@ -220,6 +260,40 @@ impl Capabilities {
         }
     }
 
+    /// The values this entity has beside its primary one, by name. A field is listed when the
+    /// entity can have it; whether it has said it yet is [`State::field`]'s to answer.
+    pub fn fields(&self) -> Vec<Field> {
+        match self {
+            Self::Light(caps) => light::fields(caps),
+            Self::Fan(caps) => fan::fields(caps),
+            Self::Cover(caps) => cover::fields(caps),
+            Self::Valve(caps) => valve::fields(caps),
+            Self::Climate(caps) => climate::fields(caps),
+            Self::Humidifier(caps) => humidifier::fields(caps),
+            Self::WaterHeater(caps) => water_heater::fields(caps),
+            Self::MediaPlayer(caps) => media_player::fields(caps),
+            Self::Update(caps) => update::fields(caps),
+            Self::Switch(_)
+            | Self::Sensor(_)
+            | Self::BinarySensor(_)
+            | Self::Number(_)
+            | Self::Select(_)
+            | Self::Text(_)
+            | Self::Button(_)
+            | Self::Event(_)
+            | Self::Lock(_)
+            | Self::Siren(_) => Vec::new(),
+        }
+    }
+
+    /// The shape of the field `name`, or `None` when this entity has no such field.
+    pub fn field_shape(&self, name: &str) -> Option<ValueShape> {
+        self.fields()
+            .into_iter()
+            .find(|field| field.name == name)
+            .map(|field| field.shape)
+    }
+
     /// Whether a reported state is one this entity can be in. `Err` says why not, as the end
     /// of a sentence about the report ("it isn't dimmable").
     pub fn fits(&self, state: &State) -> Result<(), String> {
@@ -300,6 +374,31 @@ impl State {
             Self::Climate(state) => climate::primary(state),
             Self::WaterHeater(state) => water_heater::primary(state),
             Self::Sensor(state) => sensor::primary(state),
+        }
+    }
+
+    /// The field `name` as it is now. `None` when this kind has no such field, or the entity
+    /// hasn't said it.
+    pub fn field(&self, name: &str) -> Option<Typed> {
+        match self {
+            Self::Light(state) => light::field(state, name),
+            Self::Fan(state) => fan::field(state, name),
+            Self::Cover(state) => cover::field(state, name),
+            Self::Valve(state) => valve::field(state, name),
+            Self::Climate(state) => climate::field(state, name),
+            Self::Humidifier(state) => humidifier::field(state, name),
+            Self::WaterHeater(state) => water_heater::field(state, name),
+            Self::MediaPlayer(state) => media_player::field(state, name),
+            Self::Update(state) => update::field(state, name),
+            Self::Switch(_)
+            | Self::Sensor(_)
+            | Self::BinarySensor(_)
+            | Self::Number(_)
+            | Self::Select(_)
+            | Self::Text(_)
+            | Self::Event(_)
+            | Self::Lock(_)
+            | Self::Siren(_) => None,
         }
     }
 

@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Data, Typed};
+use super::{Data, Field, Typed};
 use crate::{Service, ServiceName};
 
 use crate::InvariantError;
@@ -205,6 +205,23 @@ pub(crate) fn fits(caps: &WaterHeaterCapabilities, state: &WaterHeaterState) -> 
         return Ok(());
     }
     supports_mode(caps, state.operation_mode).map_err(|what| format!("it {what}"))
+}
+
+/// What a water heater has beside its mode.
+pub(crate) fn fields(caps: &WaterHeaterCapabilities) -> Vec<Field> {
+    let mut fields = vec![Field::number("current_temperature")];
+    if caps.target_temperature {
+        fields.push(Field::number("target_temperature"));
+    }
+    fields
+}
+
+pub(crate) fn field(state: &WaterHeaterState, name: &str) -> Option<Typed> {
+    match name {
+        "current_temperature" => state.current_temperature.map(Typed::Number),
+        "target_temperature" => state.target_temperature.map(Typed::Number),
+        _ => None,
+    }
 }
 
 pub(crate) fn primary(state: &WaterHeaterState) -> Typed {

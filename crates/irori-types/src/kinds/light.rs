@@ -3,7 +3,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Data, Typed};
+use super::{Data, Field, Typed, named};
 use crate::{Service, ServiceName};
 
 use crate::InvariantError;
@@ -305,6 +305,30 @@ pub(crate) fn fits(caps: &LightCapabilities, light: &LightState) -> Result<(), S
         rgb: light.rgb,
     };
     supports(caps, &data).map_err(|what| format!("it {what}"))
+}
+
+/// What a light has beside `on`, for one that can do it.
+pub(crate) fn fields(caps: &LightCapabilities) -> Vec<Field> {
+    let mut fields = Vec::new();
+    if caps.brightness {
+        fields.push(Field::number("brightness"));
+    }
+    if caps.color_temp_kelvin.is_some() {
+        fields.push(Field::number("color_temp_kelvin"));
+    }
+    if caps.color_temp_kelvin.is_some() || caps.rgb {
+        fields.push(Field::text("color_mode"));
+    }
+    fields
+}
+
+pub(crate) fn field(state: &LightState, name: &str) -> Option<Typed> {
+    match name {
+        "brightness" => state.brightness.map(|b| Typed::Number(f64::from(b))),
+        "color_temp_kelvin" => state.color_temp_kelvin.map(|k| Typed::Number(f64::from(k))),
+        "color_mode" => state.color_mode.as_ref().and_then(named),
+        _ => None,
+    }
 }
 
 pub(crate) fn primary(state: &LightState) -> Typed {

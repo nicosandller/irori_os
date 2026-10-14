@@ -4,7 +4,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::opening::OpeningCommand;
-use super::{Data, Typed};
+use super::{Data, Field, Typed};
 use crate::{Service, ServiceName};
 
 use super::opening::{OpenState, OpeningAbilities, OpeningState};
@@ -132,6 +132,26 @@ pub(crate) fn fits(caps: &CoverCapabilities, state: &CoverState) -> Result<(), S
     Ok(())
 }
 
+/// What a cover has beside its state, for one that says it.
+pub(crate) fn fields(caps: &CoverCapabilities) -> Vec<Field> {
+    let mut fields = Vec::new();
+    if caps.position {
+        fields.push(Field::number("position"));
+    }
+    if caps.tilt {
+        fields.push(Field::number("tilt"));
+    }
+    fields
+}
+
+pub(crate) fn field(state: &CoverState, name: &str) -> Option<Typed> {
+    match name {
+        "position" => state.position.map(|p| Typed::Number(f64::from(p))),
+        "tilt" => state.tilt.map(|t| Typed::Number(f64::from(t))),
+        _ => None,
+    }
+}
+
 pub(crate) fn primary(state: &CoverState) -> Typed {
     Typed::Text(state.state.as_str().to_owned())
 }
@@ -194,6 +214,26 @@ pub(crate) fn supports_service(caps: &CoverCapabilities, service: &Service) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cover_has_the_fields_it_can_report() {
+        let blind = CoverCapabilities {
+            device_class: None,
+            position: true,
+            tilt: false,
+            stop: true,
+        };
+        assert_eq!(fields(&blind), [Field::number("position")]);
+        let state = CoverState {
+            state: OpenState::Open,
+            position: Some(70),
+            tilt: None,
+        };
+        assert_eq!(field(&state, "position"), Some(Typed::Number(70.0)));
+        // Not said yet, and not a field at all, both read as nothing.
+        assert_eq!(field(&state, "tilt"), None);
+        assert_eq!(field(&state, "colour"), None);
+    }
 
     #[test]
     fn a_cover_does_only_what_it_says_it_can() {

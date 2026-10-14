@@ -217,6 +217,25 @@ impl Home {
         })
     }
 
+    /// The values `entity` has beside its main one: a blind's position, a thermostat's
+    /// current temperature.
+    pub fn fields(&self, entity: &str) -> Vec<irori_types::Field> {
+        self.entities.with_untracked(|entities| {
+            entities
+                .iter()
+                .find(|e| e.id.as_str() == entity)
+                .map(|e| e.capabilities.fields())
+                .unwrap_or_default()
+        })
+    }
+
+    /// The shape of what's watched on `entity`: the named field's, or its main value's.
+    pub fn watched_shape(&self, entity: &str, field: Option<&str>) -> ValueShape {
+        field
+            .and_then(|name| self.fields(entity).into_iter().find(|f| f.name == name))
+            .map_or_else(|| self.value_shape(entity), |field| field.shape)
+    }
+
     /// What on and off mean for `entity`. An update's are whether one is there to install.
     pub fn flag_words(&self, entity: &EntityId) -> (&'static str, &'static str) {
         if entity.kind() == EntityKind::Update {
@@ -250,6 +269,19 @@ fn one_of(values: &[TypedValue], entity: &EntityId, home: &Home) -> String {
     }
 }
 
+/// What a trigger, condition or wait watches, as a person says it: the entity's name, or one
+/// of its values by name ("Bedroom blind's position").
+fn watched(home: &Home, entity: &EntityId, field: Option<&irori_types::ObjectId>) -> String {
+    match field {
+        Some(field) => format!(
+            "{}'s {}",
+            home.name(entity),
+            field.as_str().replace('_', " ")
+        ),
+        None => home.name(entity),
+    }
+}
+
 /// A condition as a sentence.
 pub fn condition_words(condition: &Condition, home: &Home) -> String {
     if let Some(checks) = serde_json::to_value(condition)
@@ -261,19 +293,19 @@ pub fn condition_words(condition: &Condition, home: &Home) -> String {
     match condition {
         Condition::State {
             entity,
+            field,
             is,
             availability,
-        } => match (is, availability) {
-            (Some(is), _) => format!("{} is {}", home.name(entity), value_words(is, entity, home)),
-            (None, Some(availability)) => {
-                format!(
-                    "{} is {}",
-                    home.name(entity),
-                    format!("{availability:?}").to_lowercase()
-                )
+        } => {
+            let name = watched(home, entity, field.as_ref());
+            match (is, availability) {
+                (Some(is), _) => format!("{name} is {}", value_words(is, entity, home)),
+                (None, Some(availability)) => {
+                    format!("{name} is {}", format!("{availability:?}").to_lowercase())
+                }
+                (None, None) => name,
             }
-            (None, None) => home.name(entity),
-        },
+        }
         Condition::Expr { expr } => crate::checks::expr_words(expr.as_str(), home)
             .unwrap_or_else(|| expr.as_str().to_owned()),
         Condition::Time { .. } | Condition::Sun { .. } => serde_json::to_value(condition)
@@ -299,16 +331,17 @@ pub fn sentence(node: &Node, home: &Home) -> String {
         Node::Trigger { trigger } => match trigger {
             Trigger::State {
                 entity,
+                field,
                 from,
                 to,
                 above,
                 below,
                 hold,
             } => {
-                let name = home.name(entity);
+                let name = watched(home, entity, field.as_ref());
                 let values: Vec<TypedValue> = to.iter().flat_map(Values::iter).cloned().collect();
                 let from: Vec<TypedValue> = from.iter().flat_map(Values::iter).cloned().collect();
-                let flag = home.flag_class(entity).is_some();
+                let flag = field.is_none() && home.flag_class(entity).is_some();
                 // Something that happens (a button's press) is said as what it reports.
                 if entity.kind().counts_every_report() {
                     return match values.as_slice() {
@@ -447,22 +480,18 @@ pub fn sentence(node: &Node, home: &Home) -> String {
             let what = match until {
                 WaitUntil::State {
                     entity,
+                    field,
                     is,
                     availability,
                     hold,
                 } => {
+                    let name = watched(home, entity, field.as_ref());
                     let mut text = match (is, availability) {
-                        (Some(is), _) => {
-                            format!("{} is {}", home.name(entity), value_words(is, entity, home))
-                        }
+                        (Some(is), _) => format!("{name} is {}", value_words(is, entity, home)),
                         (None, Some(a)) => {
-                            format!(
-                                "{} is {}",
-                                home.name(entity),
-                                format!("{a:?}").to_lowercase()
-                            )
+                            format!("{name} is {}", format!("{a:?}").to_lowercase())
                         }
-                        (None, None) => home.name(entity),
+                        (None, None) => name,
                     };
                     if let Some(hold) = hold {
                         text.push_str(&format!(" for {}", hold.as_str()));

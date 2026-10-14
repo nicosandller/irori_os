@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Data, Typed};
+use super::{Data, Field, Typed};
 use crate::{InvariantError, Service, ServiceName};
 
 /// The longest title, artist, album, app name, or content type, in characters.
@@ -300,6 +300,42 @@ pub(crate) fn fits(caps: &MediaPlayerCapabilities, state: &MediaPlayerState) -> 
         return Err("it reports a position, but can't seek".into());
     }
     Ok(())
+}
+
+/// What a player has beside its state: its volume, and what it's playing.
+pub(crate) fn fields(caps: &MediaPlayerCapabilities) -> Vec<Field> {
+    let mut fields = Vec::new();
+    if caps.volume {
+        fields.push(Field::number("volume"));
+    }
+    if caps.mute {
+        fields.push(Field::bool("muted"));
+    }
+    fields.extend([
+        Field::text("title"),
+        Field::text("artist"),
+        Field::text("album"),
+        Field::text("app"),
+        Field::text("content_type"),
+        Field::number("duration"),
+        Field::number("position"),
+    ]);
+    fields
+}
+
+pub(crate) fn field(state: &MediaPlayerState, name: &str) -> Option<Typed> {
+    match name {
+        "volume" => state.volume.map(|v| Typed::Number(f64::from(v))),
+        "muted" => state.muted.map(Typed::Bool),
+        "title" => state.title.clone().map(Typed::Text),
+        "artist" => state.artist.clone().map(Typed::Text),
+        "album" => state.album.clone().map(Typed::Text),
+        "app" => state.app.clone().map(Typed::Text),
+        "content_type" => state.content_type.clone().map(Typed::Text),
+        "duration" => state.duration.map(Typed::Number),
+        "position" => state.position.map(Typed::Number),
+        _ => None,
+    }
 }
 
 pub(crate) fn primary(state: &MediaPlayerState) -> Typed {

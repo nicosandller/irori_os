@@ -320,6 +320,28 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | | `skipped_version` | string | no | The version someone passed over. **Set by the core**; a protocol's is dropped before the report is checked |
 | | `last_error` | string | no | Why the last install didn't finish: the protocol's reason when it has one, otherwise the core's. Cleared when the next install is sent |
 
+**Automations read the other values by name.** The typed value is what `on()`, `num()` and
+`text()` read and what a state trigger watches. The rest of a state is readable too, as
+*fields* ([rules.md](rules.md) §5.1): `num('cover.blind', 'position')`, or `field` on a trigger.
+A field is one of the names in the table above, with its value as on/off, a number or text:
+
+| Kind | Fields |
+|---|---|
+| `light` | `brightness`, `color_temp_kelvin`, `color_mode` |
+| `fan` | `percentage`, `oscillating`, `direction`, `preset_mode` |
+| `cover` | `position`, `tilt` |
+| `valve` | `position` |
+| `climate` | `hvac_action`, `current_temperature`, `current_humidity`, `target_temperature`, `target_temp_low`, `target_temp_high`, `target_humidity`, `fan_mode`, `swing_mode`, `preset_mode` |
+| `humidifier` | `target_humidity`, `current_humidity`, `action`, `mode` |
+| `water_heater` | `current_temperature`, `target_temperature` |
+| `media_player` | `volume`, `muted`, `title`, `artist`, `album`, `app`, `content_type`, `duration`, `position` |
+| `update` | `installed_version`, `latest_version`, `in_progress`, `progress` |
+
+An entity has the fields its capabilities allow (a light that can't dim has no `brightness`);
+readings nothing announces ahead of time, like a thermostat's `current_temperature`, are listed
+for every entity of the kind. Lists and objects (`rgb`) aren't fields. In code:
+`Capabilities::fields()` and `State::field()`, each kind answering in its own file.
+
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row
 are two changes: each moves `last_changed` and is a change for anything watching, even though the
 value is the same. A report the protocol marks `replayed` ([protocols.md](protocols.md) §6.3), only

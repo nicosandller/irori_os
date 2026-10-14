@@ -179,10 +179,48 @@ fn state_form(
     }
     let hold = trigger["for"].as_str().unwrap_or_default().to_owned();
     let edit_hold = edit.clone();
-    let middle = match home.value_shape(entity) {
-        ValueShape::Number => level_form(trigger, entity, edit),
-        ValueShape::Text => text_values_form(trigger, entity, edit),
-        ValueShape::Bool => {
+    let field = trigger["field"].as_str().map(str::to_owned);
+    let which = which_value(entity, field.as_deref(), edit.clone(), home);
+    let middle = match (home.watched_shape(entity, field.as_deref()), &field) {
+        (ValueShape::Number, _) => level_form(trigger, entity, edit),
+        (ValueShape::Text, None) => text_values_form(trigger, entity, edit),
+        // One of its other values: nothing lists what it can say, so it's typed.
+        (ValueShape::Text, Some(_)) => {
+            let to = trigger["to"].as_str().unwrap_or_default().to_owned();
+            view! {
+                <label>"Changes to (leave empty for any change)"</label>
+                <input type="text" placeholder="any change" prop:value=to
+                    on:change=move |e| {
+                        let text = event_target_value(&e).trim().to_owned();
+                        edit(Box::new(move |t: &mut Value| {
+                            write_values(t, "to", if text.is_empty() { Vec::new() } else { vec![json!(text)] });
+                        }));
+                    } />
+            }
+            .into_any()
+        }
+        (ValueShape::Bool, Some(_)) => {
+            let to = trigger["to"].as_bool();
+            view! {
+                <label>"Changes to"</label>
+                <select on:change=move |e| {
+                    let picked = event_target_value(&e);
+                    edit(Box::new(move |t: &mut Value| {
+                        write_values(t, "to", match picked.as_str() {
+                            "on" => vec![json!(true)],
+                            "off" => vec![json!(false)],
+                            _ => Vec::new(),
+                        });
+                    }));
+                }>
+                    <option value="" selected=to.is_none()>"any change"</option>
+                    <option value="on" selected=to == Some(true)>"on"</option>
+                    <option value="off" selected=to == Some(false)>"off"</option>
+                </select>
+            }
+            .into_any()
+        }
+        (ValueShape::Bool, None) => {
             let to = trigger["to"].clone();
             view! {
                 <label>"Changes to"</label>
@@ -195,6 +233,7 @@ fn state_form(
         }
     };
     view! {
+        {which}
         {middle}
         <label>"And stays that way for (optional, like 5s or 2m)"</label>
         <input type="text" placeholder="no need" prop:value=hold
@@ -210,6 +249,58 @@ fn state_form(
             } />
     }
     .into_any()
+}
+
+/// Which of the entity's values the trigger watches: its main one, or another by name (a
+/// blind's position). Nothing to choose for an entity with only the one.
+fn which_value(
+    entity: &str,
+    field: Option<&str>,
+    edit: impl Fn(Edit) + Clone + Send + Sync + 'static,
+    home: Home,
+) -> Option<AnyView> {
+    let fields = home.fields(entity);
+    if fields.is_empty() {
+        return None;
+    }
+    let entity = entity.to_owned();
+    let options = fields
+        .iter()
+        .map(|f| {
+            let name = f.name;
+            view! {
+                <option value=name selected=field == Some(name)>{name.replace('_', " ")}</option>
+            }
+        })
+        .collect_view();
+    Some(
+        view! {
+            <label>"Which of its values"</label>
+            <select on:change=move |e| {
+                let picked = event_target_value(&e);
+                let entity = entity.clone();
+                edit(Box::new(move |t: &mut Value| {
+                    let Some(o) = t.as_object_mut() else { return };
+                    // What it changed to or crossed was about the other value.
+                    for key in ["from", "to", "above", "below"] {
+                        o.remove(key);
+                    }
+                    if picked.is_empty() {
+                        o.remove("field");
+                        if home.value_shape(&entity) == ValueShape::Bool {
+                            o.insert("to".into(), json!(true));
+                        }
+                    } else {
+                        o.insert("field".into(), json!(picked));
+                    }
+                }));
+            }>
+                <option value="" selected=field.is_none()>"its main value"</option>
+                {options}
+            </select>
+        }
+        .into_any(),
+    )
 }
 
 /// Something with words for values: any change, or a change from one of the values picked, to
@@ -304,15 +395,18 @@ fn level_form(
     let watch = Watch::of(trigger);
     let above = trigger["above"].as_f64();
     let below = trigger["below"].as_f64();
+    let field = trigger["field"].as_str().map(str::to_owned);
     let now = entity.parse::<EntityId>().ok().and_then(|id| {
         expect_context::<Home>().states.with_untracked(|states| {
-            states.get(&id).and_then(|s| match &s.state {
-                Some(irori_types::State::Sensor(sensor)) => match sensor.value {
-                    irori_types::SensorValue::Number(n) => Some(n),
-                    irori_types::SensorValue::Text(_) => None,
-                },
+            let state = states.get(&id)?.state.as_ref()?;
+            let value = match &field {
+                Some(field) => state.field(field)?,
+                None => state.primary(),
+            };
+            match value {
+                irori_types::Typed::Number(n) => Some(n),
                 _ => None,
-            })
+            }
         })
     });
     let start = now.map_or(30.0, f64::round);

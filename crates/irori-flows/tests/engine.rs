@@ -338,6 +338,54 @@ fn a_hold_that_resets_is_a_near_miss_and_one_that_lasts_fires() {
     );
 }
 
+fn lit(brightness: u8, seconds: i64) -> EntityState {
+    state(
+        LIGHT,
+        State::Light(LightState {
+            on: true,
+            brightness: Some(brightness),
+            color_mode: None,
+            color_temp_kelvin: None,
+            rgb: None,
+        }),
+        seconds,
+    )
+}
+
+#[test]
+fn a_trigger_can_watch_one_of_an_entitys_other_values() {
+    let bright = flow(serde_json::json!({
+        "id": "bright", "name": "Bright",
+        "nodes": {
+            "up": { "type": "trigger", "trigger": { "type": "state", "entity": LIGHT, "field": "brightness", "above": 200 } },
+            "on": { "type": "call", "service": "switch.turn_on", "entity": GUESTS }
+        },
+        "wires": [["up", "on"]]
+    }));
+    let mut engine = engine_with(bright);
+    change(&mut engine, lit(120, 10));
+    // Still on, and brighter, but not past the line: the main value didn't change and the
+    // watched one didn't cross.
+    change(&mut engine, lit(180, 11));
+    let (calls, ..) = effects(&mut engine, at(11));
+    assert!(calls.is_empty());
+
+    change(&mut engine, lit(230, 12));
+    let (calls, done, _) = effects(&mut engine, at(12));
+    assert_eq!(calls.len(), 1);
+    let read = &done[0].steps[0].reads[0];
+    assert_eq!(read.field.as_ref().map(|f| f.as_str()), Some("brightness"));
+    assert_eq!(read.value, serde_json::json!(230.0));
+    assert!(
+        done[0].steps[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("'s brightness went 180 → 230")),
+        "{:?}",
+        done[0].steps[0].note
+    );
+}
+
 fn joined(mode: &str) -> Flow {
     flow(serde_json::json!({
         "id": "joined", "name": "Joined",

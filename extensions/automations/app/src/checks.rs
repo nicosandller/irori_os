@@ -29,6 +29,8 @@ pub enum Test {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Thing {
     pub entity: String,
+    /// Which of its values is checked, when not the main one: a blind's `position`.
+    pub field: Option<String>,
     pub test: Test,
 }
 
@@ -65,17 +67,40 @@ pub const NUM_OPS: [(&str, &str); 6] = [
     (">", "is above"),
 ];
 
-/// The id inside `f('…')` at the start of `text`, and what follows it.
-fn call<'a>(text: &'a str, f: &str) -> Option<(&'a str, &'a str)> {
-    let rest = text.strip_prefix(f)?.strip_prefix('(')?.trim_start();
-    let quote = rest.chars().next().filter(|c| *c == '\'' || *c == '"')?;
-    let rest = &rest[1..];
+/// A quoted name at the start of `text` (an entity id, a field), and what follows it.
+fn name(text: &str) -> Option<(&str, &str)> {
+    let quote = text.chars().next().filter(|c| *c == '\'' || *c == '"')?;
+    let rest = &text[1..];
     let end = rest.find(quote)?;
-    let id = &rest[..end];
-    let after = rest[end + 1..].trim_start().strip_prefix(')')?;
-    id.chars()
+    let name = &rest[..end];
+    name.chars()
         .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '.')
-        .then_some((id, after.trim()))
+        .then_some((name, rest[end + 1..].trim_start()))
+}
+
+/// What's read by `f('…')` or `f('…', 'field')` at the start of `text`, and what follows it.
+fn call<'a>(text: &'a str, f: &str) -> Option<(Read<'a>, &'a str)> {
+    let rest = text.strip_prefix(f)?.strip_prefix('(')?.trim_start();
+    let (id, rest) = name(rest)?;
+    let (field, rest) = match rest.strip_prefix(',') {
+        Some(rest) => {
+            let (field, rest) = name(rest.trim_start())?;
+            (Some(field), rest)
+        }
+        None => (None, rest),
+    };
+    Some(((id, field), rest.strip_prefix(')')?.trim()))
+}
+
+/// An entity id, and the name of one of its values when it isn't the main one.
+type Read<'a> = (&'a str, Option<&'a str>);
+
+/// `'id'` or `'id', 'field'`: what goes between a function's brackets.
+fn read_args(entity: &str, field: Option<&str>) -> String {
+    match field {
+        Some(field) => format!("'{entity}', '{field}'"),
+        None => format!("'{entity}'"),
+    }
 }
 
 fn quoted(text: &str) -> Option<String> {
@@ -89,9 +114,10 @@ impl Thing {
     /// `text('…') == 'x'`.
     fn parse_expr(text: &str) -> Option<Self> {
         let text = text.trim();
-        let clause = |id: &str, test| {
+        let clause = |(id, field): Read, test| {
             Some(Self {
                 entity: id.into(),
+                field: field.map(str::to_owned),
                 test,
             })
         };
@@ -134,6 +160,7 @@ impl Thing {
         match condition["type"].as_str()? {
             "state" if condition.get("availability").is_none() => {
                 let entity = condition["entity"].as_str()?.to_owned();
+                let field = condition["field"].as_str().map(str::to_owned);
                 let test = match &condition["is"] {
                     Value::Bool(on) => Test::Flag(*on),
                     Value::String(text) => Test::Text {
@@ -146,7 +173,11 @@ impl Thing {
                     },
                     _ => return None,
                 };
-                Some(Self { entity, test })
+                Some(Self {
+                    entity,
+                    field,
+                    test,
+                })
             }
             "not" => {
                 let inner = Self::from_condition(&condition["condition"])?;
@@ -161,6 +192,7 @@ impl Thing {
                 };
                 Some(Self {
                     entity: inner.entity,
+                    field: inner.field,
                     test,
                 })
             }
@@ -172,25 +204,36 @@ impl Thing {
     /// The condition this check is.
     fn render(&self) -> Value {
         let entity = &self.entity;
-        match &self.test {
-            Test::Flag(on) => json!({ "type": "state", "entity": entity, "is": on }),
-            Test::Text { equal: true, value } => {
-                json!({ "type": "state", "entity": entity, "is": value })
+        let state = |is: Value| {
+            let mut state = json!({ "type": "state", "entity": entity });
+            if let Some(field) = &self.field {
+                state["field"] = json!(field);
             }
+            state["is"] = is;
+            state
+        };
+        match &self.test {
+            Test::Flag(on) => state(json!(on)),
+            Test::Text { equal: true, value } => state(json!(value)),
             Test::Text {
                 equal: false,
                 value,
-            } => json!({ "type": "not", "condition":
-                { "type": "state", "entity": entity, "is": value } }),
+            } => json!({ "type": "not", "condition": state(json!(value)) }),
             Test::Num { op, value } => {
-                json!({ "type": "expr", "expr": format!("num('{entity}') {op} {value}") })
+                let read = read_args(entity, self.field.as_deref());
+                json!({ "type": "expr", "expr": format!("num({read}) {op} {value}") })
             }
         }
     }
 
     /// A first check for `entity`, fitting what kind of thing it is.
     pub fn fresh(entity: &str, home: &Home) -> Self {
-        let test = match home.value_shape(entity) {
+        Self::fresh_for(entity, None, home)
+    }
+
+    /// A first check for one of `entity`'s values: its main one, or `field`.
+    pub fn fresh_for(entity: &str, field: Option<&str>, home: &Home) -> Self {
+        let test = match home.watched_shape(entity, field) {
             ValueShape::Number => Test::Num {
                 op: "<",
                 value: 30.0,
@@ -200,6 +243,7 @@ impl Thing {
                 value: entity
                     .parse::<EntityId>()
                     .ok()
+                    .filter(|_| field.is_none())
                     .and_then(|id| home.texts(&id).into_iter().next())
                     .unwrap_or_default(),
             },
@@ -207,6 +251,7 @@ impl Thing {
         };
         Self {
             entity: entity.to_owned(),
+            field: field.map(str::to_owned),
             test,
         }
     }
@@ -220,7 +265,10 @@ impl Thing {
             if state.availability != irori_types::Availability::Available {
                 return None;
             }
-            let value = irori_rules_value(state.state.as_ref()?);
+            let value = match &self.field {
+                Some(field) => state.state.as_ref()?.field(field)?.to_json(),
+                None => irori_rules_value(state.state.as_ref()?),
+            };
             match (&self.test, value) {
                 (Test::Flag(on), Value::Bool(now)) => Some(*on == now),
                 (Test::Text { equal, value }, Value::String(now)) => {
@@ -247,9 +295,16 @@ impl Thing {
         let name = id
             .as_ref()
             .map_or_else(|| self.entity.clone(), |id| home.name(id));
+        let name = match &self.field {
+            Some(field) => format!("{name}'s {}", field.replace('_', " ")),
+            None => name,
+        };
         match &self.test {
             Test::Flag(on) => {
-                let (yes, no) = id.as_ref().map_or(("on", "off"), |id| home.flag_words(id));
+                let (yes, no) = id
+                    .as_ref()
+                    .filter(|_| self.field.is_none())
+                    .map_or(("on", "off"), |id| home.flag_words(id));
                 format!("{name} {}", if *on { yes } else { no })
             }
             Test::Num { op, value } => {
@@ -518,6 +573,7 @@ pub fn ChecksForm(
                         })
                     });
                     let test_input = test_input(&thing, i, with.clone(), home);
+                    let which = which_value(&thing, i, with.clone(), home);
                     let previous = thing.test.clone();
                     view! {
                         <div class="clause">
@@ -540,6 +596,7 @@ pub fn ChecksForm(
                                 </div>
                                 {remove}
                             </div>
+                            {which}
                             <div class="row test">{test_input}</div>
                             {now.map(|n| view! { <div class="muted now-line">{format!("now {n}")}</div> })}
                         </div>
@@ -613,6 +670,48 @@ pub fn ChecksForm(
     }
 }
 
+/// Which of the thing's values is checked: its main one, or another by name. Nothing to choose
+/// for a thing with only the one.
+fn which_value(
+    clause: &Thing,
+    i: usize,
+    with: impl Fn(&dyn Fn(&mut Checks)) + Clone + Send + Sync + 'static,
+    home: Home,
+) -> Option<AnyView> {
+    let fields = home.fields(&clause.entity);
+    if fields.is_empty() {
+        return None;
+    }
+    let entity = clause.entity.clone();
+    let options = fields
+        .iter()
+        .map(|f| {
+            let name = f.name;
+            view! {
+                <option value=name selected=clause.field.as_deref() == Some(name)>
+                    {name.replace('_', " ")}
+                </option>
+            }
+        })
+        .collect_view();
+    Some(
+        view! {
+            <div class="row test">
+                <select on:change=move |e| {
+                    let picked = event_target_value(&e);
+                    let field = (!picked.is_empty()).then_some(picked);
+                    let fresh = Thing::fresh_for(&entity, field.as_deref(), &home);
+                    with(&|c: &mut Checks| c.clauses[i] = Clause::Thing(fresh.clone()));
+                }>
+                    <option value="" selected=clause.field.is_none()>"its main value"</option>
+                    {options}
+                </select>
+            </div>
+        }
+        .into_any(),
+    )
+}
+
 /// The inputs for one check's test.
 fn test_input(
     clause: &Thing,
@@ -646,6 +745,8 @@ fn test_input(
             let (yes, no) = clause
                 .entity
                 .parse::<EntityId>()
+                .ok()
+                .filter(|_| clause.field.is_none())
                 .map_or(("on", "off"), |id| home.flag_words(&id));
             view! {
                 <select on:change=move |e| {
@@ -673,10 +774,26 @@ fn test_input(
                     <option value="not" selected=!equal>"is not"</option>
                 </select>
                 <div class="grow">
-                    <TextValue entity=clause.entity.clone() value=value
-                        pick=move |text: String| with_value(&|c: &mut Checks| {
-                            c.set_test(i, Test::Text { equal, value: text.clone() });
-                        }) />
+                    {match clause.field {
+                        // One of its other values: nothing lists what it can say, so it's typed.
+                        Some(_) => view! {
+                            <input type="text" prop:value=value
+                                on:change=move |e| {
+                                    let text = event_target_value(&e).trim().to_owned();
+                                    with_value(&|c: &mut Checks| {
+                                        c.set_test(i, Test::Text { equal, value: text.clone() });
+                                    });
+                                } />
+                        }
+                        .into_any(),
+                        None => view! {
+                            <TextValue entity=clause.entity.clone() value=value
+                                pick=move |text: String| with_value(&|c: &mut Checks| {
+                                    c.set_test(i, Test::Text { equal, value: text.clone() });
+                                }) />
+                        }
+                        .into_any(),
+                    }}
                 </div>
             }
             .into_any()
@@ -702,6 +819,13 @@ mod tests {
     fn conditions_read_as_checks_and_write_back_the_same() {
         round_trip(json!({ "type": "state", "entity": "switch.night", "is": true }));
         round_trip(json!({ "type": "expr", "expr": "num('sensor.lux') < 600" }));
+        // One of a thing's other values, by name.
+        round_trip(json!({ "type": "expr", "expr": "num('cover.blind', 'position') > 50" }));
+        round_trip(
+            json!({ "type": "state", "entity": "climate.hall", "field": "hvac_action", "is": "heating" }),
+        );
+        round_trip(json!({ "type": "not", "condition":
+            { "type": "state", "entity": "fan.attic", "field": "direction", "is": "reverse" } }));
         round_trip(json!({ "type": "not", "condition":
             { "type": "state", "entity": "sensor.tv", "is": "playing" } }));
         round_trip(json!({ "type": "all", "conditions": [
@@ -748,6 +872,7 @@ mod tests {
             checks.clauses[0],
             Clause::Thing(Thing {
                 entity: "binary_sensor.door".into(),
+                field: None,
                 test: Test::Flag(false),
             })
         );

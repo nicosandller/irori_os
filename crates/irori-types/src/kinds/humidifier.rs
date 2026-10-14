@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Data, Typed};
+use super::{Data, Field, Typed, named};
 use crate::{Service, ServiceName};
 
 use super::climate::HumidityRange;
@@ -126,6 +126,29 @@ pub(crate) fn fits(caps: &HumidifierCapabilities, state: &HumidifierState) -> Re
         supports_mode(caps, mode).map_err(|what| format!("it {what}"))?;
     }
     Ok(())
+}
+
+/// What a humidifier has beside `on`.
+pub(crate) fn fields(caps: &HumidifierCapabilities) -> Vec<Field> {
+    let mut fields = vec![
+        Field::number("target_humidity"),
+        Field::number("current_humidity"),
+        Field::text("action"),
+    ];
+    if !caps.modes.is_empty() {
+        fields.push(Field::text("mode"));
+    }
+    fields
+}
+
+pub(crate) fn field(state: &HumidifierState, name: &str) -> Option<Typed> {
+    match name {
+        "target_humidity" => state.target_humidity.map(Typed::Number),
+        "current_humidity" => state.current_humidity.map(Typed::Number),
+        "action" => state.action.as_ref().and_then(named),
+        "mode" => state.mode.clone().map(Typed::Text),
+        _ => None,
+    }
 }
 
 pub(crate) fn primary(state: &HumidifierState) -> Typed {

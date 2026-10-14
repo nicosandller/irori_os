@@ -283,8 +283,9 @@ with.
 
 Done so far: 1 (triggers, checks and waits take any kind by its value), 2 (a call names any
 kind's service, with that service's own fields, read off the `ServiceCall` schema), 3 (a state
-trigger on an `event` fires on every report), and 6 (the editor's pickers and the call form are
-drawn from what each entity offers). Still to do: 4, 5, 7. Until 7, a call can't carry a `code`.
+trigger on an `event` fires on every report), 4 (triggers, checks, waits and expressions read
+an entity's other values by name), and 6 (the editor's pickers and the call form are drawn
+from what each entity offers). Still to do: 5, 7. Until 7, a call can't carry a `code`.
 
 1. **Read entities by value, not by kind.** The engine and its page once parsed entities with
    `irori-types`' closed enums and refused what they didn't know. They read what every entity

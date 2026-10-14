@@ -84,7 +84,7 @@ pub use kinds::water_heater::{
     WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,
     WaterHeaterState,
 };
-pub use kinds::{Typed, ValueShape, mode_to_turn_on};
+pub use kinds::{Field, Typed, ValueShape, mode_to_turn_on};
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
     StateReport, Unmodeled, Waiting,

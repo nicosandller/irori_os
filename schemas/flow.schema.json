@@ -126,6 +126,17 @@
             "entity": {
               "$ref": "#/$defs/EntityId"
             },
+            "field": {
+              "description": "One of the entity's values beside its main one, by name: a blind's `position`, a\nthermostat's `current_temperature`. Left out, it's the main value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ObjectId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "is": {
               "anyOf": [
                 {
@@ -881,6 +892,17 @@
             "entity": {
               "$ref": "#/$defs/EntityId"
             },
+            "field": {
+              "description": "One of the entity's values beside its main one, by name: a blind's `position`, a\nthermostat's `current_temperature`. Left out, it's the main value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ObjectId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "for": {
               "anyOf": [
                 {
@@ -1089,6 +1111,17 @@
             },
             "entity": {
               "$ref": "#/$defs/EntityId"
+            },
+            "field": {
+              "description": "One of the entity's values beside its main one, by name: a blind's `position`, a\nthermostat's `current_temperature`. Left out, it's the main value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ObjectId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "for": {
               "anyOf": [
