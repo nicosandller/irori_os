@@ -13,7 +13,12 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use serde_json::{Map, Value, json};
 
-use crate::api::HelperCheck;
+use std::collections::{BTreeMap, BTreeSet};
+
+use irori_types::{Capabilities, EntityState, State};
+
+use crate::api::{HelperCheck, HelperPreview};
+use crate::devices::Controls;
 
 /// Which shelf of the picker a kind is on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1411,6 +1416,8 @@ pub(crate) fn HelperBuilder(#[prop(into)] on_added: Callback<()>) -> impl IntoVi
     let code_words = RwSignal::new(None::<String>);
     let code_trouble = RwSignal::new(None::<String>);
     let checked = RwSignal::new(Checked::Quiet);
+    // What it would be like, to see and try before it's made.
+    let preview = RwSignal::new(None::<Result<HelperPreview, String>>);
     let round = StoredValue::new(0u32);
     let trouble = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
@@ -1440,24 +1447,37 @@ pub(crate) fn HelperBuilder(#[prop(into)] on_added: Callback<()>) -> impl IntoVi
             .is_some_and(|name| !name.trim().is_empty());
         let this = round.get_value() + 1;
         round.set_value(this);
-        let Some(kind) = kind.filter(|_| named) else {
+        let Some(kind) = kind else {
             checked.set(Checked::Quiet);
+            preview.set(None);
             return;
         };
-        checked.set(Checked::Checking);
+        checked.set(if named {
+            Checked::Checking
+        } else {
+            Checked::Quiet
+        });
         spawn_local(async move {
             gloo_timers::future::sleep(std::time::Duration::from_millis(SETTLE_MS)).await;
             if round.try_get_value() != Some(this) {
                 return;
             }
-            let said = crate::api::check_helper(kind.table, &value).await;
+            if named {
+                let said = crate::api::check_helper(kind.table, &value).await;
+                if round.try_get_value() != Some(this) {
+                    return;
+                }
+                checked.set(match said {
+                    Ok(will) => Checked::Will(will),
+                    Err(why) => Checked::Wont(why),
+                });
+            }
+            // A preview needs no name: picking a source is enough to see what it would do.
+            let shown = crate::api::preview_helper(kind.table, &value).await;
             if round.try_get_value() != Some(this) {
                 return;
             }
-            checked.set(match said {
-                Ok(will) => Checked::Will(will),
-                Err(why) => Checked::Wont(why),
-            });
+            preview.set(Some(shown));
         });
     });
 
@@ -1542,6 +1562,7 @@ pub(crate) fn HelperBuilder(#[prop(into)] on_added: Callback<()>) -> impl IntoVi
                         }}
                     </div>
                     {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
+                    {move || preview.get().and_then(Result::ok).map(|shown| tried(draft, shown))}
                     <div class="builder-foot">
                         {check_line(checked)}
                         <button
@@ -1763,6 +1784,187 @@ fn code(
             </button>
         </div>
     }
+}
+
+/// What the helper would be like: for one worked out from other entities, what it would have
+/// said over the last day, drawn as its history would be; for one a person sets, its control,
+/// to try here without anything being sent. A group of things that switch can be tried on its
+/// members.
+fn tried(draft: Draft, shown: HelperPreview) -> AnyView {
+    let HelperPreview {
+        entity,
+        states,
+        computed,
+    } = shown;
+    if !computed {
+        return try_here(entity, states.into_iter().next());
+    }
+    let waiting = states.iter().all(|state| state.state.is_none());
+    let why = states
+        .iter()
+        .rev()
+        .find_map(|state| {
+            state
+                .attributes
+                .iter()
+                .find(|(key, _)| key.as_str() == "problem")
+                .and_then(|(_, why)| why.as_str().map(str::to_owned))
+        })
+        .unwrap_or_default();
+    let now = states.last().cloned();
+    let reading = crate::devices::control(&entity, now.as_ref(), false, quiet_controls());
+    view! {
+        <section class="builder-preview">
+            <header class="builder-preview-head">
+                <span class="builder-label">"Over the last day, had it been running"</span>
+                {(!waiting).then(|| view! { <span class="builder-preview-now">"Now " {reading}</span> })}
+            </header>
+            {if waiting {
+                view! { <p class="muted small">{why}</p> }.into_any()
+            } else {
+                crate::device::drawn_day(&entity, states, Signal::derive(|| None))
+            }}
+            {group_try(draft)}
+        </section>
+    }
+    .into_any()
+}
+
+/// Controls that do nothing: a reading drawn where nothing can be asked of it.
+fn quiet_controls() -> Controls {
+    Controls {
+        busy: RwSignal::new(BTreeSet::new()),
+        failures: RwSignal::new(BTreeMap::new()),
+        set_on: Callback::new(|_| {}),
+        set_light: Callback::new(|_| {}),
+        act: Callback::new(|_| {}),
+    }
+}
+
+/// A helper a person sets, to try here: its own control, answering on this page only.
+fn try_here(entity: irori_types::Entity, start: Option<EntityState>) -> AnyView {
+    let state = RwSignal::new(start);
+    let pressed = RwSignal::new(0u32);
+    let capabilities = entity.capabilities.clone();
+    let set = move |to: State| {
+        state.update(|now| {
+            if let Some(now) = now {
+                now.state = Some(to);
+            }
+        });
+    };
+    let controls = Controls {
+        busy: RwSignal::new(BTreeSet::new()),
+        failures: RwSignal::new(BTreeMap::new()),
+        set_on: Callback::new(move |(_, on): (irori_types::EntityId, bool)| {
+            set(State::Switch(irori_types::SwitchState { on }));
+        }),
+        set_light: Callback::new(|_| {}),
+        act: Callback::new(
+            move |(_, action, data): (irori_types::EntityId, &'static str, Option<Value>)| {
+                let data = data.unwrap_or(Value::Null);
+                let now = state
+                    .with_untracked(|state| state.as_ref().and_then(|state| state.state.clone()));
+                match (action, &capabilities) {
+                    ("press", _) => pressed.update(|times| *times += 1),
+                    ("set_value", Capabilities::Number(_)) => {
+                        if let Some(value) = data["value"].as_f64() {
+                            set(State::Number(irori_types::NumberState { value }));
+                        }
+                    }
+                    ("increment" | "decrement", Capabilities::Number(number)) => {
+                        let by = data["by"].as_f64().unwrap_or(number.step);
+                        let value = match now {
+                            Some(State::Number(state)) => state.value,
+                            _ => number.min,
+                        };
+                        let value = if action == "increment" {
+                            value + by
+                        } else {
+                            value - by
+                        };
+                        set(State::Number(irori_types::NumberState {
+                            value: value.clamp(number.min, number.max),
+                        }));
+                    }
+                    ("set_value", Capabilities::Text(_)) => {
+                        if let Some(value) = data["value"].as_str() {
+                            set(State::Text(irori_types::TextState {
+                                value: value.to_owned(),
+                            }));
+                        }
+                    }
+                    ("select_option", Capabilities::Select(_)) => {
+                        if let Some(option) = data["option"].as_str() {
+                            set(State::Select(irori_types::SelectState {
+                                option: option.to_owned(),
+                            }));
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        ),
+    };
+    let name = entity.name.to_string();
+    view! {
+        <section class="builder-preview">
+            <header class="builder-preview-head">
+                <span class="builder-label">"Try it — only on this page, nothing is made or sent"</span>
+            </header>
+            <div class="builder-try">
+                {crate::icons::entity(&entity.capabilities)}
+                <span class="builder-try-name">{name}</span>
+                <span class="builder-try-control">
+                    {move || {
+                        let now = state.get();
+                        crate::devices::control(&entity, now.as_ref(), false, controls)
+                    }}
+                </span>
+                {move || {
+                    let times = pressed.get();
+                    (times > 0).then(|| view! {
+                        <span class="builder-pressed" data-beat=if times % 2 == 0 { "b" } else { "a" }>
+                            {format!("Pressed {times}×")}
+                        </span>
+                    })
+                }}
+            </div>
+        </section>
+    }
+    .into_any()
+}
+
+/// A group of lights, switches or fans can be tried on its members before it exists: the same
+/// call the group would pass on, sent to each.
+fn group_try(draft: Draft) -> Option<AnyView> {
+    let kind = draft
+        .value
+        .with_untracked(|value| value.get("kind").and_then(Value::as_str).map(str::to_owned))?;
+    let words = match kind.as_str() {
+        "light" => "lights",
+        "switch" => "switches",
+        "fan" => "fans",
+        _ => return None,
+    };
+    let controls = expect_context::<Controls>();
+    let send = move |on: bool| {
+        for member in listed(draft, "members") {
+            if let Ok(id) = irori_types::EntityId::try_from(member.as_str()) {
+                controls.set_on.run((id, on));
+            }
+        }
+    };
+    Some(
+        view! {
+            <div class="builder-group-try">
+                <span class="muted small">{format!("Try it on the real {words}:")}</span>
+                <button type="button" class="press" on:click=move |_| send(true)>"All on"</button>
+                <button type="button" class="press" on:click=move |_| send(false)>"All off"</button>
+            </div>
+        }
+        .into_any(),
+    )
 }
 
 /// What the helper will be, or why it can't be yet. One line that changes in place.

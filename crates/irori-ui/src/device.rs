@@ -980,7 +980,7 @@ fn hour_label(at: irori_types::Timestamp) -> String {
 
 /// A day with something in it: a number's as a chart, a state's as a strip, anything else as the
 /// table alone.
-fn drawn_day(
+pub(crate) fn drawn_day(
     entity: &Entity,
     states: Vec<EntityState>,
     live: Signal<Option<EntityState>>,

@@ -1027,6 +1027,28 @@
     .json-copy.done .copy-clip { opacity: 0; scale: .6; }
     .json-copy.done .copy-check { stroke-dashoffset: 0; opacity: 1; }
 
+    /* What it would be like: a day of what it would have said, drawn as a history drawer draws
+       one, or its control to try on this page. It changes in place as settings change. */
+    .builder-preview { display: grid; gap: .5rem; padding: .75rem .8rem; background: var(--sunk);
+                       border: 1px solid var(--line); border-radius: .6rem; }
+    .builder-preview-head { display: flex; align-items: center; justify-content: space-between;
+                            gap: .6rem; flex-wrap: wrap; }
+    .builder-preview-now { display: inline-flex; align-items: center; gap: .4rem; font-size: .82rem;
+                           color: var(--muted); }
+    .builder-preview .history-note { margin: 0; }
+    .builder-try { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap;
+                   padding: .45rem .55rem; background: var(--card); border: 1px solid var(--line);
+                   border-radius: .5rem; }
+    .builder-try .entity-icon { width: 1.1rem; height: 1.1rem; color: var(--muted); }
+    .builder-try-name { flex: 1; min-width: 6rem; font-weight: 500; font-size: .9rem; }
+    .builder-try-control { display: inline-flex; align-items: center; gap: .4rem; }
+    .builder-pressed { font: .75rem var(--mono); color: var(--ember); }
+    .builder-pressed[data-beat="a"] { animation: pressed-a var(--dur-expressive) var(--ease-spring); }
+    .builder-pressed[data-beat="b"] { animation: pressed-b var(--dur-expressive) var(--ease-spring); }
+    @keyframes pressed-a { from { scale: .6; opacity: 0; } }
+    @keyframes pressed-b { from { scale: .6; opacity: 0; } }
+    .builder-group-try { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+
     /* What it will make, or why it can't: one line that changes colour in place, its mark
        turning while it checks. */
     .builder-foot { display: flex; align-items: center; gap: .9rem; padding-top: .8rem;

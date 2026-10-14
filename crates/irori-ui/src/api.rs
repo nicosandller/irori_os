@@ -843,6 +843,33 @@ pub async fn check_helper(
     response.json().await.map_err(|e| e.to_string())
 }
 
+/// A helper as it would be: its entity, and the states it would have had over the last day
+/// (`computed`) or would start in.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HelperPreview {
+    pub entity: Entity,
+    pub states: Vec<EntityState>,
+    pub computed: bool,
+}
+
+/// What a helper would be like before it's made. It needn't be named yet.
+pub async fn preview_helper(
+    table: &str,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Result<HelperPreview, String> {
+    let response = post(&format!("/api/helpers/{table}/preview"))
+        .json(fields)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        checked(response).await?;
+        return Err("Irori refused that".to_owned());
+    }
+    response.json().await.map_err(|e| e.to_string())
+}
+
 /// Removes a helper by its kind's table and the id it was made with.
 pub async fn remove_helper(table: &str, id: &str) -> Result<(), String> {
     let response = delete(&format!("/api/helpers/{table}/{id}"))
