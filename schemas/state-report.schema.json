@@ -47,6 +47,38 @@
     "state"
   ],
   "$defs": {
+    "AlarmStatus": {
+      "description": "What a panel is doing. Home Assistant's `AlarmControlPanelState`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "disarmed",
+            "armed_home",
+            "armed_away",
+            "armed_night",
+            "armed_vacation",
+            "armed_custom_bypass",
+            "disarming"
+          ]
+        },
+        {
+          "description": "Something tripped it, and it's counting down before it sounds.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "Told to arm, and counting down so people can leave.",
+          "type": "string",
+          "const": "arming"
+        },
+        {
+          "description": "Going off.",
+          "type": "string",
+          "const": "triggered"
+        }
+      ]
+    },
     "AttributeKey": {
       "description": "Format of a slug (attribute key): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
@@ -870,6 +902,23 @@
           "required": [
             "kind",
             "available"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "alarm_control_panel"
+            },
+            "state": {
+              "$ref": "#/$defs/AlarmStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
           ]
         }
       ]

@@ -11,12 +11,13 @@
 use irori_types::{Capabilities, EntityCategory, EntityKind, Name, UniqueId};
 
 use crate::kinds::{
-    binary_sensor, button, climate, cover, event, fan, humidifier, light, lock, number, select,
-    sensor, siren, switch, text, update, valve, water_heater,
+    alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, light,
+    lock, number, select, sensor, siren, switch, text, update, valve, water_heater,
 };
 use crate::template::CommandTemplate;
 use crate::topic::Component;
 
+pub use crate::kinds::alarm_control_panel::AlarmTopics;
 pub use crate::kinds::binary_sensor::BinarySensorTopics;
 pub use crate::kinds::button::ButtonTopics;
 pub use crate::kinds::climate::ClimateTopics;
@@ -104,6 +105,7 @@ pub enum EntityTopics {
     /// Boxed: Home Assistant lets nearly every part of a cover vary.
     Cover(Box<CoverTopics>),
     Lock(Box<LockTopics>),
+    AlarmControlPanel(Box<AlarmTopics>),
     Fan(Box<FanTopics>),
     Valve(Box<OpeningTopics>),
     Siren(SirenTopics),
@@ -128,6 +130,7 @@ impl EntityTopics {
             Self::Event(_) => EntityKind::Event,
             Self::Cover(_) => EntityKind::Cover,
             Self::Lock(_) => EntityKind::Lock,
+            Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
@@ -189,6 +192,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Event => event::parse(&root)?,
         Component::Cover => cover::parse(&root)?,
         Component::Lock => lock::parse(&root)?,
+        Component::AlarmControlPanel => alarm_control_panel::parse(&root)?,
         Component::Fan => fan::parse(&root)?,
         Component::Valve => valve::parse(&root)?,
         Component::Siren => siren::parse(&root)?,

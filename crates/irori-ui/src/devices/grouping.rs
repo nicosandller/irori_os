@@ -370,6 +370,7 @@ fn kind_label(kind: EntityKind) -> &'static str {
         EntityKind::Event => "Events",
         EntityKind::Cover => "Covers",
         EntityKind::Lock => "Locks",
+        EntityKind::AlarmControlPanel => "Alarm panels",
         EntityKind::Fan => "Fans",
         EntityKind::Valve => "Valves",
         EntityKind::Siren => "Sirens",

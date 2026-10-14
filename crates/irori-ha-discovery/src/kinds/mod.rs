@@ -6,6 +6,7 @@
 //! What several share lives in its own module: [`setting`] (a setting, a reading, a power
 //! switch) and [`opening`] (what a cover and a valve both do).
 
+pub mod alarm_control_panel;
 pub mod binary_sensor;
 pub mod button;
 pub mod climate;

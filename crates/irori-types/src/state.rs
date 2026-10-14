@@ -6,6 +6,7 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::alarm_control_panel::AlarmState;
 use crate::kinds::binary_sensor::BinarySensorState;
 use crate::kinds::climate::ClimateState;
 use crate::kinds::cover::CoverState;
@@ -156,6 +157,7 @@ pub enum State {
     Humidifier(HumidifierState),
     MediaPlayer(MediaPlayerState),
     Update(UpdateState),
+    AlarmControlPanel(AlarmState),
 }
 
 impl State {
@@ -180,7 +182,8 @@ impl State {
             | Self::Text(_)
             | Self::Event(_)
             | Self::Lock(_)
-            | Self::Siren(_) => Ok(()),
+            | Self::Siren(_)
+            | Self::AlarmControlPanel(_) => Ok(()),
         }
     }
 
@@ -204,6 +207,7 @@ impl State {
             Self::Humidifier(_) => EntityKind::Humidifier,
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
             Self::Update(_) => EntityKind::Update,
+            Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
         }
     }
 }

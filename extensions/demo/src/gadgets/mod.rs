@@ -5,6 +5,7 @@
 //! and sensors. Each is a [`Gadget`] in its own module. The fan and the water shut-off also have
 //! [`firmware`] to update.
 
+mod alarm;
 mod blind;
 mod dehumidifier;
 mod doorbell;
@@ -90,6 +91,7 @@ impl Gadgets {
         Self {
             all: vec![
                 Box::new(lock::FrontDoorLock::new()),
+                Box::new(alarm::HouseAlarm::new()),
                 Box::new(doorbell::Doorbell::new()),
                 Box::new(blind::Blind::new()),
                 Box::new(fan::CeilingFan::new()),

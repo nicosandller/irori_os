@@ -33,7 +33,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 15. Adds `humidifier`.
 /// 16. Adds `media_player`.
 /// 17. Adds `update`.
-pub const ENTITY_FORMAT: u32 = 17;
+/// 18. Adds `alarm_control_panel`.
+pub const ENTITY_FORMAT: u32 = 18;
 
 pub(crate) fn first() -> u32 {
     1
@@ -64,6 +65,7 @@ impl EntityKind {
             Self::Humidifier => 15,
             Self::MediaPlayer => 16,
             Self::Update => 17,
+            Self::AlarmControlPanel => 18,
         }
     }
 }

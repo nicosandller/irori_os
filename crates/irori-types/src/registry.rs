@@ -4,6 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::alarm_control_panel::AlarmCapabilities;
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
 use crate::kinds::climate::ClimateCapabilities;
@@ -209,6 +210,7 @@ pub enum Capabilities {
     Humidifier(HumidifierCapabilities),
     MediaPlayer(MediaPlayerCapabilities),
     Update(UpdateCapabilities),
+    AlarmControlPanel(AlarmCapabilities),
 }
 
 impl Capabilities {
@@ -233,6 +235,7 @@ impl Capabilities {
             Self::Humidifier(_) => EntityKind::Humidifier,
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
             Self::Update(_) => EntityKind::Update,
+            Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
         }
     }
 

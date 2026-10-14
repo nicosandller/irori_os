@@ -644,6 +644,10 @@
         {
           "maxLength": 71,
           "pattern": "^update\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 84,
+          "pattern": "^alarm_control_panel\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -772,6 +776,13 @@
       "description": "A service a rule may name: `<kind>.<action>`. Includes `toggle`, which the core resolves.",
       "type": "string",
       "enum": [
+        "alarm_control_panel.alarm_arm_away",
+        "alarm_control_panel.alarm_arm_custom_bypass",
+        "alarm_control_panel.alarm_arm_home",
+        "alarm_control_panel.alarm_arm_night",
+        "alarm_control_panel.alarm_arm_vacation",
+        "alarm_control_panel.alarm_disarm",
+        "alarm_control_panel.alarm_trigger",
         "button.press",
         "climate.set_fan_mode",
         "climate.set_humidity",

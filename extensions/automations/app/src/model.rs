@@ -692,6 +692,7 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Text(t)) => t.value.clone(),
         Some(State::Event(e)) => e.event_type.clone(),
         Some(State::Lock(l)) => l.state.as_str().to_owned(),
+        Some(State::AlarmControlPanel(panel)) => panel.state.as_str().replace('_', " "),
         Some(State::Valve(v)) => v.state.as_str().to_owned(),
         Some(State::Siren(s)) => if s.on { "sounding" } else { "quiet" }.into(),
         Some(State::Update(update)) => {

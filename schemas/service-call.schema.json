@@ -1299,6 +1299,139 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "alarm_control_panel.alarm_arm_home"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "alarm_control_panel.alarm_arm_away"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "alarm_control_panel.alarm_arm_night"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "alarm_control_panel.alarm_arm_vacation"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "alarm_control_panel.alarm_arm_custom_bypass"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "alarm_control_panel.alarm_disarm"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "alarm_control_panel.alarm_trigger"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/LockCode"
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1907,7 +2040,14 @@
         "update.install",
         "update.check",
         "update.skip",
-        "update.clear_skipped"
+        "update.clear_skipped",
+        "alarm_control_panel.alarm_arm_home",
+        "alarm_control_panel.alarm_arm_away",
+        "alarm_control_panel.alarm_arm_night",
+        "alarm_control_panel.alarm_arm_vacation",
+        "alarm_control_panel.alarm_arm_custom_bypass",
+        "alarm_control_panel.alarm_disarm",
+        "alarm_control_panel.alarm_trigger"
       ]
     },
     "SetHumidity": {

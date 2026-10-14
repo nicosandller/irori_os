@@ -8,6 +8,7 @@
 //! and each answer is one line calling into the kind's file. A cover and a valve share
 //! [`opening`]; a kind like another one shares that way rather than being cast into it.
 
+pub(crate) mod alarm_control_panel;
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
 pub(crate) mod climate;
@@ -31,6 +32,7 @@ pub(crate) mod water_heater;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
+use self::alarm_control_panel::ALARM_STATES;
 use self::climate::CLIMATE_MODES;
 use self::lock::LOCK_STATES;
 use self::media_player::PLAYBACK_STATES;
@@ -210,7 +212,8 @@ impl EntityKind {
             | Self::Button
             | Self::Event
             | Self::MediaPlayer
-            | Self::Update => return None,
+            | Self::Update
+            | Self::AlarmControlPanel => return None,
         })
     }
 }
@@ -235,7 +238,8 @@ impl Capabilities {
             | Self::Lock(_)
             | Self::Climate(_)
             | Self::WaterHeater(_)
-            | Self::MediaPlayer(_) => ValueShape::Text,
+            | Self::MediaPlayer(_)
+            | Self::AlarmControlPanel(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -256,6 +260,7 @@ impl Capabilities {
             Self::Climate(_) => Some(&CLIMATE_MODES),
             Self::WaterHeater(_) => Some(&OPERATION_MODES),
             Self::MediaPlayer(_) => Some(&PLAYBACK_STATES),
+            Self::AlarmControlPanel(_) => Some(&ALARM_STATES),
             _ => None,
         }
     }
@@ -282,7 +287,8 @@ impl Capabilities {
             | Self::Button(_)
             | Self::Event(_)
             | Self::Lock(_)
-            | Self::Siren(_) => Vec::new(),
+            | Self::Siren(_)
+            | Self::AlarmControlPanel(_) => Vec::new(),
         }
     }
 
@@ -346,6 +352,7 @@ impl Capabilities {
             Self::Humidifier(caps) => humidifier::supports_service(caps, service),
             Self::MediaPlayer(caps) => media_player::supports_service(caps, service),
             Self::Update(caps) => update::supports_service(caps, service),
+            Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) => Ok(()),
             Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
         }
@@ -371,6 +378,7 @@ impl State {
             Self::Cover(state) => cover::primary(state),
             Self::Valve(state) => valve::primary(state),
             Self::Lock(state) => lock::primary(state),
+            Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
             Self::Climate(state) => climate::primary(state),
             Self::WaterHeater(state) => water_heater::primary(state),
             Self::Sensor(state) => sensor::primary(state),
@@ -398,7 +406,8 @@ impl State {
             | Self::Text(_)
             | Self::Event(_)
             | Self::Lock(_)
-            | Self::Siren(_) => None,
+            | Self::Siren(_)
+            | Self::AlarmControlPanel(_) => None,
         }
     }
 
@@ -425,6 +434,9 @@ impl State {
             EntityKind::Text => State::Text(text::with_primary(value)?),
             EntityKind::Event => State::Event(event::with_primary(value)?),
             EntityKind::Lock => State::Lock(lock::with_primary(value)?),
+            EntityKind::AlarmControlPanel => {
+                State::AlarmControlPanel(alarm_control_panel::with_primary(value)?)
+            }
             EntityKind::Siren => State::Siren(siren::with_primary(value)?),
             EntityKind::Fan => State::Fan(fan::with_primary(previous!(Fan), value)?),
             EntityKind::Cover => State::Cover(cover::with_primary(previous!(Cover), value)?),
@@ -467,6 +479,7 @@ impl Service {
             EntityKind::Cover => cover::service(name, data),
             EntityKind::Valve => valve::service(name, data),
             EntityKind::Lock => lock::service(name, data),
+            EntityKind::AlarmControlPanel => alarm_control_panel::service(name, data),
             EntityKind::Fan => fan::service(name, data),
             EntityKind::Siren => siren::service(name, data),
             EntityKind::Climate => climate::service(name, data),
@@ -520,6 +533,7 @@ impl Service {
             EntityKind::Cover => cover::asks_for(self),
             EntityKind::Valve => valve::asks_for(self),
             EntityKind::Lock => lock::asks_for(self),
+            EntityKind::AlarmControlPanel => alarm_control_panel::asks_for(self),
             EntityKind::Fan => fan::asks_for(self),
             EntityKind::Siren => siren::asks_for(self),
             EntityKind::Climate => climate::asks_for(self),
@@ -557,6 +571,7 @@ impl ServiceName {
             EntityKind::Cover => cover::data_of(self),
             EntityKind::Valve => valve::data_of(self),
             EntityKind::Lock => lock::data_of(self),
+            EntityKind::AlarmControlPanel => alarm_control_panel::data_of(self),
             EntityKind::Fan => fan::data_of(self),
             EntityKind::Siren => siren::data_of(self),
             EntityKind::Climate => climate::data_of(self),

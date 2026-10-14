@@ -576,6 +576,12 @@ async fn list_entities(
                 e.name.clone(),
                 map::lock::describe(device, e),
             ),
+            EspHomeMessage::ListEntitiesAlarmControlPanelResponse(e) => (
+                e.key,
+                "alarm_control_panel",
+                e.name.clone(),
+                map::alarm_control_panel::describe(device, e),
+            ),
             EspHomeMessage::ListEntitiesUpdateResponse(e) => (
                 e.key,
                 "update",
@@ -731,6 +737,9 @@ fn report(
             (s.key, Some(map::light::state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock::state(s)),
+        EspHomeMessage::AlarmControlPanelStateResponse(s) => {
+            (s.key, map::alarm_control_panel::state(s))
+        }
         EspHomeMessage::UpdateStateResponse(s) => (s.key, map::update::state(s)),
         EspHomeMessage::SirenStateResponse(s) => (s.key, Some(map::siren::state(s))),
         EspHomeMessage::ValveStateResponse(s) => {
@@ -841,6 +850,10 @@ async fn command(
         EntityKind::Valve => write(client, map::valve::command(key, service)).await,
         EntityKind::Siren => write(client, map::siren::command(key, service)).await,
         EntityKind::Lock => write(client, map::lock::command(key, service)).await,
+        EntityKind::AlarmControlPanel => match map::alarm_control_panel::command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err(format!("`{}` isn't something a panel does", service.name())),
+        },
         EntityKind::Update => write(client, map::update::command(key, service)).await,
         EntityKind::Fan => {
             let known = match capabilities.get(&key) {

@@ -127,9 +127,10 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`.
-**Next, in likely order:** `alarm_control_panel`, `date`, `time`, `datetime`,
-`vacuum`, `lawn_mower`, `remote`, `scene`, `device_tracker`. Adding a kind is an
+`media_player`, `update`, `alarm_control_panel`.
+**Next, in likely order:** `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`,
+`device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
+has one, so nothing could report it. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -168,6 +169,10 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `lock` | `open` | bool | `false` | Can open the door, not only unlock it |
 | | `requires_code` | bool | `false` | Locking, unlocking and opening need its code |
 | | `code_format` | regular expression | absent | The device's; pages show it |
+| `alarm_control_panel` | `arm_modes` | list of `home` \| `away` \| `night` \| `vacation` \| `custom_bypass`, no repeats | `[]` | The ways it can be armed. One with none is disarmed and watched |
+| | `trigger` | bool | `false` | Can be set off on purpose |
+| | `code_format` | `number` \| `text` | absent | What its code looks like, when it takes one. Pages show a keypad for digits |
+| | `code_arm_required`, `code_disarm_required` | bool | `false` | Arming, or disarming, needs the code. Only with a `code_format` |
 | `valve` | `device_class` | `water` \| `gas` | absent | |
 | | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
 | `siren` | `tones` | up to 256 distinct strings | `[]` | The tones it can sound |
@@ -213,9 +218,13 @@ speaks (§5.4). Two things read it:
   node, naming the number: a `70` written when the sensor read °F now means 70 °C. Nothing
   is rewritten.
 
-**Unlocking and opening let someone in.** Pages ask before sending them, in a window that also
-takes the code a lock needs. A code travels with its call (`lock.unlock {code}`), is never shown
-in logs (its `Debug` hides it), and is never kept.
+**Unlocking, opening and disarming let someone in.** Pages ask before sending them, in a window
+that also takes the code a lock or an alarm panel needs. A code travels with its call
+(`lock.unlock {code}`, `alarm_control_panel.alarm_disarm {code}`), is never shown in logs (its
+`Debug` hides it), and is never kept. Arming is sent at once, unless the panel wants its code
+for that too. A flow can't carry a code yet ([automations.md](automations.md) §B6.7), so it
+arms and disarms only a panel that doesn't need one for it; the core refuses the others and
+says why.
 
 **Installing an update takes the device away for a while** and can't be undone. Pages ask before
 sending `update.install`, in a window that says what version it is and is also where a version
@@ -298,6 +307,7 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `cover` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, for rules (`text()`) |
 | | `position`, `tilt` | integer 0 (closed) – 100 (open) | no | Only when it said it has them |
 | `lock` | `state` | `locked` \| `unlocked` \| `locking` \| `unlocking` \| `jammed` \| `open` \| `opening` | yes | Its typed value, for rules |
+| `alarm_control_panel` | `state` | `disarmed` \| `armed_home` \| `armed_away` \| `armed_night` \| `armed_vacation` \| `armed_custom_bypass` \| `pending` \| `arming` \| `disarming` \| `triggered` | yes | Its typed value, for rules (`text()`). Home Assistant's states: `arming` counts down before it's armed, `pending` before it sounds |
 | `valve` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, as a cover's |
 | | `position` | integer 0–100 | no | When it opens part of the way |
 | `siren` | `on` | bool | yes | Sounding or not |

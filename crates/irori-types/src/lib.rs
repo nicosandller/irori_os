@@ -48,6 +48,9 @@ pub use id::{
     IdError, Name, ObjectId, ProtocolId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
 };
 pub use kind::EntityKind;
+pub use kinds::alarm_control_panel::{
+    AlarmCapabilities, AlarmState, AlarmStatus, ArmMode, CodeFormat,
+};
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
 pub use kinds::climate::{

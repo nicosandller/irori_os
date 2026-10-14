@@ -492,6 +492,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^alarm_control_panel\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "alarm_control_panel"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -508,6 +531,36 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "ArmMode": {
+      "description": "A way a panel is armed. Home Assistant's names.",
+      "oneOf": [
+        {
+          "description": "People are in: the doors and windows, not the rooms.",
+          "type": "string",
+          "const": "home"
+        },
+        {
+          "description": "Nobody is in.",
+          "type": "string",
+          "const": "away"
+        },
+        {
+          "description": "People are in and asleep.",
+          "type": "string",
+          "const": "night"
+        },
+        {
+          "description": "Nobody is in for a while.",
+          "type": "string",
+          "const": "vacation"
+        },
+        {
+          "description": "With some of its sensors left out.",
+          "type": "string",
+          "const": "custom_bypass"
+        }
+      ]
     },
     "BinarySensorClass": {
       "description": "What a binary sensor's `on` means: Home Assistant's binary sensor device classes, by the\nsame names.",
@@ -1306,7 +1359,61 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "arm_modes": {
+              "description": "The ways it can be armed. A panel with none can only be disarmed and watched.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ArmMode"
+              },
+              "uniqueItems": true
+            },
+            "code_arm_required": {
+              "description": "Needs its code to arm. Only means something with a `code_format`.",
+              "type": "boolean",
+              "default": false
+            },
+            "code_disarm_required": {
+              "description": "Needs its code to disarm. Only means something with a `code_format`.",
+              "type": "boolean",
+              "default": false
+            },
+            "code_format": {
+              "description": "What its code looks like, when it takes one: digits, or any text. Pages show a keypad\nfor the first.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CodeFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "alarm_control_panel"
+            },
+            "trigger": {
+              "description": "Can be set off on purpose.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
+      ]
+    },
+    "CodeFormat": {
+      "type": "string",
+      "enum": [
+        "number",
+        "text"
       ]
     },
     "ColorTempRange": {
@@ -1449,6 +1556,10 @@
         {
           "maxLength": 71,
           "pattern": "^update\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 84,
+          "pattern": "^alarm_control_panel\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

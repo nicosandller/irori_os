@@ -79,6 +79,8 @@ const PADLOCK: &str = concat!(
     r#"<rect x="5" y="11" width="14" height="9.5" rx="1.5"/>"#,
     r#"<path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#,
 );
+/// A shield: an alarm panel.
+const SHIELD: &str = r#"<path d="M12 3.500l7 2.500v5.500c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.500 12l1.800 1.800 3.200-3.600"/>"#;
 const FAN: &str = concat!(
     r#"<path d="M12 12h.01"/>"#,
     r#"<path d="M12 10.5C11 7.5 12 4 14.5 3.5c2 .9 1.5 4.5-1 7.200"/>"#,
@@ -134,6 +136,7 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
             _ => BLIND,
         },
         Capabilities::Lock(_) => PADLOCK,
+        Capabilities::AlarmControlPanel(_) => SHIELD,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,

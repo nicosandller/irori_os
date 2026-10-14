@@ -306,6 +306,9 @@ manifest's `entity_kinds`.
 | `cover.set_tilt` | `tilt` 0–100 | Needs `tilt` |
 | `lock.lock`, `lock.unlock` | `code`, optional | The code is required when the lock `requires_code`. `lock.toggle` unlocks a locked or locking lock and locks anything else |
 | `lock.open` | `code`, optional | Needs `open` |
+| `alarm_control_panel.alarm_arm_home`, `…alarm_arm_away`, `…alarm_arm_night`, `…alarm_arm_vacation`, `…alarm_arm_custom_bypass` | `code`, optional | Needs that mode among its `arm_modes`. The code is required when the panel has a `code_format` and `code_arm_required`; digits only when the format is `number` |
+| `alarm_control_panel.alarm_disarm` | `code`, optional | The code is required when the panel has a `code_format` and `code_disarm_required` |
+| `alarm_control_panel.alarm_trigger` | `code`, optional | Needs `trigger` |
 | `valve.open`, `valve.close`, `valve.stop`, `valve.set_position` | as the cover's | As a cover's, without tilt. `valve.toggle` closes an open or opening valve |
 | `siren.turn_on` | `tone` (one of its `tones`), `volume_level` 0.0–1.0, `duration` 1–86400 s; all optional | Each needs the siren to say it can. `siren.toggle` resolves to `turn_on` or `turn_off` |
 | `siren.turn_off` | none | |

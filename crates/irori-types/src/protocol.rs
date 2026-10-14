@@ -450,6 +450,13 @@ pub enum Service {
     UpdateCheck,
     UpdateSkip,
     UpdateClearSkipped,
+    AlarmArmHome(LockCode),
+    AlarmArmAway(LockCode),
+    AlarmArmNight(LockCode),
+    AlarmArmVacation(LockCode),
+    AlarmArmCustomBypass(LockCode),
+    AlarmDisarm(LockCode),
+    AlarmTrigger(LockCode),
 }
 
 impl Service {
@@ -517,6 +524,13 @@ impl Service {
             Self::UpdateCheck => ServiceName::UpdateCheck,
             Self::UpdateSkip => ServiceName::UpdateSkip,
             Self::UpdateClearSkipped => ServiceName::UpdateClearSkipped,
+            Self::AlarmArmHome(_) => ServiceName::AlarmArmHome,
+            Self::AlarmArmAway(_) => ServiceName::AlarmArmAway,
+            Self::AlarmArmNight(_) => ServiceName::AlarmArmNight,
+            Self::AlarmArmVacation(_) => ServiceName::AlarmArmVacation,
+            Self::AlarmArmCustomBypass(_) => ServiceName::AlarmArmCustomBypass,
+            Self::AlarmDisarm(_) => ServiceName::AlarmDisarm,
+            Self::AlarmTrigger(_) => ServiceName::AlarmTrigger,
         }
     }
 }
@@ -648,6 +662,20 @@ pub enum ServiceName {
     UpdateSkip,
     #[serde(rename = "update.clear_skipped")]
     UpdateClearSkipped,
+    #[serde(rename = "alarm_control_panel.alarm_arm_home")]
+    AlarmArmHome,
+    #[serde(rename = "alarm_control_panel.alarm_arm_away")]
+    AlarmArmAway,
+    #[serde(rename = "alarm_control_panel.alarm_arm_night")]
+    AlarmArmNight,
+    #[serde(rename = "alarm_control_panel.alarm_arm_vacation")]
+    AlarmArmVacation,
+    #[serde(rename = "alarm_control_panel.alarm_arm_custom_bypass")]
+    AlarmArmCustomBypass,
+    #[serde(rename = "alarm_control_panel.alarm_disarm")]
+    AlarmDisarm,
+    #[serde(rename = "alarm_control_panel.alarm_trigger")]
+    AlarmTrigger,
 }
 
 impl ServiceName {
@@ -714,6 +742,13 @@ impl ServiceName {
         Self::UpdateCheck,
         Self::UpdateSkip,
         Self::UpdateClearSkipped,
+        Self::AlarmArmHome,
+        Self::AlarmArmAway,
+        Self::AlarmArmNight,
+        Self::AlarmArmVacation,
+        Self::AlarmArmCustomBypass,
+        Self::AlarmDisarm,
+        Self::AlarmTrigger,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -780,6 +815,13 @@ impl ServiceName {
             Self::UpdateCheck => "update.check",
             Self::UpdateSkip => "update.skip",
             Self::UpdateClearSkipped => "update.clear_skipped",
+            Self::AlarmArmHome => "alarm_control_panel.alarm_arm_home",
+            Self::AlarmArmAway => "alarm_control_panel.alarm_arm_away",
+            Self::AlarmArmNight => "alarm_control_panel.alarm_arm_night",
+            Self::AlarmArmVacation => "alarm_control_panel.alarm_arm_vacation",
+            Self::AlarmArmCustomBypass => "alarm_control_panel.alarm_arm_custom_bypass",
+            Self::AlarmDisarm => "alarm_control_panel.alarm_disarm",
+            Self::AlarmTrigger => "alarm_control_panel.alarm_trigger",
         }
     }
 
@@ -842,6 +884,13 @@ impl ServiceName {
             | Self::UpdateCheck
             | Self::UpdateSkip
             | Self::UpdateClearSkipped => EntityKind::Update,
+            Self::AlarmArmHome
+            | Self::AlarmArmAway
+            | Self::AlarmArmNight
+            | Self::AlarmArmVacation
+            | Self::AlarmArmCustomBypass
+            | Self::AlarmDisarm
+            | Self::AlarmTrigger => EntityKind::AlarmControlPanel,
         }
     }
 }
@@ -976,9 +1025,16 @@ impl JsonSchema for ServiceCall {
                         set_position.clone()
                     }
                     ServiceName::CoverSetTilt => set_tilt.clone(),
-                    ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
-                        lock_code.clone()
-                    }
+                    ServiceName::LockLock
+                    | ServiceName::LockUnlock
+                    | ServiceName::LockOpen
+                    | ServiceName::AlarmArmHome
+                    | ServiceName::AlarmArmAway
+                    | ServiceName::AlarmArmNight
+                    | ServiceName::AlarmArmVacation
+                    | ServiceName::AlarmArmCustomBypass
+                    | ServiceName::AlarmDisarm
+                    | ServiceName::AlarmTrigger => lock_code.clone(),
                     ServiceName::FanTurnOn => fan_turn_on.clone(),
                     ServiceName::FanSetPercentage => fan_percentage.clone(),
                     ServiceName::FanOscillate => fan_oscillate.clone(),

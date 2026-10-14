@@ -2,6 +2,7 @@
 //! that's more than a knob has its own; [`control`] hands each entity to its kind's. Covers and
 //! valves share [`opening`].
 
+mod alarm_control_panel;
 mod button;
 mod climate;
 mod event;
@@ -20,6 +21,7 @@ mod text;
 mod update;
 mod water_heater;
 
+pub(crate) use self::alarm_control_panel::alarm_words;
 pub(crate) use self::climate::climate_words;
 pub(crate) use self::fan::fan_words;
 pub(crate) use self::humidifier::humidifier_words;
@@ -69,7 +71,10 @@ pub(crate) fn control(
         Capabilities::Event(_) => event::happened(state),
         // These three are drawn once and follow a state that changes (`kept`); here the
         // state is whatever it was when this was called.
-        Capabilities::Cover(_) | Capabilities::Valve(_) | Capabilities::Lock(_) => kept(
+        Capabilities::Cover(_)
+        | Capabilities::Valve(_)
+        | Capabilities::Lock(_)
+        | Capabilities::AlarmControlPanel(_) => kept(
             entity,
             Signal::stored(state.cloned()),
             Signal::stored(offline),
@@ -143,6 +148,13 @@ pub(crate) fn kept(
             controls,
         )),
         Capabilities::Lock(capabilities) => Some(lock::lock_control(
+            entity,
+            capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::AlarmControlPanel(capabilities) => Some(alarm_control_panel::alarm_control(
             entity,
             capabilities,
             value,

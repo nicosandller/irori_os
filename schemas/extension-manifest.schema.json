@@ -260,6 +260,11 @@
           "description": "Newer software for something: a device's firmware, an extension.",
           "type": "string",
           "const": "update"
+        },
+        {
+          "description": "A burglar alarm's panel: armed, disarmed, going off.",
+          "type": "string",
+          "const": "alarm_control_panel"
         }
       ]
     },

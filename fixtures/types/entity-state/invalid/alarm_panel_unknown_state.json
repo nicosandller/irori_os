@@ -1,0 +1,18 @@
+{
+  "entity_id": "alarm_control_panel.house_alarm",
+  "availability": "available",
+  "state": {
+    "kind": "alarm_control_panel",
+    "state": "armed"
+  },
+  "last_changed": "2026-09-15T22:04:12Z",
+  "last_updated": "2026-09-15T22:04:12Z",
+  "last_reported": "2026-09-15T22:04:12Z",
+  "context": {
+    "id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+    "origin": {
+      "type": "device",
+      "protocol": "esphome"
+    }
+  }
+}

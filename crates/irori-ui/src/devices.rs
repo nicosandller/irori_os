@@ -21,8 +21,8 @@ mod tables;
 mod updates;
 
 pub(crate) use self::controls::{
-    climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words, number,
-    opening_words, unit_of, update_words, water_heater_words, wording,
+    alarm_words, climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words,
+    number, opening_words, unit_of, update_words, water_heater_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
 
@@ -1789,6 +1789,7 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::Button(_)
         | Capabilities::Cover(_)
         | Capabilities::Lock(_)
+        | Capabilities::AlarmControlPanel(_)
         | Capabilities::Fan(_)
         | Capabilities::Valve(_)
         | Capabilities::Siren(_)

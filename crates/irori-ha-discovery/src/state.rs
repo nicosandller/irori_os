@@ -10,8 +10,8 @@ use irori_types::{AttributeKey, HvacMode, Service, State, UniqueId, WaterHeaterM
 use crate::discovery::EntityTopics;
 use crate::kinds::setting::Reading;
 use crate::kinds::{
-    binary_sensor, button, climate, cover, event, fan, humidifier, light, lock, number, select,
-    sensor, siren, switch, text, update, valve, water_heater,
+    alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, light,
+    lock, number, select, sensor, siren, switch, text, update, valve, water_heater,
 };
 use crate::template::ValueTemplate;
 
@@ -121,6 +121,7 @@ pub fn decode(
         EntityTopics::Cover(topics) => cover::decode(topics, message, previous),
         EntityTopics::Valve(topics) => valve::decode(topics, message, previous),
         EntityTopics::Lock(topics) => lock::decode(topics, message),
+        EntityTopics::AlarmControlPanel(topics) => alarm_control_panel::decode(topics, message),
         EntityTopics::Fan(topics) => fan::decode(topics, message, previous),
         EntityTopics::Siren(topics) => siren::decode(topics, message),
         EntityTopics::Update(topics) => update::decode(topics, message, previous),
@@ -170,6 +171,7 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         EntityTopics::Cover(topics) => cover::encode(topics, service),
         EntityTopics::Valve(topics) => valve::encode(topics, service),
         EntityTopics::Lock(topics) => lock::encode(topics, service),
+        EntityTopics::AlarmControlPanel(topics) => alarm_control_panel::encode(topics, service),
         EntityTopics::Fan(topics) => fan::encode(topics, service),
         EntityTopics::Siren(topics) => siren::encode(topics, service),
         EntityTopics::Update(topics) => update::encode(topics, service),
@@ -197,6 +199,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Button(_) => Vec::new(),
         EntityTopics::Event(topics) => vec![topics.state_topic.as_str()],
         EntityTopics::Lock(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::AlarmControlPanel(topics) => vec![topics.state_topic.as_str()],
         EntityTopics::Siren(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Cover(topics) => topics.listens(),
         EntityTopics::Valve(topics) => topics.listens(),
