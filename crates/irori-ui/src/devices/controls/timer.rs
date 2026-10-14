@@ -21,12 +21,7 @@ pub(crate) fn timer_words(state: &irori_types::TimerState) -> String {
     match state.state {
         TimerStatus::Idle => "Idle".to_owned(),
         TimerStatus::Active => match state.finishes_at {
-            Some(at) => format!(
-                "Ends {}",
-                super::moment::local_from_instant(at)
-                    .get(11..16)
-                    .unwrap_or_default()
-            ),
+            Some(at) => format!("Ends {}", super::moment::when(at)),
             None => "Running".to_owned(),
         },
         TimerStatus::Paused => format!("Paused, {} left", clock(state.remaining.unwrap_or(0.0))),
@@ -37,12 +32,7 @@ pub(crate) fn timer_words(state: &irori_types::TimerState) -> String {
 pub(crate) fn schedule_words(state: &irori_types::ScheduleState) -> String {
     let now = if state.on { "On" } else { "Off" };
     match state.next_change {
-        Some(at) => format!(
-            "{now} until {}",
-            super::moment::local_from_instant(at)
-                .get(11..16)
-                .unwrap_or_default()
-        ),
+        Some(at) => format!("{now} until {}", super::moment::when(at)),
         None => now.to_owned(),
     }
 }

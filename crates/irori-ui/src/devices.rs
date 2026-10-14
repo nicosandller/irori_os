@@ -529,9 +529,7 @@ fn helpers(kept: &[Kept], controls: Controls) -> AnyView {
                                 <span class="name">{name.clone()}</span>
                                 <span class="helper-kind">{helper.kind.word}</span>
                                 <code class="muted small">{ids}</code>
-                                {helper.problem.clone().map(|why| view! {
-                                    <span class="helper-problem">{why}</span>
-                                })}
+
                                 <span class="room-actions">
                                     {knob}
                                     <HelperActions
@@ -541,6 +539,9 @@ fn helpers(kept: &[Kept], controls: Controls) -> AnyView {
                                         name=name
                                     />
                                 </span>
+                                {helper.problem.clone().map(|why| view! {
+                                    <span class="helper-problem">{why}</span>
+                                })}
                             </li>
                         }
                     })

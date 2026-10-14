@@ -117,6 +117,36 @@ pub(super) fn local_from_instant(instant: irori_types::Timestamp) -> String {
     )
 }
 
+/// When `instant` is on this browser's clock, as a person says it: `15:30` today, `Mon 15:30`
+/// within the week ahead, `19 Oct 15:30` beyond.
+pub(crate) fn when(instant: irori_types::Timestamp) -> String {
+    #[allow(clippy::cast_precision_loss)]
+    let millis = instant.as_second() as f64 * 1000.0;
+    let date = web_sys::js_sys::Date::new(&web_sys::wasm_bindgen::JsValue::from_f64(millis));
+    let today = web_sys::js_sys::Date::new_0();
+    let time = format!("{:02}:{:02}", date.get_hours(), date.get_minutes());
+    let same_day = date.get_full_year() == today.get_full_year()
+        && date.get_month() == today.get_month()
+        && date.get_date() == today.get_date();
+    if same_day {
+        return time;
+    }
+    const DAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+    let week = 6.0 * 24.0 * 3600.0 * 1000.0;
+    if millis - today.get_time() < week {
+        format!("{} {time}", DAYS[date.get_day() as usize % 7])
+    } else {
+        format!(
+            "{} {} {time}",
+            date.get_date(),
+            MONTHS[date.get_month() as usize % 12]
+        )
+    }
+}
+
 /// What a `datetime-local` input holds, as the instant it is on this browser's clock. `None`
 /// for something that isn't a moment.
 fn instant_from_local(picked: &str) -> Option<String> {

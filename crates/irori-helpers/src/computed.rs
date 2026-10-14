@@ -458,7 +458,7 @@ fn numbers(samples: &[(Timestamp, Typed)]) -> Vec<Sample> {
 
 fn reading(value: f64) -> State {
     State::Sensor(SensorState {
-        value: SensorValue::Number(maths::round(value, 3)),
+        value: SensorValue::Number(maths::round(value, 2)),
     })
 }
 
