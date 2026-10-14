@@ -210,6 +210,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/helpers", get(list_helpers))
         .route("/api/helpers/{table}", post(add_helper))
         .route("/api/helpers/{table}/check", post(check_helper))
+        .route("/api/helpers/{table}/preview", post(preview_helper))
         .route(
             "/api/helpers/{table}/{id}",
             axum::routing::patch(edit_helper).delete(remove_helper),
@@ -1267,6 +1268,116 @@ fn free_helper_id(
         }
     }
     Err(format!("no id is free for `{name}`"))
+}
+
+/// What a helper would be like, before it's made: its entity, and the states it would have
+/// had over the last day (one worked out from other entities, played over their history) or
+/// would start in (one a person sets). The same body as making one; a name isn't needed yet.
+/// For the builder to draw and to try.
+async fn preview_helper(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    Json(mut settings): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let name = settings
+        .get("name")
+        .and_then(|name| name.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Preview")
+        .to_owned();
+    settings.insert("name".into(), serde_json::json!(name));
+    let Ok(parsed) = name.parse::<Name>() else {
+        return refused(StatusCode::BAD_REQUEST, format!("`{name}` can't be a name"));
+    };
+    let id = irori_core::new_area_id(&parsed, &[]).to_string();
+    let Ok(object_id) = irori_types::ObjectId::try_from(id.as_str()) else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            format!("`{name}` can't be made into an id"),
+        );
+    };
+    let core = &state.0.core;
+    let entities = core.entities();
+    let history = state.0.history.clone();
+    let live = core.clone();
+    let time_zone = core.place().time_zone;
+    let now = core.now();
+    let settings = serde_json::Value::Object(settings);
+    // The recorder answers a range; the reading that held as it began came a little before.
+    let changes = move |entity: &irori_types::EntityId, since: irori_types::Timestamp| {
+        let seeded = irori_types::Timestamp::from_jiff(
+            since.as_jiff() - jiff::SignedDuration::from_hours(6),
+        );
+        let mut changes = irori_core::HistorySource::changes(&history, entity, seeded);
+        // And where it is now, which the recorder may not have written yet.
+        if let Some(current) = live.state(entity)
+            && changes
+                .last()
+                .is_none_or(|last| last.last_updated < current.last_updated)
+        {
+            changes.push(current);
+        }
+        changes
+    };
+    // Each read of the history waits off the runtime (`history.rs`).
+    let preview = kind.preview(
+        &object_id,
+        &settings,
+        &entities,
+        &changes,
+        now,
+        time_zone.as_ref().map(|zone| zone.as_str()),
+    );
+    let preview = match preview {
+        Ok(preview) => preview,
+        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
+    };
+    let Ok(entity_id) = irori_types::EntityId::try_from(preview.entity_id.as_str()) else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "it makes no entity a page can show".to_owned(),
+        );
+    };
+    let context = core.new_context(irori_types::Origin::System);
+    let states: Vec<irori_types::EntityState> = preview
+        .said
+        .into_iter()
+        .map(|said| {
+            let mut attributes = irori_types::Attributes::new();
+            if let Some(problem) = said.problem
+                && let Ok(key) = irori_types::AttributeKey::try_from("problem")
+            {
+                attributes.insert(key, serde_json::json!(problem));
+            }
+            irori_types::EntityState {
+                entity_id: entity_id.clone(),
+                availability: irori_types::Availability::Available,
+                state: said.state,
+                attributes,
+                last_changed: said.at,
+                last_updated: said.at,
+                last_reported: said.at,
+                context: context.clone(),
+            }
+        })
+        .collect();
+    Json(serde_json::json!({
+        "entity": {
+            "id": entity_id,
+            "protocol": HELPERS.as_str(),
+            "unique_id": format!("preview-{id}"),
+            "name": name,
+            "capabilities": preview.capabilities,
+        },
+        "states": states,
+        "computed": preview.computed,
+    }))
+    .into_response()
 }
 
 /// What a helper would be, without making it: the entities it would become, or what's wrong
@@ -4660,6 +4771,34 @@ mod tests {
             )
             .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{checked}");
+        // Previewed before it's made, without a name: played over its source's day.
+        let (status, preview) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds/preview",
+                serde_json::json!({"source": "number.evening_brightness", "above": 50}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["entity"]["id"], "binary_sensor.preview");
+        assert_eq!(preview["computed"], true);
+        let said = preview["states"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            said.last().map(|s| s["state"]["on"].clone()),
+            Some(serde_json::json!(true)),
+            "{preview}"
+        );
+        // One a person sets starts as its `initial`.
+        let (status, preview) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers/preview",
+                serde_json::json!({"name": "Fan speed", "min": 0, "max": 10, "initial": 3}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["computed"], false);
+        assert_eq!(preview["states"][0]["state"]["value"], 3.0, "{preview}");
         // A name already in use: the check says the id Create would give it, and why.
         let (status, checked) = server
             .json(

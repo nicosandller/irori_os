@@ -240,7 +240,7 @@ impl Spec {
     }
 
     /// How far back it reads history to start from, for the kinds that look back.
-    fn looks_back(&self, now: Timestamp, zone: &TimeZone) -> Option<Timestamp> {
+    pub(crate) fn looks_back(&self, now: Timestamp, zone: &TimeZone) -> Option<Timestamp> {
         match self {
             Self::Trend(s) => Some(maths::plus(now, -s.over)),
             Self::Derivative(s) => Some(maths::plus(now, -s.over)),

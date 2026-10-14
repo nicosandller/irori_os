@@ -50,6 +50,7 @@ mod guide;
 mod maths;
 mod moment;
 mod number;
+mod preview;
 mod schedule;
 mod select;
 mod text;
@@ -75,6 +76,7 @@ pub use counter::Counter;
 pub use guide::{GUIDE, Guide, guide};
 pub use moment::{Date, Datetime, Time};
 pub use number::Number;
+pub use preview::{Preview, Said};
 pub use schedule::Schedule;
 pub use select::Select;
 pub use text::Text;
@@ -295,6 +297,15 @@ impl HelperKind {
         id: &ObjectId,
         settings: &serde_json::Value,
     ) -> Result<Vec<String>, String> {
+        Ok(self
+            .made(id, settings)?
+            .iter()
+            .map(Made::entity_id)
+            .collect())
+    }
+
+    /// The entities one helper of this kind would be, checked as `check` checks them.
+    fn made(&self, id: &ObjectId, settings: &serde_json::Value) -> Result<Vec<Made>, String> {
         fn read<T: serde::de::DeserializeOwned>(settings: &serde_json::Value) -> Result<T, String> {
             serde_json::from_value(settings.clone()).map_err(|e| e.to_string())
         }
@@ -333,7 +344,7 @@ impl HelperKind {
                 ));
             }
         }
-        Ok(made.iter().map(Made::entity_id).collect())
+        Ok(made)
     }
 }
 
