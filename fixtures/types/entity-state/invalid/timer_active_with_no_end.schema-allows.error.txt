@@ -1,0 +1,1 @@
+an active timer says when it finishes

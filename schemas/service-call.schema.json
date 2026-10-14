@@ -1720,6 +1720,107 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "timer.start"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TimerStart"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "timer.pause"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "timer.cancel"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "timer.finish"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "timer.change"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TimerChange"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -2389,7 +2490,12 @@
         "lawn_mower.start_mowing",
         "lawn_mower.pause",
         "lawn_mower.dock",
-        "scene.turn_on"
+        "scene.turn_on",
+        "timer.start",
+        "timer.pause",
+        "timer.cancel",
+        "timer.finish",
+        "timer.change"
       ]
     },
     "SetHumidity": {
@@ -2502,6 +2608,37 @@
       "required": [
         "time"
       ]
+    },
+    "TimerChange": {
+      "description": "Data for `timer.change`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "Seconds to add to a running timer, or to take away when negative.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "by"
+      ]
+    },
+    "TimerStart": {
+      "description": "Data for `timer.start`.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "How long to run for, in seconds. Left out, its own `duration`, or what was left when it\nwas paused.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
     },
     "Timestamp": {
       "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, seconds 00-59 (no leap seconds), at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",

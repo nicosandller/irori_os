@@ -1118,6 +1118,20 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What a timer can do. Nothing to say yet: every timer starts, pauses, and ends.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "timer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

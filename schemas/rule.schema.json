@@ -676,6 +676,10 @@
         {
           "maxLength": 79,
           "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^timer\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -876,6 +880,11 @@
         "switch.turn_on",
         "text.set_value",
         "time.set_value",
+        "timer.cancel",
+        "timer.change",
+        "timer.finish",
+        "timer.pause",
+        "timer.start",
         "update.check",
         "update.clear_skipped",
         "update.install",

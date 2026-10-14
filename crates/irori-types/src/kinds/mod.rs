@@ -30,6 +30,7 @@ pub(crate) mod sensor;
 pub(crate) mod siren;
 pub(crate) mod switch;
 pub(crate) mod text;
+pub mod timer;
 pub(crate) mod update;
 pub(crate) mod vacuum;
 pub(crate) mod valve;
@@ -225,7 +226,8 @@ impl EntityKind {
             | Self::Vacuum
             | Self::LawnMower
             | Self::Scene
-            | Self::DeviceTracker => return None,
+            | Self::DeviceTracker
+            | Self::Timer => return None,
         })
     }
 }
@@ -257,7 +259,8 @@ impl Capabilities {
             | Self::Time(_)
             | Self::Datetime(_)
             | Self::Vacuum(_)
-            | Self::LawnMower(_) => ValueShape::Text,
+            | Self::LawnMower(_)
+            | Self::Timer(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -279,6 +282,7 @@ impl Capabilities {
             Self::WaterHeater(_) => Some(&OPERATION_MODES),
             Self::MediaPlayer(_) => Some(&PLAYBACK_STATES),
             Self::AlarmControlPanel(_) => Some(&ALARM_STATES),
+            Self::Timer(_) => Some(&timer::STATUSES),
             Self::LawnMower(_) => Some(&lawn_mower::ACTIVITIES),
             Self::Vacuum(_) => Some(&vacuum::ACTIVITIES),
             _ => None,
@@ -298,6 +302,7 @@ impl Capabilities {
             Self::WaterHeater(caps) => water_heater::fields(caps),
             Self::MediaPlayer(caps) => media_player::fields(caps),
             Self::Update(caps) => update::fields(caps),
+            Self::Timer(caps) => timer::fields(caps),
             Self::DeviceTracker(caps) => device_tracker::fields(caps),
             Self::Vacuum(caps) => vacuum::fields(caps),
             Self::Switch(_)
@@ -380,6 +385,7 @@ impl Capabilities {
             Self::Humidifier(caps) => humidifier::supports_service(caps, service),
             Self::MediaPlayer(caps) => media_player::supports_service(caps, service),
             Self::Update(caps) => update::supports_service(caps, service),
+            Self::Timer(caps) => timer::supports_service(caps, service),
             Self::LawnMower(caps) => lawn_mower::supports_service(caps, service),
             Self::Vacuum(caps) => vacuum::supports_service(caps, service),
             Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
@@ -412,6 +418,7 @@ impl State {
             Self::Cover(state) => cover::primary(state),
             Self::Valve(state) => valve::primary(state),
             Self::Lock(state) => lock::primary(state),
+            Self::Timer(state) => timer::primary(state),
             Self::DeviceTracker(state) => device_tracker::primary(state),
             Self::LawnMower(state) => lawn_mower::primary(state),
             Self::Vacuum(state) => vacuum::primary(state),
@@ -438,6 +445,7 @@ impl State {
             Self::WaterHeater(state) => water_heater::field(state, name),
             Self::MediaPlayer(state) => media_player::field(state, name),
             Self::Update(state) => update::field(state, name),
+            Self::Timer(state) => timer::field(state, name),
             Self::DeviceTracker(state) => device_tracker::field(state, name),
             Self::Vacuum(state) => vacuum::field(state, name),
             Self::Switch(_)
@@ -504,6 +512,7 @@ impl State {
                 State::MediaPlayer(media_player::with_primary(previous!(MediaPlayer), value)?)
             }
             EntityKind::Update => State::Update(update::with_primary(previous!(Update), value)?),
+            EntityKind::Timer => State::Timer(timer::with_primary(previous!(Timer), value)?),
             EntityKind::DeviceTracker => State::DeviceTracker(device_tracker::with_primary(
                 previous!(DeviceTracker),
                 value,
@@ -535,6 +544,7 @@ impl Service {
             EntityKind::Cover => cover::service(name, data),
             EntityKind::Valve => valve::service(name, data),
             EntityKind::Lock => lock::service(name, data),
+            EntityKind::Timer => timer::service(name, data),
             EntityKind::LawnMower => lawn_mower::service(name, data),
             EntityKind::Vacuum => vacuum::service(name, data),
             EntityKind::AlarmControlPanel => alarm_control_panel::service(name, data),
@@ -572,6 +582,8 @@ impl Service {
             Self::LightTurnOn(data) => data.validate(),
             Self::NumberSetValue(data) => data.validate(),
             Self::NumberIncrement(data) | Self::NumberDecrement(data) => data.validate(),
+            Self::TimerStart(data) => data.validate(),
+            Self::TimerChange(data) => data.validate(),
             Self::SirenTurnOn(data) => data.validate(),
             Self::ClimateSetTemperature(data) => data.validate(),
             Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data) => data.validate(),
@@ -595,6 +607,7 @@ impl Service {
             EntityKind::Cover => cover::asks_for(self),
             EntityKind::Valve => valve::asks_for(self),
             EntityKind::Lock => lock::asks_for(self),
+            EntityKind::Timer => timer::asks_for(self),
             EntityKind::LawnMower => lawn_mower::asks_for(self),
             EntityKind::Vacuum => vacuum::asks_for(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::asks_for(self),
@@ -641,6 +654,7 @@ impl ServiceName {
             EntityKind::Cover => cover::data_of(self),
             EntityKind::Valve => valve::data_of(self),
             EntityKind::Lock => lock::data_of(self),
+            EntityKind::Timer => timer::data_of(self),
             EntityKind::LawnMower => lawn_mower::data_of(self),
             EntityKind::Vacuum => vacuum::data_of(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::data_of(self),

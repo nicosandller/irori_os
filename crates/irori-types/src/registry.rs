@@ -25,6 +25,7 @@ use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::siren::SirenCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
+use crate::kinds::timer::TimerCapabilities;
 use crate::kinds::update::UpdateCapabilities;
 use crate::kinds::vacuum::VacuumCapabilities;
 use crate::kinds::valve::ValveCapabilities;
@@ -223,6 +224,7 @@ pub enum Capabilities {
     LawnMower(LawnMowerCapabilities),
     Scene(SceneCapabilities),
     DeviceTracker(TrackerCapabilities),
+    Timer(TimerCapabilities),
 }
 
 impl Capabilities {
@@ -255,6 +257,7 @@ impl Capabilities {
             Self::LawnMower(_) => EntityKind::LawnMower,
             Self::Scene(_) => EntityKind::Scene,
             Self::DeviceTracker(_) => EntityKind::DeviceTracker,
+            Self::Timer(_) => EntityKind::Timer,
         }
     }
 

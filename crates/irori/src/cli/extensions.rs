@@ -375,7 +375,13 @@ fn helper_fields(kind: HelperKind, settings: HelperSettings) -> Result<Map<Strin
     };
     put("min", settings.min.map(|n| json!(n)));
     put("max", settings.max.map(|n| json!(n)));
-    put("step", settings.step.map(|n| json!(n)));
+    // A timer's step is how long it runs.
+    let step = if kind == HelperKind::Timer {
+        "duration"
+    } else {
+        "step"
+    };
+    put(step, settings.step.map(|n| json!(n)));
     put("unit", settings.unit.map(|unit| json!(unit)));
     put("mode", settings.mode.map(|mode| json!(mode)));
     put(

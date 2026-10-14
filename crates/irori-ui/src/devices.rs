@@ -22,8 +22,8 @@ mod updates;
 
 pub(crate) use self::controls::{
     alarm_words, climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words,
-    mower_words, number, opening_words, unit_of, update_words, vacuum_words, water_heater_words,
-    wording,
+    mower_words, number, opening_words, timer_words, unit_of, update_words, vacuum_words,
+    water_heater_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
 
@@ -262,7 +262,7 @@ struct HelperKind {
     example: &'static str,
 }
 
-const HELPER_KINDS: [HelperKind; 9] = [
+const HELPER_KINDS: [HelperKind; 10] = [
     HelperKind {
         table: "toggles",
         word: "Toggle",
@@ -326,6 +326,13 @@ const HELPER_KINDS: [HelperKind; 9] = [
         prefix: "datetime",
         about: "A day and a time together: when the holiday ends.",
         example: "Holiday ends",
+    },
+    HelperKind {
+        table: "timers",
+        word: "Timer",
+        prefix: "timer",
+        about: "Counts down and says when it's done: flows start it, and start from it finishing.",
+        example: "Lights stay on",
     },
 ];
 
@@ -562,6 +569,12 @@ impl HelperForm {
                     fields.insert("unit".into(), serde_json::json!(unit.trim()));
                 }
             }
+            "timers" => {
+                fields.insert(
+                    "duration".into(),
+                    serde_json::json!(number(self.step, "How long it runs")?),
+                );
+            }
             "counters" => {
                 fields.insert(
                     "step".into(),
@@ -689,6 +702,7 @@ fn AddHelper(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
                 }
                 .into_any(),
                 "counters" => view! { {field("Counts by", form.step, true)} }.into_any(),
+                "timers" => view! { {field("Runs for, in seconds", form.step, true)} }.into_any(),
                 "selects" => view! {
                     <label class="helper-field wide">
                         <span>"What it can be, one to a line"</span>
@@ -1835,6 +1849,7 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::Datetime(_)
         | Capabilities::Vacuum(_)
         | Capabilities::LawnMower(_)
+        | Capabilities::Timer(_)
         | Capabilities::Fan(_)
         | Capabilities::Valve(_)
         | Capabilities::Siren(_)

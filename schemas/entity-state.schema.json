@@ -669,6 +669,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^timer\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "timer"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -892,6 +915,10 @@
         {
           "maxLength": 79,
           "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^timer\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -1988,6 +2015,69 @@
             "kind",
             "home"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "description": "How long it runs when started without being told, in seconds.",
+              "type": "number",
+              "format": "double",
+              "minimum": 0.0
+            },
+            "finishes_at": {
+              "description": "When it runs out. While it's active, and only then.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "timer"
+            },
+            "remaining": {
+              "description": "Seconds left. While it's paused, and only then.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "state": {
+              "$ref": "#/$defs/TimerStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state",
+            "duration"
+          ]
+        }
+      ]
+    },
+    "TimerStatus": {
+      "oneOf": [
+        {
+          "description": "Not counting: never started, run out, or cancelled.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "Counting down.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "Stopped part of the way, with time left.",
+          "type": "string",
+          "const": "paused"
         }
       ]
     },

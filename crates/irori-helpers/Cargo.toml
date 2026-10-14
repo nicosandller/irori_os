@@ -11,6 +11,8 @@ license.workspace = true
 irori-types.workspace = true
 irori-protocol.workspace = true
 
+jiff.workspace = true
+
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

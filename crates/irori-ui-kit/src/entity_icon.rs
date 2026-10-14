@@ -153,6 +153,7 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
         Capabilities::LawnMower(_) => MOWER,
         Capabilities::Scene(_) => PALETTE,
         Capabilities::DeviceTracker(_) => PIN,
+        Capabilities::Timer(_) => CLOCK,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,

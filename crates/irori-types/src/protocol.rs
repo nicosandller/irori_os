@@ -26,6 +26,7 @@ use crate::kinds::opening::SetPosition;
 use crate::kinds::select::SelectOption;
 use crate::kinds::siren::SirenTurnOn;
 use crate::kinds::text::TextSetValue;
+use crate::kinds::timer::{TimerChange, TimerStart};
 use crate::kinds::vacuum::VacuumFanSpeed;
 use crate::kinds::water_heater::{WaterHeaterOperationMode, WaterHeaterSetTemperature};
 use crate::{
@@ -473,6 +474,11 @@ pub enum Service {
     LawnMowerPause,
     LawnMowerDock,
     SceneTurnOn,
+    TimerStart(TimerStart),
+    TimerPause,
+    TimerCancel,
+    TimerFinish,
+    TimerChange(TimerChange),
 }
 
 impl Service {
@@ -561,6 +567,11 @@ impl Service {
             Self::LawnMowerPause => ServiceName::LawnMowerPause,
             Self::LawnMowerDock => ServiceName::LawnMowerDock,
             Self::SceneTurnOn => ServiceName::SceneTurnOn,
+            Self::TimerStart(_) => ServiceName::TimerStart,
+            Self::TimerPause => ServiceName::TimerPause,
+            Self::TimerCancel => ServiceName::TimerCancel,
+            Self::TimerFinish => ServiceName::TimerFinish,
+            Self::TimerChange(_) => ServiceName::TimerChange,
         }
     }
 }
@@ -734,6 +745,16 @@ pub enum ServiceName {
     LawnMowerDock,
     #[serde(rename = "scene.turn_on")]
     SceneTurnOn,
+    #[serde(rename = "timer.start")]
+    TimerStart,
+    #[serde(rename = "timer.pause")]
+    TimerPause,
+    #[serde(rename = "timer.cancel")]
+    TimerCancel,
+    #[serde(rename = "timer.finish")]
+    TimerFinish,
+    #[serde(rename = "timer.change")]
+    TimerChange,
 }
 
 impl ServiceName {
@@ -821,6 +842,11 @@ impl ServiceName {
         Self::LawnMowerPause,
         Self::LawnMowerDock,
         Self::SceneTurnOn,
+        Self::TimerStart,
+        Self::TimerPause,
+        Self::TimerCancel,
+        Self::TimerFinish,
+        Self::TimerChange,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -908,6 +934,11 @@ impl ServiceName {
             Self::LawnMowerPause => "lawn_mower.pause",
             Self::LawnMowerDock => "lawn_mower.dock",
             Self::SceneTurnOn => "scene.turn_on",
+            Self::TimerStart => "timer.start",
+            Self::TimerPause => "timer.pause",
+            Self::TimerCancel => "timer.cancel",
+            Self::TimerFinish => "timer.finish",
+            Self::TimerChange => "timer.change",
         }
     }
 
@@ -991,6 +1022,11 @@ impl ServiceName {
                 EntityKind::LawnMower
             }
             Self::SceneTurnOn => EntityKind::Scene,
+            Self::TimerStart
+            | Self::TimerPause
+            | Self::TimerCancel
+            | Self::TimerFinish
+            | Self::TimerChange => EntityKind::Timer,
         }
     }
 }
@@ -1090,6 +1126,8 @@ impl JsonSchema for ServiceCall {
         let set_position = generator.subschema_for::<SetPosition>();
         let set_tilt = generator.subschema_for::<SetTilt>();
         let lock_code = generator.subschema_for::<LockCode>();
+        let timer_start = generator.subschema_for::<TimerStart>();
+        let timer_change = generator.subschema_for::<TimerChange>();
         let vacuum_fan_speed = generator.subschema_for::<VacuumFanSpeed>();
         let date_set = generator.subschema_for::<DateSetValue>();
         let time_set = generator.subschema_for::<TimeSetValue>();
@@ -1143,6 +1181,8 @@ impl JsonSchema for ServiceCall {
                     ServiceName::TimeSetValue => time_set.clone(),
                     ServiceName::DatetimeSetValue => datetime_set.clone(),
                     ServiceName::VacuumSetFanSpeed => vacuum_fan_speed.clone(),
+                    ServiceName::TimerChange => timer_change.clone(),
+                    ServiceName::TimerStart => timer_start.clone(),
                     ServiceName::FanTurnOn => fan_turn_on.clone(),
                     ServiceName::FanSetPercentage => fan_percentage.clone(),
                     ServiceName::FanOscillate => fan_oscillate.clone(),

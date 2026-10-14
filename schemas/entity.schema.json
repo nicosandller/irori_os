@@ -676,6 +676,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^timer\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "timer"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1726,6 +1749,20 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What a timer can do. Nothing to say yet: every timer starts, pauses, and ends.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "timer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1908,6 +1945,10 @@
         {
           "maxLength": 79,
           "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^timer\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

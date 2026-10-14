@@ -472,6 +472,9 @@ pub enum HelperKind {
     Time,
     /// A day and a time: `datetime.<id>`.
     Datetime,
+    /// Counts down: `timer.<id>`, and `event.<id>` for when it starts and ends. `--initial`
+    /// isn't for a timer; its length is `--step`, in seconds.
+    Timer,
 }
 
 impl HelperKind {
@@ -487,6 +490,7 @@ impl HelperKind {
             Self::Date => "dates",
             Self::Time => "times",
             Self::Datetime => "datetimes",
+            Self::Timer => "timers",
         }
     }
 }
@@ -501,7 +505,7 @@ pub struct HelperSettings {
     /// The most a number or a counter can be.
     #[arg(long, allow_negative_numbers = true)]
     pub max: Option<f64>,
-    /// How finely a number is set, or how much one count is.
+    /// How finely a number is set, how much one count is, or how long a timer runs (seconds).
     #[arg(long)]
     pub step: Option<f64>,
     /// What a number counts in: `%`, `°C`, `min`.

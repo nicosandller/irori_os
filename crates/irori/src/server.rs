@@ -4828,6 +4828,100 @@ mod tests {
         Ok(())
     }
 
+    /// A timer helper counts down by itself and says when it's done, on its event; paused, it
+    /// keeps what's left.
+    #[tokio::test]
+    async fn a_timer_helper_counts_down_and_says_it_finished() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/timers",
+                serde_json::json!({"name": "Egg", "duration": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(
+            made["entities"],
+            serde_json::json!(["timer.egg", "event.egg"])
+        );
+        let egg = EntityId::try_from("timer.egg")?;
+        let ended = EntityId::try_from("event.egg")?;
+        let status_of = |core: &Core| {
+            core.state(&egg)
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+        let said = |core: &Core| {
+            core.state(&ended)
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+        until("the timer exists", || {
+            status_of(&core) == Some(serde_json::json!("idle"))
+        })
+        .await?;
+        let call = |command: &str, data: serde_json::Value| {
+            let mut body = serde_json::json!({"entity_id": egg, "command": command});
+            if !data.is_null() {
+                body["data"] = data;
+            }
+            server.json("POST", "/api/command", body)
+        };
+
+        // Paused, it keeps what's left; cancelled, it says so.
+        let (status, body) = call("start", serde_json::json!({"duration": 60})).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("started", || {
+            said(&core) == Some(serde_json::json!("started"))
+        })
+        .await?;
+        let (status, body) = call("pause", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("paused", || {
+            status_of(&core) == Some(serde_json::json!("paused"))
+        })
+        .await?;
+        let remaining = core
+            .state(&egg)
+            .and_then(|s| s.state)
+            .and_then(|state| state.field("remaining"));
+        assert!(
+            matches!(remaining, Some(irori_types::Typed::Number(n)) if n > 55.0 && n <= 60.0),
+            "{remaining:?}"
+        );
+        let (status, _) = call("pause", serde_json::Value::Null).await?;
+        assert_ne!(status, StatusCode::OK, "a paused timer isn't paused again");
+        call("cancel", serde_json::Value::Null).await?;
+        until("cancelled", || {
+            said(&core) == Some(serde_json::json!("cancelled"))
+        })
+        .await?;
+
+        // Its own length, run out by itself.
+        let (status, body) = call("start", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("running", || {
+            status_of(&core) == Some(serde_json::json!("active"))
+        })
+        .await?;
+        for _ in 0..300 {
+            if said(&core) == Some(serde_json::json!("finished")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(said(&core), Some(serde_json::json!("finished")));
+        assert_eq!(status_of(&core), Some(serde_json::json!("idle")));
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// An icon arrives as an image with a policy that stops it doing anything but being one.
     #[tokio::test]
     async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {

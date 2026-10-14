@@ -101,7 +101,7 @@ fn picker(
 
 /// An instant as a `datetime-local` input holds it: `2026-10-14T08:45:00`, on this browser's
 /// clock.
-fn local_from_instant(instant: irori_types::Timestamp) -> String {
+pub(super) fn local_from_instant(instant: irori_types::Timestamp) -> String {
     #[allow(clippy::cast_precision_loss)]
     let date = web_sys::js_sys::Date::new(&web_sys::wasm_bindgen::JsValue::from_f64(
         instant.as_second() as f64 * 1000.0,

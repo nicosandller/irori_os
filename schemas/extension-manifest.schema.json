@@ -300,6 +300,11 @@
           "description": "Where something is, as far as the home cares: at home or not.",
           "type": "string",
           "const": "device_tracker"
+        },
+        {
+          "description": "Something that counts down and says when it's done.",
+          "type": "string",
+          "const": "timer"
         }
       ]
     },

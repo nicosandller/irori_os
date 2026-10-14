@@ -20,6 +20,7 @@ mod sensor;
 mod siren;
 mod switch;
 mod text;
+mod timer;
 mod update;
 mod vacuum;
 mod water_heater;
@@ -34,6 +35,7 @@ pub(crate) use self::media_player::media_player_words;
 pub(crate) use self::number::unit_of;
 pub(crate) use self::opening::opening_words;
 pub(crate) use self::sensor::wording;
+pub(crate) use self::timer::timer_words;
 pub(crate) use self::update::update_words;
 pub(crate) use self::vacuum::vacuum_words;
 pub(crate) use self::water_heater::water_heater_words;
@@ -86,7 +88,8 @@ pub(crate) fn control(
         | Capabilities::Lock(_)
         | Capabilities::AlarmControlPanel(_)
         | Capabilities::Vacuum(_)
-        | Capabilities::LawnMower(_) => kept(
+        | Capabilities::LawnMower(_)
+        | Capabilities::Timer(_) => kept(
             entity,
             Signal::stored(state.cloned()),
             Signal::stored(offline),
@@ -173,6 +176,7 @@ pub(crate) fn kept(
             offline,
             controls,
         )),
+        Capabilities::Timer(_) => Some(timer::timer_control(entity, value, offline, controls)),
         Capabilities::LawnMower(capabilities) => Some(lawn_mower::mower_control(
             entity,
             *capabilities,

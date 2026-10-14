@@ -85,7 +85,7 @@ refuses unless `--yes` is set. `--yes` does not skip the full-access sentence.
 | `floorplan` | `get` prints the plan as JSON. `put <file>` replaces it. Drawing stays on the page. |
 | `watch` | State changes until Ctrl-C. |
 | `extensions` | Catalog, install, install from a URL, uninstall, settings, secrets, actions, log. |
-| `helpers` | The values Irori keeps itself. `list`; `add <kind> <name>` with that kind's settings (`--min`, `--max`, `--step`, `--unit`, `--option`, `--initial`…); `set <kind> <id>` to change them; `remove <kind> <id>`. Kinds: `toggle`, `number`, `counter`, `choice`, `text`, `button`, `date`, `time`, `datetime`. `helpers toggle add|remove` still works. |
+| `helpers` | The values Irori keeps itself. `list`; `add <kind> <name>` with that kind's settings (`--min`, `--max`, `--step`, `--unit`, `--option`, `--initial`…); `set <kind> <id>` to change them; `remove <kind> <id>`. Kinds: `toggle`, `number`, `counter`, `choice`, `text`, `button`, `date`, `time`, `datetime`, `timer` (its length is `--step`, in seconds). `helpers toggle add|remove` still works. |
 | `token` | List, create, revoke. The secret is printed once. |
 | `users` | List, add, edit, remove. |
 | `place` | Show, or set coordinates, an optional label, and a time zone. No map search. |

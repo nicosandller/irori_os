@@ -25,6 +25,7 @@ use crate::kinds::sensor::SensorState;
 use crate::kinds::siren::SirenState;
 use crate::kinds::switch::SwitchState;
 use crate::kinds::text::TextState;
+use crate::kinds::timer::TimerState;
 use crate::kinds::update::UpdateState;
 use crate::kinds::vacuum::VacuumState;
 use crate::kinds::valve::ValveState;
@@ -168,6 +169,7 @@ pub enum State {
     Vacuum(VacuumState),
     LawnMower(LawnMowerState),
     DeviceTracker(TrackerState),
+    Timer(TimerState),
 }
 
 impl State {
@@ -186,6 +188,7 @@ impl State {
             Self::Humidifier(humidifier) => humidifier.validate(),
             Self::MediaPlayer(player) => player.validate(),
             Self::Update(update) => update.validate(),
+            Self::Timer(state) => state.validate(),
             Self::DeviceTracker(tracker) => tracker.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
@@ -230,6 +233,7 @@ impl State {
             Self::Vacuum(_) => EntityKind::Vacuum,
             Self::LawnMower(_) => EntityKind::LawnMower,
             Self::DeviceTracker(_) => EntityKind::DeviceTracker,
+            Self::Timer(_) => EntityKind::Timer,
         }
     }
 }

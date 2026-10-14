@@ -49,13 +49,14 @@ mod moment;
 mod number;
 mod select;
 mod text;
+mod timer;
 mod toggle;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_protocol::types::{
     Capabilities, ContextId, EntityDescription, EventState, Name, ObjectId, Service, State,
-    StateReport, Typed, UniqueId,
+    StateReport, TimerState, Timestamp, Typed, UniqueId,
 };
 use irori_protocol::{Protocol, ProtocolContext, ProtocolError, ServiceError};
 use schemars::JsonSchema;
@@ -67,6 +68,7 @@ pub use moment::{Date, Datetime, Time};
 pub use number::Number;
 pub use select::Select;
 pub use text::Text;
+pub use timer::Timer;
 pub use toggle::Toggle;
 
 /// The helpers protocol.
@@ -104,6 +106,9 @@ pub struct Settings {
     /// A day and a time: `datetime.<id>`.
     #[serde(default)]
     pub datetimes: BTreeMap<ObjectId, Datetime>,
+    /// Something that counts down: `timer.<id>`, and `event.<id>` for when it starts and ends.
+    #[serde(default)]
+    pub timers: BTreeMap<ObjectId, Timer>,
 }
 
 impl Protocol for Helpers {
@@ -175,6 +180,11 @@ pub const KINDS: &[HelperKind] = &[
         word: "date and time",
         prefixes: &["datetime"],
     },
+    HelperKind {
+        table: "timers",
+        word: "timer",
+        prefixes: &["timer", "timerevent"],
+    },
 ];
 
 impl HelperKind {
@@ -215,6 +225,7 @@ impl HelperKind {
             "dates" => moment::date(id, &read(settings)?),
             "times" => moment::time(id, &read(settings)?),
             "datetimes" => moment::datetime(id, &read(settings)?),
+            "timers" => timer::made(id, &read(settings)?),
             other => return Err(format!("there are no helpers called `{other}`")),
         }
         .map_err(|e| e.to_string())?;
@@ -250,6 +261,12 @@ pub(crate) enum Role {
     Press { fires: UniqueId },
     /// Reports things happening; nothing can be asked of it.
     Happens,
+    /// Counts down from `duration` seconds, and says what happens to it on the entity `fires`.
+    Timer {
+        fires: UniqueId,
+        duration: f64,
+        restore: bool,
+    },
 }
 
 impl Made {
@@ -303,6 +320,15 @@ impl Made {
         fires: UniqueId,
     ) -> Result<Self, ProtocolError> {
         Self::new(what, id, name, capabilities, Role::Press { fires })
+    }
+
+    pub(crate) fn timer(
+        id: &ObjectId,
+        name: &Name,
+        capabilities: Capabilities,
+        role: Role,
+    ) -> Result<Self, ProtocolError> {
+        Self::new("timer", id, name, capabilities, role)
     }
 
     pub(crate) fn happens(
@@ -375,6 +401,9 @@ fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
     for (id, moment) in &settings.datetimes {
         made.extend(moment::datetime(id, moment)?);
     }
+    for (id, counting) in &settings.timers {
+        made.extend(timer::made(id, counting)?);
+    }
     let mut taken: BTreeMap<String, &UniqueId> = BTreeMap::new();
     for one in &made {
         let entity = one.entity_id();
@@ -409,8 +438,29 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         ctx.forget(&value_key(gone)).await?;
     }
 
+    // Each timer as it is now, by its entity.
+    let mut timers: BTreeMap<UniqueId, TimerState> = BTreeMap::new();
     for (unique, helper) in &helpers {
         ctx.describe_entity(helper.description.clone()).await?;
+        if let Role::Timer {
+            fires,
+            duration,
+            restore,
+        } = &helper.role
+        {
+            let kept = ctx
+                .load(&value_key(unique.as_str()))
+                .await?
+                .and_then(|value| serde_json::from_value(value).ok());
+            let (state, said) = timer::restored(kept, *duration, *restore, now());
+            keep_timer(&ctx, unique, &state).await?;
+            ctx.report_state(report(unique.clone(), State::Timer(state.clone()), None));
+            if let Some(said) = said {
+                ctx.report_state(happened(fires, said, None));
+            }
+            timers.insert(unique.clone(), state);
+            continue;
+        }
         let Role::Value { initial } = &helper.role else {
             continue;
         };
@@ -436,7 +486,30 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     let described: Vec<&str> = helpers.keys().map(UniqueId::as_str).collect();
     ctx.store(DESCRIBED, serde_json::json!(described)).await?;
 
-    while let Some(incoming) = ctx.next_call().await {
+    loop {
+        // The next timer to run out, if one is running.
+        let next = timers.values().filter_map(|state| state.finishes_at).min();
+        let incoming = tokio::select! {
+            incoming = ctx.next_call() => match incoming {
+                Some(incoming) => incoming,
+                None => break,
+            },
+            () = sleep_until(next) => {
+                let at = now();
+                for (unique, state) in &mut timers {
+                    if !timer::due(state, at) {
+                        continue;
+                    }
+                    *state = TimerState::idle(state.duration);
+                    keep_timer(&ctx, unique, state).await?;
+                    ctx.report_state(report(unique.clone(), State::Timer(state.clone()), None));
+                    if let Some(Role::Timer { fires, .. }) = helpers.get(unique).map(|h| &h.role) {
+                        ctx.report_state(happened(fires, timer::FINISHED, None));
+                    }
+                }
+                continue;
+            }
+        };
         let unique = incoming.call.unique_id.clone();
         let caused_by = Some(incoming.call.context.id.clone());
         let Some(helper) = helpers.get(&unique) else {
@@ -490,19 +563,85 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     continue;
                 }
                 incoming.reply(Ok(()));
-                let pressed = State::Event(EventState {
-                    event_type: button::PRESSED.to_owned(),
-                });
-                ctx.report_state(report(fires.clone(), pressed, caused_by));
+                ctx.report_state(happened(fires, button::PRESSED, caused_by));
+            }
+            Role::Timer {
+                fires, duration, ..
+            } => {
+                let before = timers
+                    .get(&unique)
+                    .cloned()
+                    .unwrap_or_else(|| TimerState::idle(*duration));
+                let (state, said) = match timer::apply(&before, service, now()) {
+                    Ok(done) => done,
+                    Err(why) => {
+                        incoming.reply(Err(ServiceError::failed(format!("`{unique}` {why}"))));
+                        continue;
+                    }
+                };
+                // Kept first, as a value is: a timer that came back from a restart counting
+                // something it had been told to stop would be worse than one that didn't start.
+                if let Err(e) = keep_timer(&ctx, &unique, &state).await {
+                    incoming.reply(Err(ServiceError::failed(format!(
+                        "couldn't keep the timer: {e}"
+                    ))));
+                    continue;
+                }
+                incoming.reply(Ok(()));
+                timers.insert(unique.clone(), state.clone());
+                ctx.report_state(report(unique, State::Timer(state), caused_by.clone()));
+                if let Some(said) = said {
+                    ctx.report_state(happened(fires, said, caused_by));
+                }
             }
             Role::Happens => {
                 incoming.reply(Err(ServiceError::failed(
-                    "nothing can be asked of it: it says when its button was pressed",
+                    "nothing can be asked of it: it says when something happened",
                 )));
             }
         }
     }
     Ok(())
+}
+
+/// The time now, by this machine's clock: the helpers are the device that keeps time here.
+fn now() -> Timestamp {
+    Timestamp::from_jiff(jiff::Timestamp::now())
+}
+
+/// Sleeps until `at` by this machine's clock, or for ever when there's nothing to wait for.
+async fn sleep_until(at: Option<Timestamp>) {
+    match at {
+        Some(at) => {
+            let left = at
+                .as_jiff()
+                .duration_since(jiff::Timestamp::now())
+                .as_secs_f64()
+                .max(0.0);
+            tokio::time::sleep(std::time::Duration::from_secs_f64(left)).await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+async fn keep_timer(
+    ctx: &ProtocolContext,
+    unique: &UniqueId,
+    state: &TimerState,
+) -> Result<(), irori_protocol::Rejected> {
+    let value = serde_json::to_value(state).unwrap_or(serde_json::Value::Null);
+    ctx.store(&value_key(unique.as_str()), value).await
+}
+
+/// Something having happened, on the event entity `fires`: a press, a timer finishing.
+fn happened(fires: &UniqueId, what: &str, caused_by: Option<ContextId>) -> StateReport {
+    report(
+        fires.clone(),
+        State::Event(EventState {
+            event_type: what.to_owned(),
+        }),
+        caused_by,
+    )
 }
 
 /// A kept value as what it is: on or off, a number, a text.
