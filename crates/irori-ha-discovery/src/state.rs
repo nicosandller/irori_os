@@ -11,7 +11,7 @@ use crate::discovery::EntityTopics;
 use crate::kinds::setting::Reading;
 use crate::kinds::{
     alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, lawn_mower,
-    light, lock, moment, number, select, sensor, siren, switch, text, update, vacuum, valve,
+    light, lock, moment, number, scene, select, sensor, siren, switch, text, update, vacuum, valve,
     water_heater,
 };
 use crate::template::ValueTemplate;
@@ -117,7 +117,7 @@ pub fn decode(
         EntityTopics::Number(topics) => number::decode(topics, message),
         EntityTopics::Select(topics) => select::decode(topics, message),
         EntityTopics::Text(topics) => text::decode(topics, message),
-        EntityTopics::Button(_) => None,
+        EntityTopics::Button(_) | EntityTopics::Scene(_) => None,
         EntityTopics::Event(topics) => event::decode(topics, message),
         EntityTopics::Cover(topics) => cover::decode(topics, message, previous),
         EntityTopics::Valve(topics) => valve::decode(topics, message, previous),
@@ -172,6 +172,7 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         EntityTopics::Select(topics) => select::encode(topics, service),
         EntityTopics::Text(topics) => text::encode(topics, service),
         EntityTopics::Button(topics) => button::encode(topics, service),
+        EntityTopics::Scene(topics) => scene::encode(topics, service),
         EntityTopics::Cover(topics) => cover::encode(topics, service),
         EntityTopics::Valve(topics) => valve::encode(topics, service),
         EntityTopics::Lock(topics) => lock::encode(topics, service),
@@ -203,7 +204,7 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Select(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Text(topics) => topics.state_topic.as_deref().into_iter().collect(),
         // Nothing to listen to: a press leaves no state.
-        EntityTopics::Button(_) => Vec::new(),
+        EntityTopics::Button(_) | EntityTopics::Scene(_) => Vec::new(),
         EntityTopics::Event(topics) => vec![topics.state_topic.as_str()],
         EntityTopics::Lock(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::AlarmControlPanel(topics) => vec![topics.state_topic.as_str()],

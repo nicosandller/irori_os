@@ -76,6 +76,7 @@ pub(crate) fn control(
         Capabilities::Button(capabilities) => {
             button::button_control(entity, capabilities.device_class, offline, controls)
         }
+        Capabilities::Scene(_) => button::scene_control(entity, offline, controls),
         Capabilities::Event(_) => event::happened(state),
         // These three are drawn once and follow a state that changes (`kept`); here the
         // state is whatever it was when this was called.
@@ -207,6 +208,7 @@ pub(crate) fn kept(
         | Capabilities::Select(_)
         | Capabilities::Text(_)
         | Capabilities::Button(_)
+        | Capabilities::Scene(_)
         | Capabilities::Event(_)
         | Capabilities::Fan(_)
         | Capabilities::Siren(_)

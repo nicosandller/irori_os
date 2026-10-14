@@ -1787,7 +1787,10 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
     let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
     let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
     // A button has nothing to remember from one day to the next.
-    if matches!(entity.capabilities, Capabilities::Button(_)) {
+    if matches!(
+        entity.capabilities,
+        Capabilities::Button(_) | Capabilities::Scene(_)
+    ) {
         return control;
     }
     match entity.capabilities {
@@ -1820,6 +1823,7 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::Select(_)
         | Capabilities::Text(_)
         | Capabilities::Button(_)
+        | Capabilities::Scene(_)
         | Capabilities::Cover(_)
         | Capabilities::Lock(_)
         | Capabilities::AlarmControlPanel(_)

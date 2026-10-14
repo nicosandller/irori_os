@@ -18,6 +18,7 @@ use crate::kinds::lock::LockCapabilities;
 use crate::kinds::media_player::MediaPlayerCapabilities;
 use crate::kinds::moment::MomentCapabilities;
 use crate::kinds::number::NumberCapabilities;
+use crate::kinds::scene::SceneCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::siren::SirenCapabilities;
@@ -219,6 +220,7 @@ pub enum Capabilities {
     Datetime(MomentCapabilities),
     Vacuum(VacuumCapabilities),
     LawnMower(LawnMowerCapabilities),
+    Scene(SceneCapabilities),
 }
 
 impl Capabilities {
@@ -249,6 +251,7 @@ impl Capabilities {
             Self::Datetime(_) => EntityKind::Datetime,
             Self::Vacuum(_) => EntityKind::Vacuum,
             Self::LawnMower(_) => EntityKind::LawnMower,
+            Self::Scene(_) => EntityKind::Scene,
         }
     }
 

@@ -623,6 +623,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^scene\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "scene"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -838,6 +861,10 @@
         {
           "maxLength": 75,
           "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

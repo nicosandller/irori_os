@@ -127,8 +127,8 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`.
-**Next, in likely order:** `scene`, `device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
+`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`.
+**Next:** `device_tracker`. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
 has one, so nothing could report it. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
@@ -175,6 +175,7 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `vacuum` | `start`, `pause`, `stop`, `return_home`, `locate`, `clean_spot` | bool | `false` | What it can be told to do |
 | | `fan_speeds` | list of strings, up to 32 | `[]` | Its fan speeds by its own names (`quiet`, `turbo`). Empty for one with no choice |
 | `lawn_mower` | `start_mowing`, `pause`, `dock` | bool | `false` | What it can be told to do |
+| `scene` | none | | | A scene a device keeps (a Hue scene, a Zigbee group's) and can be told to set. Scenes Irori makes itself are flows |
 | `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
 | `valve` | `device_class` | `water` \| `gas` | absent | |
 | | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
@@ -397,6 +398,8 @@ time** ([protocols.md](protocols.md) §7.1): the rest wait their turn.
 A `button` has **no state**: there is no `button` tag, and its `EntityState.state` is always
 `null`. For a button that means "has no value", not "unknown" (§5.2): pressing it is something it
 does, not something it is. Rules can't read or compare it (`on()`, a state trigger), only press it.
+
+A `scene` is the same: no `scene` tag, no value, and one thing to ask of it, `scene.turn_on`.
 
 **Brightness is 1–255**, not a percentage: that's what Zigbee and Home Assistant use, so no
 precision is lost converting. Services will accept `brightness_pct` for people (M0.3).

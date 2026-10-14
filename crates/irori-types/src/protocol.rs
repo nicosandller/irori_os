@@ -472,6 +472,7 @@ pub enum Service {
     LawnMowerStartMowing,
     LawnMowerPause,
     LawnMowerDock,
+    SceneTurnOn,
 }
 
 impl Service {
@@ -559,6 +560,7 @@ impl Service {
             Self::LawnMowerStartMowing => ServiceName::LawnMowerStartMowing,
             Self::LawnMowerPause => ServiceName::LawnMowerPause,
             Self::LawnMowerDock => ServiceName::LawnMowerDock,
+            Self::SceneTurnOn => ServiceName::SceneTurnOn,
         }
     }
 }
@@ -730,6 +732,8 @@ pub enum ServiceName {
     LawnMowerPause,
     #[serde(rename = "lawn_mower.dock")]
     LawnMowerDock,
+    #[serde(rename = "scene.turn_on")]
+    SceneTurnOn,
 }
 
 impl ServiceName {
@@ -816,6 +820,7 @@ impl ServiceName {
         Self::LawnMowerStartMowing,
         Self::LawnMowerPause,
         Self::LawnMowerDock,
+        Self::SceneTurnOn,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -902,6 +907,7 @@ impl ServiceName {
             Self::LawnMowerStartMowing => "lawn_mower.start_mowing",
             Self::LawnMowerPause => "lawn_mower.pause",
             Self::LawnMowerDock => "lawn_mower.dock",
+            Self::SceneTurnOn => "scene.turn_on",
         }
     }
 
@@ -984,6 +990,7 @@ impl ServiceName {
             Self::LawnMowerStartMowing | Self::LawnMowerPause | Self::LawnMowerDock => {
                 EntityKind::LawnMower
             }
+            Self::SceneTurnOn => EntityKind::Scene,
         }
     }
 }

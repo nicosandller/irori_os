@@ -85,6 +85,8 @@ const CALENDAR: &str = r#"<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/
 const ROBOT: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M5.5 8.500a8.500 8.500 0 0 1 13 0"/><circle cx="12" cy="12.5" r="2.5"/>"#;
 /// A mower from the side: its deck, its wheels, and grass ahead of it.
 const MOWER: &str = r#"<path d="M4 15.5V12a3 3 0 0 1 3-3h6l4 6.5Z"/><circle cx="7" cy="17" r="2"/><circle cx="15" cy="17" r="2"/><path d="M20 17v-3M21.5 17v-2"/>"#;
+/// Three overlapping lights: a scene.
+const PALETTE: &str = r#"<circle cx="9" cy="9.5" r="4.5"/><circle cx="15" cy="9.5" r="4.5"/><circle cx="12" cy="14.5" r="4.5"/>"#;
 /// A shield: an alarm panel.
 const SHIELD: &str = r#"<path d="M12 3.5l7 2.5v5.5c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.5 12l1.800 1.800 3.200-3.600"/>"#;
 const FAN: &str = concat!(
@@ -147,6 +149,7 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
         Capabilities::Time(_) => CLOCK,
         Capabilities::Vacuum(_) => ROBOT,
         Capabilities::LawnMower(_) => MOWER,
+        Capabilities::Scene(_) => PALETTE,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,

@@ -332,7 +332,10 @@ fn entity_row(line: EntityLine, by: EntitiesBy, travels: bool, histories: Histor
         }
     };
     // A button has nothing to remember from one day to the next.
-    let has_history = !matches!(entity.capabilities, Capabilities::Button(_));
+    let has_history = !matches!(
+        entity.capabilities,
+        Capabilities::Button(_) | Capabilities::Scene(_)
+    );
     let unroll = has_history.then(|| histories.unroll(&id));
     // A player, a lock or a cover is drawn once and follows its state; everything else is
     // drawn again from each reading.

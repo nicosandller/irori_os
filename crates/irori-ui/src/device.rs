@@ -667,8 +667,11 @@ fn EntityRow(
     // The rolled-up "last 24 hours", opened from the row's own reading. A button has nothing
     // to remember from one day to the next.
     let histories = crate::history::Histories::new();
-    let unroll =
-        (!matches!(entity.capabilities, Capabilities::Button(_))).then(|| histories.unroll(&id));
+    let unroll = (!matches!(
+        entity.capabilities,
+        Capabilities::Button(_) | Capabilities::Scene(_)
+    ))
+    .then(|| histories.unroll(&id));
     let history = histories.day(&id);
     // A player, a lock or a cover is drawn once and follows its state; everything else is
     // drawn again from each reading.
@@ -1293,7 +1296,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             flag_word(&entity.capabilities, switch.on).to_owned()
         }
-        (Capabilities::Button(_), _) => "—".to_owned(),
+        (Capabilities::Button(_) | Capabilities::Scene(_), _) => "—".to_owned(),
         (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
         (Capabilities::Cover(_), Some(State::Cover(cover))) => {
             devices::opening_words(cover.opening())

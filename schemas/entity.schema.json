@@ -630,6 +630,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^scene\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "scene"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1642,6 +1665,20 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What a scene can do: be set. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "scene"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1816,6 +1853,10 @@
         {
           "maxLength": 75,
           "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

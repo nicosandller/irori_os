@@ -12,7 +12,7 @@ use irori_types::{Capabilities, EntityCategory, EntityKind, Name, UniqueId};
 
 use crate::kinds::{
     alarm_control_panel, binary_sensor, button, climate, cover, event, fan, humidifier, lawn_mower,
-    light, lock, moment, number, select, sensor, siren, switch, text, update, vacuum, valve,
+    light, lock, moment, number, scene, select, sensor, siren, switch, text, update, vacuum, valve,
     water_heater,
 };
 use crate::template::CommandTemplate;
@@ -32,6 +32,7 @@ pub use crate::kinds::lock::LockTopics;
 pub use crate::kinds::moment::MomentTopics;
 pub use crate::kinds::number::NumberTopics;
 pub use crate::kinds::opening::OpeningTopics;
+pub use crate::kinds::scene::SceneTopics;
 pub use crate::kinds::select::SelectTopics;
 pub use crate::kinds::sensor::SensorTopics;
 pub use crate::kinds::setting::{Power, Reading, Setting};
@@ -114,6 +115,7 @@ pub enum EntityTopics {
     Moment(MomentTopics),
     Vacuum(Box<VacuumTopics>),
     LawnMower(Box<LawnMowerTopics>),
+    Scene(SceneTopics),
     Fan(Box<FanTopics>),
     Valve(Box<OpeningTopics>),
     Siren(SirenTopics),
@@ -142,6 +144,7 @@ impl EntityTopics {
             Self::Moment(topics) => topics.kind,
             Self::Vacuum(_) => EntityKind::Vacuum,
             Self::LawnMower(_) => EntityKind::LawnMower,
+            Self::Scene(_) => EntityKind::Scene,
             Self::Fan(_) => EntityKind::Fan,
             Self::Valve(_) => EntityKind::Valve,
             Self::Siren(_) => EntityKind::Siren,
@@ -209,6 +212,7 @@ pub fn parse(component: Component, payload: &[u8]) -> Result<ParsedConfig, Strin
         Component::Datetime => moment::parse(EntityKind::Datetime, &root)?,
         Component::Vacuum => vacuum::parse(&root)?,
         Component::LawnMower => lawn_mower::parse(&root)?,
+        Component::Scene => scene::parse(&root)?,
         Component::Fan => fan::parse(&root)?,
         Component::Valve => valve::parse(&root)?,
         Component::Siren => siren::parse(&root)?,

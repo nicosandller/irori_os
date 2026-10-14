@@ -290,6 +290,11 @@
           "description": "A robot lawn mower.",
           "type": "string",
           "const": "lawn_mower"
+        },
+        {
+          "description": "A scene a device keeps and can be told to set. It has no value.",
+          "type": "string",
+          "const": "scene"
         }
       ]
     },

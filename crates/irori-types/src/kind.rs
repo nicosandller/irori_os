@@ -58,6 +58,8 @@ pub enum EntityKind {
     Vacuum,
     /// A robot lawn mower.
     LawnMower,
+    /// A scene a device keeps and can be told to set. It has no value.
+    Scene,
 }
 
 impl EntityKind {
@@ -87,6 +89,7 @@ impl EntityKind {
         Self::Datetime,
         Self::Vacuum,
         Self::LawnMower,
+        Self::Scene,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -117,6 +120,7 @@ impl EntityKind {
             Self::Datetime => "datetime",
             Self::Vacuum => "vacuum",
             Self::LawnMower => "lawn_mower",
+            Self::Scene => "scene",
         }
     }
 

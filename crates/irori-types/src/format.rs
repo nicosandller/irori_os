@@ -37,7 +37,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 19. Adds `date`, `time` and `datetime`.
 /// 20. Adds `vacuum`.
 /// 21. Adds `lawn_mower`.
-pub const ENTITY_FORMAT: u32 = 21;
+/// 22. Adds `scene`.
+pub const ENTITY_FORMAT: u32 = 22;
 
 pub(crate) fn first() -> u32 {
     1
@@ -72,6 +73,7 @@ impl EntityKind {
             Self::Date | Self::Time | Self::Datetime => 19,
             Self::Vacuum => 20,
             Self::LawnMower => 21,
+            Self::Scene => 22,
         }
     }
 }

@@ -1700,6 +1700,26 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "scene.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -2368,7 +2388,8 @@
         "vacuum.set_fan_speed",
         "lawn_mower.start_mowing",
         "lawn_mower.pause",
-        "lawn_mower.dock"
+        "lawn_mower.dock",
+        "scene.turn_on"
       ]
     },
     "SetHumidity": {

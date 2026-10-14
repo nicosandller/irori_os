@@ -924,6 +924,7 @@ async fn command(
         | EntityKind::MediaPlayer
         | EntityKind::Vacuum
         | EntityKind::LawnMower
+        | EntityKind::Scene
         | EntityKind::Sensor
         | EntityKind::BinarySensor
         | EntityKind::Event => Err(format!("ESPHome has no {kind} services")),

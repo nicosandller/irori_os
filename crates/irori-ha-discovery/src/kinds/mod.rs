@@ -20,6 +20,7 @@ pub mod lock;
 pub mod moment;
 pub mod number;
 pub mod opening;
+pub mod scene;
 pub mod select;
 pub mod sensor;
 pub mod setting;

@@ -456,6 +456,10 @@
         {
           "maxLength": 75,
           "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -864,6 +868,7 @@
         "number.decrement",
         "number.increment",
         "number.set_value",
+        "scene.turn_on",
         "select.select_option",
         "siren.toggle",
         "siren.turn_off",

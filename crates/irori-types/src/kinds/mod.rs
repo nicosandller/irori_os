@@ -23,6 +23,7 @@ pub(crate) mod media_player;
 pub(crate) mod moment;
 pub(crate) mod number;
 pub(crate) mod opening;
+pub(crate) mod scene;
 pub(crate) mod select;
 pub(crate) mod sensor;
 pub(crate) mod siren;
@@ -221,7 +222,8 @@ impl EntityKind {
             | Self::Time
             | Self::Datetime
             | Self::Vacuum
-            | Self::LawnMower => return None,
+            | Self::LawnMower
+            | Self::Scene => return None,
         })
     }
 }
@@ -257,7 +259,7 @@ impl Capabilities {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
             },
-            Self::Button(_) => return None,
+            Self::Button(_) | Self::Scene(_) => return None,
         })
     }
 
@@ -308,7 +310,8 @@ impl Capabilities {
             | Self::Date(_)
             | Self::Time(_)
             | Self::Datetime(_)
-            | Self::LawnMower(_) => Vec::new(),
+            | Self::LawnMower(_)
+            | Self::Scene(_) => Vec::new(),
         }
     }
 
@@ -376,7 +379,7 @@ impl Capabilities {
             Self::LawnMower(caps) => lawn_mower::supports_service(caps, service),
             Self::Vacuum(caps) => vacuum::supports_service(caps, service),
             Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
-            Self::Switch(_) | Self::Button(_) => Ok(()),
+            Self::Switch(_) | Self::Button(_) | Self::Scene(_) => Ok(()),
             // Any day, time or moment that exists is one it can be set to.
             Self::Date(_) | Self::Time(_) | Self::Datetime(_) => Ok(()),
             Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
@@ -494,7 +497,7 @@ impl State {
             }
             EntityKind::Update => State::Update(update::with_primary(previous!(Update), value)?),
             EntityKind::Vacuum => State::Vacuum(vacuum::with_primary(previous!(Vacuum), value)?),
-            EntityKind::Button => return None,
+            EntityKind::Button | EntityKind::Scene => return None,
         })
     }
 }
@@ -516,6 +519,7 @@ impl Service {
             EntityKind::Select => select::service(name, data),
             EntityKind::Text => text::service(name, data),
             EntityKind::Button => button::service(name, data),
+            EntityKind::Scene => scene::service(name, data),
             EntityKind::Cover => cover::service(name, data),
             EntityKind::Valve => valve::service(name, data),
             EntityKind::Lock => lock::service(name, data),
@@ -591,6 +595,7 @@ impl Service {
             EntityKind::Update => update::asks_for(self),
             // A press leaves nothing for a toggle to go by.
             EntityKind::Button => None,
+            EntityKind::Scene => scene::asks_for(self),
             EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => None,
         }
     }
@@ -616,6 +621,7 @@ impl ServiceName {
             EntityKind::Select => select::data_of(self),
             EntityKind::Text => text::data_of(self),
             EntityKind::Button => button::data_of(self),
+            EntityKind::Scene => scene::data_of(self),
             EntityKind::Cover => cover::data_of(self),
             EntityKind::Valve => valve::data_of(self),
             EntityKind::Lock => lock::data_of(self),
