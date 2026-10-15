@@ -2072,6 +2072,9 @@
                               translate var(--dur-base) var(--ease-out),
                               scale var(--dur-base) var(--ease-out),
                               visibility 0s var(--dur-base); }
+    /* In the builder a picker can sit in a narrow column: its list opens from the field's
+       left edge, into the form, not out past it. */
+    .builder .combo-list { left: 0; right: auto; }
     .combo.open .combo-list { opacity: 1; translate: 0 0; scale: 1; pointer-events: auto;
                               visibility: visible; transition-delay: 0s; }
     .combo-option { display: flex; align-items: center; gap: .55rem; padding: .45rem .6rem;
