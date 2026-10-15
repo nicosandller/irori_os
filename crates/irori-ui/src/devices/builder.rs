@@ -7,7 +7,7 @@
 //! from the others, and settings the form doesn't draw (a proposal's `hysteresis`, say) are
 //! kept rather than dropped.
 
-use irori_types::{Entity, ValueShape};
+use irori_types::{Entity, EntityKind, ValueShape};
 use irori_ui_kit::combo::{Choice, Combo};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -74,6 +74,10 @@ enum Widget {
     SourceField,
     /// The entities of a group, of the kind it's set to.
     Members,
+    /// The sensors a combination reads.
+    Sources,
+    /// The switch shown as something else.
+    Switch,
     /// The things a choice can be.
     Options,
     /// Which of those it starts as.
@@ -136,6 +140,8 @@ impl Field {
             Widget::Source { .. }
                 | Widget::Seconds
                 | Widget::Members
+                | Widget::Sources
+                | Widget::Switch
                 | Widget::Options
                 | Widget::Week
                 | Widget::OnOff
@@ -152,7 +158,7 @@ const SOURCE: Field = field(
 );
 const SOURCE_FIELD: Field = field("field", "Reading", Widget::SourceField);
 
-pub(crate) const HELPER_KINDS: [HelperKind; 19] = [
+pub(crate) const HELPER_KINDS: [HelperKind; 21] = [
     HelperKind {
         table: "toggles",
         word: "Toggle",
@@ -303,8 +309,8 @@ pub(crate) const HELPER_KINDS: [HelperKind; 19] = [
         table: "groups",
         word: "Group",
         prefix: "group",
-        about: "Several lights, switches, fans, covers or sensors as one: on while any is, and \
-                told as one.",
+        about: "Several lights, switches, fans or covers as one: on while any is, and told as \
+                one.",
         example: "Lounge lights",
         shelf: Shelf::Worked,
         start: r#"{"kind": "light", "members": []}"#,
@@ -318,7 +324,6 @@ pub(crate) const HELPER_KINDS: [HelperKind; 19] = [
                     ("fan", "Fans"),
                     ("cover", "Covers"),
                     ("binary_sensor", "Binary sensors"),
-                    ("sensor", "Sensors"),
                 ]),
             ),
             field("members", "Members", Widget::Members),
@@ -334,6 +339,58 @@ pub(crate) const HELPER_KINDS: [HelperKind; 19] = [
                 ]),
             )
             .only(When::SensorGroup),
+        ],
+    },
+    HelperKind {
+        table: "combined",
+        word: "Combine",
+        prefix: "combined",
+        about: "Several sensors' readings as one: their average, middle, least, most, spread, \
+                sum or latest.",
+        example: "Average temperature upstairs",
+        shelf: Shelf::Worked,
+        start: r#"{"sources": [], "of": "mean"}"#,
+        fields: &[
+            field("sources", "Sensors", Widget::Sources),
+            field(
+                "of",
+                "Their",
+                Widget::Pick(&[
+                    ("mean", "Average"),
+                    ("median", "Middle"),
+                    ("min", "Least"),
+                    ("max", "Most"),
+                    ("range", "Spread"),
+                    ("sum", "Sum"),
+                    ("last", "Latest"),
+                ]),
+            ),
+        ],
+    },
+    HelperKind {
+        table: "switch_as",
+        word: "Switch as",
+        prefix: "switchas",
+        about: "A switch shown as what it powers: a lamp's smart plug as a light, a fan's as a \
+                fan.",
+        example: "Reading lamp",
+        shelf: Shelf::Worked,
+        start: r#"{"as": "light"}"#,
+        fields: &[
+            field("switch", "The switch", Widget::Switch),
+            field(
+                "as",
+                "Shown as",
+                Widget::Pick(&[
+                    ("light", "A light"),
+                    ("fan", "A fan"),
+                    ("cover", "A cover"),
+                    ("valve", "A valve"),
+                    ("lock", "A lock"),
+                    ("siren", "A siren"),
+                ]),
+            ),
+            field("invert", "On while the switch is off", Widget::OnOff),
         ],
     },
     HelperKind {
@@ -822,6 +879,26 @@ fn setting(draft: Draft, field: Field) -> AnyView {
         }
         Widget::SourceField => source_field(draft),
         Widget::Members => members(draft),
+        Widget::Sources => picked(draft, "sources", "Add a sensor", |entity: &Entity| {
+            matches!(entity.id.kind(), EntityKind::Sensor | EntityKind::Number)
+                && entity.capabilities.primary_shape() == Some(ValueShape::Number)
+        }),
+        Widget::Switch => {
+            let choices = Signal::derive(move || {
+                live.home.with(|home| {
+                    entity_choices(home, |entity| entity.id.kind() == EntityKind::Switch, &[])
+                })
+            });
+            view! {
+                <Combo
+                    choices=choices
+                    value=Signal::derive(move || draft.text(key))
+                    pick=Callback::new(move |picked: String| draft.put(key, Some(json!(picked))))
+                    placeholder="Pick a switch"
+                />
+            }
+            .into_any()
+        }
         Widget::Options => options(draft),
         Widget::OptionPick => {
             let options = move || {
@@ -994,26 +1071,35 @@ fn chip(words: AnyView, icon: Option<&'static str>, remove: impl Fn() + 'static)
 
 /// A group's members: the entities of the kind it's set to, as chips, and a box to add more.
 fn members(draft: Draft) -> AnyView {
-    let live = expect_context::<crate::Live>();
-    let listed_now = move || listed(draft, "members");
-    let choices = Signal::derive(move || {
+    picked(draft, "members", "Add a member", move |entity: &Entity| {
         let kind = draft.text("kind");
-        let prefix = format!("{kind}.");
+        entity
+            .id
+            .as_str()
+            .strip_prefix(kind.as_str())
+            .is_some_and(|rest| rest.starts_with('.'))
+    })
+}
+
+/// Entities kept as a list under `key`, as chips, and a box to add more of those `fits`.
+fn picked(
+    draft: Draft,
+    key: &'static str,
+    placeholder: &'static str,
+    fits: impl Fn(&Entity) -> bool + Copy + Send + Sync + 'static,
+) -> AnyView {
+    let live = expect_context::<crate::Live>();
+    let listed_now = move || listed(draft, key);
+    let choices = Signal::derive(move || {
         let taken = listed_now();
-        live.home.with(|home| {
-            entity_choices(
-                home,
-                |entity| entity.id.as_str().starts_with(&prefix),
-                &taken,
-            )
-        })
+        live.home.with(|home| entity_choices(home, fits, &taken))
     });
     let add = Callback::new(move |picked: String| {
         let mut now = listed_now();
         if !now.contains(&picked) {
             now.push(picked);
         }
-        draft.put("members", Some(json!(now)));
+        draft.put(key, Some(json!(now)));
     });
     view! {
         <div class="chips">
@@ -1037,18 +1123,13 @@ fn members(draft: Draft) -> AnyView {
                         move || {
                             let now: Vec<String> =
                                 listed_now().into_iter().filter(|m| *m != gone).collect();
-                            draft.put("members", Some(json!(now)));
+                            draft.put(key, Some(json!(now)));
                         },
                     )
                 }
             </For>
         </div>
-        <Combo
-            choices=choices
-            value=Signal::derive(String::new)
-            pick=add
-            placeholder="Add a member"
-        />
+        <Combo choices=choices value=Signal::derive(String::new) pick=add placeholder=placeholder />
     }
     .into_any()
 }
@@ -1940,29 +2021,36 @@ fn try_here(entity: irori_types::Entity, start: Option<EntityState>) -> AnyView 
 /// A group of lights, switches or fans can be tried on its members before it exists: the same
 /// call the group would pass on, sent to each.
 fn group_try(draft: Draft) -> Option<AnyView> {
-    let kind = draft
-        .value
-        .with_untracked(|value| value.get("kind").and_then(Value::as_str).map(str::to_owned))?;
-    let words = match kind.as_str() {
-        "light" => "lights",
-        "switch" => "switches",
-        "fan" => "fans",
+    let (kind, switch) = draft.value.with_untracked(|value| {
+        let text = |key| value.get(key).and_then(Value::as_str).map(str::to_owned);
+        (text("kind"), text("switch"))
+    });
+    // A switch shown as something else is tried on the switch itself.
+    let (words, on, off, targets) = match (kind.as_deref(), switch) {
+        (_, Some(switch)) if draft.kind.get_untracked().is_some_and(|k| k.table == "switch_as") => {
+            ("switch", "On", "Off", vec![switch])
+        }
+        (Some("light"), _) => ("lights", "All on", "All off", listed(draft, "members")),
+        (Some("switch"), _) => ("switches", "All on", "All off", listed(draft, "members")),
+        (Some("fan"), _) => ("fans", "All on", "All off", listed(draft, "members")),
         _ => return None,
     };
     let controls = expect_context::<Controls>();
-    let send = move |on: bool| {
-        for member in listed(draft, "members") {
-            if let Ok(id) = irori_types::EntityId::try_from(member.as_str()) {
-                controls.set_on.run((id, on));
+    let send = move |turn_on: bool| {
+        for target in &targets {
+            if let Ok(id) = irori_types::EntityId::try_from(target.as_str()) {
+                controls.set_on.run((id, turn_on));
             }
         }
     };
+    let send = std::rc::Rc::new(send);
+    let send_off = std::rc::Rc::clone(&send);
     Some(
         view! {
             <div class="builder-group-try">
                 <span class="muted small">{format!("Try it on the real {words}:")}</span>
-                <button type="button" class="press" on:click=move |_| send(true)>"All on"</button>
-                <button type="button" class="press" on:click=move |_| send(false)>"All off"</button>
+                <button type="button" class="press" on:click=move |_| send(true)>{on}</button>
+                <button type="button" class="press" on:click=move |_| send_off(false)>{off}</button>
             </div>
         }
         .into_any(),

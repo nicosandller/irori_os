@@ -479,6 +479,10 @@ pub enum HelperKind {
     Schedule,
     /// Several entities as one: `--set kind=light --set members='["light.a","light.b"]'`.
     Group,
+    /// Several sensors' readings as one: `--set sources='["sensor.a","sensor.b"]' --set of=mean`.
+    Combined,
+    /// A switch shown as what it powers: `--set switch=switch.lamp_plug --set as=light`.
+    SwitchAs,
     /// On while a reading is past a line: `--set source=sensor.x --set above=26`.
     Threshold,
     /// On while a reading rises or falls: `--set source=… --set direction=rising --set by=… --set over=…`.
@@ -512,6 +516,8 @@ impl HelperKind {
             Self::Timer => "timers",
             Self::Schedule => "schedules",
             Self::Group => "groups",
+            Self::Combined => "combined",
+            Self::SwitchAs => "switch_as",
             Self::Threshold => "thresholds",
             Self::Trend => "trends",
             Self::Meter => "meters",

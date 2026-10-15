@@ -338,7 +338,9 @@ no template helper.
 
 | Table | Entity | Settings beside `name` | What it is |
 |---|---|---|---|
-| `[groups.<id>]` | `<kind>.<id>` | `kind` (`light`, `switch`, `fan`, `cover`, `binary_sensor`, `sensor`), `members`, `all`, `of` (sensors: `mean`, `min`, `max`, `sum`) | On while any member is (every one, with `all`); a call to it goes to each member |
+| `[groups.<id>]` | `<kind>.<id>` | `kind` (`light`, `switch`, `fan`, `cover`, `binary_sensor`, `sensor`), `members`, `all`, `of` (sensors: as `[combined]`) | On while any member is (every one, with `all`); a call to it goes to each member |
+| `[combined.<id>]` | `sensor.<id>` | `sources` (sensors or numbers), `of` (`mean`, `median`, `min`, `max`, `range`, `sum`, `last`; `mean` if left out) | Their readings as one, in the first source's unit. `last` is whichever changed most recently |
+| `[switch_as.<id>]` | `<as>.<id>` | `switch`, `as` (`light`, `fan`, `cover`, `valve`, `lock`, `siren`), `invert` | A switch shown as what it powers. On is on, open, sounding or locked (off, with `invert`). Turning on, opening or locking it turns the switch on, and the opposite turns it off; anything else (a brightness, a position) is refused. The switch stays an entity of its own |
 | `[thresholds.<id>]` | `binary_sensor.<id>` | `source`, `field`, `above`, `below`, `hysteresis` | On while the reading is past the line, or between the two |
 | `[trends.<id>]` | `binary_sensor.<id>` | `source`, `field`, `direction` (`rising`, `falling`), `by`, `over` (seconds) | On while it changed by at least `by` over the last `over` |
 | `[meters.<id>]` | `sensor.<id>` | `source`, `every` (`hour`, `day`, `week`, `month`, `year`) | What a counting reading went up by since the period began on the home's clock; a device's count starting again is followed. Kept through restarts |

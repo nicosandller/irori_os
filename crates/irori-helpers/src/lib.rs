@@ -69,8 +69,8 @@ use serde::Deserialize;
 
 pub use button::Button;
 pub use computed::{
-    DerivativeSettings, Group, HistorySettings, IntegralSettings, MeterSettings,
-    StatisticsSettings, Threshold, Trend,
+    Combined, DerivativeSettings, Group, HistorySettings, IntegralSettings, MeterSettings,
+    StatisticsSettings, SwitchAs, Threshold, Trend,
 };
 pub use counter::Counter;
 pub use guide::{GUIDE, Guide, guide};
@@ -127,6 +127,12 @@ pub struct Settings {
     /// Several entities of one kind as one: `<kind>.<id>`.
     #[serde(default)]
     pub groups: BTreeMap<ObjectId, Group>,
+    /// Several sensors' readings as one: their average, least, most…: `sensor.<id>`.
+    #[serde(default)]
+    pub combined: BTreeMap<ObjectId, Combined>,
+    /// A switch shown as what it powers: `light.<id>`, `fan.<id>`, …
+    #[serde(default)]
+    pub switch_as: BTreeMap<ObjectId, SwitchAs>,
     /// On while a number is past a line: `binary_sensor.<id>`.
     #[serde(default)]
     pub thresholds: BTreeMap<ObjectId, Threshold>,
@@ -236,6 +242,16 @@ pub const KINDS: &[HelperKind] = &[
         prefixes: &["group"],
     },
     HelperKind {
+        table: "combined",
+        word: "combination",
+        prefixes: &["combined"],
+    },
+    HelperKind {
+        table: "switch_as",
+        word: "switch shown as another kind",
+        prefixes: &["switchas"],
+    },
+    HelperKind {
         table: "thresholds",
         word: "threshold",
         prefixes: &["threshold"],
@@ -322,6 +338,8 @@ impl HelperKind {
             "timers" => timer::made(id, &read(settings)?),
             "schedules" => schedule::made(id, &read(settings)?),
             "groups" => computed_made(id, computed::Spec::Group(read(settings)?)),
+            "combined" => computed_made(id, computed::Spec::Combined(read(settings)?)),
+            "switch_as" => computed_made(id, computed::Spec::SwitchAs(read(settings)?)),
             "thresholds" => computed_made(id, computed::Spec::Threshold(read(settings)?)),
             "trends" => computed_made(id, computed::Spec::Trend(read(settings)?)),
             "meters" => computed_made(id, computed::Spec::Meter(read(settings)?)),
@@ -508,6 +526,8 @@ pub fn check_settings(file: &serde_json::Map<String, serde_json::Value>) -> Resu
 fn computed_made(id: &ObjectId, spec: computed::Spec) -> Result<Vec<Made>, ProtocolError> {
     let (what, name) = match &spec {
         computed::Spec::Group(s) => ("group", &s.name),
+        computed::Spec::Combined(s) => ("combined", &s.name),
+        computed::Spec::SwitchAs(s) => ("switchas", &s.name),
         computed::Spec::Threshold(s) => ("threshold", &s.name),
         computed::Spec::Trend(s) => ("trend", &s.name),
         computed::Spec::Meter(s) => ("meter", &s.name),
@@ -561,6 +581,18 @@ fn all(settings: &Settings) -> Result<Vec<Made>, ProtocolError> {
         .groups
         .iter()
         .map(|(id, s)| (id, computed::Spec::Group(s.clone())))
+        .chain(
+            settings
+                .combined
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::Combined(s.clone()))),
+        )
+        .chain(
+            settings
+                .switch_as
+                .iter()
+                .map(|(id, s)| (id, computed::Spec::SwitchAs(s.clone()))),
+        )
         .chain(
             settings
                 .thresholds
@@ -979,7 +1011,39 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                 )));
             }
             Role::Computed(spec) => {
-                let (computed::Spec::Group(group), Some(home)) = (spec.as_ref(), &home) else {
+                let Some(home) = &home else {
+                    incoming.reply(Err(ServiceError::failed(
+                        "nothing can be asked of it: it's worked out from other entities",
+                    )));
+                    continue;
+                };
+                // A switch shown as a light is turned on and off for what the light is asked.
+                if let computed::Spec::SwitchAs(shown) = spec.as_ref() {
+                    let action = match shown.action(service.name().action()) {
+                        Ok(action) => action,
+                        Err(why) => {
+                            incoming.reply(Err(ServiceError::failed(why)));
+                            continue;
+                        }
+                    };
+                    let (home, switch) = (std::sync::Arc::clone(home), shown.switch.clone());
+                    tokio::spawn(async move {
+                        // Without the data: a light's brightness means nothing to a switch.
+                        let said = home
+                            .call(
+                                switch.clone(),
+                                action.to_owned(),
+                                Default::default(),
+                                caused_by,
+                            )
+                            .await;
+                        incoming.reply(
+                            said.map_err(|why| ServiceError::failed(format!("{switch}: {why}"))),
+                        );
+                    });
+                    continue;
+                }
+                let computed::Spec::Group(group) = spec.as_ref() else {
                     incoming.reply(Err(ServiceError::failed(
                         "nothing can be asked of it: it's worked out from other entities",
                     )));

@@ -84,8 +84,20 @@ pub const GUIDE: &[Guide] = &[
     Guide {
         table: "groups",
         what: "Several entities of one kind as one: <kind>.<id>. On while any member is (or all, with all = true); a call to it goes to every member. Sensors combine their readings.",
-        settings: "kind (light, switch, fan, cover, binary_sensor or sensor), members (entity ids of that kind), all (true or false), of (for sensors: mean, min, max or sum)",
+        settings: "kind (light, switch, fan, cover, binary_sensor or sensor), members (entity ids of that kind), all (true or false), of (for sensors: mean, median, min, max, range, sum or last)",
         example: r#"{"name": "Downstairs lights", "kind": "light", "members": ["light.kitchen", "light.lounge"]}"#,
+    },
+    Guide {
+        table: "combined",
+        what: "Several sensors' readings as one: their average, middle, least, most, spread, sum or latest: sensor.<id>. \"Average temperature upstairs\".",
+        settings: "sources (entity ids of sensors or numbers), of (mean, median, min, max, range, sum or last; default mean)",
+        example: r#"{"name": "Average temperature upstairs", "sources": ["sensor.bedroom_temperature", "sensor.office_temperature"], "of": "mean"}"#,
+    },
+    Guide {
+        table: "switch_as",
+        what: "A switch shown as what it powers: a lamp's smart plug as a light, a fan's as a fan: <as>.<id>. On is on, open, sounding or locked; what it's told, the switch is.",
+        settings: "switch (a switch's entity id), as (light, fan, cover, valve, lock or siren), invert (true makes off the on, open or locked one; default false)",
+        example: r#"{"name": "Reading lamp", "switch": "switch.lamp_plug", "as": "light"}"#,
     },
     Guide {
         table: "thresholds",

@@ -173,7 +173,7 @@ const TOOLS: [Tool; 14] = [
         params: &[
             (
                 "kind",
-                "The kind, as helper_kinds names it: toggles, numbers, groups, thresholds, …",
+                "The kind, as helper_kinds names it: toggles, numbers, groups, combined, switch_as, thresholds, …",
                 true,
             ),
             ("name", "What to call it.", true),

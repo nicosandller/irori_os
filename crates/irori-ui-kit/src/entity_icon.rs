@@ -133,6 +133,8 @@ const METER: &str = r#"<rect x="3.500" y="7" width="17" height="10" rx="1.500"/>
 const AREA: &str = r#"<path d="M3 19.500h18"/><path d="M3 19.500V15c3-6 6-6 9-2s6 2 9-3v9.500Z" fill="currentColor" fill-opacity=".18"/>"#;
 const SLOPE: &str = r#"<path d="M3 18c5 0 9-9 18-12"/><path d="M7 20 18 5"/>"#;
 const BARS: &str = r#"<path d="M6 19.500v-6M10 19.500V9M14 19.500v-8M18 19.500v-4"/><path d="M3 12h2M8 12h4M15 12h2M20 12h1"/>"#;
+const COMBINE: &str = r#"<path d="M4 6h5c3 0 3 6 6 6h5M4 18h5c3 0 3-6 6-6"/><circle cx="4" cy="6" r="1.300"/><circle cx="4" cy="18" r="1.300"/><path d="M17.500 9.500 20 12l-2.500 2.500"/>"#;
+const SWITCH_AS: &str = r#"<rect x="1.500" y="9" width="9" height="6" rx="3"/><circle cx="7.500" cy="12" r="1.500" fill="currentColor"/><path d="M12 12h2.500M13 10l1.800 2-1.800 2"/><path d="M18.400 15a3.200 3.200 0 1 1 2.700 0v1.600h-2.700Z"/><path d="M18.600 19h2.300"/>"#;
 const LOOKBACK: &str = r#"<path d="M4 12a8 8 0 1 0 2.400-5.700"/><path d="M4 3.500V7h3.500"/><path d="M12 8v4l3 2"/>"#;
 
 /// What to draw for a helper of the kind kept in `table` (`extensions/helpers.toml`).
@@ -149,6 +151,8 @@ pub fn helper(table: &str) -> &'static str {
         "timers" => HOURGLASS,
         "schedules" => WEEK,
         "groups" => GROUP,
+        "combined" => COMBINE,
+        "switch_as" => SWITCH_AS,
         "thresholds" => THRESHOLD,
         "trends" => TREND,
         "meters" => METER,

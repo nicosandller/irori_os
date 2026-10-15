@@ -9,9 +9,11 @@
 
 use irori_protocol::types::{
     Availability, BinarySensorCapabilities, BinarySensorState, Capabilities, CoverCapabilities,
-    CoverState, Entity, EntityId, EntityState, FanCapabilities, FanState, LightCapabilities,
-    LightState, Name, ObjectId, OpenState, SensorCapabilities, SensorState, SensorValue,
-    SensorValueType, State, StateClass, SwitchCapabilities, SwitchState, Timestamp, Typed,
+    CoverState, Entity, EntityId, EntityKind, EntityState, FanCapabilities, FanState,
+    LightCapabilities, LightState, LockCapabilities, LockState, LockStatus, Name, ObjectId,
+    OpenState, SensorCapabilities, SensorState, SensorValue, SensorValueType, SirenCapabilities,
+    SirenState, State, StateClass, SwitchCapabilities, SwitchState, Timestamp, Typed,
+    ValveCapabilities, ValveState,
 };
 use jiff::tz::TimeZone;
 use schemars::JsonSchema;
@@ -55,9 +57,76 @@ pub enum GroupKind {
 #[serde(rename_all = "snake_case")]
 pub enum SensorGroup {
     Mean,
+    Median,
     Min,
     Max,
+    /// The most less the least.
+    Range,
     Sum,
+    /// Whichever changed last.
+    Last,
+}
+
+/// `[combined.<id>]`: the readings of several sensors as one: their average, least, most…
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Combined {
+    pub name: Name,
+    /// The sensors (or numbers) it reads, by entity id. At least one.
+    #[schemars(length(min = 1, max = 64))]
+    pub sources: Vec<EntityId>,
+    /// What their readings come to. The average unless said.
+    #[serde(default)]
+    pub of: Option<SensorGroup>,
+}
+
+/// `[switch_as.<id>]`: a switch shown as what it powers: a lamp's plug as a light, a fan's as
+/// a fan. On is on, open, sounding or locked, and what the new one is told, the switch is.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SwitchAs {
+    pub name: Name,
+    /// The switch: `switch.lamp_plug`.
+    pub switch: EntityId,
+    /// What it's shown as: `light`, `fan`, `cover`, `valve`, `lock` or `siren`.
+    #[serde(rename = "as")]
+    pub shown_as: ShownAs,
+    /// The other way round: off is on, open or locked.
+    #[serde(default)]
+    pub invert: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ShownAs {
+    Light,
+    Fan,
+    Cover,
+    Valve,
+    Lock,
+    Siren,
+}
+
+impl SwitchAs {
+    /// The switch's action for what this was asked to do, or why a switch can't. `turn_on`
+    /// for a light's `turn_on`, a cover's `open`, a lock's `lock`.
+    pub(crate) fn action(&self, asked: &str) -> Result<&'static str, String> {
+        let on = match asked {
+            "turn_on" | "open" | "lock" => true,
+            "turn_off" | "close" | "unlock" => false,
+            other => {
+                return Err(format!(
+                    "a switch can only be turned on and off, not asked to {}",
+                    other.replace('_', " ")
+                ));
+            }
+        };
+        Ok(if on != self.invert {
+            "turn_on"
+        } else {
+            "turn_off"
+        })
+    }
 }
 
 /// `[thresholds.<id>]`: on while a number is above, below, or between lines.
@@ -204,6 +273,8 @@ const LONGEST: f64 = 7.0 * 24.0 * 3600.0;
 #[derive(Debug, Clone)]
 pub(crate) enum Spec {
     Group(Group),
+    Combined(Combined),
+    SwitchAs(SwitchAs),
     Threshold(Threshold),
     Trend(Trend),
     Meter(MeterSettings),
@@ -218,6 +289,8 @@ impl Spec {
     pub(crate) fn sources(&self) -> Vec<&EntityId> {
         match self {
             Self::Group(group) => group.members.iter().collect(),
+            Self::Combined(s) => s.sources.iter().collect(),
+            Self::SwitchAs(s) => vec![&s.switch],
             Self::Threshold(s) => vec![&s.source],
             Self::Trend(s) => vec![&s.source],
             Self::Meter(s) => vec![&s.source],
@@ -235,7 +308,11 @@ impl Spec {
             Self::Integral(s) => s.field.as_ref(),
             Self::Derivative(s) => s.field.as_ref(),
             Self::Statistics(s) => s.field.as_ref(),
-            Self::Group(_) | Self::Meter(_) | Self::History(_) => None,
+            Self::Group(_)
+            | Self::Combined(_)
+            | Self::SwitchAs(_)
+            | Self::Meter(_)
+            | Self::History(_) => None,
         }
     }
 
@@ -278,6 +355,31 @@ impl Spec {
                 }
                 Ok(())
             }
+            Self::Combined(s) => {
+                if s.sources.is_empty() {
+                    return Err("it needs at least one sensor to combine".to_owned());
+                }
+                if let Some(other) = s.sources.iter().find(|source| {
+                    !matches!(source.kind(), EntityKind::Sensor | EntityKind::Number)
+                }) {
+                    return Err(format!(
+                        "it combines sensors and numbers, and {other} is a {}",
+                        other.kind()
+                    ));
+                }
+                Ok(())
+            }
+            Self::SwitchAs(s) => {
+                if s.switch.kind() == EntityKind::Switch {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "`switch` is a switch, and {} is a {}",
+                        s.switch,
+                        s.switch.kind()
+                    ))
+                }
+            }
             Self::Threshold(s) => match (s.above, s.below) {
                 (None, None) => Err("a threshold needs `above`, `below`, or both".to_owned()),
                 (Some(above), Some(below)) if above >= below => Err(format!(
@@ -312,8 +414,7 @@ impl Spec {
     }
 }
 
-fn group_kind(kind: GroupKind) -> irori_protocol::types::EntityKind {
-    use irori_protocol::types::EntityKind;
+fn group_kind(kind: GroupKind) -> EntityKind {
     match kind {
         GroupKind::Light => EntityKind::Light,
         GroupKind::Switch => EntityKind::Switch,
@@ -360,6 +461,33 @@ pub(crate) fn capabilities(spec: &Spec, unit: Option<&str>) -> Capabilities {
             }),
             GroupKind::BinarySensor => flag,
             GroupKind::Sensor => number_sensor(unit, Some(StateClass::Measurement)),
+        },
+        Spec::Combined(_) => number_sensor(unit, Some(StateClass::Measurement)),
+        Spec::SwitchAs(s) => match s.shown_as {
+            ShownAs::Light => Capabilities::Light(LightCapabilities {
+                brightness: false,
+                color_temp_kelvin: None,
+                rgb: false,
+            }),
+            ShownAs::Fan => Capabilities::Fan(FanCapabilities {
+                speed_count: 0,
+                oscillate: false,
+                direction: false,
+                preset_modes: Vec::new(),
+            }),
+            ShownAs::Cover => Capabilities::Cover(CoverCapabilities {
+                device_class: None,
+                position: false,
+                tilt: false,
+                stop: false,
+            }),
+            ShownAs::Valve => Capabilities::Valve(ValveCapabilities::default()),
+            ShownAs::Lock => Capabilities::Lock(LockCapabilities {
+                open: false,
+                requires_code: false,
+                code_format: None,
+            }),
+            ShownAs::Siren => Capabilities::Siren(SirenCapabilities::default()),
         },
         Spec::Threshold(_) | Spec::Trend(_) => flag,
         Spec::Meter(_) => number_sensor(unit, Some(StateClass::TotalIncreasing)),
@@ -511,7 +639,7 @@ impl Running {
                 integral.add(state.last_updated, n, s.per.seconds());
                 self.kept = Some(Kept::Integral(integral));
             }
-            Spec::Group(_) | Spec::Threshold(_) => {}
+            Spec::Group(_) | Spec::Combined(_) | Spec::SwitchAs(_) | Spec::Threshold(_) => {}
             _ => {
                 // The same value again isn't a new reading for the kinds that look back.
                 if self.samples.last().is_none_or(|(_, last)| *last != value) {
@@ -538,6 +666,14 @@ impl Running {
         }
         match spec {
             Spec::Group(group) => group_outcome(group, states),
+            Spec::Combined(s) => combined(&s.sources, s.of, states).map(reading),
+            Spec::SwitchAs(s) => {
+                let state = states(&s.switch).ok_or_else(|| waiting(&s.switch))?;
+                let Some(Typed::Bool(on)) = value_of(&state, None) else {
+                    return Err(format!("{} isn't saying whether it's on", s.switch));
+                };
+                Ok(shown_as(s.shown_as, on != s.invert))
+            }
             Spec::Threshold(s) => {
                 let state = states(&s.source).ok_or_else(|| waiting(&s.source))?;
                 let value = number(value_of(&state, s.field.as_ref()))
@@ -677,33 +813,104 @@ fn group_outcome(group: &Group, states: &dyn Fn(&EntityId) -> Option<EntityState
                 tilt: None,
             })
         }
-        GroupKind::Sensor => {
-            let numbers: Vec<f64> = values
-                .iter()
-                .filter_map(|value| match value {
-                    Typed::Number(n) => Some(*n),
-                    _ => None,
-                })
-                .collect();
-            if numbers.is_empty() {
-                return Err("none of its members is saying a number".to_owned());
+        GroupKind::Sensor => reading(combined(&group.members, group.of, states)?),
+    })
+}
+
+/// What several readings come to, by `of` (the average unless said).
+fn combined(
+    sources: &[EntityId],
+    of: Option<SensorGroup>,
+    states: &dyn Fn(&EntityId) -> Option<EntityState>,
+) -> Result<f64, String> {
+    let mut said: Vec<(Timestamp, f64)> = sources
+        .iter()
+        .filter_map(|source| {
+            let state = states(source)?;
+            number(value_of(&state, None)).map(|n| (state.last_updated, n))
+        })
+        .collect();
+    if said.is_empty() {
+        return Err("none of them is saying a number yet".to_owned());
+    }
+    let mut numbers: Vec<f64> = said.iter().map(|(_, n)| *n).collect();
+    let count = f64::from(u32::try_from(numbers.len()).unwrap_or(u32::MAX));
+    let least = numbers.iter().copied().fold(f64::INFINITY, f64::min);
+    let most = numbers.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    Ok(match of.unwrap_or(SensorGroup::Mean) {
+        SensorGroup::Mean => numbers.iter().sum::<f64>() / count,
+        SensorGroup::Sum => numbers.iter().sum(),
+        SensorGroup::Min => least,
+        SensorGroup::Max => most,
+        SensorGroup::Range => most - least,
+        SensorGroup::Median => {
+            numbers.sort_by(f64::total_cmp);
+            let middle = numbers.len() / 2;
+            if numbers.len().is_multiple_of(2) {
+                f64::midpoint(numbers[middle - 1], numbers[middle])
+            } else {
+                numbers[middle]
             }
-            let count = f64::from(u32::try_from(numbers.len()).unwrap_or(u32::MAX));
-            reading(match group.of.unwrap_or(SensorGroup::Mean) {
-                SensorGroup::Mean => numbers.iter().sum::<f64>() / count,
-                SensorGroup::Sum => numbers.iter().sum(),
-                SensorGroup::Min => numbers.iter().copied().fold(f64::INFINITY, f64::min),
-                SensorGroup::Max => numbers.iter().copied().fold(f64::NEG_INFINITY, f64::max),
-            })
+        }
+        SensorGroup::Last => {
+            said.sort_by_key(|(at, _)| *at);
+            said.last().map_or(0.0, |(_, n)| *n)
         }
     })
+}
+
+/// A switch that's `on`, as what it's shown as.
+fn shown_as(shown_as: ShownAs, on: bool) -> State {
+    let open = if on {
+        OpenState::Open
+    } else {
+        OpenState::Closed
+    };
+    match shown_as {
+        ShownAs::Light => State::Light(LightState {
+            on,
+            brightness: None,
+            color_mode: None,
+            color_temp_kelvin: None,
+            rgb: None,
+        }),
+        ShownAs::Fan => State::Fan(FanState {
+            on,
+            percentage: None,
+            oscillating: None,
+            direction: None,
+            preset_mode: None,
+        }),
+        ShownAs::Cover => State::Cover(CoverState {
+            state: open,
+            position: None,
+            tilt: None,
+        }),
+        ShownAs::Valve => State::Valve(ValveState {
+            state: open,
+            position: None,
+        }),
+        ShownAs::Lock => State::Lock(LockState {
+            state: if on {
+                LockStatus::Locked
+            } else {
+                LockStatus::Unlocked
+            },
+        }),
+        ShownAs::Siren => State::Siren(SirenState { on }),
+    }
 }
 
 /// The unit its source reads in, from the registry, for the helpers whose value is in it.
 pub(crate) fn source_unit(spec: &Spec, entities: &[Entity]) -> Option<String> {
     let source = match spec {
         Spec::Group(group) if group.kind == GroupKind::Sensor => group.members.first()?,
-        Spec::Group(_) | Spec::History(_) | Spec::Threshold(_) | Spec::Trend(_) => return None,
+        Spec::Combined(s) => s.sources.first()?,
+        Spec::Group(_)
+        | Spec::SwitchAs(_)
+        | Spec::History(_)
+        | Spec::Threshold(_)
+        | Spec::Trend(_) => return None,
         _ => spec.sources().into_iter().next()?,
     };
     // A field's unit isn't known: only the main value has one.
@@ -807,6 +1014,107 @@ mod tests {
         };
         let error = Spec::Group(mixed).check().expect_err("refused");
         assert!(error.contains("switch.b is a switch"), "{error}");
+    }
+
+    fn reading_of(entity: &str, value: f64, second: i64) -> EntityState {
+        state(
+            entity,
+            State::Sensor(SensorState {
+                value: SensorValue::Number(value),
+            }),
+            second,
+        )
+    }
+
+    /// Several readings come to their average, middle, spread or latest.
+    #[test]
+    fn combined_readings_come_to_what_they_are_asked() {
+        let readings = [
+            reading_of("sensor.a", 20.0, 30),
+            reading_of("sensor.b", 26.0, 10),
+            reading_of("sensor.c", 21.0, 20),
+            reading_of("sensor.d", 19.0, 0),
+        ];
+        let states = |id: &EntityId| readings.iter().find(|r| &r.entity_id == id).cloned();
+        let sources: Vec<EntityId> = ["sensor.a", "sensor.b", "sensor.c", "sensor.d"]
+            .iter()
+            .map(|id| id.parse().expect("id"))
+            .collect();
+        let of = |of| combined(&sources, Some(of), &states).expect("a number");
+        assert_eq!(combined(&sources, None, &states), Ok(21.5));
+        assert_eq!(of(SensorGroup::Median), 20.5);
+        assert_eq!(of(SensorGroup::Range), 7.0);
+        assert_eq!(of(SensorGroup::Last), 20.0);
+        assert_eq!(of(SensorGroup::Sum), 86.0);
+        assert_eq!(
+            combined(&sources[..3], Some(SensorGroup::Median), &states),
+            Ok(21.0)
+        );
+        assert!(combined(&sources, None, &|_| None).is_err());
+
+        let light = Spec::Combined(Combined {
+            name: Name::try_from("Mixed").expect("valid"),
+            sources: vec![
+                "sensor.a".parse().expect("id"),
+                "light.b".parse().expect("id"),
+            ],
+            of: None,
+        });
+        assert!(
+            light
+                .check()
+                .expect_err("refused")
+                .contains("light.b is a light")
+        );
+    }
+
+    /// A switch shown as a light is on while it is; a lock, locked; and what each is asked
+    /// becomes the switch's on or off, the other way round when inverted.
+    #[test]
+    fn a_switch_shown_as_another_kind_follows_and_is_told_through() {
+        let shown = |shown_as, invert| SwitchAs {
+            name: Name::try_from("Reading lamp").expect("valid"),
+            switch: "switch.plug".parse().expect("id"),
+            shown_as,
+            invert,
+        };
+        let plug = state("switch.plug", State::Switch(SwitchState { on: true }), 0);
+        let states = |id: &EntityId| (id.as_str() == "switch.plug").then(|| plug.clone());
+        let mut running = Running::default();
+        let zone = TimeZone::UTC;
+        let outcome =
+            |spec: Spec, running: &mut Running| running.outcome(&spec, &states, at(0), &zone);
+        assert!(matches!(
+            outcome(Spec::SwitchAs(shown(ShownAs::Light, false)), &mut running),
+            Ok(State::Light(LightState { on: true, .. }))
+        ));
+        assert!(matches!(
+            outcome(Spec::SwitchAs(shown(ShownAs::Lock, true)), &mut running),
+            Ok(State::Lock(LockState {
+                state: LockStatus::Unlocked
+            }))
+        ));
+        assert!(matches!(
+            outcome(Spec::SwitchAs(shown(ShownAs::Valve, false)), &mut running),
+            Ok(State::Valve(ValveState {
+                state: OpenState::Open,
+                ..
+            }))
+        ));
+
+        assert_eq!(
+            shown(ShownAs::Light, false).action("turn_on"),
+            Ok("turn_on")
+        );
+        assert_eq!(shown(ShownAs::Cover, false).action("close"), Ok("turn_off"));
+        assert_eq!(shown(ShownAs::Lock, true).action("lock"), Ok("turn_off"));
+        assert!(shown(ShownAs::Cover, false).action("set_position").is_err());
+
+        let not_a_switch = SwitchAs {
+            switch: "light.lamp".parse().expect("id"),
+            ..shown(ShownAs::Light, false)
+        };
+        assert!(Spec::SwitchAs(not_a_switch).check().is_err());
     }
 
     #[test]
