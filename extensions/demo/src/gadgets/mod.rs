@@ -69,7 +69,8 @@ trait Gadget: Send {
         Err(cannot(unique_id, service))
     }
 
-    /// The entities that changed on their own by `now`, in `world`.
+    /// The entities that changed on their own by `now`, in `world`. One with no state in
+    /// [`Gadget::states`] has become unknown: an mmWave's distance once nobody's there.
     fn tick(&mut self, now: Instant, world: &World) -> Vec<&'static str>;
 
     /// What its camera `unique_id` sees now, for a camera.
@@ -499,17 +500,24 @@ impl Gadgets {
                     .any(|entity| entity.unique_id == unique_id)
             })
             .ok_or_else(|| format!("the demo has no `{unique_id}`"))?;
-        gadget
-            .call(unique_id, service, now)
-            .map(|changed| state_of(gadget.as_ref(), changed))
+        gadget.call(unique_id, service, now).and_then(|changed| {
+            state_of(gadget.as_ref(), changed)
+                .map(|state| (changed, state))
+                .ok_or_else(|| format!("the demo's `{changed}` has nothing to say"))
+        })
     }
 
-    /// What changed on its own by `now`, in `world`.
-    pub(crate) fn tick(&mut self, now: Instant, world: &World) -> Vec<(&'static str, State)> {
+    /// What changed on its own by `now`, in `world`: each entity's new state, or `None` for one
+    /// that has become unknown.
+    pub(crate) fn tick(
+        &mut self,
+        now: Instant,
+        world: &World,
+    ) -> Vec<(&'static str, Option<State>)> {
         let mut changed = Vec::new();
         for gadget in &mut self.all {
             for entity in gadget.tick(now, world) {
-                changed.push(state_of(gadget.as_ref(), entity));
+                changed.push((entity, state_of(gadget.as_ref(), entity)));
             }
         }
         changed
@@ -558,13 +566,13 @@ impl Device {
     }
 }
 
-/// `entity`'s state, as `gadget` reports it.
-fn state_of(gadget: &dyn Gadget, entity: &'static str) -> (&'static str, State) {
+/// `entity`'s state, as `gadget` reports it, or `None` while it has none.
+fn state_of(gadget: &dyn Gadget, entity: &'static str) -> Option<State> {
     gadget
         .states()
         .into_iter()
         .find(|(unique_id, _)| *unique_id == entity)
-        .expect("every entity that takes a call or changes has a state")
+        .map(|(_, state)| state)
 }
 
 /// The error for a service one of these entities doesn't take.
@@ -659,10 +667,27 @@ mod tests {
             }
         };
         fits(&gadgets, &gadgets.states());
+        let mut unknown = BTreeSet::new();
         for second in (0..400).step_by(2) {
-            let ticked = gadgets.tick(now + Duration::from_secs(second), &World::at(second));
+            let ticked: Vec<_> = gadgets
+                .tick(now + Duration::from_secs(second), &World::at(second))
+                .into_iter()
+                .filter_map(|(id, state)| match state {
+                    Some(state) => Some((id, state)),
+                    None => {
+                        unknown.insert(id);
+                        None
+                    }
+                })
+                .collect();
             fits(&gadgets, &ticked);
         }
+        // Only what can be unknown is: an mmWave's distance, while nobody's there.
+        assert!(!unknown.is_empty());
+        assert!(
+            unknown.iter().all(|id| id.ends_with("-distance")),
+            "{unknown:?}"
+        );
         fits(&gadgets, &rings(0, 1000));
     }
 

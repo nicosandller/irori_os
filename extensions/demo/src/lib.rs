@@ -84,7 +84,7 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
     let mut house = gadgets::Gadgets::new();
     let started = tokio::time::Instant::now();
     for (entity, state) in house.tick(started, &World::at(0)) {
-        ctx.report_state(report(entity, Some(state), None)?);
+        ctx.report_state(report(entity, state, None)?);
     }
     for (entity, state) in house.states() {
         ctx.report_state(report(entity, Some(state), None)?);
@@ -128,7 +128,7 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                 let secs = tick * config.sensor_interval_secs;
                 let world = World::at(secs);
                 for (entity, state) in house.tick(tokio::time::Instant::now(), &world) {
-                    ctx.report_state(report(entity, Some(state), None)?);
+                    ctx.report_state(report(entity, state, None)?);
                 }
                 if tick > 0 {
                     let since = secs - config.sensor_interval_secs;

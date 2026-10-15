@@ -83,13 +83,10 @@ impl Gadget for MmWave {
         states
     }
 
+    /// The distance goes with it, unknown while nobody's there.
     fn tick(&mut self, _: Instant, world: &World) -> Vec<&'static str> {
         self.world = *world;
-        if (self.present)(world) {
-            vec![self.occupancy, self.distance]
-        } else {
-            vec![self.occupancy]
-        }
+        vec![self.occupancy, self.distance]
     }
 }
 
@@ -164,7 +161,11 @@ mod tests {
         for tick in 0..30 {
             let changed = table.tick(Instant::now(), &World::at(tick * 2));
             let states = table.states();
-            assert_eq!(changed.len(), states.len());
+            assert_eq!(
+                changed.len(),
+                2,
+                "the distance is said even when it's unknown"
+            );
             super::super::assert_fits(&table, &states);
             if let Some((_, State::Sensor(distance))) = states.get(1) {
                 assert!(

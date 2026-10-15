@@ -186,7 +186,9 @@ fn garage(out: &mut String, day: f64, car_home: bool) {
     );
     if !car_home {
         // An oil mark where it stands.
-        out.push_str(r##"<ellipse cx="400" cy="300" rx="110" ry="14" fill="#000000" opacity=".12"/>"##);
+        out.push_str(
+            r##"<ellipse cx="400" cy="300" rx="110" ry="14" fill="#000000" opacity=".12"/>"##,
+        );
         return;
     }
     let _ = write!(
