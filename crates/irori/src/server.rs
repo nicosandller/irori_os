@@ -194,6 +194,7 @@ pub fn router(state: AppState) -> Router {
             patch(edit_device).delete(remove_device),
         )
         .route("/api/entities/{id}", patch(edit_entity))
+        .route("/api/entities/{id}/picture", get(camera_picture))
         .route("/api/extensions/{id}/secrets", put(give_secret))
         .route(
             "/api/extensions/{id}/settings",
@@ -1540,6 +1541,46 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
     }
 }
 
+/// What a camera sees now, as its protocol draws it (`docs/specs/api.md`). Never cached, and
+/// served so that opening it on its own can't run anything: a protocol may send an SVG.
+async fn camera_picture(State(state): State<AppState>, Path(id): Path<EntityId>) -> Response {
+    if id.kind() != irori_types::EntityKind::Camera {
+        return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
+    }
+    if state.0.core.state(&id).is_none() {
+        return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
+    }
+    match state.0.core.camera_picture(&id).await {
+        Ok(picture) => (
+            [
+                (axum::http::header::CONTENT_TYPE, picture.content_type),
+                (
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    "default-src 'none'; style-src 'unsafe-inline'; sandbox".to_owned(),
+                ),
+                (
+                    axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                    "nosniff".to_owned(),
+                ),
+                (axum::http::header::CACHE_CONTROL, "no-store".to_owned()),
+            ],
+            picture.bytes,
+        )
+            .into_response(),
+        Err(irori_core::CallActionError::Timeout) => refused(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!("`{id}` didn't send a picture in time"),
+        ),
+        Err(irori_core::CallActionError::NotRunning(extension)) => refused(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("`{extension}` isn't running, so `{id}` can't send a picture"),
+        ),
+        Err(irori_core::CallActionError::Failed(why)) => {
+            refused(StatusCode::BAD_GATEWAY, format!("`{id}`: {why}"))
+        }
+    }
+}
+
 /// What an extension has lately said for itself: the tail of its own stderr, oldest line first.
 ///
 /// Every failure a person can see should be one they can act on, and an extension's own output
@@ -2779,28 +2820,37 @@ mod tests {
                 .as_array()
                 .is_some_and(|all| all.iter().any(|item| item["name"] == id))
         };
-        assert!(named("devices", "Demo lamp"), "no demo lamp in {home}");
-        assert!(named("entities", "Demo lamp"), "no lamp entity in {home}");
         assert!(
-            named("devices", "Demo hallway light"),
+            named("devices", "Living room lamp"),
+            "no demo lamp in {home}"
+        );
+        assert!(
+            named("entities", "Living room lamp"),
+            "no lamp entity in {home}"
+        );
+        assert!(
+            named("devices", "Foyer ceiling light"),
             "no hallway light in {home}"
         );
         assert!(
-            named("devices", "Demo movement sensor"),
+            named("devices", "Foyer movement sensor"),
             "no movement sensor in {home}"
         );
         assert!(
-            named("devices", "Demo luminosity sensor"),
+            named("devices", "Garden light sensor"),
             "no luminosity sensor in {home}"
         );
         assert!(
-            named("devices", "Demo mmWave sensor"),
+            named("devices", "Living room presence sensor"),
             "no mmWave sensor in {home}"
         );
         assert_eq!(home["extensions"]["demo"]["state"], "running");
         let lamp = home["states"]
             .as_array()
-            .and_then(|all| all.iter().find(|s| s["entity_id"] == "light.demo_lamp"))
+            .and_then(|all| {
+                all.iter()
+                    .find(|s| s["entity_id"] == "light.living_room_lamp")
+            })
             .ok_or_else(|| anyhow::anyhow!("no demo lamp state in {home}"))?;
         assert_eq!(lamp["availability"], "available");
 
@@ -2812,7 +2862,7 @@ mod tests {
     #[tokio::test]
     async fn a_command_answers_with_the_state_it_produced() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
-        let lamp = EntityId::try_from("light.demo_lamp")?;
+        let lamp = EntityId::try_from("light.living_room_lamp")?;
 
         for on in [true, false] {
             let (status, body) = post(
@@ -2990,7 +3040,7 @@ mod tests {
 
         let (status, _) = server
             .send(
-                Request::get("/api/history/sensor.demo_hallway_sensor_temperature/summary")
+                Request::get("/api/history/sensor.living_room_climate_sensor_temperature/summary")
                     .body(Body::empty())?,
             )
             .await?;
@@ -2998,7 +3048,7 @@ mod tests {
         let (status, bytes) = server
             .send(
                 Request::get(
-                    "/api/history/sensor.demo_hallway_sensor_temperature/summary?since=1970-01-01T00:00:00Z",
+                    "/api/history/sensor.living_room_climate_sensor_temperature/summary?since=1970-01-01T00:00:00Z",
                 )
                 .body(Body::empty())?,
             )
@@ -3029,7 +3079,7 @@ mod tests {
         let (status, body) = post(
             core.clone(),
             "/api/command",
-            serde_json::json!({"entity_id": "sensor.demo_hallway_sensor_temperature", "command": "toggle"}),
+            serde_json::json!({"entity_id": "sensor.living_room_climate_sensor_temperature", "command": "toggle"}),
         )
         .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -3039,7 +3089,7 @@ mod tests {
             core.clone(),
             "/api/command",
             serde_json::json!({
-                "entity_id": "light.demo_lamp", "command": "turn_off", "data": {"brightness": 5},
+                "entity_id": "light.living_room_lamp", "command": "turn_off", "data": {"brightness": 5},
             }),
         )
         .await?;
@@ -3059,7 +3109,10 @@ mod tests {
         let states: serde_json::Value = serde_json::from_slice(&body)?;
         let lamp = states
             .as_array()
-            .and_then(|all| all.iter().find(|s| s["entity_id"] == "light.demo_lamp"))
+            .and_then(|all| {
+                all.iter()
+                    .find(|s| s["entity_id"] == "light.living_room_lamp")
+            })
             .ok_or_else(|| anyhow::anyhow!("no demo lamp in {states}"))?;
         assert_eq!(lamp["state"]["kind"], "light");
 
@@ -3203,32 +3256,42 @@ mod tests {
         let server = Server::new(core.clone())?;
 
         let (status, area) = server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         assert_eq!(status, StatusCode::CREATED, "{area}");
-        assert_eq!(area["id"], "study");
+        assert_eq!(area["id"], "living_room");
 
         let (status, device) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({
-                    "name": "Reading lamp", "description": "On the desk", "area": "study",
+                    "name": "Reading lamp", "description": "On the desk", "area": "living_room",
                 }),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{device}");
         assert_eq!(device["name"], "Reading lamp");
         assert_eq!(device["description"], "On the desk");
-        assert_eq!(device["id"], "demo_lamp", "renaming it didn't move its id");
-        assert_eq!(device["area_id"], "study");
+        assert_eq!(
+            device["id"], "demo_living_room_lamp",
+            "renaming it didn't move its id"
+        );
+        assert_eq!(device["area_id"], "living_room");
 
         let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
-        assert!(areas.contains("[areas.study]"), "{areas}");
+        assert!(areas.contains("[areas.living_room]"), "{areas}");
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         // Keyed by the device's one id — the same id as its page address — so there is never a
         // second identifier for the same device to keep in step (ROADMAP D36).
-        assert!(devices.contains("[devices.demo_lamp]"), "{devices}");
+        assert!(
+            devices.contains("[devices.demo_living_room_lamp]"),
+            "{devices}"
+        );
         assert!(
             devices.contains("description = \"On the desk\""),
             "{devices}"
@@ -3237,7 +3300,7 @@ mod tests {
 
         // And the page sees the same thing it would after a restart.
         let home = server.read("/api/home").await?;
-        assert_eq!(home["areas"][0]["name"], "Study");
+        assert_eq!(home["areas"][0]["name"], "Living room");
 
         host.shutdown().await;
         Ok(())
@@ -3249,19 +3312,19 @@ mod tests {
     async fn a_rename_carries_the_entities_and_can_be_undone() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
-        let lamp = EntityId::try_from("light.demo_lamp")?;
+        let lamp = EntityId::try_from("light.living_room_lamp")?;
         let entity_named = |core: &Core| {
             core.entities()
                 .into_iter()
                 .find(|entity| entity.id == lamp)
                 .map(|entity| entity.name.to_string())
         };
-        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+        assert_eq!(entity_named(&core).as_deref(), Some("Living room lamp"));
 
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"name": "Reading lamp"}),
             )
             .await?;
@@ -3271,13 +3334,13 @@ mod tests {
         let (status, device) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"name": null}),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{device}");
-        assert_eq!(device["name"], "Demo lamp");
-        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+        assert_eq!(device["name"], "Living room lamp");
+        assert_eq!(entity_named(&core).as_deref(), Some("Living room lamp"));
 
         host.shutdown().await;
         Ok(())
@@ -3292,7 +3355,7 @@ mod tests {
         let (status, entity) = server
             .json(
                 "PATCH",
-                "/api/entities/light.demo_lamp",
+                "/api/entities/light.living_room_lamp",
                 serde_json::json!({"name": "Reading light"}),
             )
             .await?;
@@ -3302,14 +3365,14 @@ mod tests {
         server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"name": "Reading lamp"}),
             )
             .await?;
         let home = server.read("/api/home").await?;
         let named = home["entities"]
             .as_array()
-            .and_then(|all| all.iter().find(|e| e["id"] == "light.demo_lamp"))
+            .and_then(|all| all.iter().find(|e| e["id"] == "light.living_room_lamp"))
             .map(|e| e["name"].clone());
         assert_eq!(named, Some(serde_json::json!("Reading light")));
 
@@ -3324,34 +3387,42 @@ mod tests {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
         server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
-                serde_json::json!({"area": "study"}),
+                "/api/devices/demo_living_room_lamp",
+                serde_json::json!({"area": "living_room"}),
             )
             .await?;
 
         let (status, _) = server
-            .json("DELETE", "/api/areas/study", serde_json::json!(null))
+            .json("DELETE", "/api/areas/living_room", serde_json::json!(null))
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let placed = |core: &Core| {
             core.devices()
                 .into_iter()
-                .find(|device| device.id.as_str() == "demo_lamp")
+                .find(|device| device.id.as_str() == "demo_living_room_lamp")
                 .and_then(|device| device.area_id)
         };
         assert_eq!(placed(&core), None);
 
         server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         assert_eq!(
             placed(&core).map(|id| id.to_string()).as_deref(),
-            Some("study"),
+            Some("living_room"),
             "the device remembered where it belonged"
         );
 
@@ -3370,19 +3441,23 @@ mod tests {
             core.entities().iter().any(|entity| entity
                 .device_id
                 .as_ref()
-                .is_some_and(|id| id.as_str() == "demo_lamp")),
+                .is_some_and(|id| id.as_str() == "demo_living_room_lamp")),
             "the demo lamp has entities"
         );
 
         let (status, _) = server
-            .json("DELETE", "/api/devices/demo_lamp", serde_json::Value::Null)
+            .json(
+                "DELETE",
+                "/api/devices/demo_living_room_lamp",
+                serde_json::Value::Null,
+            )
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert!(
             !core
                 .devices()
                 .iter()
-                .any(|device| device.id.as_str() == "demo_lamp"),
+                .any(|device| device.id.as_str() == "demo_living_room_lamp"),
             "out of the core"
         );
         assert_eq!(core.devices().len(), before - 1, "its neighbours stayed");
@@ -3390,26 +3465,30 @@ mod tests {
             !core.entities().iter().any(|entity| entity
                 .device_id
                 .as_ref()
-                .is_some_and(|id| id.as_str() == "demo_lamp")),
+                .is_some_and(|id| id.as_str() == "demo_living_room_lamp")),
             "its entities went with it"
         );
 
         // The files agree, so a restart couldn't bring a stale row back.
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
-        assert!(!devices.contains("demo_lamp"), "{devices}");
+        assert!(!devices.contains("demo_living_room_lamp"), "{devices}");
 
         // Found again straight away, for "+ Add device" to offer back.
         let home = server.read("/api/home").await?;
         assert!(
             home["held"]
                 .as_array()
-                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_lamp")),
+                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_living_room_lamp")),
             "{home}"
         );
 
         // Removing a device that isn't in the home is a 404, found or not.
         let (status, _) = server
-            .json("DELETE", "/api/devices/demo_lamp", serde_json::Value::Null)
+            .json(
+                "DELETE",
+                "/api/devices/demo_living_room_lamp",
+                serde_json::Value::Null,
+            )
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -3417,7 +3496,7 @@ mod tests {
         Ok(())
     }
 
-    /// "Not in a room" is an answer. The demo lamp's firmware asks for the Study; once that room
+    /// "Not in a room" is an answer. The demo lamp's firmware asks for the living room; once that room
     /// exists the lamp is in it, and `area: false` must take it out and keep it out, while
     /// `area: null` hands the decision back to the device.
     #[tokio::test]
@@ -3427,23 +3506,27 @@ mod tests {
         let placed = |core: &Core| {
             core.devices()
                 .into_iter()
-                .find(|device| device.id.as_str() == "demo_lamp")
+                .find(|device| device.id.as_str() == "demo_living_room_lamp")
                 .and_then(|device| device.area_id)
                 .map(|id| id.to_string())
         };
         server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         assert_eq!(
             placed(&core).as_deref(),
-            Some("study"),
+            Some("living_room"),
             "the suggestion stands in"
         );
 
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": false}),
             )
             .await?;
@@ -3455,20 +3538,20 @@ mod tests {
         server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": null}),
             )
             .await?;
         assert_eq!(
             placed(&core).as_deref(),
-            Some("study"),
+            Some("living_room"),
             "or give it back to the device"
         );
 
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": true}),
             )
             .await?;
@@ -3506,7 +3589,7 @@ mod tests {
                         "area": "kitchen",
                         "points": [[0, 0], [400, 0], [400, 300], [0, 300]],
                     }],
-                    "devices": [{"device": "demo_lamp", "at": [120, 90]}],
+                    "devices": [{"device": "demo_living_room_lamp", "at": [120, 90]}],
                 },
             },
         });
@@ -3521,7 +3604,10 @@ mod tests {
         assert!(written.contains("from = [0, 0]"), "{written}");
         assert!(written.contains("kind = \"door\""), "{written}");
         assert!(written.contains("area = \"kitchen\""), "{written}");
-        assert!(written.contains("device = \"demo_lamp\""), "{written}");
+        assert!(
+            written.contains("device = \"demo_living_room_lamp\""),
+            "{written}"
+        );
 
         let home = server.read("/api/home").await?;
         assert_eq!(
@@ -3549,7 +3635,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": false}),
             )
             .await?;
@@ -3561,7 +3647,7 @@ mod tests {
         assert_eq!(
             core.devices()
                 .iter()
-                .find(|device| device.id.as_ref() == "demo_lamp")
+                .find(|device| device.id.as_ref() == "demo_living_room_lamp")
                 .and_then(|device| device.area_id.clone()),
             None,
             "and the core agrees"
@@ -3707,7 +3793,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": "nowhere"}),
             )
             .await?;
@@ -3911,6 +3997,9 @@ mod tests {
                         unpair.reply(Ok(()));
                     }
                     irori_protocol::Incoming::Call(call) => call.reply(Ok(())),
+                    irori_protocol::Incoming::Picture(asked) => {
+                        asked.reply(Err("no cameras on this mesh".into()));
+                    }
                 }
             }
             Ok(())
@@ -3993,6 +4082,115 @@ mod tests {
         let written = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         assert!(!written.contains("mesh_bulb"), "{written}");
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A protocol that retires its one device, as the demo does its old ones: told anything,
+    /// it removes the lamp for good.
+    #[derive(Debug)]
+    struct Retiring;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct RetiringSettings {}
+
+    impl irori_protocol::Protocol for Retiring {
+        type Config = RetiringSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "retiring"
+            name = "Retiring"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: RetiringSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            ctx.describe_device(irori_types::DeviceDescription {
+                unique_id: "lamp".parse()?,
+                name: "Old lamp".parse()?,
+                manufacturer: None,
+                model: None,
+                sw_version: None,
+                hw_version: None,
+                suggested_area: None,
+                via_device_unique_id: None,
+            })
+            .await?;
+            ctx.describe_entity(irori_types::EntityDescription {
+                unique_id: "lamp_switch".parse()?,
+                name: None,
+                device_unique_id: Some("lamp".parse()?),
+                suggested_object_id: None,
+                capabilities: irori_types::Capabilities::Switch(irori_types::SwitchCapabilities {
+                    device_class: None,
+                }),
+                entity_category: None,
+            })
+            .await?;
+            while let Some(call) = ctx.next_call().await {
+                let gone = ctx.remove_device("lamp".parse()?).await;
+                call.reply(gone.map_err(|e| irori_protocol::ServiceError::failed(e.to_string())));
+            }
+            Ok(())
+        }
+    }
+
+    /// A device its own protocol retires leaves the config files as one a person removes does:
+    /// its row, its entities' rows and its spot on the plan. Otherwise it would linger there.
+    #[tokio::test]
+    async fn a_device_its_protocol_retires_is_forgotten_by_the_files() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        tokio::spawn(server.config.clone().forget_retired(core.clone()));
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Retiring>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if known(&core, "retiring_lamp") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/devices/retiring_lamp",
+                serde_json::json!({"name": "Hall lamp"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let devices = || std::fs::read_to_string(server.config_dir().join("devices.toml"));
+        assert!(devices()?.contains("retiring_lamp"), "{}", devices()?);
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/command",
+                serde_json::json!({"entity_id": "switch.retiring_lamp", "command": "turn_on"}),
+            )
+            .await?;
+        assert!(
+            status.is_success() || status == StatusCode::NOT_FOUND,
+            "{status} {body}"
+        );
+        for _ in 0..500 {
+            if !devices()?.contains("retiring_lamp") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!devices()?.contains("retiring_lamp"), "{}", devices()?);
+        assert!(!known(&core, "retiring_lamp"));
         host.shutdown().await;
         Ok(())
     }
@@ -4518,16 +4716,16 @@ mod tests {
         assert!(
             home["held"].as_array().is_some_and(|all| all
                 .iter()
-                .any(|item| item["id"] == "demo_lamp"
+                .any(|item| item["id"] == "demo_living_room_lamp"
                     && item["provides"]["light"] == 1
-                    && item["model"] == "Virtual lamp")),
+                    && item["model"] == "Virtual colour lamp")),
             "{home}"
         );
 
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"added": true}),
             )
             .await?;
@@ -4536,16 +4734,19 @@ mod tests {
         assert!(
             home["entities"]
                 .as_array()
-                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp")),
+                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.living_room_lamp")),
             "{home}"
         );
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
-        assert!(devices.contains("[devices.demo_lamp]"), "{devices}");
+        assert!(
+            devices.contains("[devices.demo_living_room_lamp]"),
+            "{devices}"
+        );
 
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_plug",
+                "/api/devices/demo_fridge_plug",
                 serde_json::json!({"ignored": true}),
             )
             .await?;
@@ -5352,6 +5553,51 @@ mod tests {
     }
 
     /// An icon arrives as an image with a policy that stops it doing anything but being one.
+    /// A camera's picture comes from its protocol as it is now, never cached, and served so
+    /// that opening it on its own can't run anything. Only a camera has one.
+    #[tokio::test]
+    async fn a_camera_sends_its_picture_and_nothing_else_has_one() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let res = server
+            .app()?
+            .oneshot(
+                Request::get("/api/entities/camera.garden_camera_1/picture").body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let headers = res.headers().clone();
+        assert_eq!(headers["content-type"], "image/svg+xml");
+        assert_eq!(headers["cache-control"], "no-store");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert!(
+            headers["content-security-policy"]
+                .to_str()?
+                .contains("sandbox")
+        );
+        let body = String::from_utf8(res.into_body().collect().await?.to_bytes().to_vec())?;
+        assert!(
+            body.starts_with("<svg") && body.contains("Garden camera 1"),
+            "{body}"
+        );
+
+        for (path, wanted) in [
+            (
+                "/api/entities/light.living_room_lamp/picture",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "/api/entities/camera.nowhere/picture",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let (status, body) = server.send(Request::get(path).body(Body::empty())?).await?;
+            assert_eq!(status, wanted, "{path}: {}", String::from_utf8_lossy(&body));
+        }
+        host.shutdown().await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -6789,7 +7035,7 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "switch.demo_plug", "command": "turn_on" })),
+            Some(serde_json::json!({ "entity_id": "switch.fridge_plug", "command": "turn_on" })),
             Some(&guest),
             true,
         )
@@ -7588,7 +7834,9 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_on" })),
+            Some(
+                serde_json::json!({ "entity_id": "light.living_room_lamp", "command": "turn_on" }),
+            ),
             &secret,
         )
         .await?;
@@ -7615,7 +7863,9 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_off" })),
+            Some(
+                serde_json::json!({ "entity_id": "light.living_room_lamp", "command": "turn_off" }),
+            ),
             Some(&owner),
             false,
         )
@@ -7645,7 +7895,9 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_off" })),
+            Some(
+                serde_json::json!({ "entity_id": "light.living_room_lamp", "command": "turn_off" }),
+            ),
             &secret,
         )
         .await?;

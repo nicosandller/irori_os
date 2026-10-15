@@ -310,6 +310,11 @@
           "description": "On during the times a week sets out, off between them.",
           "type": "string",
           "const": "schedule"
+        },
+        {
+          "description": "Something that sees: off, idle or recording, and a picture a page can ask for.",
+          "type": "string",
+          "const": "camera"
         }
       ]
     },

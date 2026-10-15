@@ -136,6 +136,11 @@ talking, and offered again as if it were new. So removing it unpairs it first:
   then found again if its protocol still knows it. The network's own controller has nothing to
   unpair, so removing it is only ever removing it from the home.
 
+A device its own protocol removes for good is forgotten the same way: its row, its entities'
+rows and its spot on the floorplan leave these files, so nothing of it lingers to come back as a
+ghost. The demo does this to the devices it no longer has, and Zigbee to one its network let go
+([protocols.md](protocols.md) §5, *Remove a device*).
+
 `ignored = true` is from when a device could be ignored rather than removed. A row that says it
 still reads, so the rest of the file isn't refused, but that device is simply not in the home:
 it's listed as found, to be added if wanted, and Irori drops the row the next time it writes the

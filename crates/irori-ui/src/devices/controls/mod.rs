@@ -4,6 +4,7 @@
 
 mod alarm_control_panel;
 mod button;
+mod camera;
 mod climate;
 mod event;
 mod fan;
@@ -26,6 +27,7 @@ mod vacuum;
 mod water_heater;
 
 pub(crate) use self::alarm_control_panel::alarm_words;
+pub(crate) use self::camera::{camera_picture, camera_words};
 pub(crate) use self::climate::climate_words;
 pub(crate) use self::fan::fan_words;
 pub(crate) use self::humidifier::humidifier_words;
@@ -82,6 +84,9 @@ pub(crate) fn control(
         Capabilities::Event(_) => event::happened(state),
         Capabilities::DeviceTracker(_) => sensor::tracker(value),
         Capabilities::Schedule(_) => timer::schedule_reading(value),
+        Capabilities::Camera(capabilities) => {
+            camera::camera_control(entity, capabilities, value, offline, controls)
+        }
         // These three are drawn once and follow a state that changes (`kept`); here the
         // state is whatever it was when this was called.
         Capabilities::Cover(_)
@@ -206,7 +211,8 @@ pub(crate) fn kept(
             offline,
             controls,
         )),
-        Capabilities::Light(_)
+        Capabilities::Camera(_)
+        | Capabilities::Light(_)
         | Capabilities::Switch(_)
         | Capabilities::Sensor(_)
         | Capabilities::BinarySensor(_)

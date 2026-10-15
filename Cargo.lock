@@ -1666,6 +1666,7 @@ dependencies = [
 name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "irori-types",
  "rustix",
  "schemars",

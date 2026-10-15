@@ -750,6 +750,23 @@
     .padlock[data-lock="stuck"] { color: var(--error); animation: shake 360ms var(--ease-out); }
     @keyframes bolt { 50% { translate: 0 -2.5px; } }
     .reading.moving { color: var(--ember); }
+    /* A camera: what it's doing, with a red dot that breathes while it records, and its
+       picture in the drawer, each new one fading in over the last. */
+    .camera-status { display: inline-flex; align-items: center; gap: .4rem;
+                     font-size: .85rem; color: var(--muted); }
+    .camera-dot { width: .5rem; height: .5rem; border-radius: 50%; background: var(--line);
+                  transition: background-color var(--dur-base); }
+    .camera-status.recording { color: var(--fg); }
+    .camera-status.recording .camera-dot { background: #e5484d;
+                                           animation: recording 1.6s ease-in-out infinite; }
+    @keyframes recording { 50% { opacity: .35; scale: .8; } }
+    .camera-view { margin: 0 0 .9rem; display: grid; gap: .35rem; }
+    .camera-view img { display: block; width: 100%; max-width: 40rem; aspect-ratio: 16 / 9;
+                       border-radius: .6rem; background: var(--sunk);
+                       border: 1px solid var(--line); object-fit: cover;
+                       animation: frame-in var(--dur-layout) var(--ease-out); }
+    .camera-view.failed img { opacity: .45; }
+    @keyframes frame-in { from { opacity: .7; } }
     /* An update: the bar fills as the install goes. A device that doesn't say how far it has
        got gets a bar that only says it's busy. */
     .update-reading { display: inline-flex; align-items: center; gap: .5rem; }

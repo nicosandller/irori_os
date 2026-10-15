@@ -1,11 +1,12 @@
 [extension]
 id = "automations"
 name = "Automations"
-version = "0.6.0"
+version = "0.7.0"
 irori = ">=1.4.0"
 # 1.4.0 has the `update` kind, and entity format 17 with it.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."
 icon = "icon.svg"
+# Format 26 adds cameras, whose value is what they are doing (`off`, `idle`, `recording`…).
 # Format 25 adds schedules, whose value is whether they are on.
 # Format 24 adds timers, whose value is `idle`, `active` or `paused`.
 # Format 23 adds device trackers, whose value is whether they are home.
@@ -19,7 +20,7 @@ icon = "icon.svg"
 # whose value is their playback (`off`, `idle`, `playing`, `paused`, `buffering`, `standby`).
 # This format also includes every kind added before; the engine reads those by the same primary
 # value.
-entity_format = 25
+entity_format = 26
 
 [[contributes.automation]]
 run = { command = "bin/irori-ext-automations" }

@@ -127,7 +127,7 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`, `device_tracker`, `timer`, `schedule`.
+`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`, `device_tracker`, `timer`, `schedule`, `camera`.
 That is every Home Assistant kind a device on Irori's protocols reports. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
 has one, so nothing could report it. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
@@ -177,6 +177,8 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `lawn_mower` | `start_mowing`, `pause`, `dock` | bool | `false` | What it can be told to do |
 | `device_tracker` | `source_type` | `gps` \| `router` \| `bluetooth` \| `bluetooth_le` | absent | How it knows where it is. One seen on the network or heard over Bluetooth is there or not, with no position |
 | `schedule` | none | | | On during the times a week sets out. Read, never told |
+| `camera` | `on_off` | bool | `false` | Has a privacy switch: can be turned off and on |
+| | `motion_detection` | bool | `false` | Watches for motion, and can be told to stop and start again |
 | `timer` | none | | | Something that counts down. Home Assistant has timers only as helpers; here a device that counts down can be one too |
 | `scene` | none | | | A scene a device keeps (a Hue scene, a Zigbee group's) and can be told to set. Scenes Irori makes itself are flows |
 | `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
@@ -320,6 +322,8 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `device_tracker` | `home` | bool | yes | Its typed value, for rules (`on()`): at home. Named places other than home wait for Irori to have zones; a tracker in one is not home |
 | | `latitude`, `longitude` | degrees, -90 to 90 and -180 to 180 | no | Where it is, from one that knows |
 | | `accuracy` | metres, 0 or more | no | How far off that may be |
+| `camera` | `state` | `off` \| `idle` \| `recording` \| `streaming` | yes | Its typed value, for rules (`text()`). `off` only for one with `on_off`. Its picture isn't state: a page asks for it ([protocols.md](protocols.md) §5.2) |
+| | `motion_detection` | bool | no | Whether it's watching for motion, for one with `motion_detection` |
 | `schedule` | `on` | bool | yes | Its typed value, for rules (`on()`): within one of its times now |
 | | `next_change` | `Timestamp` | no | When it next turns on or off. Absent for one that never changes |
 | `timer` | `state` | `idle` \| `active` \| `paused` | yes | Its typed value, for rules (`text()`) |
@@ -385,6 +389,7 @@ A field is one of the names in the table above, with its value as on/off, a numb
 | `device_tracker` | `latitude`, `longitude`, `accuracy` |
 | `timer` | `duration`, `remaining`, `finishes_at` |
 | `schedule` | `next_change` |
+| `camera` | `motion_detection` |
 
 An entity has the fields its capabilities allow (a light that can't dim has no `brightness`);
 readings nothing announces ahead of time, like a thermostat's `current_temperature`, are listed

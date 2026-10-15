@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kinds::alarm_control_panel::AlarmState;
 use crate::kinds::binary_sensor::BinarySensorState;
+use crate::kinds::camera::CameraState;
 use crate::kinds::climate::ClimateState;
 use crate::kinds::cover::CoverState;
 use crate::kinds::device_tracker::TrackerState;
@@ -172,6 +173,7 @@ pub enum State {
     DeviceTracker(TrackerState),
     Timer(TimerState),
     Schedule(ScheduleState),
+    Camera(CameraState),
 }
 
 impl State {
@@ -205,7 +207,8 @@ impl State {
             | Self::Datetime(_)
             | Self::Vacuum(_)
             | Self::LawnMower(_)
-            | Self::Schedule(_) => Ok(()),
+            | Self::Schedule(_)
+            | Self::Camera(_) => Ok(()),
         }
     }
 
@@ -238,6 +241,7 @@ impl State {
             Self::DeviceTracker(_) => EntityKind::DeviceTracker,
             Self::Timer(_) => EntityKind::Timer,
             Self::Schedule(_) => EntityKind::Schedule,
+            Self::Camera(_) => EntityKind::Camera,
         }
     }
 }

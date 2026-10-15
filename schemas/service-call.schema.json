@@ -1725,6 +1725,86 @@
       "if": {
         "properties": {
           "service": {
+            "const": "camera.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "camera.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "camera.enable_motion_detection"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "camera.disable_motion_detection"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
             "const": "timer.start"
           }
         },
@@ -2491,6 +2571,10 @@
         "lawn_mower.pause",
         "lawn_mower.dock",
         "scene.turn_on",
+        "camera.turn_on",
+        "camera.turn_off",
+        "camera.enable_motion_detection",
+        "camera.disable_motion_detection",
         "timer.start",
         "timer.pause",
         "timer.cancel",

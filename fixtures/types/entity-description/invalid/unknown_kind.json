@@ -2,6 +2,6 @@
   "unique_id": "porch",
   "name": "Porch",
   "capabilities": {
-    "kind": "camera"
+    "kind": "doorbell"
   }
 }

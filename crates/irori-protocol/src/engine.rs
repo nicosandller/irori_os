@@ -336,7 +336,8 @@ where
                 | ToExt::Loaded { .. }
                 | ToExt::ServiceCall { .. }
                 | ToExt::ActionCall { .. }
-                | ToExt::UnpairDevice { .. } => continue,
+                | ToExt::UnpairDevice { .. }
+                | ToExt::CameraPicture { .. } => continue,
             };
             if in_tx.send(incoming).is_err() {
                 return;

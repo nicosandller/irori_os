@@ -223,7 +223,10 @@ pub(super) fn token_access(method: &Method, path: &str) -> TokenAccess {
         Some(SCOPE_COMMAND)
     } else if reading && path == "/api/home" {
         Some(SCOPE_HOME)
-    } else if reading && path == "/api/states" {
+    } else if reading
+        && (path == "/api/states"
+            || (path.starts_with("/api/entities/") && path.ends_with("/picture")))
+    {
         Some(SCOPE_STATES)
     } else if reading && (path == "/api/history" || path.starts_with("/api/history/")) {
         Some(SCOPE_HISTORY)

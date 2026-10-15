@@ -443,6 +443,7 @@ fn kind_label(kind: EntityKind) -> &'static str {
         EntityKind::DeviceTracker => "Trackers",
         EntityKind::Timer => "Timers",
         EntityKind::Schedule => "Schedules",
+        EntityKind::Camera => "Cameras",
         EntityKind::Fan => "Fans",
         EntityKind::Valve => "Valves",
         EntityKind::Siren => "Sirens",

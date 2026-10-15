@@ -1,12 +1,12 @@
 [extension]
 id = "demo"
 name = "Demo"
-version = "0.7.0"
+version = "0.8.0"
 irori = ">=1.4.0"
-description = "Virtual devices for trying Irori without hardware, living a whole day every minute: lights, a plug that measures power, presence, light and air sensors, door and window contacts, a TV and its sofa, and around the house a lock, a doorbell, a blind, a ceiling fan, a water shut-off with a leak alarm, a thermostat, a hot water tank and a dehumidifier. The fan and the shut-off have firmware to update."
+description = "A whole demo house for trying Irori without hardware, living a day every minute: door, presence, vibration and leak sensors; a garage door, a smart lock and a video doorbell; lights, a TV and metered plugs; cameras indoors and in the garden; climate, soil and light sensors; a thermostat, a smoke detector and a water boiler."
 icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater", "humidifier", "media_player", "update", "alarm_control_panel", "vacuum"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "button", "event", "cover", "lock", "climate", "water_heater", "media_player", "update", "camera"]
 run = { command = "bin/irori-ext-demo" }

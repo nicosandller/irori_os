@@ -1629,6 +1629,12 @@ fn exit_reason(status: std::io::Result<std::process::ExitStatus>) -> String {
 }
 
 fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
+    if let Some(unique_id) = incoming.picturing() {
+        return ToExt::CameraPicture {
+            id,
+            unique_id: unique_id.clone(),
+        };
+    }
     match incoming.unpairing() {
         Some((unique_id, force)) => ToExt::UnpairDevice {
             id,
@@ -1914,6 +1920,16 @@ async fn apply_from_ext(
                 incoming.reply(match error {
                     None => Ok(()),
                     Some(error) => Err(error),
+                });
+            }
+            Ok(None)
+        }
+        FromExt::PictureResult { id, picture, error } => {
+            if let Some(incoming) = pending_actions.remove(&id) {
+                incoming.reply_picture(match (picture, error) {
+                    (_, Some(error)) => Err(error),
+                    (Some(picture), None) => irori_protocol::Picture::try_from(picture),
+                    (None, None) => Err("it sent no picture".to_owned()),
                 });
             }
             Ok(None)

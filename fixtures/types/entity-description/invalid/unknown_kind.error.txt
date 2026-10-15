@@ -1,1 +1,1 @@
-unknown variant `camera`
+unknown variant `doorbell`

@@ -696,6 +696,7 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Vacuum(vacuum)) => vacuum.activity.as_str().to_owned(),
         Some(State::Timer(timer)) => timer.state.as_str().to_owned(),
         Some(State::Schedule(schedule)) => if schedule.on { "on" } else { "off" }.into(),
+        Some(State::Camera(camera)) => camera.state.as_str().to_owned(),
         Some(State::DeviceTracker(tracker)) => if tracker.home { "home" } else { "away" }.into(),
         Some(State::LawnMower(mower)) => mower.activity.as_str().to_owned(),
         Some(State::Date(date)) => date.value.to_string(),

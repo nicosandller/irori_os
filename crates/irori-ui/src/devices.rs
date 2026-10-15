@@ -22,7 +22,7 @@ mod updates;
 
 use self::builder::{HELPER_KINDS, HelperBuilder, HelperKind};
 pub(crate) use self::controls::{
-    alarm_words, climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words,
+    alarm_words, camera_picture, camera_words, climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words,
     mower_words, number, opening_words, schedule_words, timer_words, unit_of, update_words,
     vacuum_words, water_heater_words, wording,
 };
@@ -1576,6 +1576,7 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::WaterHeater(_)
         | Capabilities::Humidifier(_)
         | Capabilities::MediaPlayer(_)
+        | Capabilities::Camera(_)
         | Capabilities::Update(_) => view! {
             {control}
             <button

@@ -46,7 +46,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 
 | ID | Feature | Description | Status | Depends on |
 |----|---------|-------------|:------:|------------|
-| X1 | Demo | Virtual devices living a day every minute: lights, plug, sensors, TV, lock, alarm, robot vacuum, doorbell, blind, fan, valve, thermostat and more | ✅ | C6 |
+| X1 | Demo | A demo house living a day every minute, room by room: doors, presence, vibration, leak and smoke sensors, a garage door, a smart lock, a video doorbell, lights, a TV, metered plugs, cameras, climate and soil sensors, a thermostat and a water boiler | ✅ | C6 |
 | X2 | ESPHome | Native API, discovery, plaintext and encrypted | ✅ | C6 |
 | X3 | HA Discovery library | `irori-ha-discovery`: HA MQTT Discovery parsing, shared by MQTT and Zigbee | ✅ | C2 |
 | X4 | Zigbee | Self-installed Zigbee2MQTT, embedded broker, permit-join | ✅ | C6, X3 |

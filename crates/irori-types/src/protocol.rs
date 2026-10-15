@@ -474,6 +474,10 @@ pub enum Service {
     LawnMowerPause,
     LawnMowerDock,
     SceneTurnOn,
+    CameraTurnOn,
+    CameraTurnOff,
+    CameraEnableMotionDetection,
+    CameraDisableMotionDetection,
     TimerStart(TimerStart),
     TimerPause,
     TimerCancel,
@@ -567,6 +571,10 @@ impl Service {
             Self::LawnMowerPause => ServiceName::LawnMowerPause,
             Self::LawnMowerDock => ServiceName::LawnMowerDock,
             Self::SceneTurnOn => ServiceName::SceneTurnOn,
+            Self::CameraTurnOn => ServiceName::CameraTurnOn,
+            Self::CameraTurnOff => ServiceName::CameraTurnOff,
+            Self::CameraEnableMotionDetection => ServiceName::CameraEnableMotionDetection,
+            Self::CameraDisableMotionDetection => ServiceName::CameraDisableMotionDetection,
             Self::TimerStart(_) => ServiceName::TimerStart,
             Self::TimerPause => ServiceName::TimerPause,
             Self::TimerCancel => ServiceName::TimerCancel,
@@ -745,6 +753,14 @@ pub enum ServiceName {
     LawnMowerDock,
     #[serde(rename = "scene.turn_on")]
     SceneTurnOn,
+    #[serde(rename = "camera.turn_on")]
+    CameraTurnOn,
+    #[serde(rename = "camera.turn_off")]
+    CameraTurnOff,
+    #[serde(rename = "camera.enable_motion_detection")]
+    CameraEnableMotionDetection,
+    #[serde(rename = "camera.disable_motion_detection")]
+    CameraDisableMotionDetection,
     #[serde(rename = "timer.start")]
     TimerStart,
     #[serde(rename = "timer.pause")]
@@ -842,6 +858,10 @@ impl ServiceName {
         Self::LawnMowerPause,
         Self::LawnMowerDock,
         Self::SceneTurnOn,
+        Self::CameraTurnOn,
+        Self::CameraTurnOff,
+        Self::CameraEnableMotionDetection,
+        Self::CameraDisableMotionDetection,
         Self::TimerStart,
         Self::TimerPause,
         Self::TimerCancel,
@@ -934,6 +954,10 @@ impl ServiceName {
             Self::LawnMowerPause => "lawn_mower.pause",
             Self::LawnMowerDock => "lawn_mower.dock",
             Self::SceneTurnOn => "scene.turn_on",
+            Self::CameraTurnOn => "camera.turn_on",
+            Self::CameraTurnOff => "camera.turn_off",
+            Self::CameraEnableMotionDetection => "camera.enable_motion_detection",
+            Self::CameraDisableMotionDetection => "camera.disable_motion_detection",
             Self::TimerStart => "timer.start",
             Self::TimerPause => "timer.pause",
             Self::TimerCancel => "timer.cancel",
@@ -1022,6 +1046,10 @@ impl ServiceName {
                 EntityKind::LawnMower
             }
             Self::SceneTurnOn => EntityKind::Scene,
+            Self::CameraTurnOn
+            | Self::CameraTurnOff
+            | Self::CameraEnableMotionDetection
+            | Self::CameraDisableMotionDetection => EntityKind::Camera,
             Self::TimerStart
             | Self::TimerPause
             | Self::TimerCancel

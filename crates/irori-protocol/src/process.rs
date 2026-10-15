@@ -23,8 +23,8 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::host::{Op, Reply, Reports};
 use crate::{
-    AvailabilityTarget, Health, IncomingAction, IncomingCall, Protocol, ProtocolError, Rejected,
-    ServiceError, ServiceErrorCode, host,
+    AvailabilityTarget, Health, IncomingAction, IncomingCall, Picture, Protocol, ProtocolError,
+    Rejected, ServiceError, ServiceErrorCode, host,
 };
 
 /// A message from the extension process to the host.
@@ -91,6 +91,14 @@ pub enum FromExt {
     ActionResult {
         id: u64,
         #[serde(default)]
+        error: Option<String>,
+    },
+    /// The answer to `camera_picture`: the picture, or why there's none.
+    PictureResult {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        picture: Option<WirePicture>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
     // --- Engine operations (`docs/specs/automations.md` §B2). Each needs an API scope and is
@@ -184,6 +192,11 @@ pub enum ToExt {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
     },
+    /// A page wants a picture from one of its cameras. Answered with `picture_result`.
+    CameraPicture {
+        id: u64,
+        unique_id: UniqueId,
+    },
     Stop,
     /// The answer to an engine operation. `error` starts with a code for `call_service`
     /// (`unavailable: …`).
@@ -211,6 +224,38 @@ pub enum ToExt {
         #[serde(default)]
         params: serde_json::Value,
     },
+}
+
+/// A picture on the wire: its type, and its bytes as base64.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WirePicture {
+    pub content_type: String,
+    pub data: String,
+}
+
+impl From<&Picture> for WirePicture {
+    fn from(picture: &Picture) -> Self {
+        use base64::Engine;
+        Self {
+            content_type: picture.content_type.clone(),
+            data: base64::engine::general_purpose::STANDARD.encode(&picture.bytes),
+        }
+    }
+}
+
+impl TryFrom<WirePicture> for Picture {
+    type Error = String;
+
+    fn try_from(wire: WirePicture) -> Result<Self, String> {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(wire.data.as_bytes())
+            .map_err(|e| format!("the picture isn't base64: {e}"))?;
+        Ok(Self {
+            content_type: wire.content_type,
+            bytes,
+        })
+    }
 }
 
 /// A failed service call on the wire (`docs/specs/protocols.md` §7.3).
@@ -577,6 +622,31 @@ fn handle_host_line(
                 return ReadControl::Stop;
             }
         }
+        ToExt::CameraPicture { id, unique_id } => {
+            let (incoming, result) = host::incoming_picture(unique_id);
+            match actions.try_send(incoming) {
+                Ok(()) => {
+                    let out = out.clone();
+                    runtime.spawn(async move {
+                        let (picture, error) = match result.await {
+                            Ok(Ok(picture)) => (Some(WirePicture::from(&picture)), None),
+                            Ok(Err(error)) => (None, Some(error)),
+                            Err(_) => (None, Some("the protocol dropped the request".to_owned())),
+                        };
+                        enqueue_json(&out, &FromExt::PictureResult { id, picture, error });
+                    });
+                }
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => enqueue_json(
+                    out,
+                    &FromExt::PictureResult {
+                        id,
+                        picture: None,
+                        error: Some("the extension is busy and can't take this yet".into()),
+                    },
+                ),
+            }
+        }
         ToExt::Stop => return ReadControl::Stop,
         // Engine traffic is read by `engine::run`, not by a protocol extension's `serve`.
         // A line that arrives here is consumed so the reader stays up; the same messages
@@ -922,6 +992,63 @@ mod tests {
             assert!(matches!(msg, FromExt::CallService { .. }));
             assert_eq!(serde_json::to_value(&msg).expect("ser"), old);
         }
+    }
+
+    /// A page asking a process for a camera's picture: the request reaches the protocol as one,
+    /// and the picture comes back on the pipe as base64 the host can read back byte for byte.
+    #[tokio::test]
+    async fn a_picture_goes_out_as_a_request_and_comes_back_whole() {
+        let pending = Pending::default();
+        let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
+        let (actions, mut actions_rx) = tokio::sync::mpsc::channel(1);
+        let (out_tx, mut out_rx) = mpsc::channel(STDOUT_QUEUE);
+        let runtime = tokio::runtime::Handle::current();
+
+        let control = handle_host_line(
+            r#"{"type":"camera_picture","id":7,"unique_id":"garden-camera"}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        let crate::Incoming::Picture(asked) = actions_rx.try_recv().expect("queued").sorted()
+        else {
+            panic!("a picture request arrives as one");
+        };
+        assert_eq!(asked.unique_id.as_str(), "garden-camera");
+        let drawn = Picture {
+            content_type: "image/png".into(),
+            bytes: vec![0x89, b'P', b'N', b'G', 0, 255],
+        };
+        asked.reply(Ok(drawn.clone()));
+
+        let line = tokio::task::spawn_blocking(move || out_rx.blocking_recv())
+            .await
+            .expect("joined")
+            .expect("an answer");
+        let FromExt::PictureResult { id, picture, error } =
+            serde_json::from_str(line.trim()).expect("a picture result")
+        else {
+            panic!("expected a picture result, got {line}");
+        };
+        assert_eq!((id, error), (7, None));
+        let back = Picture::try_from(picture.expect("a picture")).expect("base64");
+        assert_eq!(back, drawn);
+
+        // On the host's side, the answer reaches whoever asked.
+        let (incoming, result) =
+            host::incoming_picture(UniqueId::try_from("garden-camera").expect("id"));
+        incoming.reply_picture(Ok(back));
+        assert_eq!(result.await.expect("answered"), Ok(drawn));
+        let (incoming, result) =
+            host::incoming_picture(UniqueId::try_from("garden-camera").expect("id"));
+        incoming.reply(Ok(()));
+        assert!(
+            result.await.expect("answered").is_err(),
+            "an answer without a picture"
+        );
     }
 
     #[test]

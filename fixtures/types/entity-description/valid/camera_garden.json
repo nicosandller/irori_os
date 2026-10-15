@@ -1,0 +1,10 @@
+{
+  "unique_id": "garden-camera-camera",
+  "name": "Camera",
+  "device_unique_id": "garden-camera",
+  "capabilities": {
+    "kind": "camera",
+    "on_off": true,
+    "motion_detection": true
+  }
+}

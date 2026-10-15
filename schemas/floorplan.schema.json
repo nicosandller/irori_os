@@ -149,6 +149,10 @@
         {
           "maxLength": 73,
           "pattern": "^schedule\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^camera\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

@@ -472,6 +472,10 @@
         {
           "maxLength": 73,
           "pattern": "^schedule\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^camera\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -826,6 +830,11 @@
         "alarm_control_panel.alarm_disarm",
         "alarm_control_panel.alarm_trigger",
         "button.press",
+        "camera.disable_motion_detection",
+        "camera.enable_motion_detection",
+        "camera.toggle",
+        "camera.turn_off",
+        "camera.turn_on",
         "climate.set_fan_mode",
         "climate.set_humidity",
         "climate.set_hvac_mode",

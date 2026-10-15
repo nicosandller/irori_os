@@ -722,6 +722,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "id": {
+            "pattern": "^camera\\."
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "properties": {
+              "kind": {
+                "const": "camera"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -1800,6 +1823,29 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "camera"
+            },
+            "motion_detection": {
+              "description": "Watches for motion, and can be told to stop and start again.",
+              "type": "boolean",
+              "default": false
+            },
+            "on_off": {
+              "description": "Can be turned off and on again: a privacy switch.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },
@@ -1990,6 +2036,10 @@
         {
           "maxLength": 73,
           "pattern": "^schedule\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^camera\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },

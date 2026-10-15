@@ -60,6 +60,9 @@ fn system_extension() -> Result<ExtensionId, Rejected> {
 /// itself to answer, and a network gives a device several seconds to do it.
 pub const UNPAIR_TIMEOUT: Duration = Duration::from_secs(25);
 
+/// How long a page waits for a camera's picture. Longer than a live view can bear.
+pub const PICTURE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How long an extension's page waits for its engine to answer. Longer than a service call: a
 /// backtest replays a day of history (`docs/specs/automations.md` §B3).
 pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -325,6 +328,13 @@ impl Drop for Delivery<'_> {
     }
 }
 
+/// A device its protocol removed for good, and the entities it had, by protocol and unique id.
+#[derive(Debug, Clone)]
+pub struct Retired {
+    pub device: DeviceId,
+    pub entities: Vec<(ProtocolId, UniqueId)>,
+}
+
 /// A handle to the core. Cheap to clone; all clones share the same home.
 #[derive(Debug, Clone)]
 pub struct Core(Arc<Shared>);
@@ -336,6 +346,8 @@ struct Shared {
     // Never held across an `.await`: every change is a short synchronous step.
     home: RwLock<Home>,
     events: broadcast::Sender<Event>,
+    /// Devices their own protocol removed for good, with the entities they had.
+    retired: broadcast::Sender<Retired>,
     links: RwLock<HashMap<ProtocolId, mpsc::Sender<IncomingCall>>>,
     /// Keyed by extension id rather than protocol id: an action is triggered on the extension
     /// itself, not resolved through an entity the way a service call is (D25 makes the two ids
@@ -426,6 +438,7 @@ impl Core {
             version,
             home: RwLock::default(),
             events: broadcast::channel(EVENT_BUFFER).0,
+            retired: broadcast::channel(EVENT_BUFFER).0,
             links: RwLock::default(),
             action_links: RwLock::default(),
             action_windows: RwLock::default(),
@@ -465,6 +478,13 @@ impl Core {
     /// and is told how many it missed.
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
         self.0.events.subscribe()
+    }
+
+    /// Devices their protocol removed for good (`docs/specs/protocols.md` §4, *Remove a
+    /// device*), for the config files to forget as they would a device a person removed.
+    /// Taking a device out of the home, which puts it back among what was found, isn't this.
+    pub fn retired(&self) -> broadcast::Receiver<Retired> {
+        self.0.retired.subscribe()
     }
 
     pub fn devices(&self) -> Vec<Device> {
@@ -1126,6 +1146,51 @@ impl Core {
         self.ask(&extension, asked, UNPAIR_TIMEOUT).await
     }
 
+    /// A picture of what a camera sees now, from its protocol (`docs/specs/protocols.md` §5.2).
+    /// Checked before it's passed on: an image type a page can show and nothing bigger than
+    /// [`irori_protocol::MAX_PICTURE`].
+    pub async fn camera_picture(
+        &self,
+        entity_id: &EntityId,
+    ) -> Result<irori_protocol::Picture, CallActionError> {
+        if entity_id.kind() != EntityKind::Camera {
+            return Err(CallActionError::Failed(format!(
+                "`{entity_id}` isn't a camera"
+            )));
+        }
+        let (protocol, unique_id) = {
+            let home = read(&self.0.home);
+            let entity = home
+                .entity(entity_id)
+                .ok_or_else(|| CallActionError::Failed(format!("there's no `{entity_id}`")))?;
+            (entity.protocol.clone(), entity.unique_id.clone())
+        };
+        let extension = ExtensionId::try_from(protocol.as_str())
+            .map_err(|e| CallActionError::Failed(e.to_string()))?;
+        let sender = read(&self.0.action_links)
+            .get(&extension)
+            .cloned()
+            .ok_or_else(|| CallActionError::NotRunning(extension.clone()))?;
+        let (incoming, result) = irori_protocol::host::incoming_picture(unique_id);
+        let deadline = tokio::time::Instant::now() + PICTURE_TIMEOUT;
+        match tokio::time::timeout_at(deadline, sender.send(incoming)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(CallActionError::NotRunning(extension)),
+            Err(_) => return Err(CallActionError::Timeout),
+        }
+        let picture = match tokio::time::timeout_at(deadline, result).await {
+            Err(_) => return Err(CallActionError::Timeout),
+            Ok(Err(_)) => {
+                return Err(CallActionError::Failed(
+                    "the extension dropped the request without answering".into(),
+                ));
+            }
+            Ok(Ok(answer)) => answer.map_err(CallActionError::Failed)?,
+        };
+        picture.check().map_err(CallActionError::Failed)?;
+        Ok(picture)
+    }
+
     async fn ask(
         &self,
         extension: &ExtensionId,
@@ -1223,10 +1288,16 @@ impl Core {
                 self.change(|home, stamp| home.describe_entity(protocol, kinds, entity, stamp)),
                 reply,
             ),
-            Op::RemoveDevice(unique_id, reply) => (
-                self.change(|home, _| home.remove_device(protocol, &unique_id)),
-                reply,
-            ),
+            Op::RemoveDevice(unique_id, reply) => {
+                let device = home::device_id_for(protocol, &unique_id);
+                let entities = self.device_entity_keys(&device).unwrap_or_default();
+                let removed = self.change(|home, _| home.remove_device(protocol, &unique_id));
+                if removed.is_ok() {
+                    // No listeners is fine.
+                    let _ = self.0.retired.send(Retired { device, entities });
+                }
+                (removed, reply)
+            }
             Op::RemoveEntity(unique_id, reply) => (
                 self.change(|home, _| home.remove_entity(protocol, &unique_id)),
                 reply,

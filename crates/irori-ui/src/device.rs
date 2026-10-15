@@ -715,6 +715,8 @@ fn EntityRow(
                 view! {
                     <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
                         <div class="drawer-inner">
+                            {matches!(entity.capabilities, Capabilities::Camera(_))
+                                .then(|| devices::camera_picture(&entity, open))}
                             {history_panel(entity.clone(), history.clone(), state.into())}
                         </div>
                     </div>
@@ -1314,6 +1316,9 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         }
         (Capabilities::LawnMower(_), Some(State::LawnMower(mower))) => {
             devices::mower_words(mower.activity).to_owned()
+        }
+        (Capabilities::Camera(_), Some(State::Camera(camera))) => {
+            devices::camera_words(camera.state).to_owned()
         }
         (Capabilities::DeviceTracker(_), Some(State::DeviceTracker(tracker))) => {
             if tracker.home { "Home" } else { "Away" }.to_owned()

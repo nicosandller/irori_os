@@ -11,6 +11,7 @@
 pub(crate) mod alarm_control_panel;
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
+pub(crate) mod camera;
 pub(crate) mod climate;
 pub(crate) mod cover;
 pub(crate) mod device_tracker;
@@ -210,6 +211,7 @@ impl EntityKind {
             Self::Climate => climate::toggle(current),
             Self::WaterHeater => water_heater::toggle(current),
             Self::Lock => lock::toggle(current),
+            Self::Camera => camera::toggle(current),
             Self::Cover | Self::Valve => OpeningCommand::toggle_service(self, current),
             Self::Sensor
             | Self::BinarySensor
@@ -263,7 +265,8 @@ impl Capabilities {
             | Self::Datetime(_)
             | Self::Vacuum(_)
             | Self::LawnMower(_)
-            | Self::Timer(_) => ValueShape::Text,
+            | Self::Timer(_)
+            | Self::Camera(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
@@ -288,6 +291,7 @@ impl Capabilities {
             Self::Timer(_) => Some(&timer::STATUSES),
             Self::LawnMower(_) => Some(&lawn_mower::ACTIVITIES),
             Self::Vacuum(_) => Some(&vacuum::ACTIVITIES),
+            Self::Camera(_) => Some(&camera::CAMERA_STATES),
             _ => None,
         }
     }
@@ -309,6 +313,7 @@ impl Capabilities {
             Self::DeviceTracker(caps) => device_tracker::fields(caps),
             Self::Schedule(caps) => schedule::fields(caps),
             Self::Vacuum(caps) => vacuum::fields(caps),
+            Self::Camera(caps) => camera::fields(caps),
             Self::Switch(_)
             | Self::Sensor(_)
             | Self::BinarySensor(_)
@@ -359,6 +364,7 @@ impl Capabilities {
             (Self::WaterHeater(caps), State::WaterHeater(state)) => water_heater::fits(caps, state),
             (Self::MediaPlayer(caps), State::MediaPlayer(state)) => media_player::fits(caps, state),
             (Self::Vacuum(caps), State::Vacuum(state)) => vacuum::fits(caps, state),
+            (Self::Camera(caps), State::Camera(state)) => camera::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -392,6 +398,7 @@ impl Capabilities {
             Self::Timer(caps) => timer::supports_service(caps, service),
             Self::LawnMower(caps) => lawn_mower::supports_service(caps, service),
             Self::Vacuum(caps) => vacuum::supports_service(caps, service),
+            Self::Camera(caps) => camera::supports_service(caps, service),
             Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) | Self::Scene(_) => Ok(()),
             // Any day, time or moment that exists is one it can be set to.
@@ -429,6 +436,7 @@ impl State {
             Self::Schedule(state) => schedule::primary(state),
             Self::LawnMower(state) => lawn_mower::primary(state),
             Self::Vacuum(state) => vacuum::primary(state),
+            Self::Camera(state) => camera::primary(state),
             Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
             Self::Date(state) => moment::date_primary(state),
             Self::Time(state) => moment::time_primary(state),
@@ -456,6 +464,7 @@ impl State {
             Self::DeviceTracker(state) => device_tracker::field(state, name),
             Self::Schedule(state) => schedule::field(state, name),
             Self::Vacuum(state) => vacuum::field(state, name),
+            Self::Camera(state) => camera::field(state, name),
             Self::Switch(_)
             | Self::Sensor(_)
             | Self::BinarySensor(_)
@@ -529,6 +538,7 @@ impl State {
                 value,
             )?),
             EntityKind::Vacuum => State::Vacuum(vacuum::with_primary(previous!(Vacuum), value)?),
+            EntityKind::Camera => State::Camera(camera::with_primary(previous!(Camera), value)?),
             EntityKind::Button | EntityKind::Scene => return None,
         })
     }
@@ -558,6 +568,7 @@ impl Service {
             EntityKind::Timer => timer::service(name, data),
             EntityKind::LawnMower => lawn_mower::service(name, data),
             EntityKind::Vacuum => vacuum::service(name, data),
+            EntityKind::Camera => camera::service(name, data),
             EntityKind::AlarmControlPanel => alarm_control_panel::service(name, data),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => {
                 moment::service(name, data)
@@ -622,6 +633,7 @@ impl Service {
             EntityKind::Timer => timer::asks_for(self),
             EntityKind::LawnMower => lawn_mower::asks_for(self),
             EntityKind::Vacuum => vacuum::asks_for(self),
+            EntityKind::Camera => camera::asks_for(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::asks_for(self),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::asks_for(self),
             EntityKind::Fan => fan::asks_for(self),
@@ -670,6 +682,7 @@ impl ServiceName {
             EntityKind::Timer => timer::data_of(self),
             EntityKind::LawnMower => lawn_mower::data_of(self),
             EntityKind::Vacuum => vacuum::data_of(self),
+            EntityKind::Camera => camera::data_of(self),
             EntityKind::AlarmControlPanel => alarm_control_panel::data_of(self),
             EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::data_of(self),
             EntityKind::Fan => fan::data_of(self),

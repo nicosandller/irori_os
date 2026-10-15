@@ -475,6 +475,26 @@ impl Config {
 
     /// Picks up edits made outside Irori. Runs until the process ends. A change to `[recorder]`
     /// is applied to `history` here; `[server]` still waits for a restart.
+    /// Forgets each device its protocol removed for good, as `forget_device` does for one a
+    /// person removed: a protocol that retires a device (the demo replacing its devices, a
+    /// network letting one go) doesn't leave its rows behind to come back as a ghost.
+    pub async fn forget_retired(self, core: Core) {
+        let mut retired = core.retired();
+        loop {
+            match retired.recv().await {
+                Ok(irori_core::Retired { device, entities }) => {
+                    if let Err(e) = self.forget_unpaired(&core, &device, entities).await {
+                        tracing::warn!(%device, error = ?e, "couldn't forget a retired device");
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                    tracing::warn!(missed, "missed devices their protocols retired");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    }
+
     pub async fn watch(self, core: Core, history: crate::history::History) {
         let irori = self.0.lock().await.irori();
         let started = Started {
@@ -708,7 +728,7 @@ mod tests {
         config
             .edit(&core, |settings| {
                 settings.devices.insert(
-                    "demo_lamp".parse().expect("a valid device id"),
+                    "demo_living_room_lamp".parse().expect("a valid device id"),
                     DeviceSettings {
                         added: false,
                         name: Some("Reading lamp".parse::<Name>().expect("a valid name")),
@@ -892,7 +912,7 @@ mod tests {
         let dir = tempfile::tempdir()?;
         std::fs::write(
             dir.path().join("devices.toml"),
-            "[devices.demo_lamp]\nadded = true\n\n\
+            "[devices.demo_living_room_lamp]\nadded = true\n\n\
              [devices.demo_unplugged]\nname = \"Away\"\nadded = true\n\n\
              [devices.demonic_1]\nadded = true\n\n\
              [devices.esphome_00_11]\nadded = true\n",
@@ -911,7 +931,7 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
         let devices = std::fs::read_to_string(dir.path().join("devices.toml"))?;
-        assert!(!devices.contains("demo_lamp"), "{devices}");
+        assert!(!devices.contains("demo_living_room_lamp"), "{devices}");
         assert!(!devices.contains("demo_unplugged"), "{devices}");
         assert!(
             devices.contains("demonic_1"),

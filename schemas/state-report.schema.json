@@ -86,6 +86,24 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
+    "CameraStatus": {
+      "description": "What a camera is doing. Home Assistant's camera states, with `off` for one turned off.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "idle",
+            "recording"
+          ]
+        },
+        {
+          "description": "Someone is watching it live.",
+          "type": "string",
+          "const": "streaming"
+        }
+      ]
+    },
     "CivilDate": {
       "type": "string",
       "examples": [
@@ -1168,6 +1186,30 @@
           "required": [
             "kind",
             "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "camera"
+            },
+            "motion_detection": {
+              "description": "Whether it's watching for motion, for one with `motion_detection`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/CameraStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
           ]
         }
       ]

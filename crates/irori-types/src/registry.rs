@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::kinds::alarm_control_panel::AlarmCapabilities;
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
+use crate::kinds::camera::CameraCapabilities;
 use crate::kinds::climate::ClimateCapabilities;
 use crate::kinds::cover::CoverCapabilities;
 use crate::kinds::device_tracker::TrackerCapabilities;
@@ -227,6 +228,7 @@ pub enum Capabilities {
     DeviceTracker(TrackerCapabilities),
     Timer(TimerCapabilities),
     Schedule(ScheduleCapabilities),
+    Camera(CameraCapabilities),
 }
 
 impl Capabilities {
@@ -261,6 +263,7 @@ impl Capabilities {
             Self::DeviceTracker(_) => EntityKind::DeviceTracker,
             Self::Timer(_) => EntityKind::Timer,
             Self::Schedule(_) => EntityKind::Schedule,
+            Self::Camera(_) => EntityKind::Camera,
         }
     }
 
