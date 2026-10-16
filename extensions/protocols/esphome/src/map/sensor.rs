@@ -5,12 +5,21 @@ use esphome_client::types::{
     TextSensorStateResponse,
 };
 use irori_protocol::ProtocolError;
+use irori_protocol::types::units::Conversion;
 use irori_protocol::types::{
     Capabilities, EntityDescription, EntityKind, Name, SensorCapabilities, SensorClass,
     SensorState, SensorValue, SensorValueType, State, StateClass, UniqueId,
 };
 
 use super::{category, entity_id, optional};
+
+/// How this sensor's readings become °C, when it's a temperature in another unit.
+pub fn conversion(entity: &ListEntitiesSensorResponse) -> Option<Conversion> {
+    Conversion::of(
+        SensorClass::from_ha(&entity.device_class),
+        optional(&entity.unit_of_measurement).as_deref(),
+    )
+}
 
 pub fn describe(
     device: &UniqueId,
@@ -27,7 +36,11 @@ pub fn describe(
             // ESPHome's device classes are Home Assistant's. One Irori doesn't have is left out; the
             // reading still arrives.
             device_class: SensorClass::from_ha(&entity.device_class),
-            unit: optional(&entity.unit_of_measurement),
+            // Temperatures are °C in the model, whatever the device speaks.
+            unit: match conversion(entity) {
+                Some(_) => Some(Conversion::UNIT.to_owned()),
+                None => optional(&entity.unit_of_measurement),
+            },
             state_class: match entity.state_class {
                 1 | 4 => Some(StateClass::Measurement),
                 2 => Some(StateClass::TotalIncreasing),
@@ -42,13 +55,16 @@ pub fn describe(
 
 /// `None` when the device says it has no reading right now: the entity becomes unknown rather
 /// than keeping a stale number (`docs/specs/entities.md` §5).
-pub fn state(state: &SensorStateResponse) -> Option<State> {
+pub fn state(state: &SensorStateResponse, conversion: Option<Conversion>) -> Option<State> {
     let value = f64::from(state.state);
     if state.missing_state || !value.is_finite() {
         return None;
     }
     Some(State::Sensor(SensorState {
-        value: SensorValue::Number(value),
+        value: SensorValue::Number(match conversion {
+            Some(conversion) => conversion.to_model(value),
+            None => value,
+        }),
     }))
 }
 
@@ -132,6 +148,47 @@ mod tests {
     }
 
     #[test]
+    fn a_fahrenheit_temperature_is_celsius_in_the_model() {
+        let device = UniqueId::try_from("00:11:22:33:44:55").expect("valid");
+        let listed = ListEntitiesSensorResponse {
+            key: 3,
+            name: "Outside".into(),
+            device_class: "temperature".into(),
+            unit_of_measurement: "°F".into(),
+            ..Default::default()
+        };
+        let conversion = conversion(&listed);
+        let Capabilities::Sensor(caps) = describe(&device, &listed).expect("valid").capabilities
+        else {
+            panic!("a sensor");
+        };
+        assert_eq!(caps.unit.as_deref(), Some("°C"));
+        let reading = SensorStateResponse {
+            key: 3,
+            state: 70.0,
+            ..Default::default()
+        };
+        assert_eq!(
+            state(&reading, conversion),
+            Some(State::Sensor(SensorState {
+                value: SensorValue::Number(21.11)
+            }))
+        );
+
+        // A humidity that happens to say °F isn't a temperature, and one in °C needs nothing.
+        let humidity = ListEntitiesSensorResponse {
+            device_class: "humidity".into(),
+            ..listed.clone()
+        };
+        assert_eq!(super::conversion(&humidity), None);
+        let celsius = ListEntitiesSensorResponse {
+            unit_of_measurement: "°C".into(),
+            ..listed
+        };
+        assert_eq!(super::conversion(&celsius), None);
+    }
+
+    #[test]
     fn a_missing_reading_is_unknown_rather_than_stale() {
         let missing = SensorStateResponse {
             key: 1,
@@ -139,7 +196,7 @@ mod tests {
             missing_state: true,
             ..Default::default()
         };
-        assert_eq!(state(&missing), None);
+        assert_eq!(state(&missing, None), None);
         let real = SensorStateResponse {
             key: 1,
             state: 21.5,
@@ -147,7 +204,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            state(&real),
+            state(&real, None),
             Some(State::Sensor(SensorState {
                 value: SensorValue::Number(21.5)
             }))

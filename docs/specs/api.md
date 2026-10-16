@@ -75,10 +75,10 @@ it needs and no others.
 
 | Scope | Allows |
 |---|---|
-| `registry:read` | `GET /api/devices`, `/api/entities`, `/api/areas`, `/api/floors`, `/api/floorplan`, `/api/extensions`, `/api/apps` |
-| `states:read` | `GET /api/states` |
+| `registry:read` | `GET /api/devices`, `/api/entities`, `/api/areas`, `/api/floors`, `/api/floorplan`, `/api/extensions`, `/api/helpers`, `/api/apps` |
+| `states:read` | `GET /api/states`, `GET /api/entities/<entity_id>/picture` |
 | `registry:read` and `states:read` | `GET /api/home` (the whole picture) |
-| `history:read` | `GET /api/history/<entity_id>`, `GET /api/history/<entity_id>/summary?since=<RFC3339>` |
+| `history:read` | `GET /api/history/<entity_id>` (a button's or scene's presses too, [entities.md](entities.md) §5.3), `GET /api/history/<entity_id>/summary?since=<RFC3339>` |
 | `services:call` | `POST /api/command` |
 | `events:read`, with the two reads above | `GET /api/ws` |
 
@@ -101,6 +101,12 @@ waiting their turn to install, each with its `entity_id` and how many are `ahead
 `POST /api/command` is `{ "entity_id", "command", "data"? }`. `command` is one of the
 entity's actions (`turn_on`) or `toggle`. The response is the entity's state once the
 protocol has confirmed, or an error.
+
+`GET /api/entities/<entity_id>/picture` is what a camera sees now, as its protocol sends it
+([protocols.md](protocols.md) §5.2): the image itself, `Cache-Control: no-store`, and a
+`Content-Security-Policy` that lets nothing in it run, since a picture may be an SVG. `404` for
+anything that isn't a camera, `504` when the camera didn't answer within 5 seconds, `502` with
+the protocol's reason when it had no picture to give.
 
 ## 4. The websocket
 

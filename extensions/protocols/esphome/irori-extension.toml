@@ -1,7 +1,7 @@
 [extension]
 id = "esphome"
 name = "ESPHome"
-version = "0.5.0"
+version = "0.6.0"
 irori = ">=1.4.0"
 # 1.4.0 has the `update` kind: firmware a device can be told to install.
 description = "Devices running ESPHome firmware, over ESPHome's native API."
@@ -9,7 +9,7 @@ icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater", "update"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "text", "button", "event", "cover", "lock", "fan", "valve", "siren", "climate", "water_heater", "update", "alarm_control_panel", "date", "time", "datetime", "media_player"]
 run = { command = "bin/irori-ext-esphome" }
 
 # Finding devices (mDNS) and talking to them (TCP 6053) happens entirely on the local network.

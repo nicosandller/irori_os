@@ -1,4 +1,5 @@
-//! The living room's thermostat: heats, or follows its schedule, in °C, and reads the room.
+//! The kitchen's thermostat: heats, or follows its schedule, in °C, and reads the room. It has
+//! firmware to update.
 
 use tokio::time::Instant;
 
@@ -6,15 +7,19 @@ use irori_protocol::types::{
     Capabilities, ClimateCapabilities, ClimateState, HvacAction, HvacMode, Service, State,
 };
 
-use super::{Device, Entity, Gadget, Room, cannot};
+use super::firmware::Firmware;
+use super::{Device, Entity, Gadget, cannot};
+use crate::world::World;
 
-const THERMOSTAT: &str = "thermostat";
-const THERMOSTAT_CLIMATE: &str = "thermostat-climate";
+const THERMOSTAT: &str = "kitchen-thermostat";
+const THERMOSTAT_CLIMATE: &str = "kitchen-thermostat-climate";
+const THERMOSTAT_FIRMWARE: &str = "kitchen-thermostat-firmware";
 
 pub(super) struct Thermostat {
     state: ClimateState,
     /// The mode `turn_on` goes back to.
     on_mode: HvacMode,
+    firmware: Firmware,
 }
 
 fn capabilities() -> ClimateCapabilities {
@@ -52,6 +57,7 @@ impl Thermostat {
                 ..ClimateState::in_mode(HvacMode::Heat)
             },
             on_mode: HvacMode::Heat,
+            firmware: Firmware::new(THERMOSTAT_FIRMWARE, "Thermostat firmware", 3),
         }
     }
 
@@ -72,34 +78,32 @@ impl Thermostat {
 
 impl Gadget for Thermostat {
     fn device(&self) -> Device {
-        Device {
-            unique_id: THERMOSTAT,
-            name: "Demo thermostat",
-            model: "Virtual thermostat",
-            room: "Living room",
-        }
+        Device::new(THERMOSTAT, "Thermostat", "smart thermostat", "Kitchen")
     }
 
     fn entities(&self) -> Vec<Entity> {
-        vec![Entity {
-            unique_id: THERMOSTAT_CLIMATE,
-            name: None,
-            capabilities: Capabilities::Climate(capabilities()),
-            suggested_object_id: None,
-            category: None,
-        }]
+        vec![
+            Entity::main(THERMOSTAT_CLIMATE, Capabilities::Climate(capabilities())),
+            self.firmware.entity(),
+        ]
     }
 
     fn states(&self) -> Vec<(&'static str, State)> {
-        vec![(THERMOSTAT_CLIMATE, State::Climate(self.state.clone()))]
+        vec![
+            (THERMOSTAT_CLIMATE, State::Climate(self.state.clone())),
+            self.firmware.state(),
+        ]
     }
 
     fn call(
         &mut self,
         unique_id: &str,
         service: &Service,
-        _: Instant,
+        now: Instant,
     ) -> Result<&'static str, String> {
+        if self.firmware.is(unique_id) {
+            return self.firmware.call(service, now);
+        }
         match (unique_id, service) {
             (THERMOSTAT_CLIMATE, Service::ClimateSetHvacMode(data)) => {
                 self.set_mode(data.hvac_mode)
@@ -132,15 +136,18 @@ impl Gadget for Thermostat {
     }
 
     /// Reads the room, and heats while it's below the target.
-    fn tick(&mut self, _: Instant, room: Room, _: u64) -> Vec<&'static str> {
+    fn tick(&mut self, now: Instant, world: &World) -> Vec<&'static str> {
         let before = self.state.clone();
-        self.state.current_temperature = Some(room.temperature);
-        self.state.hvac_action = Some(heating(&self.state, room.temperature));
-        if self.state == before {
-            Vec::new()
-        } else {
-            vec![THERMOSTAT_CLIMATE]
+        self.state.current_temperature = Some(world.indoors);
+        self.state.hvac_action = Some(heating(&self.state, world.indoors));
+        let mut changed = Vec::new();
+        if self.state != before {
+            changed.push(THERMOSTAT_CLIMATE);
         }
+        if self.firmware.tick(now) {
+            changed.push(THERMOSTAT_FIRMWARE);
+        }
+        changed
     }
 }
 
@@ -150,10 +157,10 @@ mod tests {
 
     use super::*;
 
-    fn room(temperature: f64) -> Room {
-        Room {
-            temperature,
-            humidity: 50.0,
+    fn room(temperature: f64) -> World {
+        World {
+            indoors: temperature,
+            ..World::at(0)
         }
     }
 
@@ -161,13 +168,13 @@ mod tests {
     fn the_thermostat_heats_a_cold_room_and_comes_back_on_as_it_was() {
         let now = Instant::now();
         let mut thermostat = Thermostat::new();
-        thermostat.tick(now, room(19.0), 0);
+        thermostat.tick(now, &room(19.0));
         super::super::assert_fits(&thermostat, &thermostat.states());
         assert_eq!(thermostat.state.hvac_action, Some(HvacAction::Heating));
-        thermostat.tick(now, room(22.0), 0);
+        thermostat.tick(now, &room(22.0));
         assert_eq!(thermostat.state.hvac_action, Some(HvacAction::Idle));
         assert!(
-            thermostat.tick(now, room(22.0), 0).is_empty(),
+            thermostat.tick(now, &room(22.0)).is_empty(),
             "nothing new to say"
         );
 

@@ -136,6 +136,11 @@ talking, and offered again as if it were new. So removing it unpairs it first:
   then found again if its protocol still knows it. The network's own controller has nothing to
   unpair, so removing it is only ever removing it from the home.
 
+A device its own protocol removes for good is forgotten the same way: its row, its entities'
+rows and its spot on the floorplan leave these files, so nothing of it lingers to come back as a
+ghost. The demo does this to the devices it no longer has, and Zigbee to one its network let go
+([protocols.md](protocols.md) §5, *Remove a device*).
+
 `ignored = true` is from when a device could be ignored rather than removed. A row that says it
 still reads, so the rest of the file isn't refused, but that device is simply not in the home:
 it's listed as found, to be added if wanted, and Irori drops the row the next time it writes the
@@ -312,12 +317,95 @@ Unlike `secrets.toml`, this file is meant to be committed, and the API reads it:
 edits it does so on behalf of the extension it belongs to — the helpers endpoints write
 `extensions/helpers.toml` — never as a general "write any extension's settings" call.
 
-**Helpers** keep their definitions here. A toggle is a switch Irori keeps itself — "guests are
-over", "holiday mode" — with the entity id `switch.<id>`. `name` is its one name: renaming the
-entity from the UI rewrites it here, not in `entities.toml`, so there's no second name (D36).
-`initial` is its value before anyone has switched it; after that, the value it was left at is kept
-in the extension's private storage (`protocols.md` §5) through restarts. Removing a toggle
-removes its entity and forgets its value.
+**Helpers** keep their definitions here: values Irori keeps itself rather than a device
+reporting them. Each kind has its own table, keyed by the id its entity gets, and every helper
+is an ordinary entity of a kind Irori already has, with no device:
+
+| Table | Entity | Settings beside `name` | Until it's set |
+|---|---|---|---|
+| `[toggles.<id>]` | `switch.<id>` | `initial` | off |
+| `[numbers.<id>]` | `number.<id>` | `min`, `max` (both required), `step` (1), `unit`, `mode` (`slider` \| `box`), `initial` | its `min` |
+| `[counters.<id>]` | `number.<id>` | `initial` (0), `step` (1), `min` (0), `max` (1,000,000) | its `initial` |
+| `[selects.<id>]` | `select.<id>` | `options` (required, 1–256), `initial` | its first option |
+| `[texts.<id>]` | `text.<id>` | `min_length` (0), `max_length` (255), `initial` | empty |
+| `[buttons.<id>]` | `button.<id>` and `event.<id>` | none | has no value |
+| `[dates.<id>]` | `date.<id>` | `initial` (`2026-10-14`) | unknown |
+| `[times.<id>]` | `time.<id>` | `initial` (`06:45`) | unknown |
+| `[datetimes.<id>]` | `datetime.<id>` | `initial` (`2026-10-14T06:45:00Z`) | unknown |
+| `[timers.<id>]` | `timer.<id>` and `event.<id>` | `duration` (seconds; 0, the default, means it's told each time), `restore` (on) | idle. Its event says `started`, `paused`, `cancelled` and `finished`. One that ran out while Irori was down finishes as Irori starts, and says so, unless `restore = false` |
+| `[schedules.<id>]` | `schedule.<id>` | `mon` … `sun`, each a list of `["07:00", "09:00"]` times; `24:00` ends one at midnight | its week, read on the home's clock (`home.toml`), or this machine's until the home says where it is |
+
+**Helpers worked out from other entities.** Each reads its sources (by entity id, and `field`
+for one of a source's other values where it says) and comes to an ordinary entity. While it
+can't be worked out (a source that isn't there yet, or isn't a number where one is needed), it
+is unknown with the reason as its `problem` attribute, which the Helpers tab shows. There is
+no template helper.
+
+| Table | Entity | Settings beside `name` | What it is |
+|---|---|---|---|
+| `[groups.<id>]` | `<kind>.<id>` | `kind` (`light`, `switch`, `fan`, `cover`, `binary_sensor`, `sensor`), `members`, `all`, `of` (sensors: as `[combined]`) | On while any member is (every one, with `all`); a call to it goes to each member |
+| `[combined.<id>]` | `sensor.<id>` | `sources` (sensors or numbers), `of` (`mean`, `median`, `min`, `max`, `range`, `sum`, `last`; `mean` if left out) | Their readings as one, in the first source's unit. `last` is whichever changed most recently |
+| `[switch_as.<id>]` | `<as>.<id>` | `switch`, `as` (`light`, `fan`, `cover`, `valve`, `lock`, `siren`), `invert` | A switch shown as what it powers. On is on, open, sounding or locked (off, with `invert`). Turning on, opening or locking it turns the switch on, and the opposite turns it off; anything else (a brightness, a position) is refused. The switch stays an entity of its own |
+| `[thresholds.<id>]` | `binary_sensor.<id>` | `source`, `field`, `above`, `below`, `hysteresis` | On while the reading is past the line, or between the two |
+| `[trends.<id>]` | `binary_sensor.<id>` | `source`, `field`, `direction` (`rising`, `falling`), `by`, `over` (seconds) | On while it changed by at least `by` over the last `over` |
+| `[meters.<id>]` | `sensor.<id>` | `source`, `every` (`hour`, `day`, `week`, `month`, `year`) | What a counting reading went up by since the period began on the home's clock; a device's count starting again is followed. Kept through restarts |
+| `[integrals.<id>]` | `sensor.<id>` | `source`, `field`, `per` (`second`, `minute`, `hour`) | The area under the reading, trapezoid by trapezoid: W into Wh. Kept through restarts |
+| `[derivatives.<id>]` | `sensor.<id>` | `source`, `field`, `per`, `over` | How fast it changes, per `per`, over the last `over` seconds |
+| `[statistics.<id>]` | `sensor.<id>` | `source`, `field`, `of` (`mean`, `min`, `max`), `over` | Over the last `over` seconds; the mean counts each reading for as long as it held |
+| `[history.<id>]` | `sensor.<id>` | `source`, `is` (`true`, `false` or a text), `measure` (`time` in hours, `count`, `ratio` in %), `over` | Since midnight at home, or over the last `over` seconds |
+
+Windows are a week at most. Helpers that read each other in a ring are refused, naming the
+ring. Their unit follows the source's where it has one (`Wh` from `W`, `°C/h`).
+
+```toml
+[numbers.evening_brightness]
+name = "Evening brightness"
+min = 0
+max = 100
+unit = "%"
+
+[counters.doorbell_today]
+name = "Doorbell rings today"
+
+[selects.house_mode]
+name = "House mode"
+options = ["home", "away", "asleep"]
+
+[buttons.movie_time]
+name = "Movie time"
+```
+
+- **One name.** `name` is the helper's one name: renaming the entity from the UI rewrites it
+  here, not in `entities.toml`, so there's no second name (D36).
+- **The value isn't here.** `initial` is what it is before anyone has set it; after that, the
+  value it was left at is kept in the extension's private storage (`protocols.md` §5) through
+  restarts. Removing a helper removes its entity and forgets its value. A kept value the helper
+  can no longer have (its range was narrowed, the option taken away) is dropped, and it's at
+  its `initial` again.
+- **A counter is a number.** `number.increment` and `number.decrement` count it by its `step`,
+  or by `by`, stopping at `min` and `max`; the core works those out for every number
+  (`protocols.md` §7.1). `number.set_value` puts it back.
+- **A button is two entities**, because pressing and having been pressed are different things
+  (`entities.md` §5.3): `button.<id>` is pressed, from a page or a flow, and `event.<id>`
+  reports `pressed` each time. A flow starts from the event.
+- **Two helpers can't be one entity.** A number and a counter with the same id would both be
+  `number.<id>`; the file is refused, naming both.
+- A helper that's wrong (a `min` above its `max`, an `initial` it can't be) stops the helpers
+  from starting, with the reason in their log; the API and the page check before writing.
+  `POST /api/helpers/<table>/check` checks one without writing anything and says what it
+  would make (`{id, entities, taken}`) or why it couldn't be; the page's builder asks it as
+  the helper is filled in, as a form or as the JSON of one table entry with its kind under `helper` (a group
+  has a `kind` of its own).
+- **A helper can be seen before it's made.** `POST /api/helpers/<table>/preview`, with the same
+  body (a name isn't needed), answers `{entity, states, computed}`: one worked out from other
+  entities is played over its sources' last day as though it had been running, asked again at
+  each change and every ten minutes, so a page can draw what it would have said; one a person
+  sets is the state it would start in. Nothing is written.
+- **The assistant can fill one in, not make one.** In the builder its scope is `helpers`: it
+  can list the home's entities and helpers and read every kind's settings, and
+  `propose_helper` checks a helper the same way and hands it to the builder. The person changes
+  what they like and presses Create; nothing is written before that.
+
 ### 3.7 `floorplan.toml`
 
 The home as a drawing, **a floor at a time**. Nothing discovers this — no protocol can tell
@@ -683,7 +771,8 @@ Named here so the layout has room for them, specified when they are built:
 - **An entity in a different area than its device** (`Entity.area_id` already allows it).
 - **More on the plan** — furniture, stairs between floors, and an area that spans one without
   being traced on each.
-- **More helpers** — numbers, text, timers — once rules can use them.
+- **More helpers** — a group's brightness and position, and other kinds as they're asked
+  for.
 
 ## 8. Changes from the roadmap draft
 

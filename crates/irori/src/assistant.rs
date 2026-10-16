@@ -137,6 +137,9 @@ pub enum ChatEvent {
     /// The model wants floors or rooms removed. It can't: the person is asked, on the page,
     /// and the page removes what they say yes to.
     Confirm(Vec<Removal>),
+    /// The model has filled in the helper builder the person has open: `{kind, name,
+    /// settings, entities}`, for the page to take into its form. Nothing has been made.
+    Helper(Value),
     Error(String),
     Done,
 }
@@ -984,7 +987,7 @@ async fn answer(
         // Drawing a floor takes more goes than looking something up: rooms may have to be
         // made first, and a batch that was refused is worth one more try.
         let with_tools = tools_work
-            && if floor_of(&scope).is_some() {
+            && if floor_of(&scope).is_some() || scope == "helpers" {
                 rounds < PLAN_ROUNDS
             } else {
                 execute_round(rounds)
@@ -1021,16 +1024,25 @@ async fn answer(
                     }
                     let before = drawing.clone();
                     let mut removals = Vec::new();
+                    let mut proposed = None;
                     let result = run_tool(
                         &env,
                         &scope,
                         &picture,
                         &call,
                         &mut drawing,
-                        &mut removals,
-                        &mut added,
+                        Asked {
+                            removals: &mut removals,
+                            added: &mut added,
+                            proposed: &mut proposed,
+                        },
                     )
                     .await;
+                    if let Some(helper) = proposed
+                        && tx.send(ChatEvent::Helper(helper)).await.is_err()
+                    {
+                        return;
+                    }
                     if !removals.is_empty() && tx.send(ChatEvent::Confirm(removals)).await.is_err()
                     {
                         return;
@@ -1521,6 +1533,16 @@ fn anthropic_messages(conversation: &Conversation) -> Vec<Value> {
     messages
 }
 
+/// What a tool call leaves for the page to ask the person, or to show them.
+struct Asked<'a> {
+    /// The floors and rooms the model asked to have removed, for the person to be asked about.
+    removals: &'a mut Vec<Removal>,
+    /// How many floors and rooms this question has had added so far.
+    added: &'a mut usize,
+    /// The helper the model filled the builder in with, when it did.
+    proposed: &'a mut Option<Value>,
+}
+
 async fn run_tool(
     env: &Env<'_>,
     scope: &str,
@@ -1528,11 +1550,13 @@ async fn run_tool(
     call: &ToolCall,
     // The plan the person is editing, when there is one.
     drawing: &mut Option<Floorplan>,
-    // The floors and rooms the model asked to have removed, for the person to be asked about.
-    removals: &mut Vec<Removal>,
-    // How many floors and rooms this question has had added so far.
-    added: &mut usize,
+    asked: Asked<'_>,
 ) -> String {
+    let Asked {
+        removals,
+        added,
+        proposed,
+    } = asked;
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
     if !irori_assist::tool_offered(scope, drawing.is_some(), &call.name) {
@@ -1629,6 +1653,10 @@ async fn run_tool(
                 .join("\n")
         }
         "edit_floorplan" => return draw(env.core, scope, &args, drawing),
+        "list_entities" => entities_brief(env.core),
+        "list_helpers" => helpers_brief(env).await,
+        "helper_kinds" => irori_helpers::guide(),
+        "propose_helper" => return propose(env, &args, proposed).await,
         "edit_home" => return arrange(env, scope, &args, removals, added).await,
         "read_logs" => {
             let source = args
@@ -1867,6 +1895,186 @@ const MOST_CHANGES: usize = 200;
 /// Held to what the editor is held to: the changes are made to a copy, the copy has to pass
 /// the same check a saved plan does, and a room has to be one the home has. Nothing is written
 /// to the config directory from here. The page is sent the plan and keeps it or undoes it.
+/// Every entity, a line each: id, name, kind, the shape of its value, its other values by
+/// name, and what it reports now. What a helper is made from.
+fn entities_brief(core: &Core) -> String {
+    let states: std::collections::BTreeMap<_, _> = core
+        .states()
+        .into_iter()
+        .map(|state| (state.entity_id.clone(), state))
+        .collect();
+    let mut lines: Vec<String> = core
+        .entities()
+        .iter()
+        .map(|entity| {
+            let caps = &entity.capabilities;
+            let shape = match caps.primary_shape() {
+                Some(irori_types::ValueShape::Bool) => "on/off".to_owned(),
+                Some(irori_types::ValueShape::Number) => match caps {
+                    irori_types::Capabilities::Sensor(sensor) => {
+                        format!(
+                            "number{}",
+                            sensor
+                                .unit
+                                .as_deref()
+                                .map(|u| format!(" in {u}"))
+                                .unwrap_or_default()
+                        )
+                    }
+                    irori_types::Capabilities::Number(number) => {
+                        format!(
+                            "number{}",
+                            number
+                                .unit
+                                .as_deref()
+                                .map(|u| format!(" in {u}"))
+                                .unwrap_or_default()
+                        )
+                    }
+                    _ => "number".to_owned(),
+                },
+                Some(irori_types::ValueShape::Text) => match caps.text_options() {
+                    Some(options) => format!("text: one of {}", options.join(", ")),
+                    None => "text".to_owned(),
+                },
+                None => "no value".to_owned(),
+            };
+            let fields: Vec<&str> = caps.fields().iter().map(|field| field.name).collect();
+            let now = states
+                .get(&entity.id)
+                .and_then(|state| state.state.as_ref())
+                .map(|state| state.primary().to_json().to_string())
+                .unwrap_or_else(|| "unknown".to_owned());
+            format!(
+                "{} \"{}\" ({}, {shape}{}) now {now}",
+                entity.id,
+                entity.name,
+                entity.id.kind(),
+                if fields.is_empty() {
+                    String::new()
+                } else {
+                    format!("; also {}", fields.join(", "))
+                }
+            )
+        })
+        .collect();
+    lines.sort();
+    if lines.is_empty() {
+        "The home has no entities yet.".to_owned()
+    } else {
+        lines.join("\n")
+    }
+}
+
+/// The helpers there are, from the file that defines them.
+async fn helpers_brief(env: &Env<'_>) -> String {
+    let helpers = irori_types::ExtensionId::try_from("helpers").expect("a valid extension id");
+    let file = env.config.extension_settings(&helpers).await;
+    let mut lines = Vec::new();
+    for kind in irori_helpers::KINDS {
+        let Some(table) = file.get(kind.table).and_then(Value::as_object) else {
+            continue;
+        };
+        for (id, settings) in table {
+            let entity = irori_types::ObjectId::try_from(id.as_str())
+                .ok()
+                .and_then(|object| kind.check(&object, settings).ok())
+                .and_then(|entities| entities.into_iter().next())
+                .unwrap_or_default();
+            lines.push(format!("{} {id} → {entity}: {settings}", kind.table));
+        }
+    }
+    if lines.is_empty() {
+        "There are no helpers yet.".to_owned()
+    } else {
+        lines.join("\n")
+    }
+}
+
+/// Fills in the helper builder: checks what the model proposed as making it would, and hands
+/// it to the page if it would be made. What's wrong goes back to the model, to put right.
+async fn propose(env: &Env<'_>, args: &Value, proposed: &mut Option<Value>) -> String {
+    let Some(table) = args.get("kind").and_then(Value::as_str) else {
+        return "propose_helper needs a kind, as helper_kinds names it.".to_owned();
+    };
+    let Some(kind) = irori_helpers::HelperKind::of_table(table) else {
+        let kinds: Vec<&str> = irori_helpers::KINDS.iter().map(|kind| kind.table).collect();
+        return format!("there's no kind `{table}`; there are: {}", kinds.join(", "));
+    };
+    let Some(name) = args
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    else {
+        return "propose_helper needs a name.".to_owned();
+    };
+    // Some models send the settings as an object, some as the text of one.
+    let settings = match args.get("settings") {
+        Some(Value::String(text)) => serde_json::from_str::<Value>(text).unwrap_or(Value::Null),
+        Some(other) => other.clone(),
+        None => json!({}),
+    };
+    let Value::Object(mut settings) = settings else {
+        return "settings has to be a JSON object, like {\"source\": \"sensor.x\", \"above\": 26}."
+            .to_owned();
+    };
+    settings.insert("name".to_owned(), json!(name));
+    let Ok(parsed) = name.parse::<irori_types::Name>() else {
+        return format!("`{name}` can't be a name.");
+    };
+    let id = irori_core::new_area_id(&parsed, &[]).to_string();
+    let Ok(object) = irori_types::ObjectId::try_from(id.as_str()) else {
+        return format!("`{name}` can't be made into an id.");
+    };
+    let entities = match kind.check(&object, &Value::Object(settings.clone())) {
+        Ok(entities) => entities,
+        Err(why) => {
+            return format!("That wouldn't be made: {why}. Put it right and propose it again.");
+        }
+    };
+    // A source that isn't in the home is said now, rather than found as a problem later.
+    let known: std::collections::BTreeSet<String> = env
+        .core
+        .entities()
+        .iter()
+        .map(|entity| entity.id.to_string())
+        .collect();
+    let mut sources: Vec<String> = Vec::new();
+    if let Some(source) = settings.get("source").and_then(Value::as_str) {
+        sources.push(source.to_owned());
+    }
+    if let Some(members) = settings.get("members").and_then(Value::as_array) {
+        sources.extend(members.iter().filter_map(Value::as_str).map(str::to_owned));
+    }
+    let missing: Vec<&String> = sources
+        .iter()
+        .filter(|source| !known.contains(*source))
+        .collect();
+    if !missing.is_empty() {
+        return format!(
+            "These aren't entities in the home: {}. Pick from list_entities and propose it again.",
+            missing
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
+    settings.remove("name");
+    *proposed = Some(json!({
+        "kind": kind.table,
+        "name": name,
+        "settings": settings,
+        "entities": entities,
+    }));
+    format!(
+        "The builder is filled in: a {} called \"{name}\", which will be {}. Nothing is made until the person presses Create. Tell them in a sentence what it will do, and that they can change anything before they do.",
+        kind.word,
+        entities.join(" and ")
+    )
+}
+
 fn draw(core: &Core, scope: &str, args: &Value, drawing: &mut Option<Floorplan>) -> String {
     let (Some(plan), Some(floor)) = (drawing.as_mut(), floor_of(scope)) else {
         return "The plan isn't open for editing. Ask the person to press Edit on the Floorplan \
@@ -2452,6 +2660,24 @@ async fn system_prompt(
         ));
         return Ok(prompt);
     }
+    if scope == "helpers" {
+        prompt.push_str(
+            "The person is in Irori's helper builder, making a helper: a value Irori keeps \
+             itself, or one it works out from other entities. Help them choose the right kind \
+             and its settings for what they describe. Use `list_entities` to find the entities \
+             to use, by their exact ids, and `helper_kinds` for what each kind does. When you \
+             know what to make, call `propose_helper`: it fills in the builder for them to look \
+             over and make. Never say a helper has been made; they make it with Create. If \
+             what they ask for needs something a helper can't do, say so, and suggest the \
+             nearest one, or an automation.\n",
+        );
+        if local.is_some() {
+            prompt.push_str("The kinds of helper:\n");
+            prompt.push_str(&irori_helpers::guide());
+            prompt.push('\n');
+        }
+        return Ok(prompt);
+    }
     if scope == "settings" {
         prompt.push_str(
             "When the person asks what went wrong, read the log lines and say what they mean \
@@ -2820,7 +3046,7 @@ async fn set_key(config: &Config, core: &Core, key: &str) -> Result<(), String> 
 }
 
 pub fn check_scope(scope: &str) -> Result<(), String> {
-    if scope == "general" || scope == "settings" {
+    if scope == "general" || scope == "settings" || scope == "helpers" {
         return Ok(());
     }
     let Some((kind, id)) = scope.split_once(':') else {
@@ -3142,6 +3368,8 @@ pub struct Progress {
     /// The plan as the model last drew it, when it has drawn on one. Shared rather than held:
     /// every word of the answer copies this whole struct to whoever is following it.
     pub plan: Option<Arc<Floorplan>>,
+    /// The helper as the model last proposed it, when it has.
+    pub helper: Option<Value>,
     pub ended: Option<Ended>,
 }
 
@@ -3194,6 +3422,7 @@ impl Pending {
             let mut sent = 0usize;
             let mut step = None;
             let mut drawn = None;
+            let mut proposed = None;
             let mut asked = 0usize;
             loop {
                 let now = progress.borrow_and_update().clone();
@@ -3213,6 +3442,14 @@ impl Pending {
                             .send(ChatEvent::Plan(Box::new((*plan).clone())))
                             .await
                             .is_err()
+                    {
+                        return;
+                    }
+                }
+                if now.helper != proposed {
+                    proposed = now.helper.clone();
+                    if let Some(helper) = now.helper
+                        && tx.send(ChatEvent::Helper(helper)).await.is_err()
                     {
                         return;
                     }
@@ -3344,6 +3581,11 @@ impl Turns {
                         pending
                             .progress
                             .send_modify(|progress| progress.plan = Some(Arc::new(*plan)));
+                    }
+                    ChatEvent::Helper(helper) => {
+                        pending
+                            .progress
+                            .send_modify(|progress| progress.helper = Some(helper));
                     }
                     ChatEvent::Error(why) => return Ended::Failed(why),
                     ChatEvent::Done => return Ended::Done,

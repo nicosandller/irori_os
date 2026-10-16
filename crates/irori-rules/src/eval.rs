@@ -7,8 +7,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use cel::extractors::Arguments;
 use cel::{Context, FunctionContext, ResolveResult, Value};
-use irori_types::{Availability, EntityId, EntityState, State, Timestamp, Typed};
+use irori_types::{
+    Availability, EntityId, EntityState, ObjectId, State, Timestamp, Typed, ValueShape,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::clock::{self, Place};
@@ -33,6 +36,9 @@ pub struct Read {
     /// `None` when there's no such entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability: Option<Availability>,
+    /// Which of its values was read, when not the main one: `position`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<ObjectId>,
     /// Its value, `null` if unknown.
     #[serde(default)]
     pub value: serde_json::Value,
@@ -40,13 +46,23 @@ pub struct Read {
 
 impl Read {
     pub fn of(entity_id: &EntityId, states: &BTreeMap<EntityId, EntityState>) -> Self {
+        Self::of_field(entity_id, None, states)
+    }
+
+    /// The entity's `field` as it is, or its main value when none is named.
+    pub fn of_field(
+        entity_id: &EntityId,
+        field: Option<&ObjectId>,
+        states: &BTreeMap<EntityId, EntityState>,
+    ) -> Self {
         let state = states.get(entity_id);
         Self {
             entity_id: entity_id.clone(),
             availability: state.map(|state| state.availability),
+            field: field.cloned(),
             value: state
                 .and_then(|state| state.state.as_ref())
-                .map(value_of)
+                .map(|state| read_of(state, field))
                 .unwrap_or(serde_json::Value::Null),
         }
     }
@@ -55,6 +71,17 @@ impl Read {
 /// The plain value of a state: `true`, `21.5`, `"rinse"`.
 pub fn value_of(state: &State) -> serde_json::Value {
     state.primary().to_json()
+}
+
+/// The plain value of one of a state's fields, `null` while the entity hasn't said it; the
+/// main value when no field is named.
+pub fn read_of(state: &State, field: Option<&ObjectId>) -> serde_json::Value {
+    match field {
+        None => value_of(state),
+        Some(field) => state
+            .field(field.as_str())
+            .map_or(serde_json::Value::Null, |value| value.to_json()),
+    }
 }
 
 /// A result and what it read on the way.
@@ -131,9 +158,10 @@ impl Evaluator {
         match condition {
             Condition::State {
                 entity,
+                field,
                 is,
                 availability,
-            } => state_holds(entity, is.as_ref(), *availability, snapshot),
+            } => state_holds(entity, field.as_ref(), is.as_ref(), *availability, snapshot),
             Condition::Expr { expr } => self.boolean(expr.as_str(), snapshot),
             Condition::Time {
                 after,
@@ -222,10 +250,11 @@ impl Evaluator {
         match until {
             WaitUntil::State {
                 entity,
+                field,
                 is,
                 availability,
                 ..
-            } => state_holds(entity, is.as_ref(), *availability, snapshot),
+            } => state_holds(entity, field.as_ref(), is.as_ref(), *availability, snapshot),
             WaitUntil::Expr { expr, .. } => self.boolean(expr.as_str(), snapshot),
         }
     }
@@ -241,11 +270,12 @@ fn merge(into: &mut Vec<Read>, reads: Vec<Read>) {
 
 fn state_holds(
     entity: &EntityId,
+    field: Option<&ObjectId>,
     is: Option<&TypedValue>,
     availability: Option<AvailabilityWanted>,
     snapshot: &Snapshot,
 ) -> Outcome<bool> {
-    let read = Read::of(entity, &snapshot.states);
+    let read = Read::of_field(entity, field, &snapshot.states);
     let reads = vec![read.clone()];
     let Some(state) = snapshot.states.get(entity) else {
         return Outcome {
@@ -329,6 +359,7 @@ type Reads = Arc<Mutex<Vec<Read>>>;
 
 /// A bound entity function, as CEL calls it.
 type EntityFn = Box<dyn Fn(&FunctionContext, Arc<String>) -> ResolveResult + Send + Sync>;
+type ValuedFn = Box<dyn Fn(&FunctionContext, Arguments) -> ResolveResult + Send + Sync>;
 
 /// Looks an entity up, noting the read.
 fn look(
@@ -363,6 +394,33 @@ fn live(
     state
         .state
         .ok_or_else(|| format!("{function}({id:?}): entity has never reported a value"))
+}
+
+/// One of an entity's values beside its main one, read as `function` reads: `num` a number,
+/// `on` an on/off, `text` a text.
+fn read_field(
+    function: &str,
+    shape: ValueShape,
+    state: &State,
+    id: &str,
+    field: &str,
+) -> Result<Value, String> {
+    match state.field(field) {
+        None => Err(format!(
+            "{function}({id:?}, {field:?}): the entity hasn't said its {field}"
+        )),
+        Some(value) if value.shape() != shape => Err(format!(
+            "{function}({id:?}, {field:?}): {field} is {}",
+            match value.shape() {
+                ValueShape::Number => "a number — use num()",
+                ValueShape::Bool => "on/off — use on()",
+                ValueShape::Text => "text — use text()",
+            }
+        )),
+        Some(Typed::Number(n)) => Ok(Value::Float(n)),
+        Some(Typed::Bool(on)) => Ok(Value::Bool(on)),
+        Some(Typed::Text(text)) => Ok(Value::String(Arc::new(text))),
+    }
 }
 
 fn fail(ftx: &FunctionContext, message: String) -> ResolveResult {
@@ -400,18 +458,45 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads, place: Option
             })
         };
 
-    let num = entity_fn("num", |state, id| match state.primary() {
-        Typed::Number(n) => Ok(Value::Float(n)),
-        Typed::Text(_) => Err(format!("num({id:?}): entity is text, not a number")),
-        Typed::Bool(_) => Err(format!(
-            "num({id:?}): entity is on/off, not a number — use on({id:?})"
-        )),
+    // `num(id)` reads the entity's main value; `num(id, 'position')` one of its others.
+    let valued_fn = |name: &'static str,
+                     shape: ValueShape,
+                     read: fn(State, &str) -> Result<Value, String>|
+     -> ValuedFn {
+        let states = Arc::clone(&snapshot.states);
+        let reads = Arc::clone(reads);
+        Box::new(move |ftx: &FunctionContext, Arguments(args): Arguments| {
+            let read = match args.as_slice() {
+                [Value::String(id)] => {
+                    live(name, &states, &reads, id).and_then(|state| read(state, id))
+                }
+                [Value::String(id), Value::String(field)] => live(name, &states, &reads, id)
+                    .and_then(|state| read_field(name, shape, &state, id, field)),
+                _ => Err(format!(
+                    "{name}() takes an entity id, and the name of one of its values if not the main one"
+                )),
+            };
+            match read {
+                Ok(value) => Ok(value),
+                Err(message) => fail(ftx, message),
+            }
+        })
+    };
+
+    let num = valued_fn("num", ValueShape::Number, |state, id| {
+        match state.primary() {
+            Typed::Number(n) => Ok(Value::Float(n)),
+            Typed::Text(_) => Err(format!("num({id:?}): entity is text, not a number")),
+            Typed::Bool(_) => Err(format!(
+                "num({id:?}): entity is on/off, not a number — use on({id:?})"
+            )),
+        }
     });
-    context.add_function("num", move |ftx: &FunctionContext, id: Arc<String>| {
-        num(ftx, id)
+    context.add_function("num", move |ftx: &FunctionContext, args: Arguments| {
+        num(ftx, args)
     });
 
-    let on = entity_fn("on", |state, id| match state.primary() {
+    let on = valued_fn("on", ValueShape::Bool, |state, id| match state.primary() {
         Typed::Bool(on) => Ok(Value::Bool(on)),
         Typed::Number(_) => Err(format!(
             "on({id:?}): entity is a number, not on/off — use num({id:?})"
@@ -420,17 +505,19 @@ fn bind(context: &mut Context, snapshot: &Snapshot, reads: &Reads, place: Option
             "on({id:?}): entity is text, not on/off — use text({id:?})"
         )),
     });
-    context.add_function("on", move |ftx: &FunctionContext, id: Arc<String>| {
-        on(ftx, id)
+    context.add_function("on", move |ftx: &FunctionContext, args: Arguments| {
+        on(ftx, args)
     });
 
-    let text = entity_fn("text", |state, id| match state.primary() {
-        Typed::Text(text) => Ok(Value::String(Arc::new(text))),
-        Typed::Number(_) => Err(format!("text({id:?}): entity is a number")),
-        Typed::Bool(_) => Err(format!("text({id:?}): entity is not a text sensor")),
+    let text = valued_fn("text", ValueShape::Text, |state, id| {
+        match state.primary() {
+            Typed::Text(text) => Ok(Value::String(Arc::new(text))),
+            Typed::Number(_) => Err(format!("text({id:?}): entity is a number")),
+            Typed::Bool(_) => Err(format!("text({id:?}): entity is not a text sensor")),
+        }
     });
-    context.add_function("text", move |ftx: &FunctionContext, id: Arc<String>| {
-        text(ftx, id)
+    context.add_function("text", move |ftx: &FunctionContext, args: Arguments| {
+        text(ftx, args)
     });
 
     let brightness = entity_fn("brightness", |state, id| match state {
@@ -621,6 +708,56 @@ mod tests {
         assert_eq!(outcome.reads.len(), 2);
         assert_eq!(outcome.reads[1].entity_id.as_str(), "sensor.lux");
         assert_eq!(outcome.reads[1].value, serde_json::json!(42.0));
+    }
+
+    fn blind(position: Option<u8>) -> Snapshot {
+        Snapshot {
+            states: Arc::new(BTreeMap::from([state(
+                "cover.blind",
+                State::Cover(irori_types::CoverState {
+                    state: irori_types::OpenState::Open,
+                    position,
+                    tilt: None,
+                }),
+                Availability::Available,
+            )])),
+            vars: BTreeMap::new(),
+            now: at(),
+        }
+    }
+
+    #[test]
+    fn a_field_is_read_by_name() {
+        let mut eval = Evaluator::default();
+        let outcome = eval.boolean("num('cover.blind', 'position') > 50", &blind(Some(70)));
+        assert_eq!(outcome.result, Ok(true));
+        assert_eq!(
+            eval.boolean("text('cover.blind') == 'open'", &blind(Some(70)))
+                .result,
+            Ok(true)
+        );
+
+        // A blind that hasn't said where it is has nothing to compare, which is an error and
+        // not zero.
+        let outcome = eval.boolean("num('cover.blind', 'position') > 50", &blind(None));
+        assert!(
+            outcome
+                .result
+                .unwrap_err()
+                .contains("hasn't said its position")
+        );
+
+        let condition: Condition = serde_json::from_value(serde_json::json!({
+            "type": "state", "entity": "cover.blind", "field": "position", "is": 70
+        }))
+        .unwrap();
+        let outcome = eval.condition(&condition, &blind(Some(70)));
+        assert_eq!(outcome.result, Ok(true));
+        assert_eq!(
+            outcome.reads[0].field.as_ref().unwrap().as_str(),
+            "position"
+        );
+        assert_eq!(outcome.reads[0].value, serde_json::json!(70.0));
     }
 
     #[test]

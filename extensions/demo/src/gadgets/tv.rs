@@ -1,4 +1,4 @@
-//! The living-room TV. Playback changes once a minute of demo time, so a trigger waiting
+//! The living room's TV. Playback changes once a minute of demo time, so a trigger waiting
 //! for it to play for 20 seconds gets to fire. A command holds until that minute changes.
 
 use tokio::time::Instant;
@@ -8,21 +8,22 @@ use irori_protocol::types::{
     State,
 };
 
-use super::{Device, Entity, Gadget, Room};
+use super::{Device, Entity, Gadget};
+use crate::world::World;
 
-const TV: &str = "tv";
-const PLAYER: &str = "tv-player";
+const TV: &str = "living-room-tv";
+const PLAYER: &str = "living-room-tv-player";
 /// How long the TV stays in each scripted state.
 const STEP: u64 = 60;
 
-pub(crate) struct DemoTv {
+pub(crate) struct Tv {
     /// Demo seconds on the sensor clock, as of the last tick. Commands use this same clock.
     secs: u64,
     /// A command and the scripted step it belongs to.
     hold: Option<(u64, MediaPlayerState)>,
 }
 
-impl DemoTv {
+impl Tv {
     pub(crate) fn new() -> Self {
         Self {
             secs: 0,
@@ -112,27 +113,20 @@ fn apply(player: &mut MediaPlayerState, service: &Service) -> Result<(), String>
                     .unwrap_or_else(|| data.content_id.clone()),
             );
         }
-        other => return Err(format!("the demo TV has no {}", other.name())),
+        other => return Err(format!("the TV has no {}", other.name())),
     }
     Ok(())
 }
 
-impl Gadget for DemoTv {
+impl Gadget for Tv {
     fn device(&self) -> Device {
-        Device {
-            unique_id: TV,
-            name: "Demo TV",
-            model: "Virtual TV",
-            room: "Living room",
-        }
+        Device::new(TV, "TV", "TV", "Living room")
     }
 
     fn entities(&self) -> Vec<Entity> {
-        vec![Entity {
-            unique_id: PLAYER,
-            name: None,
-            suggested_object_id: Some("demo_tv"),
-            capabilities: Capabilities::MediaPlayer(MediaPlayerCapabilities {
+        vec![Entity::main(
+            PLAYER,
+            Capabilities::MediaPlayer(MediaPlayerCapabilities {
                 device_class: Some(MediaPlayerClass::Tv),
                 volume: true,
                 mute: true,
@@ -142,8 +136,7 @@ impl Gadget for DemoTv {
                 turn_on: true,
                 turn_off: true,
             }),
-            category: None,
-        }]
+        )]
     }
 
     fn states(&self) -> Vec<(&'static str, State)> {
@@ -157,7 +150,7 @@ impl Gadget for DemoTv {
         _: Instant,
     ) -> Result<&'static str, String> {
         if unique_id != PLAYER {
-            return Err(format!("the demo TV has no {}", service.name()));
+            return Err(format!("the TV has no {}", service.name()));
         }
         let mut player = self.shown();
         apply(&mut player, service)?;
@@ -166,7 +159,8 @@ impl Gadget for DemoTv {
     }
 
     /// Reports the player on every sensor tick, and drops a command once its minute is over.
-    fn tick(&mut self, _: Instant, _: Room, secs: u64) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, world: &World) -> Vec<&'static str> {
+        let secs = world.secs;
         self.secs = secs;
         if self
             .hold
@@ -201,12 +195,12 @@ mod tests {
             })),
         )
         .expect("plays");
-        let during = DemoTv {
+        let during = Tv {
             secs: 90,
             hold: Some((60 / STEP, held)),
         };
         assert_eq!(during.shown().title.as_deref(), Some("Big Buck Bunny"));
-        let next = DemoTv {
+        let next = Tv {
             secs: 120,
             hold: during.hold,
         };

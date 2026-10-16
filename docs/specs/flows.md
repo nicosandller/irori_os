@@ -231,7 +231,7 @@ A **run record**:
 | `started_at`, `finished_at` | |
 | `outcome` | `completed` \| `error` \| `stopped` \| `superseded` \| `aborted` (with `reason`) |
 | `ended_at` | The nodes (and ports) its tokens ended at: the one-line summary ("ended at dark → no") |
-| `steps` | In order: `seq`, `node`, `token`, `via` (the wire it came in on), `at`, `port`, `reads` (`entity_id`, `availability`, `value`), and per node kind: the expression and its result or error, the call and its answer, the wait's end (`matched` / `timeout` / `gave_up`), a join's arrivals |
+| `steps` | In order: `seq`, `node`, `token`, `via` (the wire it came in on), `at`, `port`, `reads` (`entity_id`, `availability`, `value`, and `field` when it read one of the entity's other values), and per node kind: the expression and its result or error, the call and its answer, the wait's end (`matched` / `timeout` / `gave_up`), a join's arrivals |
 
 A **near-miss**: `at`, `flow_id`, `version`, `node`, `kind`, a sentence, and the reads.
 Deliberately narrow, so the log keeps the few that matter:

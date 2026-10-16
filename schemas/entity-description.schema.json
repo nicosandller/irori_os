@@ -85,6 +85,36 @@
     "capabilities"
   ],
   "$defs": {
+    "ArmMode": {
+      "description": "A way a panel is armed. Home Assistant's names.",
+      "oneOf": [
+        {
+          "description": "People are in: the doors and windows, not the rooms.",
+          "type": "string",
+          "const": "home"
+        },
+        {
+          "description": "Nobody is in.",
+          "type": "string",
+          "const": "away"
+        },
+        {
+          "description": "People are in and asleep.",
+          "type": "string",
+          "const": "night"
+        },
+        {
+          "description": "Nobody is in for a while.",
+          "type": "string",
+          "const": "vacation"
+        },
+        {
+          "description": "With some of its sensors left out.",
+          "type": "string",
+          "const": "custom_bypass"
+        }
+      ]
+    },
     "BinarySensorClass": {
       "description": "What a binary sensor's `on` means: Home Assistant's binary sensor device classes, by the\nsame names.",
       "type": "string",
@@ -882,7 +912,271 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "arm_modes": {
+              "description": "The ways it can be armed. A panel with none can only be disarmed and watched.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ArmMode"
+              },
+              "uniqueItems": true
+            },
+            "code_arm_required": {
+              "description": "Needs its code to arm. Only means something with a `code_format`.",
+              "type": "boolean",
+              "default": false
+            },
+            "code_disarm_required": {
+              "description": "Needs its code to disarm. Only means something with a `code_format`.",
+              "type": "boolean",
+              "default": false
+            },
+            "code_format": {
+              "description": "What its code looks like, when it takes one: digits, or any text. Pages show a keypad\nfor the first.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CodeFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "alarm_control_panel"
+            },
+            "trigger": {
+              "description": "Can be set off on purpose.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "date"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "time"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a `date`, a `time` or a `datetime` can do: hold its value. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "datetime"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "clean_spot": {
+              "description": "Can clean the spot it's on.",
+              "type": "boolean",
+              "default": false
+            },
+            "fan_speeds": {
+              "description": "The fan speeds it has, by its own names (`quiet`, `turbo`). None for one with no choice.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 32
+            },
+            "kind": {
+              "type": "string",
+              "const": "vacuum"
+            },
+            "locate": {
+              "description": "Can make a noise so someone can find it.",
+              "type": "boolean",
+              "default": false
+            },
+            "pause": {
+              "description": "Can be paused where it is.",
+              "type": "boolean",
+              "default": false
+            },
+            "return_home": {
+              "description": "Can be sent back to its dock.",
+              "type": "boolean",
+              "default": false
+            },
+            "start": {
+              "description": "Can be told to start cleaning.",
+              "type": "boolean",
+              "default": false
+            },
+            "stop": {
+              "description": "Can be stopped.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "dock": {
+              "description": "Can be sent back to its dock.",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "lawn_mower"
+            },
+            "pause": {
+              "description": "Can be paused where it is.",
+              "type": "boolean",
+              "default": false
+            },
+            "start_mowing": {
+              "description": "Can be told to start mowing.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a scene can do: be set. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "scene"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "device_tracker"
+            },
+            "source_type": {
+              "description": "How it knows, when it says. Home Assistant's source types.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/TrackerSource"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a timer can do. Nothing to say yet: every timer starts, pauses, and ends.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "timer"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a schedule can do. Nothing to say yet: a schedule is read, not told.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "schedule"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "camera"
+            },
+            "motion_detection": {
+              "description": "Watches for motion, and can be told to stop and start again.",
+              "type": "boolean",
+              "default": false
+            },
+            "on_off": {
+              "description": "Can be turned off and on again: a privacy switch.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
+      ]
+    },
+    "CodeFormat": {
+      "type": "string",
+      "enum": [
+        "number",
+        "text"
       ]
     },
     "ColorTempRange": {
@@ -1155,6 +1449,27 @@
       "enum": [
         "text",
         "password"
+      ]
+    },
+    "TrackerSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "bluetooth",
+            "bluetooth_le"
+          ]
+        },
+        {
+          "description": "A position from satellites, or from a phone that says where it is.",
+          "type": "string",
+          "const": "gps"
+        },
+        {
+          "description": "Seen on the home's network.",
+          "type": "string",
+          "const": "router"
+        }
       ]
     },
     "UniqueId": {

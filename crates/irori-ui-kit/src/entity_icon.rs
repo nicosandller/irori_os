@@ -79,6 +79,19 @@ const PADLOCK: &str = concat!(
     r#"<rect x="5" y="11" width="14" height="9.5" rx="1.5"/>"#,
     r#"<path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#,
 );
+/// A calendar page: a day or a moment someone sets.
+const CALENDAR: &str = r#"<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>"#;
+/// A robot vacuum from above: its body, its bumper and its lid.
+const CAMERA: &str = r#"<path d="M3.5 7.500h11a1.500 1.500 0 0 1 1.500 1.500v6a1.500 1.500 0 0 1-1.500 1.500h-11A1.500 1.500 0 0 1 2 15V9a1.500 1.500 0 0 1 1.500-1.500Z"/><path d="m16 11 5-3v8l-5-3"/><circle cx="9" cy="12" r="2.200"/>"#;
+const ROBOT: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M5.5 8.500a8.500 8.500 0 0 1 13 0"/><circle cx="12" cy="12.5" r="2.5"/>"#;
+/// A mower from the side: its deck, its wheels, and grass ahead of it.
+const MOWER: &str = r#"<path d="M4 15.5V12a3 3 0 0 1 3-3h6l4 6.5Z"/><circle cx="7" cy="17" r="2"/><circle cx="15" cy="17" r="2"/><path d="M20 17v-3M21.5 17v-2"/>"#;
+/// Three overlapping lights: a scene.
+const PALETTE: &str = r#"<circle cx="9" cy="9.5" r="4.5"/><circle cx="15" cy="9.5" r="4.5"/><circle cx="12" cy="14.5" r="4.5"/>"#;
+/// A map pin: something whose place is known.
+const PIN: &str = r#"<path d="M12 21c4-4.300 6-7.500 6-10.500a6 6 0 0 0-12 0C6 13.5 8 16.700 12 21Z"/><circle cx="12" cy="10.5" r="2.2"/>"#;
+/// A shield: an alarm panel.
+const SHIELD: &str = r#"<path d="M12 3.5l7 2.5v5.5c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.5 12l1.800 1.800 3.200-3.600"/>"#;
 const FAN: &str = concat!(
     r#"<path d="M12 12h.01"/>"#,
     r#"<path d="M12 10.5C11 7.5 12 4 14.5 3.5c2 .9 1.5 4.5-1 7.200"/>"#,
@@ -109,6 +122,51 @@ const PLAYER: &str = concat!(
     r#"<path d="M10.500 8.700v4.600l4-2.300Z"/>"#,
 );
 
+// The helpers that have no entity kind of their own to look like: a counter is a number, a
+// threshold a binary sensor, and the icon says what the helper does rather than what it is.
+const COUNTER: &str =
+    r#"<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 12h3M14.5 12h3M16 10.500v3"/>"#;
+const HOURGLASS: &str = r#"<path d="M7 3.500h10M7 20.500h10M8 3.500c0 4.500 8 4.500 8 8.500s-8 4-8 8.500M16 3.500c0 4.500-8 4.500-8 8.500s8 4 8 8.500"/>"#;
+const WEEK: &str = r#"<rect x="3.500" y="5" width="17" height="14.500" rx="1.500"/><path d="M3.500 9.500h17M7 13h4M13 13h4M7 16.500h7"/>"#;
+const GROUP: &str = r#"<circle cx="8" cy="9" r="3.500"/><circle cx="16" cy="9" r="3.500"/><circle cx="12" cy="16" r="3.500"/>"#;
+const THRESHOLD: &str = r#"<path d="M3 10h2.500M8.500 10h2.500M14 10h2.500M19.500 10H21"/><path d="M3 18c3 0 4-10 7-10s3 7 5 7 3-9 6-9"/>"#;
+const TREND: &str = r#"<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>"#;
+const METER: &str = r#"<rect x="3.500" y="7" width="17" height="10" rx="1.500"/><path d="M8 7v10M12 7v10M16 7v10"/>"#;
+const AREA: &str = r#"<path d="M3 19.500h18"/><path d="M3 19.500V15c3-6 6-6 9-2s6 2 9-3v9.500Z" fill="currentColor" fill-opacity=".18"/>"#;
+const SLOPE: &str = r#"<path d="M3 18c5 0 9-9 18-12"/><path d="M7 20 18 5"/>"#;
+const BARS: &str = r#"<path d="M6 19.500v-6M10 19.500V9M14 19.500v-8M18 19.500v-4"/><path d="M3 12h2M8 12h4M15 12h2M20 12h1"/>"#;
+const COMBINE: &str = r#"<path d="M4 6h5c3 0 3 6 6 6h5M4 18h5c3 0 3-6 6-6"/><circle cx="4" cy="6" r="1.300"/><circle cx="4" cy="18" r="1.300"/><path d="M17.500 9.500 20 12l-2.500 2.500"/>"#;
+const SWITCH_AS: &str = r#"<rect x="1.500" y="9" width="9" height="6" rx="3"/><circle cx="7.500" cy="12" r="1.500" fill="currentColor"/><path d="M12 12h2.500M13 10l1.800 2-1.800 2"/><path d="M18.400 15a3.200 3.200 0 1 1 2.700 0v1.600h-2.700Z"/><path d="M18.600 19h2.300"/>"#;
+const LOOKBACK: &str =
+    r#"<path d="M4 12a8 8 0 1 0 2.400-5.700"/><path d="M4 3.500V7h3.500"/><path d="M12 8v4l3 2"/>"#;
+
+/// What to draw for a helper of the kind kept in `table` (`extensions/helpers.toml`).
+pub fn helper(table: &str) -> &'static str {
+    match table {
+        "toggles" => TOGGLE,
+        "numbers" => SLIDERS,
+        "counters" => COUNTER,
+        "selects" => LIST,
+        "texts" => LETTERS,
+        "buttons" => PRESS,
+        "dates" | "datetimes" => CALENDAR,
+        "times" => CLOCK,
+        "timers" => HOURGLASS,
+        "schedules" => WEEK,
+        "groups" => GROUP,
+        "combined" => COMBINE,
+        "switch_as" => SWITCH_AS,
+        "thresholds" => THRESHOLD,
+        "trends" => TREND,
+        "meters" => METER,
+        "integrals" => AREA,
+        "derivatives" => SLOPE,
+        "statistics" => BARS,
+        "history" => LOOKBACK,
+        _ => DOT,
+    }
+}
+
 /// What to draw inside the icon's 24 × 24 box for an entity that has these capabilities.
 pub fn drawing(capabilities: &Capabilities) -> &'static str {
     match capabilities {
@@ -134,6 +192,15 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
             _ => BLIND,
         },
         Capabilities::Lock(_) => PADLOCK,
+        Capabilities::AlarmControlPanel(_) => SHIELD,
+        Capabilities::Date(_) | Capabilities::Datetime(_) => CALENDAR,
+        Capabilities::Time(_) => CLOCK,
+        Capabilities::Vacuum(_) => ROBOT,
+        Capabilities::LawnMower(_) => MOWER,
+        Capabilities::Scene(_) => PALETTE,
+        Capabilities::DeviceTracker(_) => PIN,
+        Capabilities::Timer(_) => CLOCK,
+        Capabilities::Schedule(_) => CALENDAR,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,
@@ -146,6 +213,7 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
             None => PLAYER,
         },
         Capabilities::Update(_) => INSTALL,
+        Capabilities::Camera(_) => CAMERA,
     }
 }
 

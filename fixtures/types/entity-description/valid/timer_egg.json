@@ -1,0 +1,7 @@
+{
+  "unique_id": "timer-egg",
+  "name": "Egg",
+  "capabilities": {
+    "kind": "timer"
+  }
+}

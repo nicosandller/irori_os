@@ -5,7 +5,7 @@
 use tokio::time::{Duration, Instant};
 
 use irori_protocol::types::{
-    Capabilities, EntityCategory, Service, State, UpdateCapabilities, UpdateClass, UpdateState,
+    Capabilities, Service, State, UpdateCapabilities, UpdateClass, UpdateState,
 };
 
 use super::Entity;
@@ -42,17 +42,16 @@ impl Firmware {
     }
 
     pub(super) fn entity(&self) -> Entity {
-        Entity {
-            unique_id: self.unique_id,
-            name: Some("Firmware"),
-            suggested_object_id: None,
-            capabilities: Capabilities::Update(UpdateCapabilities {
+        Entity::named(
+            self.unique_id,
+            "Firmware",
+            Capabilities::Update(UpdateCapabilities {
                 device_class: Some(UpdateClass::Firmware),
                 install: true,
                 check: true,
             }),
-            category: Some(EntityCategory::Config),
-        }
+        )
+        .config()
     }
 
     pub(super) fn state(&self) -> (&'static str, State) {
@@ -146,7 +145,7 @@ mod tests {
     #[test]
     fn firmware_installs_in_half_a_minute_and_another_comes_out() {
         let now = Instant::now();
-        let mut firmware = Firmware::new("fan-firmware", "Ceiling fan firmware", 4);
+        let mut firmware = Firmware::new("lock-firmware", "Lock firmware", 4);
         assert!(update(&firmware).available);
         firmware.call(&Service::UpdateInstall, now).expect("starts");
         assert!(firmware.call(&Service::UpdateInstall, now).is_err());

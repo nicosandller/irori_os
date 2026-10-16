@@ -229,6 +229,7 @@ fn events(
             ChatEvent::Step(tool) => serde_json::json!({ "step": tool }),
             ChatEvent::Plan(plan) => serde_json::json!({ "plan": plan }),
             ChatEvent::Confirm(removals) => serde_json::json!({ "confirm": removals }),
+            ChatEvent::Helper(helper) => serde_json::json!({ "helper": helper }),
             ChatEvent::Done => serde_json::json!({ "done": true }),
         };
         Ok(Event::default().data(data.to_string()))

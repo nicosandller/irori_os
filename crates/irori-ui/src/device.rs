@@ -667,8 +667,7 @@ fn EntityRow(
     // The rolled-up "last 24 hours", opened from the row's own reading. A button has nothing
     // to remember from one day to the next.
     let histories = crate::history::Histories::new();
-    let unroll =
-        (!matches!(entity.capabilities, Capabilities::Button(_))).then(|| histories.unroll(&id));
+    let unroll = Some(histories.unroll(&id));
     let history = histories.day(&id);
     // A player, a lock or a cover is drawn once and follows its state; everything else is
     // drawn again from each reading.
@@ -716,6 +715,8 @@ fn EntityRow(
                 view! {
                     <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
                         <div class="drawer-inner">
+                            {matches!(entity.capabilities, Capabilities::Camera(_))
+                                .then(|| devices::camera_picture(&entity, open))}
                             {history_panel(entity.clone(), history.clone(), state.into())}
                         </div>
                     </div>
@@ -977,11 +978,17 @@ fn hour_label(at: irori_types::Timestamp) -> String {
 
 /// A day with something in it: a number's as a chart, a state's as a strip, anything else as the
 /// table alone.
-fn drawn_day(
+pub(crate) fn drawn_day(
     entity: &Entity,
     states: Vec<EntityState>,
     live: Signal<Option<EntityState>>,
 ) -> AnyView {
+    if matches!(
+        entity.capabilities,
+        Capabilities::Button(_) | Capabilities::Scene(_)
+    ) {
+        return presses(&states);
+    }
     match (readings(&states), spans(entity, &states)) {
         (Some(numbers), _) => charted(entity, numbers, states, live),
         (None, Some(spans)) => timelined(entity, spans, states, live),
@@ -1293,7 +1300,7 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             flag_word(&entity.capabilities, switch.on).to_owned()
         }
-        (Capabilities::Button(_), _) => "—".to_owned(),
+        (Capabilities::Button(_) | Capabilities::Scene(_), _) => "—".to_owned(),
         (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
         (Capabilities::Cover(_), Some(State::Cover(cover))) => {
             devices::opening_words(cover.opening())
@@ -1301,6 +1308,27 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Lock(_), Some(State::Lock(lock))) => {
             devices::lock_words(lock.state).to_owned()
         }
+        (Capabilities::AlarmControlPanel(_), Some(State::AlarmControlPanel(panel))) => {
+            devices::alarm_words(panel.state).to_owned()
+        }
+        (Capabilities::Vacuum(_), Some(State::Vacuum(vacuum))) => {
+            devices::vacuum_words(vacuum.activity).to_owned()
+        }
+        (Capabilities::LawnMower(_), Some(State::LawnMower(mower))) => {
+            devices::mower_words(mower.activity).to_owned()
+        }
+        (Capabilities::Camera(_), Some(State::Camera(camera))) => {
+            devices::camera_words(camera.state).to_owned()
+        }
+        (Capabilities::DeviceTracker(_), Some(State::DeviceTracker(tracker))) => {
+            if tracker.home { "Home" } else { "Away" }.to_owned()
+        }
+        (Capabilities::Timer(_), Some(State::Timer(timer))) => devices::timer_words(timer),
+        (Capabilities::Schedule(_), Some(State::Schedule(schedule))) => {
+            devices::schedule_words(schedule)
+        }
+        (Capabilities::Date(_), Some(State::Date(date))) => date.value.to_string(),
+        (Capabilities::Time(_), Some(State::Time(time))) => time.value.to_string(),
         (Capabilities::Fan(_), Some(State::Fan(fan))) => devices::fan_words(fan),
         (Capabilities::Climate(_), Some(State::Climate(climate))) => {
             devices::climate_words(climate)
@@ -1350,6 +1378,90 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
 fn clock_time(at: irori_types::Timestamp) -> String {
     let text = at.to_string();
     text.get(11..19).map(str::to_owned).unwrap_or(text)
+}
+
+/// A button's day: each press a mark on the line from a day ago to now, and the latest few
+/// said with who pressed it. The marks come in one after another as the drawer opens.
+fn presses(states: &[EntityState]) -> AnyView {
+    let pressed: Vec<&EntityState> = states
+        .iter()
+        .filter(|state| {
+            state.attributes.iter().any(|(key, value)| {
+                key.as_str() == "pressed" && value == &serde_json::Value::Bool(true)
+            })
+        })
+        .collect();
+    if pressed.is_empty() {
+        return view! {
+            <p class="muted small history-note">
+                "Not pressed in the last 24 hours. Each press is kept here, from this page, a flow "
+                "or a program, for the days of history set in Settings."
+            </p>
+        }
+        .into_any();
+    }
+    let now: f64 = js_sys_now();
+    let day: f64 = 24.0 * 3600.0 * 1000.0;
+    let marks = pressed
+        .iter()
+        .enumerate()
+        .map(|(at, state)| {
+            let ms = state.last_changed.as_jiff().as_millisecond() as f64;
+            let left = (100.0 - (now - ms) / day * 100.0).clamp(0.0, 100.0);
+            view! {
+                <span
+                    class="press-mark"
+                    style=format!("left: {left:.2}%; --at: {at}")
+                    title=devices::controls_when(state.last_changed)
+                ></span>
+            }
+        })
+        .collect_view();
+    let count = pressed.len();
+    let latest = pressed
+        .iter()
+        .rev()
+        .take(5)
+        .map(|state| {
+            view! {
+                <li>
+                    <span class="press-when">{devices::controls_when(state.last_changed)}</span>
+                    <span class="muted">{who_pressed(&state.context.origin)}</span>
+                </li>
+            }
+        })
+        .collect_view();
+    view! {
+        <div class="presses">
+            <div class="presses-head">
+                <span class="presses-count">
+                    {format!("{count} press{} in the last 24 hours", if count == 1 { "" } else { "es" })}
+                </span>
+            </div>
+            <div class="press-track" aria-hidden="true">{marks}</div>
+            <div class="press-scale" aria-hidden="true">
+                <span>"24 h ago"</span><span>"12 h"</span><span>"now"</span>
+            </div>
+            <ul class="press-list">{latest}</ul>
+        </div>
+    }
+    .into_any()
+}
+
+/// The time now, in milliseconds, as the browser has it.
+fn js_sys_now() -> f64 {
+    web_sys::js_sys::Date::now()
+}
+
+/// Who a press came from, in a few words.
+fn who_pressed(origin: &irori_types::Origin) -> &'static str {
+    match origin {
+        irori_types::Origin::User { .. } => "from a page or the command line",
+        irori_types::Origin::Automation { .. } => "by a flow",
+        irori_types::Origin::Api { .. } => "by a program",
+        irori_types::Origin::Device { .. } => "on the device",
+        irori_types::Origin::System => "by Irori",
+    }
 }
 
 /// A device id that isn't here: either mistyped, or one that has gone away since the link was

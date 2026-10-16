@@ -6,22 +6,30 @@ use std::collections::BTreeMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::alarm_control_panel::AlarmState;
 use crate::kinds::binary_sensor::BinarySensorState;
+use crate::kinds::camera::CameraState;
 use crate::kinds::climate::ClimateState;
 use crate::kinds::cover::CoverState;
+use crate::kinds::device_tracker::TrackerState;
 use crate::kinds::event::EventState;
 use crate::kinds::fan::FanState;
 use crate::kinds::humidifier::HumidifierState;
+use crate::kinds::lawn_mower::LawnMowerState;
 use crate::kinds::light::LightState;
 use crate::kinds::lock::LockState;
 use crate::kinds::media_player::MediaPlayerState;
+use crate::kinds::moment::{DateState, DatetimeState, TimeState};
 use crate::kinds::number::NumberState;
+use crate::kinds::schedule::ScheduleState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
 use crate::kinds::siren::SirenState;
 use crate::kinds::switch::SwitchState;
 use crate::kinds::text::TextState;
+use crate::kinds::timer::TimerState;
 use crate::kinds::update::UpdateState;
+use crate::kinds::vacuum::VacuumState;
 use crate::kinds::valve::ValveState;
 use crate::kinds::water_heater::WaterHeaterState;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
@@ -156,6 +164,16 @@ pub enum State {
     Humidifier(HumidifierState),
     MediaPlayer(MediaPlayerState),
     Update(UpdateState),
+    AlarmControlPanel(AlarmState),
+    Date(DateState),
+    Time(TimeState),
+    Datetime(DatetimeState),
+    Vacuum(VacuumState),
+    LawnMower(LawnMowerState),
+    DeviceTracker(TrackerState),
+    Timer(TimerState),
+    Schedule(ScheduleState),
+    Camera(CameraState),
 }
 
 impl State {
@@ -174,13 +192,23 @@ impl State {
             Self::Humidifier(humidifier) => humidifier.validate(),
             Self::MediaPlayer(player) => player.validate(),
             Self::Update(update) => update.validate(),
+            Self::Timer(state) => state.validate(),
+            Self::DeviceTracker(tracker) => tracker.validate(),
             Self::Switch(_)
             | Self::BinarySensor(_)
             | Self::Select(_)
             | Self::Text(_)
             | Self::Event(_)
             | Self::Lock(_)
-            | Self::Siren(_) => Ok(()),
+            | Self::Siren(_)
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_)
+            | Self::Vacuum(_)
+            | Self::LawnMower(_)
+            | Self::Schedule(_)
+            | Self::Camera(_) => Ok(()),
         }
     }
 
@@ -204,6 +232,16 @@ impl State {
             Self::Humidifier(_) => EntityKind::Humidifier,
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
             Self::Update(_) => EntityKind::Update,
+            Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
+            Self::Date(_) => EntityKind::Date,
+            Self::Time(_) => EntityKind::Time,
+            Self::Datetime(_) => EntityKind::Datetime,
+            Self::Vacuum(_) => EntityKind::Vacuum,
+            Self::LawnMower(_) => EntityKind::LawnMower,
+            Self::DeviceTracker(_) => EntityKind::DeviceTracker,
+            Self::Timer(_) => EntityKind::Timer,
+            Self::Schedule(_) => EntityKind::Schedule,
+            Self::Camera(_) => EntityKind::Camera,
         }
     }
 }

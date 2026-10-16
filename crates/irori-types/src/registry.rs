@@ -4,23 +4,32 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::alarm_control_panel::AlarmCapabilities;
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
+use crate::kinds::camera::CameraCapabilities;
 use crate::kinds::climate::ClimateCapabilities;
 use crate::kinds::cover::CoverCapabilities;
+use crate::kinds::device_tracker::TrackerCapabilities;
 use crate::kinds::event::EventCapabilities;
 use crate::kinds::fan::FanCapabilities;
 use crate::kinds::humidifier::HumidifierCapabilities;
+use crate::kinds::lawn_mower::LawnMowerCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::lock::LockCapabilities;
 use crate::kinds::media_player::MediaPlayerCapabilities;
+use crate::kinds::moment::MomentCapabilities;
 use crate::kinds::number::NumberCapabilities;
+use crate::kinds::scene::SceneCapabilities;
+use crate::kinds::schedule::ScheduleCapabilities;
 use crate::kinds::select::SelectCapabilities;
 use crate::kinds::sensor::SensorCapabilities;
 use crate::kinds::siren::SirenCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
+use crate::kinds::timer::TimerCapabilities;
 use crate::kinds::update::UpdateCapabilities;
+use crate::kinds::vacuum::VacuumCapabilities;
 use crate::kinds::valve::ValveCapabilities;
 use crate::kinds::water_heater::WaterHeaterCapabilities;
 use crate::{
@@ -209,6 +218,17 @@ pub enum Capabilities {
     Humidifier(HumidifierCapabilities),
     MediaPlayer(MediaPlayerCapabilities),
     Update(UpdateCapabilities),
+    AlarmControlPanel(AlarmCapabilities),
+    Date(MomentCapabilities),
+    Time(MomentCapabilities),
+    Datetime(MomentCapabilities),
+    Vacuum(VacuumCapabilities),
+    LawnMower(LawnMowerCapabilities),
+    Scene(SceneCapabilities),
+    DeviceTracker(TrackerCapabilities),
+    Timer(TimerCapabilities),
+    Schedule(ScheduleCapabilities),
+    Camera(CameraCapabilities),
 }
 
 impl Capabilities {
@@ -233,6 +253,17 @@ impl Capabilities {
             Self::Humidifier(_) => EntityKind::Humidifier,
             Self::MediaPlayer(_) => EntityKind::MediaPlayer,
             Self::Update(_) => EntityKind::Update,
+            Self::AlarmControlPanel(_) => EntityKind::AlarmControlPanel,
+            Self::Date(_) => EntityKind::Date,
+            Self::Time(_) => EntityKind::Time,
+            Self::Datetime(_) => EntityKind::Datetime,
+            Self::Vacuum(_) => EntityKind::Vacuum,
+            Self::LawnMower(_) => EntityKind::LawnMower,
+            Self::Scene(_) => EntityKind::Scene,
+            Self::DeviceTracker(_) => EntityKind::DeviceTracker,
+            Self::Timer(_) => EntityKind::Timer,
+            Self::Schedule(_) => EntityKind::Schedule,
+            Self::Camera(_) => EntityKind::Camera,
         }
     }
 

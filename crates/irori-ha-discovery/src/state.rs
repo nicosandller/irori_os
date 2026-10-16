@@ -2,14 +2,17 @@
 //! (`docs/specs/entities.md` §5.3, `docs/specs/protocols.md` §7). Each component's own module
 //! under [`crate::kinds`] does the reading and writing; this hands each entity to it.
 
-use irori_types::units::{TemperatureUnit, round_to};
-use irori_types::{HvacMode, Service, State, UniqueId, WaterHeaterMode};
+use std::collections::BTreeMap;
+
+use irori_types::units::{Conversion, TemperatureUnit, round_to};
+use irori_types::{AttributeKey, HvacMode, Service, State, UniqueId, WaterHeaterMode};
 
 use crate::discovery::EntityTopics;
 use crate::kinds::setting::Reading;
 use crate::kinds::{
-    binary_sensor, button, climate, cover, event, fan, humidifier, light, lock, number, select,
-    sensor, siren, switch, text, update, valve, water_heater,
+    alarm_control_panel, binary_sensor, button, climate, cover, device_tracker, event, fan,
+    humidifier, lawn_mower, light, lock, moment, number, scene, select, sensor, siren, switch,
+    text, update, vacuum, valve, water_heater,
 };
 use crate::template::ValueTemplate;
 
@@ -89,6 +92,16 @@ pub(crate) fn update<T>(field: &mut Option<T>, said: Option<Option<T>>) {
 /// `previous` is the entity's last-known state, if any. A component whose state is spread over
 /// several topics (the default light schema's on/off and brightness, a thermostat's settings)
 /// gets only part of it in one message, and keeps the rest from `previous`.
+/// What every report from this entity says beside its state: the unit its device speaks, for
+/// a temperature Irori keeps in °C (`docs/specs/entities.md` §5.4).
+pub fn attributes(topics: &EntityTopics) -> BTreeMap<AttributeKey, serde_json::Value> {
+    Conversion::attributes(match topics {
+        EntityTopics::Sensor(topics) => topics.conversion,
+        EntityTopics::Number(topics) => topics.conversion,
+        _ => None,
+    })
+}
+
 pub fn decode(
     topics: &EntityTopics,
     topic: &str,
@@ -100,15 +113,20 @@ pub fn decode(
         EntityTopics::Light(topics) => light::decode(topics, message, previous),
         EntityTopics::Switch(topics) => switch::decode(topics, message),
         EntityTopics::Sensor(topics) => sensor::decode(topics, message),
+        EntityTopics::DeviceTracker(topics) => device_tracker::decode(topics, message, previous),
         EntityTopics::BinarySensor(topics) => binary_sensor::decode(topics, message),
         EntityTopics::Number(topics) => number::decode(topics, message),
         EntityTopics::Select(topics) => select::decode(topics, message),
         EntityTopics::Text(topics) => text::decode(topics, message),
-        EntityTopics::Button(_) => None,
+        EntityTopics::Button(_) | EntityTopics::Scene(_) => None,
         EntityTopics::Event(topics) => event::decode(topics, message),
         EntityTopics::Cover(topics) => cover::decode(topics, message, previous),
         EntityTopics::Valve(topics) => valve::decode(topics, message, previous),
         EntityTopics::Lock(topics) => lock::decode(topics, message),
+        EntityTopics::AlarmControlPanel(topics) => alarm_control_panel::decode(topics, message),
+        EntityTopics::Moment(topics) => moment::decode(topics, message),
+        EntityTopics::Vacuum(topics) => vacuum::decode(topics, message),
+        EntityTopics::LawnMower(topics) => lawn_mower::decode(topics, message),
         EntityTopics::Fan(topics) => fan::decode(topics, message, previous),
         EntityTopics::Siren(topics) => siren::decode(topics, message),
         EntityTopics::Update(topics) => update::decode(topics, message, previous),
@@ -155,16 +173,24 @@ pub fn encode(topics: &EntityTopics, service: &Service) -> Result<Vec<Publish>, 
         EntityTopics::Select(topics) => select::encode(topics, service),
         EntityTopics::Text(topics) => text::encode(topics, service),
         EntityTopics::Button(topics) => button::encode(topics, service),
+        EntityTopics::Scene(topics) => scene::encode(topics, service),
         EntityTopics::Cover(topics) => cover::encode(topics, service),
         EntityTopics::Valve(topics) => valve::encode(topics, service),
         EntityTopics::Lock(topics) => lock::encode(topics, service),
+        EntityTopics::AlarmControlPanel(topics) => alarm_control_panel::encode(topics, service),
+        EntityTopics::Moment(topics) => moment::encode(topics, service),
+        EntityTopics::Vacuum(topics) => vacuum::encode(topics, service),
+        EntityTopics::LawnMower(topics) => lawn_mower::encode(topics, service),
         EntityTopics::Fan(topics) => fan::encode(topics, service),
         EntityTopics::Siren(topics) => siren::encode(topics, service),
         EntityTopics::Update(topics) => update::encode(topics, service),
         EntityTopics::Climate(topics) => climate::encode(topics, service, None),
         EntityTopics::WaterHeater(topics) => water_heater::encode(topics, service, None),
         EntityTopics::Humidifier(topics) => humidifier::encode(topics, service),
-        EntityTopics::Sensor(_) | EntityTopics::BinarySensor(_) | EntityTopics::Event(_) => {
+        EntityTopics::Sensor(_)
+        | EntityTopics::BinarySensor(_)
+        | EntityTopics::Event(_)
+        | EntityTopics::DeviceTracker(_) => {
             Err(format!("this entity has no `{}` service", service.name()))
         }
     }
@@ -177,14 +203,26 @@ pub fn topics_of(unique_id: &UniqueId, topics: &EntityTopics) -> Vec<(String, Un
         EntityTopics::Light(topics) => topics.listens(),
         EntityTopics::Switch(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Sensor(topics) => vec![topics.state_topic.as_str()],
+        EntityTopics::DeviceTracker(topics) => topics
+            .state_topic
+            .as_deref()
+            .into_iter()
+            .chain(topics.json_attributes_topic.as_deref())
+            .collect(),
         EntityTopics::BinarySensor(topics) => vec![topics.state_topic.as_str()],
         EntityTopics::Number(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Select(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Text(topics) => topics.state_topic.as_deref().into_iter().collect(),
         // Nothing to listen to: a press leaves no state.
-        EntityTopics::Button(_) => Vec::new(),
+        EntityTopics::Button(_) | EntityTopics::Scene(_) => Vec::new(),
         EntityTopics::Event(topics) => vec![topics.state_topic.as_str()],
         EntityTopics::Lock(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::AlarmControlPanel(topics) => vec![topics.state_topic.as_str()],
+        EntityTopics::Moment(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::Vacuum(topics) => topics.state_topic.as_deref().into_iter().collect(),
+        EntityTopics::LawnMower(topics) => {
+            topics.activity_state_topic.as_deref().into_iter().collect()
+        }
         EntityTopics::Siren(topics) => topics.state_topic.as_deref().into_iter().collect(),
         EntityTopics::Cover(topics) => topics.listens(),
         EntityTopics::Valve(topics) => topics.listens(),
@@ -323,6 +361,7 @@ mod tests {
         let topics = EntityTopics::Sensor(SensorTopics {
             state_topic: "t".to_owned(),
             value_template: crate::template::ValueTemplate::None,
+            conversion: None,
         });
         let error = encode(&topics, &Service::SwitchTurnOn).expect_err("sensors have no services");
         assert!(error.contains("switch.turn_on"));

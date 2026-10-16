@@ -4,7 +4,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Data, Typed};
+use super::{Data, Field, Typed, named};
 use crate::{Service, ServiceName};
 
 use crate::InvariantError;
@@ -189,6 +189,34 @@ pub fn speed_to_percentage(speed: u16, count: u16) -> u8 {
     (u32::from(speed.min(count)) * 100 / u32::from(count))
         .try_into()
         .unwrap_or(100)
+}
+
+/// What a fan has beside `on`, for one that can do it.
+pub(crate) fn fields(caps: &FanCapabilities) -> Vec<Field> {
+    let mut fields = Vec::new();
+    if caps.speed_count > 0 {
+        fields.push(Field::number("percentage"));
+    }
+    if caps.oscillate {
+        fields.push(Field::bool("oscillating"));
+    }
+    if caps.direction {
+        fields.push(Field::text("direction"));
+    }
+    if !caps.preset_modes.is_empty() {
+        fields.push(Field::text("preset_mode"));
+    }
+    fields
+}
+
+pub(crate) fn field(state: &FanState, name: &str) -> Option<Typed> {
+    match name {
+        "percentage" => state.percentage.map(|p| Typed::Number(f64::from(p))),
+        "oscillating" => state.oscillating.map(Typed::Bool),
+        "direction" => state.direction.as_ref().and_then(named),
+        "preset_mode" => state.preset_mode.clone().map(Typed::Text),
+        _ => None,
+    }
 }
 
 pub(crate) fn primary(state: &FanState) -> Typed {

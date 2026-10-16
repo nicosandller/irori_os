@@ -35,6 +35,16 @@ pub(crate) fn binary(class: Option<BinarySensorClass>, value: Option<&State>) ->
     view! { <span class="reading" class:on=on.unwrap_or(false)>{reading}</span> }.into_any()
 }
 
+/// A tracker's reading: home, or away.
+pub(crate) fn tracker(value: Option<&State>) -> AnyView {
+    let home = match value {
+        Some(State::DeviceTracker(tracker)) => Some(tracker.home),
+        _ => None,
+    };
+    let reading = home.map_or(UNKNOWN, |home| if home { "Home" } else { "Away" });
+    view! { <span class="reading" class:on=home.unwrap_or(false)>{reading}</span> }.into_any()
+}
+
 /// What a binary sensor's `true` and `false` mean in words. Without a device class there's
 /// nothing better to say than on and off.
 pub(crate) fn wording(class: Option<BinarySensorClass>, on: bool) -> &'static str {

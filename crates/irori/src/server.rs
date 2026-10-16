@@ -194,6 +194,7 @@ pub fn router(state: AppState) -> Router {
             patch(edit_device).delete(remove_device),
         )
         .route("/api/entities/{id}", patch(edit_entity))
+        .route("/api/entities/{id}/picture", get(camera_picture))
         .route("/api/extensions/{id}/secrets", put(give_secret))
         .route(
             "/api/extensions/{id}/settings",
@@ -207,10 +208,13 @@ pub fn router(state: AppState) -> Router {
         .route("/api/extensions/{id}/install", post(install_official))
         .route("/api/extensions/install", post(install_url))
         .route("/api/extensions/{id}", axum::routing::delete(uninstall))
-        .route("/api/helpers/toggles", post(add_toggle))
+        .route("/api/helpers", get(list_helpers))
+        .route("/api/helpers/{table}", post(add_helper))
+        .route("/api/helpers/{table}/check", post(check_helper))
+        .route("/api/helpers/{table}/preview", post(preview_helper))
         .route(
-            "/api/helpers/toggles/{id}",
-            axum::routing::delete(remove_toggle),
+            "/api/helpers/{table}/{id}",
+            axum::routing::patch(edit_helper).delete(remove_helper),
         )
         .route("/api/extensions/{id}/icon.svg", get(extension_icon))
         .route("/api/extensions/{id}/log", get(extension_log))
@@ -1070,24 +1074,32 @@ async fn edit_entity(
     // A helper's name lives where the helper is defined. Writing it to entities.toml as well
     // would give it two names, one in each file (ROADMAP D36).
     if key.protocol.as_str() == HELPERS.as_str()
-        && let Some(toggle) = key.unique_id.as_str().strip_prefix("toggle-")
+        && let Some((kind, helper, main)) =
+            irori_helpers::HelperKind::of_unique(key.unique_id.as_str())
     {
+        // A button's event is named after its button: there's one name to change.
+        if !main {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("it's named after its {}; rename that", kind.word),
+            );
+        }
         let Some(Some(name)) = request.name.clone() else {
             return refused(
                 StatusCode::BAD_REQUEST,
                 "a helper always has a name; send the new one".to_owned(),
             );
         };
-        let toggle = toggle.to_owned();
+        let helper = helper.to_owned();
         let renamed = state
             .0
             .config
             .edit_extension(core, &HELPERS, |file| {
                 let entry = file
-                    .get_mut("toggles")
-                    .and_then(|toggles| toggles.get_mut(&toggle))
+                    .get_mut(kind.table)
+                    .and_then(|table| table.get_mut(&helper))
                     .and_then(serde_json::Value::as_object_mut)
-                    .ok_or_else(|| Refused(format!("there's no toggle `{toggle}`")))?;
+                    .ok_or_else(|| Refused(format!("there's no {} `{helper}`", kind.word)))?;
                 entry.insert("name".into(), serde_json::json!(name.as_str()));
                 Ok(())
             })
@@ -1113,16 +1125,76 @@ async fn edit_entity(
     }
 }
 
-/// The helpers extension's id: its toggles are kept in `extensions/helpers.toml`.
+/// The helpers extension's id: its helpers are kept in `extensions/helpers.toml`.
 static HELPERS: LazyLock<ExtensionId> =
     LazyLock::new(|| ExtensionId::try_from("helpers").expect("a valid extension id"));
 
-/// Makes a toggle: `{"name": "Guests are over"}`. Its id comes from the name and never changes;
-/// its entity is `switch.<id>`.
-async fn add_toggle(State(state): State<AppState>, Json(request): Json<AreaRequest>) -> Response {
-    if request.floor.is_some() {
-        return refused(StatusCode::BAD_REQUEST, "a toggle has no floor".to_owned());
+/// The kind of helper a path names (`toggles`, `numbers`…), or the refusal for one there isn't.
+fn helper_kind(table: &str) -> Result<&'static irori_helpers::HelperKind, Box<Response>> {
+    irori_helpers::HelperKind::of_table(table).ok_or_else(|| {
+        let kinds: Vec<&str> = irori_helpers::KINDS.iter().map(|kind| kind.table).collect();
+        Box::new(refused(
+            StatusCode::NOT_FOUND,
+            format!(
+                "there are no helpers called `{table}`; there are: {}",
+                kinds.join(", ")
+            ),
+        ))
+    })
+}
+
+/// Every helper, as it's written in `extensions/helpers.toml`: its kind, its id, its entity,
+/// and its settings.
+async fn list_helpers(State(state): State<AppState>) -> Response {
+    let file = state.0.config.extension_settings(&HELPERS).await;
+    let mut helpers = Vec::new();
+    for kind in irori_helpers::KINDS {
+        let Some(table) = file.get(kind.table).and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        for (id, settings) in table {
+            let entities = irori_types::ObjectId::try_from(id.as_str())
+                .ok()
+                .and_then(|id| kind.check(&id, settings).ok())
+                .unwrap_or_default();
+            let mut helper = serde_json::json!({
+                "kind": kind.table,
+                "id": id,
+                "entity_id": entities.first(),
+                "entities": entities,
+            });
+            if let (Some(helper), Some(settings)) = (helper.as_object_mut(), settings.as_object()) {
+                for (key, value) in settings {
+                    helper.entry(key.clone()).or_insert_with(|| value.clone());
+                }
+            }
+            helpers.push(helper);
+        }
     }
+    Json(helpers).into_response()
+}
+
+/// Makes a helper: `POST /api/helpers/numbers {"name": "Evening brightness", "min": 0, "max":
+/// 100}`. Its id comes from the name and never changes; its entity is `<kind>.<id>`.
+async fn add_helper(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    Json(settings): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let name = match settings.get("name").map(Name::deserialize) {
+        Some(Ok(name)) => name,
+        Some(Err(e)) => return refused(StatusCode::BAD_REQUEST, format!("`name`: {e}")),
+        None => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("a {} needs a `name`", kind.word),
+            );
+        }
+    };
     let taken: Vec<String> = state
         .0
         .core
@@ -1130,57 +1202,314 @@ async fn add_toggle(State(state): State<AppState>, Json(request): Json<AreaReque
         .iter()
         .map(|entity| entity.id.to_string())
         .collect();
+    let settings = serde_json::Value::Object(settings);
     let made = state
         .0
         .config
         .edit_extension(&state.0.core, &HELPERS, |file| {
-            let toggles = file
-                .entry("toggles")
+            let helpers = file
+                .entry(kind.table)
                 .or_insert_with(|| serde_json::json!({}))
                 .as_object_mut()
                 .ok_or_else(|| {
-                    Refused("`toggles` in extensions/helpers.toml isn't a table".into())
+                    Refused(format!(
+                        "`{}` in extensions/helpers.toml isn't a table",
+                        kind.table
+                    ))
                 })?;
-            // An id no toggle has, and no other switch either: `switch.<id>` has to be free.
-            let base = irori_core::new_area_id(&request.name, &[]).to_string();
-            let id = (1..)
-                .map(|n| {
-                    if n == 1 {
-                        base.clone()
-                    } else {
-                        format!("{base}_{n}")
-                    }
-                })
-                .find(|id| !toggles.contains_key(id) && !taken.contains(&format!("switch.{id}")))
-                .expect("an unbounded range always finds a free id");
-            toggles.insert(
-                id.clone(),
-                serde_json::json!({"name": request.name.as_str()}),
-            );
-            Ok(id)
+            let (id, entities) =
+                free_helper_id(kind, &name, &settings, helpers, &taken).map_err(Refused)?;
+            helpers.insert(id.clone(), settings.clone());
+            irori_helpers::check_settings(file).map_err(Refused)?;
+            Ok((id, entities))
         })
         .await;
     match made {
-        Ok(id) => (
+        Ok((id, entities)) => (
             StatusCode::CREATED,
-            Json(serde_json::json!({"id": id, "entity_id": format!("switch.{id}")})),
+            Json(serde_json::json!({
+                "kind": kind.table,
+                "id": id,
+                "entity_id": entities.first(),
+                "entities": entities,
+            })),
         )
             .into_response(),
         Err(e) => edit_failed(e),
     }
 }
 
-async fn remove_toggle(State(state): State<AppState>, Path(id): Path<String>) -> Response {
+/// The id a new helper called `name` gets: one no helper of its kind has, and whose entities
+/// nothing else in the home is (`name`, then `name_2`, …). Making one and checking one both
+/// ask this, so a check says what Create will make.
+fn free_helper_id(
+    kind: &irori_helpers::HelperKind,
+    name: &Name,
+    settings: &serde_json::Value,
+    helpers: &serde_json::Map<String, serde_json::Value>,
+    taken: &[String],
+) -> Result<(String, Vec<String>), String> {
+    let base = irori_core::new_area_id(name, &[]).to_string();
+    for n in 1..=1000 {
+        let id = if n == 1 {
+            base.clone()
+        } else {
+            format!("{base}_{n}")
+        };
+        if helpers.contains_key(&id) {
+            continue;
+        }
+        let Ok(object) = irori_types::ObjectId::try_from(id.as_str()) else {
+            continue;
+        };
+        // Wrong whatever it's called: say so rather than try a thousand ids.
+        let entities = kind.check(&object, settings)?;
+        if !entities.iter().any(|entity| taken.contains(entity)) {
+            return Ok((id, entities));
+        }
+    }
+    Err(format!("no id is free for `{name}`"))
+}
+
+/// What a helper would be like, before it's made: its entity, and the states it would have
+/// had over the last day (one worked out from other entities, played over their history) or
+/// would start in (one a person sets). The same body as making one; a name isn't needed yet.
+/// For the builder to draw and to try.
+async fn preview_helper(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    Json(mut settings): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let name = settings
+        .get("name")
+        .and_then(|name| name.as_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .unwrap_or("Preview")
+        .to_owned();
+    settings.insert("name".into(), serde_json::json!(name));
+    let Ok(parsed) = name.parse::<Name>() else {
+        return refused(StatusCode::BAD_REQUEST, format!("`{name}` can't be a name"));
+    };
+    let id = irori_core::new_area_id(&parsed, &[]).to_string();
+    let Ok(object_id) = irori_types::ObjectId::try_from(id.as_str()) else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            format!("`{name}` can't be made into an id"),
+        );
+    };
+    let core = &state.0.core;
+    let entities = core.entities();
+    let history = state.0.history.clone();
+    let live = core.clone();
+    let time_zone = core.place().time_zone;
+    let now = core.now();
+    let settings = serde_json::Value::Object(settings);
+    // The recorder answers a range; the reading that held as it began came a little before.
+    let changes = move |entity: &irori_types::EntityId, since: irori_types::Timestamp| {
+        let seeded = irori_types::Timestamp::from_jiff(
+            since.as_jiff() - jiff::SignedDuration::from_hours(6),
+        );
+        let mut changes = irori_core::HistorySource::changes(&history, entity, seeded);
+        // And where it is now, which the recorder may not have written yet.
+        if let Some(current) = live.state(entity)
+            && changes
+                .last()
+                .is_none_or(|last| last.last_updated < current.last_updated)
+        {
+            changes.push(current);
+        }
+        changes
+    };
+    // Each read of the history waits off the runtime (`history.rs`).
+    let preview = kind.preview(
+        &object_id,
+        &settings,
+        &entities,
+        &changes,
+        now,
+        time_zone.as_ref().map(|zone| zone.as_str()),
+    );
+    let preview = match preview {
+        Ok(preview) => preview,
+        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
+    };
+    let Ok(entity_id) = irori_types::EntityId::try_from(preview.entity_id.as_str()) else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "it makes no entity a page can show".to_owned(),
+        );
+    };
+    let context = core.new_context(irori_types::Origin::System);
+    let states: Vec<irori_types::EntityState> = preview
+        .said
+        .into_iter()
+        .map(|said| {
+            let mut attributes = irori_types::Attributes::new();
+            if let Some(problem) = said.problem
+                && let Ok(key) = irori_types::AttributeKey::try_from("problem")
+            {
+                attributes.insert(key, serde_json::json!(problem));
+            }
+            irori_types::EntityState {
+                entity_id: entity_id.clone(),
+                availability: irori_types::Availability::Available,
+                state: said.state,
+                attributes,
+                last_changed: said.at,
+                last_updated: said.at,
+                last_reported: said.at,
+                context: context.clone(),
+            }
+        })
+        .collect();
+    Json(serde_json::json!({
+        "entity": {
+            "id": entity_id,
+            "protocol": HELPERS.as_str(),
+            "unique_id": format!("preview-{id}"),
+            "name": name,
+            "capabilities": preview.capabilities,
+        },
+        "states": states,
+        "computed": preview.computed,
+    }))
+    .into_response()
+}
+
+/// What a helper would be, without making it: the entities it would become, or what's wrong
+/// with it, in the words making it would refuse with. `POST /api/helpers/thresholds/check`
+/// with the same body as making one. For a form to say as it's filled in.
+async fn check_helper(
+    State(state): State<AppState>,
+    Path(table): Path<String>,
+    Json(settings): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let name = match settings.get("name").map(Name::deserialize) {
+        Some(Ok(name)) => name,
+        Some(Err(e)) => return refused(StatusCode::BAD_REQUEST, format!("`name`: {e}")),
+        None => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("a {} needs a name", kind.word),
+            );
+        }
+    };
+    let taken: Vec<String> = state
+        .0
+        .core
+        .entities()
+        .iter()
+        .map(|entity| entity.id.to_string())
+        .collect();
+    let settings = serde_json::Value::Object(settings);
+    let mut file = state.0.config.extension_settings(&HELPERS).await;
+    let Some(helpers) = file
+        .entry(kind.table)
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+    else {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            format!("`{}` in extensions/helpers.toml isn't a table", kind.table),
+        );
+    };
+    // The id Create would give it, and the plain one it would have liked, to say why not.
+    let (id, entities) = match free_helper_id(kind, &name, &settings, helpers, &taken) {
+        Ok(found) => found,
+        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
+    };
+    let plain = irori_core::new_area_id(&name, &[]).to_string();
+    let taken: Vec<String> = if id == plain {
+        Vec::new()
+    } else {
+        irori_types::ObjectId::try_from(plain.as_str())
+            .ok()
+            .and_then(|object| kind.check(&object, &settings).ok())
+            .unwrap_or_default()
+    };
+    // With the rest of the file, for what one helper alone can't show (a ring).
+    helpers.insert(id.clone(), settings);
+    if let Err(why) = irori_helpers::check_settings(&file) {
+        return refused(StatusCode::BAD_REQUEST, why);
+    }
+    Json(serde_json::json!({
+        "kind": kind.table,
+        "id": id,
+        "entity_id": entities.first(),
+        "entities": entities,
+        "taken": taken,
+    }))
+    .into_response()
+}
+
+/// Changes a helper's settings: the fields sent replace what it had, and `null` takes one
+/// away. `PATCH /api/helpers/numbers/evening_brightness {"max": 80}`. Its id and its entity
+/// stay; a value it can no longer have goes back to its `initial`.
+async fn edit_helper(
+    State(state): State<AppState>,
+    Path((table, id)): Path<(String, String)>,
+    Json(changes): Json<serde_json::Map<String, serde_json::Value>>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
+    let edited = state
+        .0
+        .config
+        .edit_extension(&state.0.core, &HELPERS, |file| {
+            let entry = file
+                .get_mut(kind.table)
+                .and_then(|table| table.get_mut(&id))
+                .and_then(serde_json::Value::as_object_mut)
+                .ok_or_else(|| Refused(format!("there's no {} `{id}`", kind.word)))?;
+            for (key, value) in &changes {
+                if value.is_null() {
+                    entry.remove(key);
+                } else {
+                    entry.insert(key.clone(), value.clone());
+                }
+            }
+            let object_id =
+                irori_types::ObjectId::try_from(id.as_str()).map_err(|e| Refused(e.to_string()))?;
+            kind.check(&object_id, &serde_json::Value::Object(entry.clone()))
+                .map_err(Refused)?;
+            irori_helpers::check_settings(file).map_err(Refused)
+        })
+        .await;
+    match edited {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+async fn remove_helper(
+    State(state): State<AppState>,
+    Path((table, id)): Path<(String, String)>,
+) -> Response {
+    let kind = match helper_kind(&table) {
+        Ok(kind) => kind,
+        Err(refusal) => return *refusal,
+    };
     let removed = state
         .0
         .config
         .edit_extension(&state.0.core, &HELPERS, |file| {
             let gone = file
-                .get_mut("toggles")
+                .get_mut(kind.table)
                 .and_then(serde_json::Value::as_object_mut)
-                .and_then(|toggles| toggles.remove(&id));
+                .and_then(|helpers| helpers.remove(&id));
             gone.map(|_| ())
-                .ok_or_else(|| Refused(format!("there's no toggle `{id}`")))
+                .ok_or_else(|| Refused(format!("there's no {} `{id}`", kind.word)))
         })
         .await;
     match removed {
@@ -1209,6 +1538,46 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
         )
             .into_response(),
         None => refused(StatusCode::NOT_FOUND, format!("`{id}` has no icon")),
+    }
+}
+
+/// What a camera sees now, as its protocol draws it (`docs/specs/api.md`). Never cached, and
+/// served so that opening it on its own can't run anything: a protocol may send an SVG.
+async fn camera_picture(State(state): State<AppState>, Path(id): Path<EntityId>) -> Response {
+    if id.kind() != irori_types::EntityKind::Camera {
+        return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
+    }
+    if state.0.core.state(&id).is_none() {
+        return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
+    }
+    match state.0.core.camera_picture(&id).await {
+        Ok(picture) => (
+            [
+                (axum::http::header::CONTENT_TYPE, picture.content_type),
+                (
+                    axum::http::header::CONTENT_SECURITY_POLICY,
+                    "default-src 'none'; style-src 'unsafe-inline'; sandbox".to_owned(),
+                ),
+                (
+                    axum::http::header::X_CONTENT_TYPE_OPTIONS,
+                    "nosniff".to_owned(),
+                ),
+                (axum::http::header::CACHE_CONTROL, "no-store".to_owned()),
+            ],
+            picture.bytes,
+        )
+            .into_response(),
+        Err(irori_core::CallActionError::Timeout) => refused(
+            StatusCode::GATEWAY_TIMEOUT,
+            format!("`{id}` didn't send a picture in time"),
+        ),
+        Err(irori_core::CallActionError::NotRunning(extension)) => refused(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("`{extension}` isn't running, so `{id}` can't send a picture"),
+        ),
+        Err(irori_core::CallActionError::Failed(why)) => {
+            refused(StatusCode::BAD_GATEWAY, format!("`{id}`: {why}"))
+        }
     }
 }
 
@@ -2451,28 +2820,37 @@ mod tests {
                 .as_array()
                 .is_some_and(|all| all.iter().any(|item| item["name"] == id))
         };
-        assert!(named("devices", "Demo lamp"), "no demo lamp in {home}");
-        assert!(named("entities", "Demo lamp"), "no lamp entity in {home}");
         assert!(
-            named("devices", "Demo hallway light"),
+            named("devices", "Living room lamp"),
+            "no demo lamp in {home}"
+        );
+        assert!(
+            named("entities", "Living room lamp"),
+            "no lamp entity in {home}"
+        );
+        assert!(
+            named("devices", "Foyer ceiling light"),
             "no hallway light in {home}"
         );
         assert!(
-            named("devices", "Demo movement sensor"),
+            named("devices", "Foyer movement sensor"),
             "no movement sensor in {home}"
         );
         assert!(
-            named("devices", "Demo luminosity sensor"),
+            named("devices", "Garden light sensor"),
             "no luminosity sensor in {home}"
         );
         assert!(
-            named("devices", "Demo mmWave sensor"),
+            named("devices", "Living room presence sensor"),
             "no mmWave sensor in {home}"
         );
         assert_eq!(home["extensions"]["demo"]["state"], "running");
         let lamp = home["states"]
             .as_array()
-            .and_then(|all| all.iter().find(|s| s["entity_id"] == "light.demo_lamp"))
+            .and_then(|all| {
+                all.iter()
+                    .find(|s| s["entity_id"] == "light.living_room_lamp")
+            })
             .ok_or_else(|| anyhow::anyhow!("no demo lamp state in {home}"))?;
         assert_eq!(lamp["availability"], "available");
 
@@ -2484,7 +2862,7 @@ mod tests {
     #[tokio::test]
     async fn a_command_answers_with_the_state_it_produced() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
-        let lamp = EntityId::try_from("light.demo_lamp")?;
+        let lamp = EntityId::try_from("light.living_room_lamp")?;
 
         for on in [true, false] {
             let (status, body) = post(
@@ -2662,7 +3040,7 @@ mod tests {
 
         let (status, _) = server
             .send(
-                Request::get("/api/history/sensor.demo_hallway_sensor_temperature/summary")
+                Request::get("/api/history/sensor.living_room_climate_sensor_temperature/summary")
                     .body(Body::empty())?,
             )
             .await?;
@@ -2670,7 +3048,7 @@ mod tests {
         let (status, bytes) = server
             .send(
                 Request::get(
-                    "/api/history/sensor.demo_hallway_sensor_temperature/summary?since=1970-01-01T00:00:00Z",
+                    "/api/history/sensor.living_room_climate_sensor_temperature/summary?since=1970-01-01T00:00:00Z",
                 )
                 .body(Body::empty())?,
             )
@@ -2701,7 +3079,7 @@ mod tests {
         let (status, body) = post(
             core.clone(),
             "/api/command",
-            serde_json::json!({"entity_id": "sensor.demo_hallway_sensor_temperature", "command": "toggle"}),
+            serde_json::json!({"entity_id": "sensor.living_room_climate_sensor_temperature", "command": "toggle"}),
         )
         .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
@@ -2711,7 +3089,7 @@ mod tests {
             core.clone(),
             "/api/command",
             serde_json::json!({
-                "entity_id": "light.demo_lamp", "command": "turn_off", "data": {"brightness": 5},
+                "entity_id": "light.living_room_lamp", "command": "turn_off", "data": {"brightness": 5},
             }),
         )
         .await?;
@@ -2731,7 +3109,10 @@ mod tests {
         let states: serde_json::Value = serde_json::from_slice(&body)?;
         let lamp = states
             .as_array()
-            .and_then(|all| all.iter().find(|s| s["entity_id"] == "light.demo_lamp"))
+            .and_then(|all| {
+                all.iter()
+                    .find(|s| s["entity_id"] == "light.living_room_lamp")
+            })
             .ok_or_else(|| anyhow::anyhow!("no demo lamp in {states}"))?;
         assert_eq!(lamp["state"]["kind"], "light");
 
@@ -2875,32 +3256,42 @@ mod tests {
         let server = Server::new(core.clone())?;
 
         let (status, area) = server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         assert_eq!(status, StatusCode::CREATED, "{area}");
-        assert_eq!(area["id"], "study");
+        assert_eq!(area["id"], "living_room");
 
         let (status, device) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({
-                    "name": "Reading lamp", "description": "On the desk", "area": "study",
+                    "name": "Reading lamp", "description": "On the desk", "area": "living_room",
                 }),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{device}");
         assert_eq!(device["name"], "Reading lamp");
         assert_eq!(device["description"], "On the desk");
-        assert_eq!(device["id"], "demo_lamp", "renaming it didn't move its id");
-        assert_eq!(device["area_id"], "study");
+        assert_eq!(
+            device["id"], "demo_living_room_lamp",
+            "renaming it didn't move its id"
+        );
+        assert_eq!(device["area_id"], "living_room");
 
         let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
-        assert!(areas.contains("[areas.study]"), "{areas}");
+        assert!(areas.contains("[areas.living_room]"), "{areas}");
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         // Keyed by the device's one id — the same id as its page address — so there is never a
         // second identifier for the same device to keep in step (ROADMAP D36).
-        assert!(devices.contains("[devices.demo_lamp]"), "{devices}");
+        assert!(
+            devices.contains("[devices.demo_living_room_lamp]"),
+            "{devices}"
+        );
         assert!(
             devices.contains("description = \"On the desk\""),
             "{devices}"
@@ -2909,7 +3300,7 @@ mod tests {
 
         // And the page sees the same thing it would after a restart.
         let home = server.read("/api/home").await?;
-        assert_eq!(home["areas"][0]["name"], "Study");
+        assert_eq!(home["areas"][0]["name"], "Living room");
 
         host.shutdown().await;
         Ok(())
@@ -2921,19 +3312,19 @@ mod tests {
     async fn a_rename_carries_the_entities_and_can_be_undone() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
-        let lamp = EntityId::try_from("light.demo_lamp")?;
+        let lamp = EntityId::try_from("light.living_room_lamp")?;
         let entity_named = |core: &Core| {
             core.entities()
                 .into_iter()
                 .find(|entity| entity.id == lamp)
                 .map(|entity| entity.name.to_string())
         };
-        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+        assert_eq!(entity_named(&core).as_deref(), Some("Living room lamp"));
 
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"name": "Reading lamp"}),
             )
             .await?;
@@ -2943,13 +3334,13 @@ mod tests {
         let (status, device) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"name": null}),
             )
             .await?;
         assert_eq!(status, StatusCode::OK, "{device}");
-        assert_eq!(device["name"], "Demo lamp");
-        assert_eq!(entity_named(&core).as_deref(), Some("Demo lamp"));
+        assert_eq!(device["name"], "Living room lamp");
+        assert_eq!(entity_named(&core).as_deref(), Some("Living room lamp"));
 
         host.shutdown().await;
         Ok(())
@@ -2964,7 +3355,7 @@ mod tests {
         let (status, entity) = server
             .json(
                 "PATCH",
-                "/api/entities/light.demo_lamp",
+                "/api/entities/light.living_room_lamp",
                 serde_json::json!({"name": "Reading light"}),
             )
             .await?;
@@ -2974,14 +3365,14 @@ mod tests {
         server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"name": "Reading lamp"}),
             )
             .await?;
         let home = server.read("/api/home").await?;
         let named = home["entities"]
             .as_array()
-            .and_then(|all| all.iter().find(|e| e["id"] == "light.demo_lamp"))
+            .and_then(|all| all.iter().find(|e| e["id"] == "light.living_room_lamp"))
             .map(|e| e["name"].clone());
         assert_eq!(named, Some(serde_json::json!("Reading light")));
 
@@ -2996,34 +3387,42 @@ mod tests {
         let (core, host) = demo().await?;
         let server = Server::new(core.clone())?;
         server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
-                serde_json::json!({"area": "study"}),
+                "/api/devices/demo_living_room_lamp",
+                serde_json::json!({"area": "living_room"}),
             )
             .await?;
 
         let (status, _) = server
-            .json("DELETE", "/api/areas/study", serde_json::json!(null))
+            .json("DELETE", "/api/areas/living_room", serde_json::json!(null))
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
         let placed = |core: &Core| {
             core.devices()
                 .into_iter()
-                .find(|device| device.id.as_str() == "demo_lamp")
+                .find(|device| device.id.as_str() == "demo_living_room_lamp")
                 .and_then(|device| device.area_id)
         };
         assert_eq!(placed(&core), None);
 
         server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         assert_eq!(
             placed(&core).map(|id| id.to_string()).as_deref(),
-            Some("study"),
+            Some("living_room"),
             "the device remembered where it belonged"
         );
 
@@ -3042,19 +3441,23 @@ mod tests {
             core.entities().iter().any(|entity| entity
                 .device_id
                 .as_ref()
-                .is_some_and(|id| id.as_str() == "demo_lamp")),
+                .is_some_and(|id| id.as_str() == "demo_living_room_lamp")),
             "the demo lamp has entities"
         );
 
         let (status, _) = server
-            .json("DELETE", "/api/devices/demo_lamp", serde_json::Value::Null)
+            .json(
+                "DELETE",
+                "/api/devices/demo_living_room_lamp",
+                serde_json::Value::Null,
+            )
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
         assert!(
             !core
                 .devices()
                 .iter()
-                .any(|device| device.id.as_str() == "demo_lamp"),
+                .any(|device| device.id.as_str() == "demo_living_room_lamp"),
             "out of the core"
         );
         assert_eq!(core.devices().len(), before - 1, "its neighbours stayed");
@@ -3062,26 +3465,30 @@ mod tests {
             !core.entities().iter().any(|entity| entity
                 .device_id
                 .as_ref()
-                .is_some_and(|id| id.as_str() == "demo_lamp")),
+                .is_some_and(|id| id.as_str() == "demo_living_room_lamp")),
             "its entities went with it"
         );
 
         // The files agree, so a restart couldn't bring a stale row back.
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
-        assert!(!devices.contains("demo_lamp"), "{devices}");
+        assert!(!devices.contains("demo_living_room_lamp"), "{devices}");
 
         // Found again straight away, for "+ Add device" to offer back.
         let home = server.read("/api/home").await?;
         assert!(
             home["held"]
                 .as_array()
-                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_lamp")),
+                .is_some_and(|all| all.iter().any(|item| item["id"] == "demo_living_room_lamp")),
             "{home}"
         );
 
         // Removing a device that isn't in the home is a 404, found or not.
         let (status, _) = server
-            .json("DELETE", "/api/devices/demo_lamp", serde_json::Value::Null)
+            .json(
+                "DELETE",
+                "/api/devices/demo_living_room_lamp",
+                serde_json::Value::Null,
+            )
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
@@ -3089,7 +3496,7 @@ mod tests {
         Ok(())
     }
 
-    /// "Not in a room" is an answer. The demo lamp's firmware asks for the Study; once that room
+    /// "Not in a room" is an answer. The demo lamp's firmware asks for the living room; once that room
     /// exists the lamp is in it, and `area: false` must take it out and keep it out, while
     /// `area: null` hands the decision back to the device.
     #[tokio::test]
@@ -3099,23 +3506,27 @@ mod tests {
         let placed = |core: &Core| {
             core.devices()
                 .into_iter()
-                .find(|device| device.id.as_str() == "demo_lamp")
+                .find(|device| device.id.as_str() == "demo_living_room_lamp")
                 .and_then(|device| device.area_id)
                 .map(|id| id.to_string())
         };
         server
-            .json("POST", "/api/areas", serde_json::json!({"name": "Study"}))
+            .json(
+                "POST",
+                "/api/areas",
+                serde_json::json!({"name": "Living room"}),
+            )
             .await?;
         assert_eq!(
             placed(&core).as_deref(),
-            Some("study"),
+            Some("living_room"),
             "the suggestion stands in"
         );
 
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": false}),
             )
             .await?;
@@ -3127,20 +3538,20 @@ mod tests {
         server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": null}),
             )
             .await?;
         assert_eq!(
             placed(&core).as_deref(),
-            Some("study"),
+            Some("living_room"),
             "or give it back to the device"
         );
 
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": true}),
             )
             .await?;
@@ -3178,7 +3589,7 @@ mod tests {
                         "area": "kitchen",
                         "points": [[0, 0], [400, 0], [400, 300], [0, 300]],
                     }],
-                    "devices": [{"device": "demo_lamp", "at": [120, 90]}],
+                    "devices": [{"device": "demo_living_room_lamp", "at": [120, 90]}],
                 },
             },
         });
@@ -3193,7 +3604,10 @@ mod tests {
         assert!(written.contains("from = [0, 0]"), "{written}");
         assert!(written.contains("kind = \"door\""), "{written}");
         assert!(written.contains("area = \"kitchen\""), "{written}");
-        assert!(written.contains("device = \"demo_lamp\""), "{written}");
+        assert!(
+            written.contains("device = \"demo_living_room_lamp\""),
+            "{written}"
+        );
 
         let home = server.read("/api/home").await?;
         assert_eq!(
@@ -3221,7 +3635,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": false}),
             )
             .await?;
@@ -3233,7 +3647,7 @@ mod tests {
         assert_eq!(
             core.devices()
                 .iter()
-                .find(|device| device.id.as_ref() == "demo_lamp")
+                .find(|device| device.id.as_ref() == "demo_living_room_lamp")
                 .and_then(|device| device.area_id.clone()),
             None,
             "and the core agrees"
@@ -3379,7 +3793,7 @@ mod tests {
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"area": "nowhere"}),
             )
             .await?;
@@ -3583,6 +3997,9 @@ mod tests {
                         unpair.reply(Ok(()));
                     }
                     irori_protocol::Incoming::Call(call) => call.reply(Ok(())),
+                    irori_protocol::Incoming::Picture(asked) => {
+                        asked.reply(Err("no cameras on this mesh".into()));
+                    }
                 }
             }
             Ok(())
@@ -3665,6 +4082,115 @@ mod tests {
         let written = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         assert!(!written.contains("mesh_bulb"), "{written}");
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A protocol that retires its one device, as the demo does its old ones: told anything,
+    /// it removes the lamp for good.
+    #[derive(Debug)]
+    struct Retiring;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct RetiringSettings {}
+
+    impl irori_protocol::Protocol for Retiring {
+        type Config = RetiringSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "retiring"
+            name = "Retiring"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: RetiringSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            ctx.describe_device(irori_types::DeviceDescription {
+                unique_id: "lamp".parse()?,
+                name: "Old lamp".parse()?,
+                manufacturer: None,
+                model: None,
+                sw_version: None,
+                hw_version: None,
+                suggested_area: None,
+                via_device_unique_id: None,
+            })
+            .await?;
+            ctx.describe_entity(irori_types::EntityDescription {
+                unique_id: "lamp_switch".parse()?,
+                name: None,
+                device_unique_id: Some("lamp".parse()?),
+                suggested_object_id: None,
+                capabilities: irori_types::Capabilities::Switch(irori_types::SwitchCapabilities {
+                    device_class: None,
+                }),
+                entity_category: None,
+            })
+            .await?;
+            while let Some(call) = ctx.next_call().await {
+                let gone = ctx.remove_device("lamp".parse()?).await;
+                call.reply(gone.map_err(|e| irori_protocol::ServiceError::failed(e.to_string())));
+            }
+            Ok(())
+        }
+    }
+
+    /// A device its own protocol retires leaves the config files as one a person removes does:
+    /// its row, its entities' rows and its spot on the plan. Otherwise it would linger there.
+    #[tokio::test]
+    async fn a_device_its_protocol_retires_is_forgotten_by_the_files() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        tokio::spawn(server.config.clone().forget_retired(core.clone()));
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Retiring>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if known(&core, "retiring_lamp") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/devices/retiring_lamp",
+                serde_json::json!({"name": "Hall lamp"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let devices = || std::fs::read_to_string(server.config_dir().join("devices.toml"));
+        assert!(devices()?.contains("retiring_lamp"), "{}", devices()?);
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/command",
+                serde_json::json!({"entity_id": "switch.retiring_lamp", "command": "turn_on"}),
+            )
+            .await?;
+        assert!(
+            status.is_success() || status == StatusCode::NOT_FOUND,
+            "{status} {body}"
+        );
+        for _ in 0..500 {
+            if !devices()?.contains("retiring_lamp") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(!devices()?.contains("retiring_lamp"), "{}", devices()?);
+        assert!(!known(&core, "retiring_lamp"));
         host.shutdown().await;
         Ok(())
     }
@@ -4190,16 +4716,16 @@ mod tests {
         assert!(
             home["held"].as_array().is_some_and(|all| all
                 .iter()
-                .any(|item| item["id"] == "demo_lamp"
+                .any(|item| item["id"] == "demo_living_room_lamp"
                     && item["provides"]["light"] == 1
-                    && item["model"] == "Virtual lamp")),
+                    && item["model"] == "Virtual colour lamp")),
             "{home}"
         );
 
         let (status, body) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_lamp",
+                "/api/devices/demo_living_room_lamp",
                 serde_json::json!({"added": true}),
             )
             .await?;
@@ -4208,16 +4734,19 @@ mod tests {
         assert!(
             home["entities"]
                 .as_array()
-                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.demo_lamp")),
+                .is_some_and(|all| all.iter().any(|e| e["id"] == "light.living_room_lamp")),
             "{home}"
         );
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
-        assert!(devices.contains("[devices.demo_lamp]"), "{devices}");
+        assert!(
+            devices.contains("[devices.demo_living_room_lamp]"),
+            "{devices}"
+        );
 
         let (status, _) = server
             .json(
                 "PATCH",
-                "/api/devices/demo_plug",
+                "/api/devices/demo_fridge_plug",
                 serde_json::json!({"ignored": true}),
             )
             .await?;
@@ -4355,7 +4884,720 @@ mod tests {
         Ok(())
     }
 
+    /// Every kind of helper is made the same way and is an entity of a kind Irori already has:
+    /// a number is set and counted within its range, a choice takes only its options, a button
+    /// says each time it was pressed. What's wrong with one is said when it's made.
+    #[tokio::test]
+    async fn helpers_of_every_kind_are_made_set_changed_and_listed() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let number_is = |core: &Core, id: &EntityId, value: f64| {
+            core.state(id).and_then(|s| s.state)
+                == Some(irori_types::State::Number(irori_types::NumberState {
+                    value,
+                }))
+        };
+        let command = |entity: &EntityId, command: &str, data: serde_json::Value| {
+            let mut body = serde_json::json!({"entity_id": entity, "command": command});
+            if !data.is_null() {
+                body["data"] = data;
+            }
+            server.json("POST", "/api/command", body)
+        };
+
+        // A number: within its range, at its `initial` until it's set.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers",
+                serde_json::json!({"name": "Evening brightness", "min": 0, "max": 100,
+                    "step": 5, "unit": "%", "initial": 40}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(made["entity_id"], "number.evening_brightness");
+        let evening = EntityId::try_from("number.evening_brightness")?;
+        until("the number exists", || number_is(&core, &evening, 40.0)).await?;
+        let (status, body) =
+            command(&evening, "set_value", serde_json::json!({"value": 95})).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("set", || number_is(&core, &evening, 95.0)).await?;
+        let (status, body) =
+            command(&evening, "set_value", serde_json::json!({"value": 140})).await?;
+        assert_ne!(status, StatusCode::OK, "{body}");
+        // Counted by its step, and no further than its range.
+        for _ in 0..2 {
+            let (status, body) = command(&evening, "increment", serde_json::Value::Null).await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+        }
+        until("counted up to the end", || {
+            number_is(&core, &evening, 100.0)
+        })
+        .await?;
+
+        // What's wrong with one is said, and nothing is made.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers",
+                serde_json::json!({"name": "Backwards", "min": 10, "max": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("min 10 is above its max 1")),
+            "{body}"
+        );
+        // Checked without being made: what it would be, or why not.
+        let (status, checked) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds/check",
+                serde_json::json!({"name": "Bright", "source": "number.evening_brightness", "above": 50}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{checked}");
+        assert_eq!(checked["entity_id"], "binary_sensor.bright");
+        let (status, checked) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds/check",
+                serde_json::json!({"name": "Bright", "source": "number.evening_brightness"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{checked}");
+        // Previewed before it's made, without a name: played over its source's day.
+        let (status, preview) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds/preview",
+                serde_json::json!({"source": "number.evening_brightness", "above": 50}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["entity"]["id"], "binary_sensor.preview");
+        assert_eq!(preview["computed"], true);
+        let said = preview["states"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            said.last().map(|s| s["state"]["on"].clone()),
+            Some(serde_json::json!(true)),
+            "{preview}"
+        );
+        // One a person sets starts as its `initial`.
+        let (status, preview) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers/preview",
+                serde_json::json!({"name": "Fan speed", "min": 0, "max": 10, "initial": 3}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{preview}");
+        assert_eq!(preview["computed"], false);
+        assert_eq!(preview["states"][0]["state"]["value"], 3.0, "{preview}");
+        // A name already in use: the check says the id Create would give it, and why.
+        let (status, checked) = server
+            .json(
+                "POST",
+                "/api/helpers/numbers/check",
+                serde_json::json!({"name": "Evening brightness", "min": 0, "max": 10}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{checked}");
+        assert_eq!(checked["entity_id"], "number.evening_brightness_2");
+        assert_eq!(
+            checked["taken"],
+            serde_json::json!(["number.evening_brightness"])
+        );
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/gadgets",
+                serde_json::json!({"name": "X"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("toggles, numbers")),
+            "{body}"
+        );
+
+        // A counter is a number too, so one with the same name gets an id of its own.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/counters",
+                serde_json::json!({"name": "Evening brightness"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(made["entity_id"], "number.evening_brightness_2");
+        let count = EntityId::try_from("number.evening_brightness_2")?;
+        until("the counter exists", || number_is(&core, &count, 0.0)).await?;
+        // The first number kept what it was left at through the restart a new helper is.
+        until("kept", || number_is(&core, &evening, 100.0)).await?;
+
+        // A choice takes only what it lists.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/selects",
+                serde_json::json!({"name": "House mode", "options": ["home", "away"]}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let mode = EntityId::try_from("select.house_mode")?;
+        let mode_is = |core: &Core, option: &str| {
+            core.state(&mode).and_then(|s| s.state)
+                == Some(irori_types::State::Select(irori_types::SelectState {
+                    option: option.to_owned(),
+                }))
+        };
+        until("the choice exists", || mode_is(&core, "home")).await?;
+        let (status, body) = command(
+            &mode,
+            "select_option",
+            serde_json::json!({"option": "away"}),
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("chosen", || mode_is(&core, "away")).await?;
+        let (status, _) = command(
+            &mode,
+            "select_option",
+            serde_json::json!({"option": "asleep"}),
+        )
+        .await?;
+        assert_ne!(status, StatusCode::OK);
+
+        // A button is pressed, and its event says so each time.
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/buttons",
+                serde_json::json!({"name": "Movie time"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(
+            made["entities"],
+            serde_json::json!(["button.movie_time", "event.movie_time"])
+        );
+        let button = EntityId::try_from("button.movie_time")?;
+        let pressed = EntityId::try_from("event.movie_time")?;
+        until("the button exists", || core.state(&pressed).is_some()).await?;
+        assert_eq!(core.state(&pressed).and_then(|s| s.state), None);
+        let (status, body) = command(&button, "press", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("pressed", || {
+            core.state(&pressed).and_then(|s| s.state)
+                == Some(irori_types::State::Event(irori_types::EventState {
+                    event_type: "pressed".to_owned(),
+                }))
+        })
+        .await?;
+        let first = core.state(&pressed).map(|s| s.last_changed);
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        command(&button, "press", serde_json::Value::Null).await?;
+        until("pressed again", || {
+            core.state(&pressed).map(|s| s.last_changed) != first
+        })
+        .await?;
+        // Its event is named after it: there's one name to change.
+        let (status, _) = server
+            .json(
+                "PATCH",
+                "/api/entities/event.movie_time",
+                serde_json::json!({"name": "Film"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // A changed range: a value it can no longer have goes back to its `initial`.
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/helpers/numbers/evening_brightness",
+                serde_json::json!({"max": 80}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        until("back to its initial", || number_is(&core, &evening, 40.0)).await?;
+        let (status, body) = server
+            .json(
+                "PATCH",
+                "/api/helpers/numbers/evening_brightness",
+                serde_json::json!({"max": 30}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("`initial`")),
+            "{body}"
+        );
+
+        // All of them, as they're written.
+        let listed = server.read("/api/helpers").await?;
+        let kinds: Vec<(&str, &str)> = listed
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|h| {
+                (
+                    h["kind"].as_str().unwrap_or(""),
+                    h["id"].as_str().unwrap_or(""),
+                )
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("numbers", "evening_brightness"),
+                ("counters", "evening_brightness_2"),
+                ("selects", "house_mode"),
+                ("buttons", "movie_time"),
+            ]
+        );
+        assert_eq!(listed[0]["max"], 80);
+        assert_eq!(listed[0]["entity_id"], "number.evening_brightness");
+
+        let (status, _) = server
+            .json(
+                "DELETE",
+                "/api/helpers/buttons/movie_time",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        until("the button and its event are gone", || {
+            core.state(&button).is_none() && core.state(&pressed).is_none()
+        })
+        .await?;
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A time helper starts at its `initial` and is set like any time; a date nobody has picked
+    /// is unknown until someone does.
+    #[tokio::test]
+    async fn a_time_and_a_date_helper_are_set_like_a_devices() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let text_of = |core: &Core, id: &EntityId| {
+            core.state(id)
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/times",
+                serde_json::json!({"name": "Wake up", "initial": "06:45"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let wake = EntityId::try_from("time.wake_up")?;
+        until("the time exists", || {
+            text_of(&core, &wake) == Some(serde_json::json!("06:45:00"))
+        })
+        .await?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/command",
+                serde_json::json!({"entity_id": wake, "command": "set_value",
+                    "data": {"time": "07:30"}}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("set", || {
+            text_of(&core, &wake) == Some(serde_json::json!("07:30:00"))
+        })
+        .await?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/dates",
+                serde_json::json!({"name": "Bins go out", "initial": "2026-02-30"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("a day that exists")),
+            "{body}"
+        );
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/dates",
+                serde_json::json!({"name": "Bins go out"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let bins = EntityId::try_from("date.bins_go_out")?;
+        until("the date exists", || core.state(&bins).is_some()).await?;
+        assert_eq!(text_of(&core, &bins), None, "nobody has picked a day");
+        // The time kept what it was set to through the restart a new helper is.
+        until("kept", || {
+            text_of(&core, &wake) == Some(serde_json::json!("07:30:00"))
+        })
+        .await?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/command",
+                serde_json::json!({"entity_id": bins, "command": "set_value",
+                    "data": {"date": "2026-10-20"}}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("picked", || {
+            text_of(&core, &bins) == Some(serde_json::json!("2026-10-20"))
+        })
+        .await?;
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A timer helper counts down by itself and says when it's done, on its event; paused, it
+    /// keeps what's left.
+    #[tokio::test]
+    async fn a_timer_helper_counts_down_and_says_it_finished() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/timers",
+                serde_json::json!({"name": "Egg", "duration": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        assert_eq!(
+            made["entities"],
+            serde_json::json!(["timer.egg", "event.egg"])
+        );
+        let egg = EntityId::try_from("timer.egg")?;
+        let ended = EntityId::try_from("event.egg")?;
+        let status_of = |core: &Core| {
+            core.state(&egg)
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+        let said = |core: &Core| {
+            core.state(&ended)
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+        until("the timer exists", || {
+            status_of(&core) == Some(serde_json::json!("idle"))
+        })
+        .await?;
+        let call = |command: &str, data: serde_json::Value| {
+            let mut body = serde_json::json!({"entity_id": egg, "command": command});
+            if !data.is_null() {
+                body["data"] = data;
+            }
+            server.json("POST", "/api/command", body)
+        };
+
+        // Paused, it keeps what's left; cancelled, it says so.
+        let (status, body) = call("start", serde_json::json!({"duration": 60})).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("started", || {
+            said(&core) == Some(serde_json::json!("started"))
+        })
+        .await?;
+        let (status, body) = call("pause", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("paused", || {
+            status_of(&core) == Some(serde_json::json!("paused"))
+        })
+        .await?;
+        let remaining = core
+            .state(&egg)
+            .and_then(|s| s.state)
+            .and_then(|state| state.field("remaining"));
+        assert!(
+            matches!(remaining, Some(irori_types::Typed::Number(n)) if n > 55.0 && n <= 60.0),
+            "{remaining:?}"
+        );
+        let (status, _) = call("pause", serde_json::Value::Null).await?;
+        assert_ne!(status, StatusCode::OK, "a paused timer isn't paused again");
+        call("cancel", serde_json::Value::Null).await?;
+        until("cancelled", || {
+            said(&core) == Some(serde_json::json!("cancelled"))
+        })
+        .await?;
+
+        // Its own length, run out by itself.
+        let (status, body) = call("start", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("running", || {
+            status_of(&core) == Some(serde_json::json!("active"))
+        })
+        .await?;
+        for _ in 0..300 {
+            if said(&core) == Some(serde_json::json!("finished")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(said(&core), Some(serde_json::json!("finished")));
+        assert_eq!(status_of(&core), Some(serde_json::json!("idle")));
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A schedule helper says whether it's on now and when that changes, on the home's clock.
+    #[tokio::test]
+    async fn a_schedule_helper_says_whether_it_is_on_and_until_when() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+        let every_day = serde_json::json!([["00:00", "24:00"]]);
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/helpers/schedules",
+                serde_json::json!({"name": "Always", "mon": every_day, "tue": every_day,
+                    "wed": every_day, "thu": every_day, "fri": every_day, "sat": every_day,
+                    "sun": every_day}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{made}");
+        let always = EntityId::try_from("schedule.always")?;
+        until("on", || {
+            core.state(&always).and_then(|s| s.state)
+                == Some(irori_types::State::Schedule(irori_types::ScheduleState {
+                    on: true,
+                    next_change: None,
+                }))
+        })
+        .await?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/schedules",
+                serde_json::json!({"name": "Backwards", "mon": [["22:00", "02:00"]]}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("ends before it starts")),
+            "{body}"
+        );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Helpers worked out from other entities follow them: a group of toggles is on while one
+    /// is and turns them all on, a threshold follows a number, a meter counts what a counter
+    /// went up by. One whose source isn't there says why.
+    #[tokio::test]
+    async fn helpers_worked_out_from_others_follow_them() -> anyhow::Result<()> {
+        let storage: Arc<dyn irori_protocol::Storage> =
+            Arc::new(irori_protocol::MemoryStorage::default());
+        let core = core();
+        core.use_storage(Arc::clone(&storage));
+        let server = Server::new(core.clone())?;
+        let host = helpers(&core).await?;
+
+        let primary = |core: &Core, id: &str| {
+            core.state(&EntityId::try_from(id).expect("an entity id"))
+                .and_then(|s| s.state)
+                .map(|state| state.primary().to_json())
+        };
+        let call = |entity: &str, command: &str, data: serde_json::Value| {
+            let mut body = serde_json::json!({"entity_id": entity, "command": command});
+            if !data.is_null() {
+                body["data"] = data;
+            }
+            server.json("POST", "/api/command", body)
+        };
+        for (table, body) in [
+            ("toggles", serde_json::json!({"name": "Lamp one"})),
+            ("toggles", serde_json::json!({"name": "Lamp two"})),
+            (
+                "numbers",
+                serde_json::json!({"name": "Level", "min": 0, "max": 100, "initial": 10}),
+            ),
+            ("counters", serde_json::json!({"name": "Rings"})),
+            (
+                "groups",
+                serde_json::json!({"name": "Lamps", "kind": "switch",
+                "members": ["switch.lamp_one", "switch.lamp_two"]}),
+            ),
+            (
+                "thresholds",
+                serde_json::json!({"name": "High", "source": "number.level", "above": 50}),
+            ),
+            (
+                "meters",
+                serde_json::json!({"name": "Rings today", "source": "number.rings", "every": "day"}),
+            ),
+            (
+                "thresholds",
+                serde_json::json!({"name": "Nowhere", "source": "sensor.missing", "above": 1}),
+            ),
+        ] {
+            let path = format!("/api/helpers/{table}");
+            let (status, made) = server.json("POST", &path, body).await?;
+            assert_eq!(status, StatusCode::CREATED, "{made}");
+        }
+        until("the group is off", || {
+            primary(&core, "switch.lamps") == Some(serde_json::json!(false))
+        })
+        .await?;
+        until("the threshold is off", || {
+            primary(&core, "binary_sensor.high") == Some(serde_json::json!(false))
+        })
+        .await?;
+
+        // The group is on while any member is, and turning it on turns them all on.
+        let (status, body) = call("switch.lamp_one", "turn_on", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("the group is on", || {
+            primary(&core, "switch.lamps") == Some(serde_json::json!(true))
+        })
+        .await?;
+        call("switch.lamp_one", "turn_off", serde_json::Value::Null).await?;
+        until("off again", || {
+            primary(&core, "switch.lamps") == Some(serde_json::json!(false))
+        })
+        .await?;
+        let (status, body) = call("switch.lamps", "turn_on", serde_json::Value::Null).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        until("both members on", || {
+            primary(&core, "switch.lamp_one") == Some(serde_json::json!(true))
+                && primary(&core, "switch.lamp_two") == Some(serde_json::json!(true))
+        })
+        .await?;
+
+        // The threshold follows its number.
+        call(
+            "number.level",
+            "set_value",
+            serde_json::json!({"value": 80}),
+        )
+        .await?;
+        until("high", || {
+            primary(&core, "binary_sensor.high") == Some(serde_json::json!(true))
+        })
+        .await?;
+
+        // The meter counts what the counter went up by.
+        for _ in 0..3 {
+            call("number.rings", "increment", serde_json::Value::Null).await?;
+        }
+        until("three rings", || {
+            primary(&core, "sensor.rings_today") == Some(serde_json::json!(2.0))
+                || primary(&core, "sensor.rings_today") == Some(serde_json::json!(3.0))
+        })
+        .await?;
+
+        // A source that isn't there is said, not guessed around.
+        let nowhere = core
+            .state(&EntityId::try_from("binary_sensor.nowhere")?)
+            .expect("described");
+        assert_eq!(nowhere.state, None);
+        assert!(
+            nowhere
+                .attributes
+                .iter()
+                .any(|(key, why)| key.as_str() == "problem"
+                    && why
+                        .as_str()
+                        .is_some_and(|why| why.contains("sensor.missing"))),
+            "{:?}",
+            nowhere.attributes
+        );
+
+        // Helpers that read each other in a ring are refused.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/helpers/thresholds",
+                serde_json::json!({"name": "Loop", "source": "binary_sensor.loop", "above": 1}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// An icon arrives as an image with a policy that stops it doing anything but being one.
+    /// A camera's picture comes from its protocol as it is now, never cached, and served so
+    /// that opening it on its own can't run anything. Only a camera has one.
+    #[tokio::test]
+    async fn a_camera_sends_its_picture_and_nothing_else_has_one() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        let server = Server::new(core.clone())?;
+        let res = server
+            .app()?
+            .oneshot(
+                Request::get("/api/entities/camera.garden_camera_1/picture").body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        let headers = res.headers().clone();
+        assert_eq!(headers["content-type"], "image/svg+xml");
+        assert_eq!(headers["cache-control"], "no-store");
+        assert_eq!(headers["x-content-type-options"], "nosniff");
+        assert!(
+            headers["content-security-policy"]
+                .to_str()?
+                .contains("sandbox")
+        );
+        let body = String::from_utf8(res.into_body().collect().await?.to_bytes().to_vec())?;
+        assert!(
+            body.starts_with("<svg") && body.contains("Garden camera 1"),
+            "{body}"
+        );
+
+        for (path, wanted) in [
+            (
+                "/api/entities/light.living_room_lamp/picture",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                "/api/entities/camera.nowhere/picture",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let (status, body) = server.send(Request::get(path).body(Body::empty())?).await?;
+            assert_eq!(status, wanted, "{path}: {}", String::from_utf8_lossy(&body));
+        }
+        host.shutdown().await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn an_extensions_icon_is_served_as_a_locked_down_image() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -4548,6 +5790,39 @@ mod tests {
                             None => "No picture.".to_owned(),
                         };
                         let line = serde_json::json!({"choices": [{"delta": {"content": said}}]});
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
+                    // Fills in the helper builder: a toggle, or with `proposes-badly` a threshold
+                    // on a sensor the home doesn't have. Says what came back.
+                    if body["model"] == "proposes" || body["model"] == "proposes-badly" {
+                        let report = body["messages"].as_array().and_then(|messages| {
+                            messages
+                                .iter()
+                                .find(|m| m["role"] == "tool")
+                                .and_then(|m| m["content"].as_str().map(str::to_owned))
+                        });
+                        let arguments = if body["model"] == "proposes" {
+                            serde_json::json!({"kind": "toggles", "name": "Guest mode",
+                                "settings": {"initial": true}})
+                        } else {
+                            serde_json::json!({"kind": "thresholds", "name": "Too warm",
+                                "settings": "{\"source\": \"sensor.nowhere\", \"above\": 26}"})
+                        };
+                        let line = match report {
+                            Some(report) => serde_json::json!({"choices": [{"delta": {
+                                "content": format!("Told: {report}"),
+                            }}]}),
+                            None => serde_json::json!({"choices": [{"delta": {
+                                "tool_calls": [{"index": 0, "id": "a", "function": {
+                                    "name": "propose_helper",
+                                    "arguments": arguments.to_string(),
+                                }}],
+                            }}]}),
+                        };
                         return (
                             [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
                             format!("data: {line}\n\ndata: [DONE]\n\n"),
@@ -4762,6 +6037,67 @@ mod tests {
                 .lines()
                 .filter_map(|line| serde_json::from_str(line.strip_prefix("data:")?.trim()).ok())
                 .collect())
+        }
+
+        /// In the helper builder the assistant fills the form in. Nothing is made until the
+        /// person presses Create.
+        #[tokio::test]
+        async fn the_assistant_fills_in_the_helper_builder_and_makes_nothing() -> anyhow::Result<()>
+        {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "proposes"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let lines = |text: String| -> Vec<serde_json::Value> {
+                text.lines()
+                    .filter_map(|line| {
+                        serde_json::from_str(line.strip_prefix("data:")?.trim()).ok()
+                    })
+                    .collect()
+            };
+            let said = lines(events(&server, "helpers", "A guest mode switch, on").await?);
+            let helper = said
+                .iter()
+                .find_map(|event| event.get("helper"))
+                .unwrap_or_else(|| panic!("nothing filled in: {said:?}"));
+            assert_eq!(helper["kind"], "toggles");
+            assert_eq!(helper["name"], "Guest mode");
+            assert_eq!(helper["settings"]["initial"], true);
+            assert_eq!(helper["entities"][0], "switch.guest_mode");
+            assert!(
+                said.iter().any(|event| event["delta"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("Create"))),
+                "{said:?}"
+            );
+            let file = std::fs::read_to_string(
+                server.config_dir().join("extensions").join("helpers.toml"),
+            )
+            .unwrap_or_default();
+            assert!(!file.contains("guest_mode"), "{file}");
+
+            // A source the home doesn't have is said to the model, and nothing is filled in.
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "proposes-badly"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let said = lines(events(&server, "helpers", "Tell me when it's too warm").await?);
+            assert!(
+                said.iter().all(|event| event.get("helper").is_none()),
+                "{said:?}"
+            );
+            let text = serde_json::Value::from(said).to_string();
+            assert!(text.contains("sensor.nowhere"), "{text}");
+
+            // Elsewhere there is no builder to fill in.
+            let said = lines(events(&server, "general", "A guest mode switch").await?);
+            assert!(
+                said.iter().all(|event| event.get("helper").is_none()),
+                "{said:?}"
+            );
+            Ok(())
         }
 
         /// On the Floorplan page the assistant may draw — on the copy the person is editing,
@@ -5699,7 +7035,7 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "switch.demo_plug", "command": "turn_on" })),
+            Some(serde_json::json!({ "entity_id": "switch.fridge_plug", "command": "turn_on" })),
             Some(&guest),
             true,
         )
@@ -6498,7 +7834,9 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_on" })),
+            Some(
+                serde_json::json!({ "entity_id": "light.living_room_lamp", "command": "turn_on" }),
+            ),
             &secret,
         )
         .await?;
@@ -6525,7 +7863,9 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_off" })),
+            Some(
+                serde_json::json!({ "entity_id": "light.living_room_lamp", "command": "turn_off" }),
+            ),
             Some(&owner),
             false,
         )
@@ -6555,7 +7895,9 @@ mod tests {
             &app,
             "POST",
             "/api/command",
-            Some(serde_json::json!({ "entity_id": "light.demo_lamp", "command": "turn_off" })),
+            Some(
+                serde_json::json!({ "entity_id": "light.living_room_lamp", "command": "turn_off" }),
+            ),
             &secret,
         )
         .await?;

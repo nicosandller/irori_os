@@ -46,6 +46,28 @@ pub enum EntityKind {
     MediaPlayer,
     /// Newer software for something: a device's firmware, an extension.
     Update,
+    /// A burglar alarm's panel: armed, disarmed, going off.
+    AlarmControlPanel,
+    /// A calendar day someone sets, e.g. when the bins go out.
+    Date,
+    /// A time of day someone sets, e.g. an alarm clock's.
+    Time,
+    /// A moment someone sets: a day and a time, e.g. when a holiday ends.
+    Datetime,
+    /// A robot vacuum cleaner.
+    Vacuum,
+    /// A robot lawn mower.
+    LawnMower,
+    /// A scene a device keeps and can be told to set. It has no value.
+    Scene,
+    /// Where something is, as far as the home cares: at home or not.
+    DeviceTracker,
+    /// Something that counts down and says when it's done.
+    Timer,
+    /// On during the times a week sets out, off between them.
+    Schedule,
+    /// Something that sees: off, idle or recording, and a picture a page can ask for.
+    Camera,
 }
 
 impl EntityKind {
@@ -69,6 +91,17 @@ impl EntityKind {
         Self::Humidifier,
         Self::MediaPlayer,
         Self::Update,
+        Self::AlarmControlPanel,
+        Self::Date,
+        Self::Time,
+        Self::Datetime,
+        Self::Vacuum,
+        Self::LawnMower,
+        Self::Scene,
+        Self::DeviceTracker,
+        Self::Timer,
+        Self::Schedule,
+        Self::Camera,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -93,6 +126,17 @@ impl EntityKind {
             Self::Humidifier => "humidifier",
             Self::MediaPlayer => "media_player",
             Self::Update => "update",
+            Self::AlarmControlPanel => "alarm_control_panel",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::Datetime => "datetime",
+            Self::Vacuum => "vacuum",
+            Self::LawnMower => "lawn_mower",
+            Self::Scene => "scene",
+            Self::DeviceTracker => "device_tracker",
+            Self::Timer => "timer",
+            Self::Schedule => "schedule",
+            Self::Camera => "camera",
         }
     }
 

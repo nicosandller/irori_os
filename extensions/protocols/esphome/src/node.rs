@@ -15,7 +15,7 @@ use esphome_client::types::{
     EspHomeMessage, ListEntitiesRequest, PingResponse, SubscribeStatesRequest,
 };
 use irori_protocol::types::WaterHeaterMode;
-use irori_protocol::types::units::TemperatureUnit;
+use irori_protocol::types::units::{Conversion, TemperatureUnit};
 use irori_protocol::types::{
     Capabilities, ContextId, DeviceDescription, EntityDescription, EntityKind, HvacMode, State,
     StateReport, UniqueId, Unmodeled,
@@ -459,6 +459,10 @@ struct Units {
     climate_reads: HashMap<u32, map::climate::Reads>,
     /// Water heaters that report the water's temperature.
     reads_current: std::collections::HashSet<u32>,
+    /// Temperature sensors and settings that aren't in °C, by key. A sensor and a number
+    /// can share a key, so each kind has its own.
+    sensors: HashMap<u32, Conversion>,
+    numbers: HashMap<u32, Conversion>,
 }
 
 impl Units {
@@ -514,18 +518,28 @@ async fn list_entities(
                 e.name.clone(),
                 map::switch::describe(device, e),
             ),
-            EspHomeMessage::ListEntitiesSensorResponse(e) => (
-                e.key,
-                "sensor",
-                e.name.clone(),
-                map::sensor::describe(device, e),
-            ),
-            EspHomeMessage::ListEntitiesNumberResponse(e) => (
-                e.key,
-                "number",
-                e.name.clone(),
-                map::number::describe(device, e),
-            ),
+            EspHomeMessage::ListEntitiesSensorResponse(e) => {
+                if let Some(conversion) = map::sensor::conversion(e) {
+                    units.sensors.insert(e.key, conversion);
+                }
+                (
+                    e.key,
+                    "sensor",
+                    e.name.clone(),
+                    map::sensor::describe(device, e),
+                )
+            }
+            EspHomeMessage::ListEntitiesNumberResponse(e) => {
+                if let Some(conversion) = map::number::conversion(e) {
+                    units.numbers.insert(e.key, conversion);
+                }
+                (
+                    e.key,
+                    "number",
+                    e.name.clone(),
+                    map::number::describe(device, e),
+                )
+            }
             EspHomeMessage::ListEntitiesSelectResponse(e) => (
                 e.key,
                 "select",
@@ -561,6 +575,36 @@ async fn list_entities(
                 "lock",
                 e.name.clone(),
                 map::lock::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesMediaPlayerResponse(e) => (
+                e.key,
+                "media_player",
+                e.name.clone(),
+                map::media_player::describe(device, e),
+            ),
+            EspHomeMessage::ListEntitiesDateResponse(e) => (
+                e.key,
+                "date",
+                e.name.clone(),
+                map::moment::describe_date(device, e),
+            ),
+            EspHomeMessage::ListEntitiesTimeResponse(e) => (
+                e.key,
+                "time",
+                e.name.clone(),
+                map::moment::describe_time(device, e),
+            ),
+            EspHomeMessage::ListEntitiesDateTimeResponse(e) => (
+                e.key,
+                "datetime",
+                e.name.clone(),
+                map::moment::describe_datetime(device, e),
+            ),
+            EspHomeMessage::ListEntitiesAlarmControlPanelResponse(e) => (
+                e.key,
+                "alarm_control_panel",
+                e.name.clone(),
+                map::alarm_control_panel::describe(device, e),
             ),
             EspHomeMessage::ListEntitiesUpdateResponse(e) => (
                 e.key,
@@ -668,6 +712,8 @@ fn report(
     commanded: &mut HashMap<u32, VecDeque<(ContextId, Instant)>>,
 ) -> Option<StateReport> {
     let capabilities = &known.capabilities;
+    // How this entity's value was converted on the way in, when it was.
+    let mut converted = None;
     let (key, state) = match message {
         EspHomeMessage::ClimateStateResponse(s) => {
             let Some(Capabilities::Climate(caps)) = capabilities.get(&s.key) else {
@@ -715,6 +761,18 @@ fn report(
             (s.key, Some(map::light::state(s, known)))
         }
         EspHomeMessage::LockStateResponse(s) => (s.key, map::lock::state(s)),
+        EspHomeMessage::MediaPlayerStateResponse(s) => {
+            let Some(Capabilities::MediaPlayer(known)) = capabilities.get(&s.key) else {
+                return None;
+            };
+            (s.key, map::media_player::state(s, known))
+        }
+        EspHomeMessage::DateStateResponse(s) => (s.key, map::moment::date_state(s)),
+        EspHomeMessage::TimeStateResponse(s) => (s.key, map::moment::time_state(s)),
+        EspHomeMessage::DateTimeStateResponse(s) => (s.key, map::moment::datetime_state(s)),
+        EspHomeMessage::AlarmControlPanelStateResponse(s) => {
+            (s.key, map::alarm_control_panel::state(s))
+        }
         EspHomeMessage::UpdateStateResponse(s) => (s.key, map::update::state(s)),
         EspHomeMessage::SirenStateResponse(s) => (s.key, Some(map::siren::state(s))),
         EspHomeMessage::ValveStateResponse(s) => {
@@ -737,9 +795,15 @@ fn report(
         }
         EspHomeMessage::SwitchStateResponse(s) => (s.key, Some(map::switch::state(s))),
         EspHomeMessage::BinarySensorStateResponse(s) => (s.key, Some(map::binary_sensor::state(s))),
-        EspHomeMessage::SensorStateResponse(s) => (s.key, map::sensor::state(s)),
+        EspHomeMessage::SensorStateResponse(s) => {
+            converted = known.units.sensors.get(&s.key).copied();
+            (s.key, map::sensor::state(s, converted))
+        }
         EspHomeMessage::TextSensorStateResponse(s) => (s.key, map::sensor::text_state(s)),
-        EspHomeMessage::NumberStateResponse(s) => (s.key, map::number::state(s)),
+        EspHomeMessage::NumberStateResponse(s) => {
+            converted = known.units.numbers.get(&s.key).copied();
+            (s.key, map::number::state(s, converted))
+        }
         EspHomeMessage::SelectStateResponse(s) => (s.key, map::select::state(s)),
         EspHomeMessage::TextStateResponse(s) => (s.key, map::text::state(s)),
         EspHomeMessage::EventResponse(e) => (e.key, Some(map::event::state(e))),
@@ -749,7 +813,8 @@ fn report(
     Some(StateReport {
         unique_id,
         state,
-        attributes: std::collections::BTreeMap::new(),
+        // A temperature that isn't in °C on the device says which unit it is there.
+        attributes: Conversion::attributes(converted),
         caused_by: caused_by(key, commanded),
         replayed: false,
     })
@@ -807,7 +872,10 @@ async fn command(
     let written = match kind {
         EntityKind::Light => write(client, map::light::command(key, service)).await,
         EntityKind::Switch => write(client, map::switch::command(key, service)).await,
-        EntityKind::Number => write(client, map::number::command(key, service)).await,
+        EntityKind::Number => {
+            let conversion = known.units.numbers.get(&key).copied();
+            write(client, map::number::command(key, service, conversion)).await
+        }
         EntityKind::Select => write(client, map::select::command(key, service)).await,
         EntityKind::Text => write(client, map::text::command(key, service)).await,
         EntityKind::Button => write(client, map::button::command(key)).await,
@@ -815,6 +883,26 @@ async fn command(
         EntityKind::Valve => write(client, map::valve::command(key, service)).await,
         EntityKind::Siren => write(client, map::siren::command(key, service)).await,
         EntityKind::Lock => write(client, map::lock::command(key, service)).await,
+        EntityKind::MediaPlayer => match map::media_player::command(key, service) {
+            Ok(request) => write(client, request).await,
+            Err(why) => Err(why),
+        },
+        EntityKind::Date => match map::moment::date_command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err("that isn't a day it can be set to".to_owned()),
+        },
+        EntityKind::Time => match map::moment::time_command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err("that isn't a time it can be set to".to_owned()),
+        },
+        EntityKind::Datetime => match map::moment::datetime_command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err("that isn't a moment it can hold: it counts from 1970 to 2106".to_owned()),
+        },
+        EntityKind::AlarmControlPanel => match map::alarm_control_panel::command(key, service) {
+            Some(request) => write(client, request).await,
+            None => Err(format!("`{}` isn't something a panel does", service.name())),
+        },
         EntityKind::Update => write(client, map::update::command(key, service)).await,
         EntityKind::Fan => {
             let known = match capabilities.get(&key) {
@@ -849,7 +937,13 @@ async fn command(
         }
         // The core only sends these to an entity of the kind, and ESPHome has none.
         EntityKind::Humidifier
-        | EntityKind::MediaPlayer
+        | EntityKind::Vacuum
+        | EntityKind::LawnMower
+        | EntityKind::Scene
+        | EntityKind::DeviceTracker
+        | EntityKind::Timer
+        | EntityKind::Schedule
+        | EntityKind::Camera
         | EntityKind::Sensor
         | EntityKind::BinarySensor
         | EntityKind::Event => Err(format!("ESPHome has no {kind} services")),
@@ -988,7 +1082,7 @@ mod tests {
         let connection = Connection { id: 1, address };
         let task = tokio::spawn(run(connection, None, events_tx, calls_rx));
 
-        // What it has. The fake device also offers a speaker, which Irori doesn't model yet.
+        // What it has. The fake device also offers a camera, which Irori has no kind for.
         let Some(Event::Arrived {
             device,
             entities,
@@ -1004,14 +1098,14 @@ mod tests {
         assert_eq!(
             entities.len(),
             5,
-            "the speaker should be left out: {entities:?}"
+            "the camera should be left out: {entities:?}"
         );
         // ...and listed on the device instead, so it isn't simply gone.
         assert_eq!(unmodeled.len(), 1, "{unmodeled:?}");
-        assert_eq!(unmodeled[0].platform.as_str(), "media_player");
+        assert_eq!(unmodeled[0].platform.as_str(), "camera");
         assert_eq!(
             unmodeled[0].name.as_ref().map(|n| n.as_str()),
-            Some("Speaker")
+            Some("Porch camera")
         );
         assert_eq!(
             unmodeled[0].device_unique_id.as_ref().map(|d| d.as_str()),

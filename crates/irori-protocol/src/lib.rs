@@ -25,6 +25,7 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 pub use irori_types as types;
 
 pub mod engine;
+pub mod home;
 mod process;
 pub use process::{ExtProcess, FromExt, ToExt, WireCommand, serve, spawn};
 
@@ -242,6 +243,59 @@ impl IncomingCall {
     }
 }
 
+/// A picture from a camera, as its protocol sends it (`docs/specs/protocols.md` §5.2).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Picture {
+    /// One of [`PICTURE_TYPES`].
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
+impl fmt::Debug for Picture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Picture({}, {} bytes)",
+            self.content_type,
+            self.bytes.len()
+        )
+    }
+}
+
+/// The most a picture may be. Pictures cross the extension pipe as text, a third bigger again.
+pub const MAX_PICTURE: usize = 2 * 1024 * 1024;
+
+/// What a picture may be. A page shows it as an image, so nothing that runs.
+pub const PICTURE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/svg+xml"];
+
+impl Picture {
+    /// Whether the core passes it on: a type it knows, no bigger than [`MAX_PICTURE`].
+    pub fn check(&self) -> Result<(), String> {
+        if !PICTURE_TYPES.contains(&self.content_type.as_str()) {
+            return Err(format!(
+                "a picture is one of {}, not {}",
+                PICTURE_TYPES.join(", "),
+                self.content_type
+            ));
+        }
+        if self.bytes.is_empty() || self.bytes.len() > MAX_PICTURE {
+            return Err(format!(
+                "a picture is up to {MAX_PICTURE} bytes, and this one is {}",
+                self.bytes.len()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Where an action's answer goes: an action's or an unpair's says only whether it worked, a
+/// picture's carries the picture.
+#[derive(Debug)]
+enum ActionReply {
+    Done(oneshot::Sender<Result<(), String>>),
+    Picture(oneshot::Sender<Result<Picture, String>>),
+}
+
 /// A UI-triggered action waiting for its result (`docs/specs/protocols.md` §5, the manifest's
 /// `contributes.protocol.actions`). Reply exactly once; dropping it without replying reports a
 /// failure.
@@ -254,12 +308,34 @@ pub struct IncomingAction {
     /// Set when this isn't an action at all but an unpair, which travels the same way.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Unpair`].
     unpair: Option<(UniqueId, bool)>,
-    reply: oneshot::Sender<Result<(), String>>,
+    /// Set when it's a page asking a camera for a picture, which travels the same way too.
+    /// [`ProtocolContext::next`] hands those out as [`Incoming::Picture`].
+    picture: Option<UniqueId>,
+    reply: ActionReply,
 }
 
 impl IncomingAction {
     pub fn reply(self, result: Result<(), String>) {
-        let _ = self.reply.send(result);
+        match self.reply {
+            ActionReply::Done(reply) => {
+                let _ = reply.send(result);
+            }
+            ActionReply::Picture(reply) => {
+                let _ = reply.send(result.and_then(|()| Err("it sent no picture".to_owned())));
+            }
+        }
+    }
+
+    /// Answers a picture request; for the host, which reads the answer off the pipe.
+    pub fn reply_picture(self, result: Result<Picture, String>) {
+        match self.reply {
+            ActionReply::Picture(reply) => {
+                let _ = reply.send(result);
+            }
+            ActionReply::Done(reply) => {
+                let _ = reply.send(result.map(|_| ()));
+            }
+        }
     }
 
     /// The device to unpair and whether to force it, if that's what this is. For the host,
@@ -268,15 +344,47 @@ impl IncomingAction {
         self.unpair.as_ref().map(|(device, force)| (device, *force))
     }
 
+    /// The camera a picture is wanted from, if that's what this is. For the host.
+    pub fn picturing(&self) -> Option<&UniqueId> {
+        self.picture.as_ref()
+    }
+
     fn sorted(self) -> Incoming {
-        match self.unpair {
-            Some((unique_id, force)) => Incoming::Unpair(IncomingUnpair {
-                unique_id,
-                force,
-                reply: self.reply,
+        match (self.unpair, self.picture, self.reply) {
+            (Some((unique_id, force)), _, ActionReply::Done(reply)) => {
+                Incoming::Unpair(IncomingUnpair {
+                    unique_id,
+                    force,
+                    reply,
+                })
+            }
+            (_, Some(unique_id), ActionReply::Picture(reply)) => {
+                Incoming::Picture(IncomingPicture { unique_id, reply })
+            }
+            (unpair, picture, reply) => Incoming::Action(Self {
+                action_id: self.action_id,
+                stop: self.stop,
+                unpair,
+                picture,
+                reply,
             }),
-            None => Incoming::Action(self),
         }
+    }
+}
+
+/// A page asking one of this protocol's cameras for a picture of what it sees now
+/// (`docs/specs/protocols.md` §5.2). Only sent for an entity of the `camera` kind. Reply exactly
+/// once, quickly; dropping it without replying reports a failure.
+#[derive(Debug)]
+pub struct IncomingPicture {
+    /// The camera entity's `unique_id`, as this protocol described it.
+    pub unique_id: UniqueId,
+    reply: oneshot::Sender<Result<Picture, String>>,
+}
+
+impl IncomingPicture {
+    pub fn reply(self, result: Result<Picture, String>) {
+        let _ = self.reply.send(result);
     }
 }
 
@@ -308,6 +416,7 @@ pub enum Incoming {
     Call(IncomingCall),
     Action(IncomingAction),
     Unpair(IncomingUnpair),
+    Picture(IncomingPicture),
 }
 
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
@@ -318,11 +427,24 @@ pub struct ProtocolContext {
     calls: mpsc::Receiver<IncomingCall>,
     actions: mpsc::Receiver<IncomingAction>,
     stop: watch::Receiver<bool>,
+    /// The rest of the home, for a built-in whose manifest asks for API scopes.
+    home: Option<Arc<dyn home::Home>>,
 }
 
 const CORE_GONE: &str = "the core is shutting down";
 
 impl ProtocolContext {
+    /// The rest of the home: other entities, their states and history, and calls to them.
+    /// Only for a built-in whose manifest asks for API scopes; `None` for every other.
+    pub fn home(&self) -> Option<Arc<dyn home::Home>> {
+        self.home.clone()
+    }
+
+    /// Gives the protocol the rest of the home. The host does this for a built-in that asks.
+    pub fn give_home(&mut self, home: Arc<dyn home::Home>) {
+        self.home = Some(home);
+    }
+
     async fn request(&self, op: impl FnOnce(host::Reply) -> host::Op) -> Result<(), Rejected> {
         let (reply, result) = oneshot::channel();
         self.ops
@@ -466,6 +588,9 @@ impl ProtocolContext {
                         // A protocol that only reads actions never said it unpairs.
                         Incoming::Unpair(unpair) => {
                             unpair.reply(Err("this protocol can't unpair a device".into()));
+                        }
+                        Incoming::Picture(picture) => {
+                            picture.reply(Err("this protocol has no pictures".into()));
                         }
                         Incoming::Call(_) => {}
                     }
@@ -855,6 +980,7 @@ pub mod host {
             calls: calls_rx,
             actions: actions_rx,
             stop: stop_rx,
+            home: None,
         };
         let host = HostEnd {
             ops: ops_rx,
@@ -883,7 +1009,8 @@ pub mod host {
             action_id,
             stop: false,
             unpair: None,
-            reply,
+            picture: None,
+            reply: ActionReply::Done(reply),
         };
         (incoming, result)
     }
@@ -905,6 +1032,22 @@ pub mod host {
     ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
         let (mut incoming, result) = incoming_action(String::new());
         incoming.unpair = Some((unique_id, force));
+        (incoming, result)
+    }
+
+    /// Builds a picture request for the protocol, as it travels: on the actions channel.
+    /// [`ProtocolContext::next`] hands it out as [`Incoming::Picture`].
+    pub fn incoming_picture(
+        unique_id: UniqueId,
+    ) -> (IncomingAction, oneshot::Receiver<Result<Picture, String>>) {
+        let (reply, result) = oneshot::channel();
+        let incoming = IncomingAction {
+            action_id: String::new(),
+            stop: false,
+            unpair: None,
+            picture: Some(unique_id),
+            reply: ActionReply::Picture(reply),
+        };
         (incoming, result)
     }
 }

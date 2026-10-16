@@ -33,7 +33,15 @@ use crate::{Entity, EntityKind, EntityState};
 /// 15. Adds `humidifier`.
 /// 16. Adds `media_player`.
 /// 17. Adds `update`.
-pub const ENTITY_FORMAT: u32 = 17;
+/// 18. Adds `alarm_control_panel`.
+/// 19. Adds `date`, `time` and `datetime`.
+/// 20. Adds `vacuum`.
+/// 21. Adds `lawn_mower`.
+/// 22. Adds `scene`.
+/// 23. Adds `device_tracker`.
+/// 24. Adds `timer`.
+/// 25. Adds `schedule`.
+pub const ENTITY_FORMAT: u32 = 26;
 
 pub(crate) fn first() -> u32 {
     1
@@ -64,6 +72,15 @@ impl EntityKind {
             Self::Humidifier => 15,
             Self::MediaPlayer => 16,
             Self::Update => 17,
+            Self::AlarmControlPanel => 18,
+            Self::Date | Self::Time | Self::Datetime => 19,
+            Self::Vacuum => 20,
+            Self::LawnMower => 21,
+            Self::Scene => 22,
+            Self::DeviceTracker => 23,
+            Self::Timer => 24,
+            Self::Schedule => 25,
+            Self::Camera => 26,
         }
     }
 }

@@ -126,6 +126,17 @@
             "entity": {
               "$ref": "#/$defs/EntityId"
             },
+            "field": {
+              "description": "One of the entity's values beside its main one, by name: a blind's `position`, a\nthermostat's `current_temperature`. Left out, it's the main value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ObjectId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "is": {
               "anyOf": [
                 {
@@ -421,6 +432,50 @@
         {
           "maxLength": 71,
           "pattern": "^update\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 84,
+          "pattern": "^alarm_control_panel\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^date\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^time\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^datetime\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^vacuum\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 79,
+          "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^timer\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^schedule\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^camera\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -767,7 +822,19 @@
       "description": "A service a rule may name: `<kind>.<action>`. Includes `toggle`, which the core resolves.",
       "type": "string",
       "enum": [
+        "alarm_control_panel.alarm_arm_away",
+        "alarm_control_panel.alarm_arm_custom_bypass",
+        "alarm_control_panel.alarm_arm_home",
+        "alarm_control_panel.alarm_arm_night",
+        "alarm_control_panel.alarm_arm_vacation",
+        "alarm_control_panel.alarm_disarm",
+        "alarm_control_panel.alarm_trigger",
         "button.press",
+        "camera.disable_motion_detection",
+        "camera.enable_motion_detection",
+        "camera.toggle",
+        "camera.turn_off",
+        "camera.turn_on",
         "climate.set_fan_mode",
         "climate.set_humidity",
         "climate.set_hvac_mode",
@@ -783,6 +850,8 @@
         "cover.set_tilt",
         "cover.stop",
         "cover.toggle",
+        "date.set_value",
+        "datetime.set_value",
         "fan.oscillate",
         "fan.set_direction",
         "fan.set_percentage",
@@ -795,6 +864,9 @@
         "humidifier.toggle",
         "humidifier.turn_off",
         "humidifier.turn_on",
+        "lawn_mower.dock",
+        "lawn_mower.pause",
+        "lawn_mower.start_mowing",
         "light.toggle",
         "light.turn_off",
         "light.turn_on",
@@ -814,7 +886,10 @@
         "media_player.turn_on",
         "media_player.volume_mute",
         "media_player.volume_set",
+        "number.decrement",
+        "number.increment",
         "number.set_value",
+        "scene.turn_on",
         "select.select_option",
         "siren.toggle",
         "siren.turn_off",
@@ -823,10 +898,23 @@
         "switch.turn_off",
         "switch.turn_on",
         "text.set_value",
+        "time.set_value",
+        "timer.cancel",
+        "timer.change",
+        "timer.finish",
+        "timer.pause",
+        "timer.start",
         "update.check",
         "update.clear_skipped",
         "update.install",
         "update.skip",
+        "vacuum.clean_spot",
+        "vacuum.locate",
+        "vacuum.pause",
+        "vacuum.return_to_base",
+        "vacuum.set_fan_speed",
+        "vacuum.start",
+        "vacuum.stop",
         "valve.close",
         "valve.open",
         "valve.set_position",
@@ -880,6 +968,17 @@
             },
             "entity": {
               "$ref": "#/$defs/EntityId"
+            },
+            "field": {
+              "description": "One of the entity's values beside its main one, by name: a blind's `position`, a\nthermostat's `current_temperature`. Left out, it's the main value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ObjectId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "for": {
               "anyOf": [
@@ -1089,6 +1188,17 @@
             },
             "entity": {
               "$ref": "#/$defs/EntityId"
+            },
+            "field": {
+              "description": "One of the entity's values beside its main one, by name: a blind's `position`, a\nthermostat's `current_temperature`. Left out, it's the main value.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ObjectId"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "for": {
               "anyOf": [

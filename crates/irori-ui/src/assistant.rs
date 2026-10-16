@@ -37,6 +37,10 @@ struct Thread {
     used: RwSignal<Option<api::AssistantContext>>,
     /// The Floorplan page's working copy, while that page is open.
     desk: StoredValue<Option<Desk>>,
+    /// The helper builder, while it is open: it takes what the model filled in.
+    builder: StoredValue<Option<Callback<serde_json::Value>>>,
+    /// The last helper handed to the builder (`BuilderDesk`).
+    filled: StoredValue<Option<serde_json::Value>>,
     /// The picture or PDF that will go with the next question.
     attached: RwSignal<Option<api::Attachment>>,
     /// Floors and rooms the assistant asked to have removed, waiting on a yes or a no.
@@ -70,6 +74,25 @@ pub struct Chats {
     owner: Owner,
     threads: StoredValue<HashMap<String, Thread>>,
     desk: StoredValue<Option<Desk>>,
+    builder: StoredValue<Option<Callback<serde_json::Value>>>,
+    filled: StoredValue<Option<serde_json::Value>>,
+}
+
+/// Where the helper builder takes what the model filled in, while it is open.
+#[derive(Debug, Clone, Copy)]
+pub struct BuilderDesk {
+    builder: StoredValue<Option<Callback<serde_json::Value>>>,
+    /// The last helper handed over. An answer read again from its start says it again, and
+    /// must not undo what the person changed since; a builder opened afresh takes it again.
+    filled: StoredValue<Option<serde_json::Value>>,
+}
+
+impl BuilderDesk {
+    /// The builder saying it has opened, or — with `None` — that it has closed.
+    pub fn lay(self, builder: Option<Callback<serde_json::Value>>) {
+        self.filled.set_value(None);
+        self.builder.set_value(builder);
+    }
 }
 
 impl Chats {
@@ -79,6 +102,8 @@ impl Chats {
             owner: Owner::current().unwrap_or_default(),
             threads: StoredValue::new(HashMap::new()),
             desk: StoredValue::new(None),
+            builder: StoredValue::new(None),
+            filled: StoredValue::new(None),
         }
     }
 
@@ -86,6 +111,14 @@ impl Chats {
     /// gone.
     pub fn lay(&self, desk: Option<Desk>) {
         self.desk.set_value(desk);
+    }
+
+    /// Where the helper builder lays itself down while it is open.
+    pub fn builder_desk(&self) -> BuilderDesk {
+        BuilderDesk {
+            builder: self.builder,
+            filled: self.filled,
+        }
     }
 
     fn thread(&self, scope: &str) -> Thread {
@@ -107,6 +140,8 @@ impl Chats {
             round: RwSignal::new(0),
             used: RwSignal::new(None),
             desk: self.desk,
+            builder: self.builder,
+            filled: self.filled,
             attached: RwSignal::new(None),
             asked: RwSignal::new(Vec::new()),
             answered: StoredValue::new(Vec::new()),
@@ -165,6 +200,19 @@ impl Thread {
                     }
                 }
             }),
+            // Only the helper builder can take a helper, and each one only once.
+            Streamed::Helper(helper) => {
+                if self
+                    .filled
+                    .with_value(|filled| filled.as_ref() == Some(&helper))
+                {
+                    return;
+                }
+                if let Some(builder) = self.builder.get_value() {
+                    self.filled.set_value(Some(helper.clone()));
+                    builder.run(helper);
+                }
+            }
             Streamed::Failed(_) | Streamed::Done => {}
         }
     }
@@ -466,7 +514,7 @@ pub fn Ask(scope: String, title: String) -> impl IntoView {
 }
 
 #[component]
-fn Spark() -> impl IntoView {
+pub fn Spark() -> impl IntoView {
     view! {
         <svg class="spark" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"
@@ -560,6 +608,10 @@ impl Phase {
                 "read_floorplan" => "Looking at the plan",
                 "edit_floorplan" => "Drawing on the plan",
                 "edit_home" => "Arranging floors and rooms",
+                "list_entities" => "Reading what's in the home",
+                "list_helpers" => "Reading the helpers",
+                "helper_kinds" => "Reading the kinds of helper",
+                "propose_helper" => "Filling in the helper",
                 _ => "Looking something up",
             },
             Self::Writing => "Writing",
@@ -663,6 +715,8 @@ pub fn Chat(
     let about = title.clone();
     // The one conversation that can change something: the drawing on the Floorplan page.
     let on_plan = scope.with_value(|scope| scope.starts_with("floorplan:"));
+    // The helper builder's conversation, which fills the form in beside it.
+    let building = scope.with_value(|scope| scope == "helpers");
     let local = move || {
         assistant
             .0
@@ -818,6 +872,23 @@ pub fn Chat(
                                  tell it or from a picture or PDF of a plan you attach or drop \
                                  here — as one step you can undo. Nothing is saved until you press Save."
                             }}
+                        </p>
+                    }.into_any()
+                } else if building && local() {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask which kind of helper fits and what to set: the model on this \
+                             machine can say, from what's in your home. Filling the form in for \
+                             you needs a cloud model."
+                        </p>
+                    }.into_any()
+                } else if building {
+                    view! {
+                        <p class="chat-empty">
+                            "Say what you want kept or worked out — \u{201c}tell me when the lounge \
+                             is too warm\u{201d}, \u{201c}hours the heating ran today\u{201d} — and \
+                             the form is filled in from what's in your home. Change anything you \
+                             like; nothing is made until you press Create."
                         </p>
                     }.into_any()
                 } else {

@@ -65,6 +65,12 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
    reloads settings itself; restarting is the one way they arrive, so there is exactly one code
    path to get right.
 
+**The rest of the home.** A built-in whose manifest asks for API scopes (Helpers does) is
+handed the rest of the home in-process (`irori_protocol::home::Home`): entities, states and
+their changes, history, the home's place, and service calls made as the extension, with the
+call that caused them as their parent. Each needs its scope, as an engine's requests do
+([automations.md](automations.md) §B2).
+
 **Isolation.** Built-in protocols run in their own task, and **must never block**: no
 long computation, blocking I/O, or `std::thread::sleep`, in `run` or before it returns its
 future. Blocking one task blocks a shared worker, which no supervision can undo, so slow or
@@ -100,7 +106,7 @@ core's process.
 |---|---|---|
 | Describe a device | `DeviceDescription` (§6.1) | Adds it, or updates the one with the same `unique_id` |
 | Describe an entity | `EntityDescription` (§6.2) | Same. Its device must be described first |
-| Remove a device | `unique_id` | Also removes its entities |
+| Remove a device | `unique_id` | Also removes its entities. The device is gone for good: Irori forgets it as it would one a person removed, its rows in the config files and its spot on the floorplan included ([config.md](config.md) §3.2) |
 | Remove an entity | `unique_id` | |
 | Report state | `StateReport` (§6.3) | A new value for one of its entities |
 | Set availability | entity `unique_id`s, or a device `unique_id` for all its entities; `available` \| `unavailable` | §6.4 |
@@ -112,6 +118,7 @@ core's process.
 | Say an action is open | an action id, and how long it has left, or that it has closed | §5.1 |
 | Handle actions | receives an action id, and whether to start it or stop it early; replies with a result | §5.1 |
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
+| Send a picture | receives a camera entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` entities. §5.2 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 
@@ -154,6 +161,21 @@ of its devices then asks the protocol to unpair it first ([config.md](config.md)
 On the wire these are `action_call { id, action_id, stop }` and
 `unpair_device { id, unique_id, force }`, both answered with `action_result { id, error }`, and
 `set_action_open { action_id, closes_in_ms }` from the protocol.
+
+### 5.2 Pictures
+
+A camera's picture isn't state: it would fill history and mean nothing to a flow. A page asks for
+one when it wants it (`GET /api/entities/{id}/picture`, [api.md](api.md)), and the core asks the
+camera's protocol.
+
+- The protocol replies with the picture as it is now: its type (`image/jpeg`, `image/png`,
+  `image/webp` or `image/svg+xml`) and its bytes, at most 2 MB. Anything else is refused.
+- It replies within 5 seconds, or the page is told the camera didn't answer in time.
+- A protocol with no cameras replies that it has none. The SDK's `next_action` does that for it.
+
+On the wire the request is `camera_picture { id, unique_id }`, answered with
+`picture_result { id, picture: { content_type, data }, error }`, `data` being the bytes as
+base64. In the SDK it is `Incoming::Picture`, from `ProtocolContext::next`.
 
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
@@ -296,6 +318,7 @@ manifest's `entity_kinds`.
 | `switch.turn_on` | none | |
 | `switch.turn_off` | none | |
 | `number.set_value` | `value`, a finite number within the number's `min`–`max` | |
+| `number.increment`, `number.decrement` | `by` (optional), a number above zero. Left out, the number's own `step` | **Never sent to a protocol**: the core works out the value it comes to, from the value the number has or was last told to have, stopping at `min` or `max`, and sends that as `number.set_value`. So every number counts, a device's setting or a counter Irori keeps. Refused while the number hasn't said its value |
 | `select.select_option` | `option`, one of the select's `options` | |
 | `text.set_value` | `value`, a string within the text's lengths | |
 | `button.press` | none | |
@@ -305,6 +328,21 @@ manifest's `entity_kinds`.
 | `cover.set_tilt` | `tilt` 0–100 | Needs `tilt` |
 | `lock.lock`, `lock.unlock` | `code`, optional | The code is required when the lock `requires_code`. `lock.toggle` unlocks a locked or locking lock and locks anything else |
 | `lock.open` | `code`, optional | Needs `open` |
+| `alarm_control_panel.alarm_arm_home`, `…alarm_arm_away`, `…alarm_arm_night`, `…alarm_arm_vacation`, `…alarm_arm_custom_bypass` | `code`, optional | Needs that mode among its `arm_modes`. The code is required when the panel has a `code_format` and `code_arm_required`; digits only when the format is `number` |
+| `alarm_control_panel.alarm_disarm` | `code`, optional | The code is required when the panel has a `code_format` and `code_disarm_required` |
+| `alarm_control_panel.alarm_trigger` | `code`, optional | Needs `trigger` |
+| `vacuum.start`, `vacuum.pause`, `vacuum.stop`, `vacuum.return_to_base`, `vacuum.locate`, `vacuum.clean_spot` | none | Each needs the capability of its name (`return_to_base` needs `return_home`) |
+| `vacuum.set_fan_speed` | `fan_speed`, one of its `fan_speeds` | |
+| `lawn_mower.start_mowing`, `lawn_mower.pause`, `lawn_mower.dock` | none | Each needs the capability of its name |
+| `scene.turn_on` | none | Home Assistant's name for setting a scene |
+| `camera.turn_on`, `camera.turn_off` | none | Its privacy switch. Only for one with `on_off` |
+| `camera.enable_motion_detection`, `camera.disable_motion_detection` | none | Only for one with `motion_detection` |
+| `timer.start` | `duration` (optional), seconds above 0, at most a year | Left out: its own `duration`, or what was left when it was paused |
+| `timer.pause`, `timer.cancel`, `timer.finish` | none | |
+| `timer.change` | `by`, seconds to add, or to take away when negative | Taken past its end, it finishes |
+| `date.set_value` | `date`, a calendar day (`2026-10-14`) | Home Assistant's field names, here and below |
+| `time.set_value` | `time`, a time of day (`06:45:00`, or `06:45`) | |
+| `datetime.set_value` | `datetime`, a `Timestamp` | An ESPHome device counts seconds from 1970 to 2106, and refuses a moment outside that |
 | `valve.open`, `valve.close`, `valve.stop`, `valve.set_position` | as the cover's | As a cover's, without tilt. `valve.toggle` closes an open or opening valve |
 | `siren.turn_on` | `tone` (one of its `tones`), `volume_level` 0.0–1.0, `duration` 1–86400 s; all optional | Each needs the siren to say it can. `siren.toggle` resolves to `turn_on` or `turn_off` |
 | `siren.turn_off` | none | |

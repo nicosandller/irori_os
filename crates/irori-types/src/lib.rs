@@ -48,13 +48,18 @@ pub use id::{
     IdError, Name, ObjectId, ProtocolId, RuleId, SLUG_MAX_LEN, TokenId, UniqueId, UserId,
 };
 pub use kind::EntityKind;
+pub use kinds::alarm_control_panel::{
+    AlarmCapabilities, AlarmState, AlarmStatus, ArmMode, CodeFormat,
+};
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
+pub use kinds::camera::{CameraCapabilities, CameraState, CameraStatus};
 pub use kinds::climate::{
     ClimateCapabilities, ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature,
     ClimateState, ClimateSwingMode, HumidityRange, HvacAction, HvacMode, SetHumidity,
 };
 pub use kinds::cover::{CoverCapabilities, CoverClass, CoverState, SetTilt};
+pub use kinds::device_tracker::{TrackerCapabilities, TrackerSource, TrackerState};
 pub use kinds::event::{EventCapabilities, EventClass, EventState};
 pub use kinds::fan::{
     FanCapabilities, FanDirection, FanOscillate, FanPercentage, FanPresetMode, FanSetDirection,
@@ -63,14 +68,23 @@ pub use kinds::fan::{
 pub use kinds::humidifier::{
     HumidifierAction, HumidifierCapabilities, HumidifierClass, HumidifierMode, HumidifierState,
 };
+pub use kinds::lawn_mower::{LawnMowerCapabilities, LawnMowerState, MowerActivity};
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
 pub use kinds::media_player::{
     MediaPlayerCapabilities, MediaPlayerClass, MediaPlayerState, MediaSeek, PlayMedia, Playback,
     VolumeMute, VolumeSet,
 };
-pub use kinds::number::{NumberCapabilities, NumberMode, NumberSetValue, NumberState};
+pub use kinds::moment::{
+    CivilDate, ClockTime, DateSetValue, DateState, DatetimeSetValue, DatetimeState,
+    MomentCapabilities, TimeSetValue, TimeState,
+};
+pub use kinds::number::{
+    NumberCapabilities, NumberMode, NumberSetValue, NumberState, NumberStep, stepped,
+};
 pub use kinds::opening::{OpenState, OpeningAbilities, OpeningCommand, OpeningState, SetPosition};
+pub use kinds::scene::SceneCapabilities;
+pub use kinds::schedule::{ScheduleCapabilities, ScheduleState};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
 pub use kinds::sensor::{
     SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, StateClass,
@@ -78,13 +92,16 @@ pub use kinds::sensor::{
 pub use kinds::siren::{SirenCapabilities, SirenState, SirenTurnOn};
 pub use kinds::switch::{SwitchCapabilities, SwitchClass, SwitchState};
 pub use kinds::text::{TextCapabilities, TextMode, TextSetValue, TextState};
+pub use kinds::timer;
+pub use kinds::timer::{TimerCapabilities, TimerChange, TimerStart, TimerState, TimerStatus};
 pub use kinds::update::{UpdateCapabilities, UpdateClass, UpdateState};
+pub use kinds::vacuum::{VacuumActivity, VacuumCapabilities, VacuumFanSpeed, VacuumState};
 pub use kinds::valve::{ValveCapabilities, ValveClass, ValveState};
 pub use kinds::water_heater::{
     WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,
     WaterHeaterState,
 };
-pub use kinds::{Typed, ValueShape, mode_to_turn_on};
+pub use kinds::{Field, Typed, ValueShape, mode_to_turn_on};
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
     StateReport, Unmodeled, Waiting,

@@ -8,29 +8,39 @@
 //! and each answer is one line calling into the kind's file. A cover and a valve share
 //! [`opening`]; a kind like another one shares that way rather than being cast into it.
 
+pub(crate) mod alarm_control_panel;
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
+pub(crate) mod camera;
 pub(crate) mod climate;
 pub(crate) mod cover;
+pub(crate) mod device_tracker;
 pub(crate) mod event;
 pub(crate) mod fan;
 pub(crate) mod humidifier;
+pub(crate) mod lawn_mower;
 pub(crate) mod light;
 pub(crate) mod lock;
 pub(crate) mod media_player;
+pub(crate) mod moment;
 pub(crate) mod number;
 pub(crate) mod opening;
+pub(crate) mod scene;
+pub(crate) mod schedule;
 pub(crate) mod select;
 pub(crate) mod sensor;
 pub(crate) mod siren;
 pub(crate) mod switch;
 pub(crate) mod text;
+pub mod timer;
 pub(crate) mod update;
+pub(crate) mod vacuum;
 pub(crate) mod valve;
 pub(crate) mod water_heater;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
+use self::alarm_control_panel::ALARM_STATES;
 use self::climate::CLIMATE_MODES;
 use self::lock::LOCK_STATES;
 use self::media_player::PLAYBACK_STATES;
@@ -89,6 +99,46 @@ pub enum ValueShape {
     Bool,
     Number,
     Text,
+}
+
+/// A value an entity has beside its primary one: a blind's `position`, a thermostat's
+/// `current_temperature`. Automations read it by name, `num(id, 'position')`
+/// (`docs/specs/rules.md` §5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Field {
+    pub name: &'static str,
+    pub shape: ValueShape,
+}
+
+impl Field {
+    pub(crate) const fn bool(name: &'static str) -> Self {
+        Self {
+            name,
+            shape: ValueShape::Bool,
+        }
+    }
+
+    pub(crate) const fn number(name: &'static str) -> Self {
+        Self {
+            name,
+            shape: ValueShape::Number,
+        }
+    }
+
+    pub(crate) const fn text(name: &'static str) -> Self {
+        Self {
+            name,
+            shape: ValueShape::Text,
+        }
+    }
+}
+
+/// A name-only enum as the text it's written as: a fan's `forward`, a thermostat's `heating`.
+pub(crate) fn named<T: serde::Serialize>(value: &T) -> Option<Typed> {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::String(name)) => Some(Typed::Text(name)),
+        _ => None,
+    }
 }
 
 /// Whether a service takes `data`, and whether it can do without.
@@ -161,6 +211,7 @@ impl EntityKind {
             Self::Climate => climate::toggle(current),
             Self::WaterHeater => water_heater::toggle(current),
             Self::Lock => lock::toggle(current),
+            Self::Camera => camera::toggle(current),
             Self::Cover | Self::Valve => OpeningCommand::toggle_service(self, current),
             Self::Sensor
             | Self::BinarySensor
@@ -170,7 +221,17 @@ impl EntityKind {
             | Self::Button
             | Self::Event
             | Self::MediaPlayer
-            | Self::Update => return None,
+            | Self::Update
+            | Self::AlarmControlPanel
+            | Self::Date
+            | Self::Time
+            | Self::Datetime
+            | Self::Vacuum
+            | Self::LawnMower
+            | Self::Scene
+            | Self::DeviceTracker
+            | Self::Timer
+            | Self::Schedule => return None,
         })
     }
 }
@@ -185,7 +246,9 @@ impl Capabilities {
             | Self::Fan(_)
             | Self::Siren(_)
             | Self::Humidifier(_)
-            | Self::Update(_) => ValueShape::Bool,
+            | Self::Update(_)
+            | Self::DeviceTracker(_)
+            | Self::Schedule(_) => ValueShape::Bool,
             Self::Number(_) => ValueShape::Number,
             Self::Select(_)
             | Self::Text(_)
@@ -195,12 +258,20 @@ impl Capabilities {
             | Self::Lock(_)
             | Self::Climate(_)
             | Self::WaterHeater(_)
-            | Self::MediaPlayer(_) => ValueShape::Text,
+            | Self::MediaPlayer(_)
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_)
+            | Self::Vacuum(_)
+            | Self::LawnMower(_)
+            | Self::Timer(_)
+            | Self::Camera(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
             },
-            Self::Button(_) => return None,
+            Self::Button(_) | Self::Scene(_) => return None,
         })
     }
 
@@ -216,8 +287,58 @@ impl Capabilities {
             Self::Climate(_) => Some(&CLIMATE_MODES),
             Self::WaterHeater(_) => Some(&OPERATION_MODES),
             Self::MediaPlayer(_) => Some(&PLAYBACK_STATES),
+            Self::AlarmControlPanel(_) => Some(&ALARM_STATES),
+            Self::Timer(_) => Some(&timer::STATUSES),
+            Self::LawnMower(_) => Some(&lawn_mower::ACTIVITIES),
+            Self::Vacuum(_) => Some(&vacuum::ACTIVITIES),
+            Self::Camera(_) => Some(&camera::CAMERA_STATES),
             _ => None,
         }
+    }
+
+    /// The values this entity has beside its primary one, by name. A field is listed when the
+    /// entity can have it; whether it has said it yet is [`State::field`]'s to answer.
+    pub fn fields(&self) -> Vec<Field> {
+        match self {
+            Self::Light(caps) => light::fields(caps),
+            Self::Fan(caps) => fan::fields(caps),
+            Self::Cover(caps) => cover::fields(caps),
+            Self::Valve(caps) => valve::fields(caps),
+            Self::Climate(caps) => climate::fields(caps),
+            Self::Humidifier(caps) => humidifier::fields(caps),
+            Self::WaterHeater(caps) => water_heater::fields(caps),
+            Self::MediaPlayer(caps) => media_player::fields(caps),
+            Self::Update(caps) => update::fields(caps),
+            Self::Timer(caps) => timer::fields(caps),
+            Self::DeviceTracker(caps) => device_tracker::fields(caps),
+            Self::Schedule(caps) => schedule::fields(caps),
+            Self::Vacuum(caps) => vacuum::fields(caps),
+            Self::Camera(caps) => camera::fields(caps),
+            Self::Switch(_)
+            | Self::Sensor(_)
+            | Self::BinarySensor(_)
+            | Self::Number(_)
+            | Self::Select(_)
+            | Self::Text(_)
+            | Self::Button(_)
+            | Self::Event(_)
+            | Self::Lock(_)
+            | Self::Siren(_)
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_)
+            | Self::LawnMower(_)
+            | Self::Scene(_) => Vec::new(),
+        }
+    }
+
+    /// The shape of the field `name`, or `None` when this entity has no such field.
+    pub fn field_shape(&self, name: &str) -> Option<ValueShape> {
+        self.fields()
+            .into_iter()
+            .find(|field| field.name == name)
+            .map(|field| field.shape)
     }
 
     /// Whether a reported state is one this entity can be in. `Err` says why not, as the end
@@ -242,6 +363,8 @@ impl Capabilities {
             (Self::Humidifier(caps), State::Humidifier(state)) => humidifier::fits(caps, state),
             (Self::WaterHeater(caps), State::WaterHeater(state)) => water_heater::fits(caps, state),
             (Self::MediaPlayer(caps), State::MediaPlayer(state)) => media_player::fits(caps, state),
+            (Self::Vacuum(caps), State::Vacuum(state)) => vacuum::fits(caps, state),
+            (Self::Camera(caps), State::Camera(state)) => camera::fits(caps, state),
             _ => Ok(()),
         }
     }
@@ -272,8 +395,19 @@ impl Capabilities {
             Self::Humidifier(caps) => humidifier::supports_service(caps, service),
             Self::MediaPlayer(caps) => media_player::supports_service(caps, service),
             Self::Update(caps) => update::supports_service(caps, service),
-            Self::Switch(_) | Self::Button(_) => Ok(()),
-            Self::Sensor(_) | Self::BinarySensor(_) | Self::Event(_) => Ok(()),
+            Self::Timer(caps) => timer::supports_service(caps, service),
+            Self::LawnMower(caps) => lawn_mower::supports_service(caps, service),
+            Self::Vacuum(caps) => vacuum::supports_service(caps, service),
+            Self::Camera(caps) => camera::supports_service(caps, service),
+            Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
+            Self::Switch(_) | Self::Button(_) | Self::Scene(_) => Ok(()),
+            // Any day, time or moment that exists is one it can be set to.
+            Self::Date(_) | Self::Time(_) | Self::Datetime(_) => Ok(()),
+            Self::Sensor(_)
+            | Self::BinarySensor(_)
+            | Self::Event(_)
+            | Self::DeviceTracker(_)
+            | Self::Schedule(_) => Ok(()),
         }
     }
 }
@@ -297,9 +431,54 @@ impl State {
             Self::Cover(state) => cover::primary(state),
             Self::Valve(state) => valve::primary(state),
             Self::Lock(state) => lock::primary(state),
+            Self::Timer(state) => timer::primary(state),
+            Self::DeviceTracker(state) => device_tracker::primary(state),
+            Self::Schedule(state) => schedule::primary(state),
+            Self::LawnMower(state) => lawn_mower::primary(state),
+            Self::Vacuum(state) => vacuum::primary(state),
+            Self::Camera(state) => camera::primary(state),
+            Self::AlarmControlPanel(state) => alarm_control_panel::primary(state),
+            Self::Date(state) => moment::date_primary(state),
+            Self::Time(state) => moment::time_primary(state),
+            Self::Datetime(state) => moment::datetime_primary(state),
             Self::Climate(state) => climate::primary(state),
             Self::WaterHeater(state) => water_heater::primary(state),
             Self::Sensor(state) => sensor::primary(state),
+        }
+    }
+
+    /// The field `name` as it is now. `None` when this kind has no such field, or the entity
+    /// hasn't said it.
+    pub fn field(&self, name: &str) -> Option<Typed> {
+        match self {
+            Self::Light(state) => light::field(state, name),
+            Self::Fan(state) => fan::field(state, name),
+            Self::Cover(state) => cover::field(state, name),
+            Self::Valve(state) => valve::field(state, name),
+            Self::Climate(state) => climate::field(state, name),
+            Self::Humidifier(state) => humidifier::field(state, name),
+            Self::WaterHeater(state) => water_heater::field(state, name),
+            Self::MediaPlayer(state) => media_player::field(state, name),
+            Self::Update(state) => update::field(state, name),
+            Self::Timer(state) => timer::field(state, name),
+            Self::DeviceTracker(state) => device_tracker::field(state, name),
+            Self::Schedule(state) => schedule::field(state, name),
+            Self::Vacuum(state) => vacuum::field(state, name),
+            Self::Camera(state) => camera::field(state, name),
+            Self::Switch(_)
+            | Self::Sensor(_)
+            | Self::BinarySensor(_)
+            | Self::Number(_)
+            | Self::Select(_)
+            | Self::Text(_)
+            | Self::Event(_)
+            | Self::Lock(_)
+            | Self::Siren(_)
+            | Self::AlarmControlPanel(_)
+            | Self::Date(_)
+            | Self::Time(_)
+            | Self::Datetime(_)
+            | Self::LawnMower(_) => None,
         }
     }
 
@@ -326,6 +505,13 @@ impl State {
             EntityKind::Text => State::Text(text::with_primary(value)?),
             EntityKind::Event => State::Event(event::with_primary(value)?),
             EntityKind::Lock => State::Lock(lock::with_primary(value)?),
+            EntityKind::LawnMower => State::LawnMower(lawn_mower::with_primary(value)?),
+            EntityKind::AlarmControlPanel => {
+                State::AlarmControlPanel(alarm_control_panel::with_primary(value)?)
+            }
+            EntityKind::Date => State::Date(moment::date_with_primary(value)?),
+            EntityKind::Time => State::Time(moment::time_with_primary(value)?),
+            EntityKind::Datetime => State::Datetime(moment::datetime_with_primary(value)?),
             EntityKind::Siren => State::Siren(siren::with_primary(value)?),
             EntityKind::Fan => State::Fan(fan::with_primary(previous!(Fan), value)?),
             EntityKind::Cover => State::Cover(cover::with_primary(previous!(Cover), value)?),
@@ -343,7 +529,17 @@ impl State {
                 State::MediaPlayer(media_player::with_primary(previous!(MediaPlayer), value)?)
             }
             EntityKind::Update => State::Update(update::with_primary(previous!(Update), value)?),
-            EntityKind::Button => return None,
+            EntityKind::Timer => State::Timer(timer::with_primary(previous!(Timer), value)?),
+            EntityKind::Schedule => {
+                State::Schedule(schedule::with_primary(previous!(Schedule), value)?)
+            }
+            EntityKind::DeviceTracker => State::DeviceTracker(device_tracker::with_primary(
+                previous!(DeviceTracker),
+                value,
+            )?),
+            EntityKind::Vacuum => State::Vacuum(vacuum::with_primary(previous!(Vacuum), value)?),
+            EntityKind::Camera => State::Camera(camera::with_primary(previous!(Camera), value)?),
+            EntityKind::Button | EntityKind::Scene => return None,
         })
     }
 }
@@ -365,9 +561,18 @@ impl Service {
             EntityKind::Select => select::service(name, data),
             EntityKind::Text => text::service(name, data),
             EntityKind::Button => button::service(name, data),
+            EntityKind::Scene => scene::service(name, data),
             EntityKind::Cover => cover::service(name, data),
             EntityKind::Valve => valve::service(name, data),
             EntityKind::Lock => lock::service(name, data),
+            EntityKind::Timer => timer::service(name, data),
+            EntityKind::LawnMower => lawn_mower::service(name, data),
+            EntityKind::Vacuum => vacuum::service(name, data),
+            EntityKind::Camera => camera::service(name, data),
+            EntityKind::AlarmControlPanel => alarm_control_panel::service(name, data),
+            EntityKind::Date | EntityKind::Time | EntityKind::Datetime => {
+                moment::service(name, data)
+            }
             EntityKind::Fan => fan::service(name, data),
             EntityKind::Siren => siren::service(name, data),
             EntityKind::Climate => climate::service(name, data),
@@ -375,9 +580,11 @@ impl Service {
             EntityKind::Humidifier => humidifier::service(name, data),
             EntityKind::MediaPlayer => media_player::service(name, data),
             EntityKind::Update => update::service(name, data),
-            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => {
-                Err(not_mine(name))
-            }
+            EntityKind::Sensor
+            | EntityKind::BinarySensor
+            | EntityKind::Event
+            | EntityKind::DeviceTracker
+            | EntityKind::Schedule => Err(not_mine(name)),
         }?;
         service.validate()?;
         Ok(service)
@@ -397,6 +604,9 @@ impl Service {
         match self {
             Self::LightTurnOn(data) => data.validate(),
             Self::NumberSetValue(data) => data.validate(),
+            Self::NumberIncrement(data) | Self::NumberDecrement(data) => data.validate(),
+            Self::TimerStart(data) => data.validate(),
+            Self::TimerChange(data) => data.validate(),
             Self::SirenTurnOn(data) => data.validate(),
             Self::ClimateSetTemperature(data) => data.validate(),
             Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data) => data.validate(),
@@ -420,6 +630,12 @@ impl Service {
             EntityKind::Cover => cover::asks_for(self),
             EntityKind::Valve => valve::asks_for(self),
             EntityKind::Lock => lock::asks_for(self),
+            EntityKind::Timer => timer::asks_for(self),
+            EntityKind::LawnMower => lawn_mower::asks_for(self),
+            EntityKind::Vacuum => vacuum::asks_for(self),
+            EntityKind::Camera => camera::asks_for(self),
+            EntityKind::AlarmControlPanel => alarm_control_panel::asks_for(self),
+            EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::asks_for(self),
             EntityKind::Fan => fan::asks_for(self),
             EntityKind::Siren => siren::asks_for(self),
             EntityKind::Climate => climate::asks_for(self),
@@ -429,7 +645,12 @@ impl Service {
             EntityKind::Update => update::asks_for(self),
             // A press leaves nothing for a toggle to go by.
             EntityKind::Button => None,
-            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => None,
+            EntityKind::Scene => scene::asks_for(self),
+            EntityKind::Sensor
+            | EntityKind::BinarySensor
+            | EntityKind::Event
+            | EntityKind::DeviceTracker
+            | EntityKind::Schedule => None,
         }
     }
 }
@@ -454,9 +675,16 @@ impl ServiceName {
             EntityKind::Select => select::data_of(self),
             EntityKind::Text => text::data_of(self),
             EntityKind::Button => button::data_of(self),
+            EntityKind::Scene => scene::data_of(self),
             EntityKind::Cover => cover::data_of(self),
             EntityKind::Valve => valve::data_of(self),
             EntityKind::Lock => lock::data_of(self),
+            EntityKind::Timer => timer::data_of(self),
+            EntityKind::LawnMower => lawn_mower::data_of(self),
+            EntityKind::Vacuum => vacuum::data_of(self),
+            EntityKind::Camera => camera::data_of(self),
+            EntityKind::AlarmControlPanel => alarm_control_panel::data_of(self),
+            EntityKind::Date | EntityKind::Time | EntityKind::Datetime => moment::data_of(self),
             EntityKind::Fan => fan::data_of(self),
             EntityKind::Siren => siren::data_of(self),
             EntityKind::Climate => climate::data_of(self),
@@ -464,7 +692,11 @@ impl ServiceName {
             EntityKind::Humidifier => humidifier::data_of(self),
             EntityKind::MediaPlayer => media_player::data_of(self),
             EntityKind::Update => update::data_of(self),
-            EntityKind::Sensor | EntityKind::BinarySensor | EntityKind::Event => Data::None,
+            EntityKind::Sensor
+            | EntityKind::BinarySensor
+            | EntityKind::Event
+            | EntityKind::DeviceTracker
+            | EntityKind::Schedule => Data::None,
         }
     }
 

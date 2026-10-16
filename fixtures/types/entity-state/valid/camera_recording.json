@@ -1,0 +1,19 @@
+{
+  "entity_id": "camera.garden",
+  "availability": "available",
+  "state": {
+    "kind": "camera",
+    "state": "recording",
+    "motion_detection": true
+  },
+  "last_changed": "2026-10-15T22:04:12Z",
+  "last_updated": "2026-10-15T22:04:12Z",
+  "last_reported": "2026-10-15T22:04:12Z",
+  "context": {
+    "id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+    "origin": {
+      "type": "device",
+      "protocol": "demo"
+    }
+  }
+}

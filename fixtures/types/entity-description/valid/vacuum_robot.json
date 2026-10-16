@@ -1,0 +1,15 @@
+{
+  "unique_id": "robot_vacuum",
+  "name": "Robot",
+  "capabilities": {
+    "kind": "vacuum",
+    "start": true,
+    "pause": true,
+    "stop": true,
+    "return_home": true,
+    "fan_speeds": [
+      "quiet",
+      "turbo"
+    ]
+  }
+}

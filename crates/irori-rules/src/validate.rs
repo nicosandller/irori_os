@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cel::Program;
 use cel::common::ast::{CallExpr, Expr, IdedExpr, LiteralValue};
-use irori_types::{Capabilities, Entity, EntityId, ValueShape};
+use irori_types::{Capabilities, Entity, EntityId, ObjectId, ValueShape};
 
 use crate::{
     Action, CallData, Condition, ExprString, Rule, RuleService, Trigger, TypedValue, WaitUntil,
@@ -132,12 +132,14 @@ fn walk_triggers_one(
     match trigger {
         Trigger::State {
             entity,
+            field,
             from,
             to,
             above,
             below,
             hold,
         } => {
+            check_field(here, entity, field.as_ref(), registry, problems);
             // A press, a ring: something that happens rather than a value that lasts. It has
             // no value to have changed from, be above, or stay at.
             if let Some(found) = registry.entity(entity)
@@ -162,10 +164,26 @@ fn walk_triggers_one(
                 }
             }
             for value in from.iter().flat_map(crate::Values::iter) {
-                check_state_match(here, entity, Some(value), None, None, registry, problems);
+                check_state_match(
+                    here,
+                    (entity, field.as_ref()),
+                    Some(value),
+                    None,
+                    None,
+                    registry,
+                    problems,
+                );
             }
             for value in to.iter().flat_map(crate::Values::iter) {
-                check_state_match(here, entity, None, Some(value), None, registry, problems);
+                check_state_match(
+                    here,
+                    (entity, field.as_ref()),
+                    None,
+                    Some(value),
+                    None,
+                    registry,
+                    problems,
+                );
             }
             // A change is to something else, so from one value to that same value never is one.
             if let (Some(from), Some(to)) = (from, to)
@@ -183,14 +201,20 @@ fn walk_triggers_one(
             }
             if (above.is_some() || below.is_some())
                 && let Some(found) = registry.entity(entity)
-                && found.capabilities.primary_shape() != Some(ValueShape::Number)
+                && let Some(shape) = read_shape(found, field.as_ref())
+                && shape != Some(ValueShape::Number)
             {
                 problems.push(problem(
                     here,
-                    format!(
-                        "above and below are for a sensor with numbers, and {entity} is a {}",
-                        found.capabilities.kind()
-                    ),
+                    match field {
+                        Some(field) => format!(
+                            "above and below are for a number, and {entity}'s {field} isn't one"
+                        ),
+                        None => format!(
+                            "above and below are for a sensor with numbers, and {entity} is a {}",
+                            found.capabilities.kind()
+                        ),
+                    },
                 ));
             }
         }
@@ -250,15 +274,20 @@ fn walk_condition(
         Condition::Expr { expr } => {
             check_expr(path, expr, ExprRole::Bool, registry, sets, problems);
         }
-        Condition::State { entity, is, .. } => check_state_match(
-            path,
-            entity,
-            None,
-            is.as_ref(),
-            Some("is"),
-            registry,
-            problems,
-        ),
+        Condition::State {
+            entity, field, is, ..
+        } => {
+            check_field(path, entity, field.as_ref(), registry, problems);
+            check_state_match(
+                path,
+                (entity, field.as_ref()),
+                None,
+                is.as_ref(),
+                Some("is"),
+                registry,
+                problems,
+            );
+        }
         Condition::Time { .. } => {
             if !registry.has_timezone() {
                 problems.push(problem(
@@ -313,15 +342,21 @@ fn walk_actions(
                 problems,
             ),
             Action::Wait { until, .. } => match until {
-                WaitUntil::State { entity, is, .. } => check_state_match(
-                    &format!("{here}/until"),
-                    entity,
-                    None,
-                    is.as_ref(),
-                    Some("is"),
-                    registry,
-                    problems,
-                ),
+                WaitUntil::State {
+                    entity, field, is, ..
+                } => {
+                    let here = format!("{here}/until");
+                    check_field(&here, entity, field.as_ref(), registry, problems);
+                    check_state_match(
+                        &here,
+                        (entity, field.as_ref()),
+                        None,
+                        is.as_ref(),
+                        Some("is"),
+                        registry,
+                        problems,
+                    );
+                }
                 WaitUntil::Expr { expr, .. } => {
                     check_expr(
                         &format!("{here}/until"),
@@ -547,15 +582,20 @@ pub fn check_wait(
 ) -> Vec<Problem> {
     let mut problems = Vec::new();
     match until {
-        WaitUntil::State { entity, is, .. } => check_state_match(
-            path,
-            entity,
-            None,
-            is.as_ref(),
-            Some("is"),
-            registry,
-            &mut problems,
-        ),
+        WaitUntil::State {
+            entity, field, is, ..
+        } => {
+            check_field(path, entity, field.as_ref(), registry, &mut problems);
+            check_state_match(
+                path,
+                (entity, field.as_ref()),
+                None,
+                is.as_ref(),
+                Some("is"),
+                registry,
+                &mut problems,
+            );
+        }
         WaitUntil::Expr { expr, .. } => {
             check_expr(path, expr, ExprRole::Wait, registry, vars, &mut problems);
         }
@@ -668,7 +708,17 @@ fn walk_ast(
                         .parse()
                         .map_err(|e: irori_types::IdError| e.to_string())?;
                     ids.insert(entity_id.clone());
-                    check_fn_against_registry(name, &entity_id, registry)?;
+                    match call.args.get(1) {
+                        None => check_fn_against_registry(name, &entity_id, registry)?,
+                        Some(second) => {
+                            let field = string_literal(second).ok_or_else(|| {
+                                format!(
+                                    "{name}() needs a string literal field name, not an expression"
+                                )
+                            })?;
+                            check_field_against_registry(name, &entity_id, field, registry)?;
+                        }
+                    }
                 } else {
                     let entity_id: EntityId = id
                         .parse()
@@ -719,6 +769,7 @@ fn walk_ast(
 
 fn check_arity(name: &str, n: usize) -> Result<(), String> {
     let expected = match name {
+        "num" | "on" | "text" if n == 2 => Some(2),
         "num" | "on" | "text" | "brightness" | "available" | "unknown" | "var" => Some(1),
         "attr" | "min" | "max" => Some(2),
         "round" => Some(1),
@@ -797,6 +848,60 @@ fn check_fn_against_registry(
     }
 }
 
+/// `num(id, 'position')`: the entity has to have a value by that name, of the shape the
+/// function reads.
+fn check_field_against_registry(
+    name: &str,
+    id: &EntityId,
+    field: &str,
+    registry: &impl RegistryView,
+) -> Result<(), String> {
+    let Some(entity) = registry.entity(id) else {
+        return Err(format!(
+            "{name}(\"{id}\", \"{field}\"): no such entity — check the entity id"
+        ));
+    };
+    let wanted = match name {
+        "num" => ValueShape::Number,
+        "on" => ValueShape::Bool,
+        _ => ValueShape::Text,
+    };
+    match entity.capabilities.field_shape(field) {
+        Some(shape) if shape == wanted => Ok(()),
+        Some(shape) => Err(format!(
+            "{name}(\"{id}\", \"{field}\"): {field} is {} — use {}(\"{id}\", \"{field}\")",
+            match shape {
+                ValueShape::Number => "a number",
+                ValueShape::Bool => "on/off",
+                ValueShape::Text => "text",
+            },
+            match shape {
+                ValueShape::Number => "num",
+                ValueShape::Bool => "on",
+                ValueShape::Text => "text",
+            }
+        )),
+        None => {
+            let fields = entity.capabilities.fields();
+            Err(if fields.is_empty() {
+                format!(
+                    "{name}(\"{id}\", \"{field}\"): a {} has only its main value — use {name}(\"{id}\")",
+                    entity.capabilities.kind()
+                )
+            } else {
+                format!(
+                    "{name}(\"{id}\", \"{field}\"): it has no {field}; it has: {}",
+                    fields
+                        .iter()
+                        .map(|field| field.name)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            })
+        }
+    }
+}
+
 fn infer_type(expr: &IdedExpr, sets: &BTreeMap<String, ExprKind>) -> Result<ExprKind, String> {
     match &expr.expr {
         Expr::Literal(LiteralValue::Boolean(_)) => Ok(ExprKind::Bool),
@@ -862,7 +967,7 @@ fn infer_type(expr: &IdedExpr, sets: &BTreeMap<String, ExprKind>) -> Result<Expr
 
 fn check_state_match(
     path: &str,
-    id: &EntityId,
+    (id, field): Watched,
     from: Option<&TypedValue>,
     to: Option<&TypedValue>,
     to_field: Option<&str>,
@@ -898,43 +1003,103 @@ fn check_state_match(
         }
     }
     if let Some(value) = from
-        && let Err(reason) = typed_value_fits(value, entity)
+        && let Err(reason) = typed_value_fits(value, entity, field)
     {
         problems.push(problem(format!("{path}/from"), reason));
     }
     if let Some(value) = to
-        && let Err(reason) = typed_value_fits(value, entity)
+        && let Err(reason) = typed_value_fits(value, entity, field)
     {
         let field = to_field.unwrap_or("to");
         problems.push(problem(format!("{path}/{field}"), reason));
     }
 }
 
-fn typed_value_fits(value: &TypedValue, entity: &Entity) -> Result<(), String> {
+/// What a trigger, condition or wait reads: an entity, and one of its fields when not its main
+/// value.
+type Watched<'a> = (&'a EntityId, Option<&'a ObjectId>);
+
+/// The entity has to have a value by the name a trigger, condition or wait reads. Says which
+/// it does have when it hasn't.
+fn check_field(
+    path: &str,
+    id: &EntityId,
+    field: Option<&ObjectId>,
+    registry: &impl RegistryView,
+    problems: &mut Vec<Problem>,
+) {
+    let (Some(field), Some(entity)) = (field, registry.entity(id)) else {
+        return;
+    };
+    if entity.capabilities.field_shape(field.as_str()).is_some() {
+        return;
+    }
+    let fields = entity.capabilities.fields();
+    let why = if fields.is_empty() {
+        format!(
+            "{id} is a {}, which has only its main value; leave `field` out",
+            entity.capabilities.kind()
+        )
+    } else {
+        format!(
+            "{id} has no {field}; it has: {}",
+            fields
+                .iter()
+                .map(|field| field.name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    problems.push(problem(format!("{path}/field"), why));
+}
+
+/// The shape of what a trigger, condition or wait reads: the named field's, or the main
+/// value's. `None` for a field the entity doesn't have ([`check_field`] says so).
+fn read_shape(entity: &Entity, field: Option<&ObjectId>) -> Option<Option<ValueShape>> {
+    match field {
+        Some(field) => entity.capabilities.field_shape(field.as_str()).map(Some),
+        None => Some(entity.capabilities.primary_shape()),
+    }
+}
+
+fn typed_value_fits(
+    value: &TypedValue,
+    entity: &Entity,
+    field: Option<&ObjectId>,
+) -> Result<(), String> {
     let (shape, what) = match value {
         TypedValue::Null => return Ok(()),
         TypedValue::Bool(_) => (ValueShape::Bool, "a boolean"),
         TypedValue::Number(_) => (ValueShape::Number, "a number"),
         TypedValue::Text(_) => (ValueShape::Text, "a string"),
     };
-    let Some(has) = entity.capabilities.primary_shape() else {
+    let Some(has) = read_shape(entity, field) else {
+        return Ok(());
+    };
+    let Some(has) = has else {
         return Err(format!(
             "{} is a {}, which has no value to compare",
             entity.id,
             entity.capabilities.kind()
         ));
     };
-    if has == shape {
-        match value {
-            TypedValue::Text(text) => text_can_be(entity, text),
-            _ => Ok(()),
-        }
-    } else {
-        Err(format!(
+    match (has == shape, field, value) {
+        (true, None, TypedValue::Text(text)) => text_can_be(entity, text),
+        (true, ..) => Ok(()),
+        (false, Some(field), _) => Err(format!(
+            "`is` is {what}, but {}'s {field} is {}",
+            entity.id,
+            match has {
+                ValueShape::Number => "a number",
+                ValueShape::Bool => "on/off",
+                ValueShape::Text => "text",
+            }
+        )),
+        (false, None, _) => Err(format!(
             "`is` is {what}, but {} is a {}",
             entity.id,
             entity.capabilities.kind()
-        ))
+        )),
     }
 }
 
@@ -954,7 +1119,10 @@ fn text_can_be(entity: &Entity, text: &str) -> Result<(), String> {
 /// The entity id in `text('id')`, if `expr` is that call.
 fn text_of(expr: &IdedExpr) -> Option<&str> {
     match &expr.expr {
-        Expr::Call(inner) if crate::expr::author_name(inner.func_name.as_str()) == "text" => {
+        Expr::Call(inner)
+            if crate::expr::author_name(inner.func_name.as_str()) == "text"
+                && inner.args.len() == 1 =>
+        {
             inner.args.first().and_then(string_literal)
         }
         _ => None,
@@ -1164,7 +1332,7 @@ mod tests {
             Ok(())
         );
         assert_eq!(
-            typed_value_fits(&TypedValue::Bool(true), &restart),
+            typed_value_fits(&TypedValue::Bool(true), &restart, None),
             Err("button.board_restart is a button, which has no value to compare".to_owned())
         );
     }
@@ -1203,8 +1371,8 @@ mod tests {
                 "{wrong}: {problems:?}"
             );
         }
-        assert!(typed_value_fits(&TypedValue::Text("spin".into()), &washer).is_err());
-        assert!(typed_value_fits(&TypedValue::Text("wash".into()), &washer).is_ok());
+        assert!(typed_value_fits(&TypedValue::Text("spin".into()), &washer, None).is_err());
+        assert!(typed_value_fits(&TypedValue::Text("wash".into()), &washer, None).is_ok());
     }
 
     #[test]
@@ -1264,11 +1432,76 @@ mod tests {
     fn extra_arguments_are_rejected() {
         let mut rule = hallway_rule();
         if let Condition::Expr { expr } = &mut rule.conditions[0] {
-            *expr = serde_json::from_str(r#""on('switch.guests_over', 'extra')""#).unwrap();
+            *expr = serde_json::from_str(r#""on('switch.guests_over', 'extra', 'more')""#).unwrap();
         }
         let problems = validate(&rule, &hallway_registry());
         assert!(
             problems.iter().any(|p| p.reason.contains("argument")),
+            "{problems:?}"
+        );
+    }
+
+    fn with_condition(expr: &str) -> Vec<Problem> {
+        let mut rule = hallway_rule();
+        if let Condition::Expr { expr: slot } = &mut rule.conditions[0] {
+            *slot = serde_json::from_value(serde_json::json!(expr)).unwrap();
+        }
+        validate(&rule, &hallway_registry())
+    }
+
+    #[test]
+    fn a_field_is_read_by_name_and_checked_against_what_the_entity_has() {
+        assert_eq!(
+            with_condition("num('light.demo_hall_light', 'brightness') > 100"),
+            []
+        );
+        let problems = with_condition("num('light.demo_hall_light', 'position') > 100");
+        assert!(
+            problems[0]
+                .reason
+                .contains("it has no position; it has: brightness"),
+            "{problems:?}"
+        );
+        // The light can't change colour, so it has no colour mode to read either.
+        let problems = with_condition("on('light.demo_hall_light', 'brightness')");
+        assert!(
+            problems[0].reason.contains("brightness is a number"),
+            "{problems:?}"
+        );
+        let problems = with_condition("on('switch.guests_over', 'extra')");
+        assert!(
+            problems[0].reason.contains("has only its main value"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn a_trigger_on_a_field_is_checked_like_one_on_the_main_value() {
+        let mut rule = hallway_rule();
+        rule.triggers[0] = serde_json::from_value(serde_json::json!({
+            "type": "state", "entity": "light.demo_hall_light", "field": "brightness", "above": 100
+        }))
+        .unwrap();
+        assert_eq!(validate(&rule, &hallway_registry()), []);
+
+        rule.triggers[0] = serde_json::from_value(serde_json::json!({
+            "type": "state", "entity": "light.demo_hall_light", "field": "brightness", "to": true
+        }))
+        .unwrap();
+        let problems = validate(&rule, &hallway_registry());
+        assert!(
+            problems[0].reason.contains("brightness is a number"),
+            "{problems:?}"
+        );
+
+        rule.triggers[0] = serde_json::from_value(serde_json::json!({
+            "type": "state", "entity": "switch.guests_over", "field": "level", "to": true
+        }))
+        .unwrap();
+        let problems = validate(&rule, &hallway_registry());
+        assert!(problems[0].path.ends_with("/field"), "{problems:?}");
+        assert!(
+            problems[0].reason.contains("leave `field` out"),
             "{problems:?}"
         );
     }

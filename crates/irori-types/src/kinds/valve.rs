@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::opening::OpeningCommand;
-use super::{Data, Typed};
+use super::{Data, Field, Typed};
 use crate::{InvariantError, Service, ServiceName};
 
 use super::opening::{OpenState, OpeningAbilities, OpeningState};
@@ -80,6 +80,22 @@ impl From<OpeningState> for ValveState {
             state: opening.state,
             position: opening.position,
         }
+    }
+}
+
+/// What a valve has beside its state, for one that says it.
+pub(crate) fn fields(caps: &ValveCapabilities) -> Vec<Field> {
+    if caps.position {
+        vec![Field::number("position")]
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn field(state: &ValveState, name: &str) -> Option<Typed> {
+    match name {
+        "position" => state.position.map(|p| Typed::Number(f64::from(p))),
+        _ => None,
     }
 }
 

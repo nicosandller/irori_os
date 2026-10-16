@@ -338,6 +338,85 @@ fn a_hold_that_resets_is_a_near_miss_and_one_that_lasts_fires() {
     );
 }
 
+#[test]
+fn a_number_compared_with_a_converted_sensor_gets_a_warning_naming_it() {
+    let warm = flow(serde_json::json!({
+        "id": "warm", "name": "Warm",
+        "nodes": {
+            "hot": { "type": "trigger", "trigger": { "type": "state", "entity": LUX, "above": 70 } },
+            "still": { "type": "gate", "condition": { "type": "expr", "expr": format!("num('{LUX}') > 65") } },
+            "moving": { "type": "gate", "condition": { "type": "state", "entity": MOTION, "is": true } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["hot", "still"], ["still:yes", "moving"], ["moving:yes", "on"]]
+    }));
+    let registry = registry();
+    assert!(validate::converted(&warm, &registry, &BTreeMap::new()).is_empty());
+
+    let native = BTreeMap::from([(id(LUX), "°F".to_owned())]);
+    let problems = validate::converted(&warm, &registry, &native);
+    let at: Vec<&str> = problems
+        .iter()
+        .map(|p| p.node.as_ref().expect("a node").as_str())
+        .collect();
+    // The trigger and the expression compare numbers with it; the motion gate doesn't.
+    assert_eq!(at, ["hot", "still"]);
+    assert!(problems.iter().all(|p| p.severity == Severity::Warning));
+    assert!(
+        problems[0].message.contains("says °F") && problems[0].message.contains("70 here is °C"),
+        "{}",
+        problems[0].message
+    );
+}
+
+fn lit(brightness: u8, seconds: i64) -> EntityState {
+    state(
+        LIGHT,
+        State::Light(LightState {
+            on: true,
+            brightness: Some(brightness),
+            color_mode: None,
+            color_temp_kelvin: None,
+            rgb: None,
+        }),
+        seconds,
+    )
+}
+
+#[test]
+fn a_trigger_can_watch_one_of_an_entitys_other_values() {
+    let bright = flow(serde_json::json!({
+        "id": "bright", "name": "Bright",
+        "nodes": {
+            "up": { "type": "trigger", "trigger": { "type": "state", "entity": LIGHT, "field": "brightness", "above": 200 } },
+            "on": { "type": "call", "service": "switch.turn_on", "entity": GUESTS }
+        },
+        "wires": [["up", "on"]]
+    }));
+    let mut engine = engine_with(bright);
+    change(&mut engine, lit(120, 10));
+    // Still on, and brighter, but not past the line: the main value didn't change and the
+    // watched one didn't cross.
+    change(&mut engine, lit(180, 11));
+    let (calls, ..) = effects(&mut engine, at(11));
+    assert!(calls.is_empty());
+
+    change(&mut engine, lit(230, 12));
+    let (calls, done, _) = effects(&mut engine, at(12));
+    assert_eq!(calls.len(), 1);
+    let read = &done[0].steps[0].reads[0];
+    assert_eq!(read.field.as_ref().map(|f| f.as_str()), Some("brightness"));
+    assert_eq!(read.value, serde_json::json!(230.0));
+    assert!(
+        done[0].steps[0]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("'s brightness went 180 → 230")),
+        "{:?}",
+        done[0].steps[0].note
+    );
+}
+
 fn joined(mode: &str) -> Flow {
     flow(serde_json::json!({
         "id": "joined", "name": "Joined",

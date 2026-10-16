@@ -1,0 +1,14 @@
+{
+  "service": "scene.turn_on",
+  "unique_id": "group_1_scene_2",
+  "data": {
+    "transition": 2
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

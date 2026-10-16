@@ -260,6 +260,61 @@
           "description": "Newer software for something: a device's firmware, an extension.",
           "type": "string",
           "const": "update"
+        },
+        {
+          "description": "A burglar alarm's panel: armed, disarmed, going off.",
+          "type": "string",
+          "const": "alarm_control_panel"
+        },
+        {
+          "description": "A calendar day someone sets, e.g. when the bins go out.",
+          "type": "string",
+          "const": "date"
+        },
+        {
+          "description": "A time of day someone sets, e.g. an alarm clock's.",
+          "type": "string",
+          "const": "time"
+        },
+        {
+          "description": "A moment someone sets: a day and a time, e.g. when a holiday ends.",
+          "type": "string",
+          "const": "datetime"
+        },
+        {
+          "description": "A robot vacuum cleaner.",
+          "type": "string",
+          "const": "vacuum"
+        },
+        {
+          "description": "A robot lawn mower.",
+          "type": "string",
+          "const": "lawn_mower"
+        },
+        {
+          "description": "A scene a device keeps and can be told to set. It has no value.",
+          "type": "string",
+          "const": "scene"
+        },
+        {
+          "description": "Where something is, as far as the home cares: at home or not.",
+          "type": "string",
+          "const": "device_tracker"
+        },
+        {
+          "description": "Something that counts down and says when it's done.",
+          "type": "string",
+          "const": "timer"
+        },
+        {
+          "description": "On during the times a week sets out, off between them.",
+          "type": "string",
+          "const": "schedule"
+        },
+        {
+          "description": "Something that sees: off, idle or recording, and a picture a page can ask for.",
+          "type": "string",
+          "const": "camera"
         }
       ]
     },

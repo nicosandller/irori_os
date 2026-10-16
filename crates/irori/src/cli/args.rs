@@ -118,7 +118,7 @@ pub enum Command {
     Watch(OnlyRemote),
     /// Official extensions: list, install, and uninstall.
     Extensions(ExtensionsArgs),
-    /// Toggles Irori keeps itself.
+    /// Values Irori keeps itself: toggles, numbers, counters, choices, texts, buttons.
     Helpers(HelpersArgs),
     /// Programs that aren't the page. A token is shown once.
     Token(TokenArgs),
@@ -419,11 +419,153 @@ pub struct HelpersArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum HelpersCmd {
+    /// Every helper: its kind, its id, its entity, and its name.
+    List,
+    /// Make a helper. Its id comes from its name, and its entity is `<kind>.<id>`.
+    Add {
+        kind: HelperKind,
+        name: String,
+        #[command(flatten)]
+        settings: HelperSettings,
+    },
+    /// Change a helper's settings. What isn't given stays as it is.
+    Set {
+        kind: HelperKind,
+        /// The id, not the entity.
+        id: String,
+        /// A new name.
+        #[arg(long)]
+        name: Option<String>,
+        #[command(flatten)]
+        settings: HelperSettings,
+    },
+    Remove {
+        kind: HelperKind,
+        /// The id, not the entity.
+        id: String,
+    },
     /// A toggle's id comes from its name. The entity is `switch.<id>`.
     Toggle {
         #[command(subcommand)]
         cmd: ToggleCmd,
     },
+}
+
+/// A kind of helper, as a person says it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum HelperKind {
+    /// On or off: `switch.<id>`.
+    Toggle,
+    /// A value within `--min` and `--max`: `number.<id>`.
+    Number,
+    /// A number counted up and down: `number.<id>`.
+    Counter,
+    /// One of the `--option`s: `select.<id>`.
+    Choice,
+    /// A few words: `text.<id>`.
+    Text,
+    /// Something to press: `button.<id>`, and `event.<id>` for when it was.
+    Button,
+    /// A calendar day: `date.<id>`.
+    Date,
+    /// A time of day: `time.<id>`.
+    Time,
+    /// A day and a time: `datetime.<id>`.
+    Datetime,
+    /// Counts down: `timer.<id>`, and `event.<id>` for when it starts and ends. `--initial`
+    /// isn't for a timer; its length is `--step`, in seconds.
+    Timer,
+    /// On during a week's times, given with `--set mon='[["07:00","09:00"]]'`: `schedule.<id>`.
+    Schedule,
+    /// Several entities as one: `--set kind=light --set members='["light.a","light.b"]'`.
+    Group,
+    /// Several sensors' readings as one: `--set sources='["sensor.a","sensor.b"]' --set of=mean`.
+    Combined,
+    /// A switch shown as what it powers: `--set switch=switch.lamp_plug --set as=light`.
+    SwitchAs,
+    /// On while a reading is past a line: `--set source=sensor.x --set above=26`.
+    Threshold,
+    /// On while a reading rises or falls: `--set source=… --set direction=rising --set by=… --set over=…`.
+    Trend,
+    /// What a counting reading went up by: `--set source=… --set every=day`.
+    Meter,
+    /// The area under a reading, power into energy: `--set source=…`.
+    Integral,
+    /// How fast a reading changes: `--set source=… --set over=…`.
+    Derivative,
+    /// A reading's mean, min or max: `--set source=… --set of=mean --set over=…`.
+    Statistics,
+    /// How long, how often or how much of the time something was a value:
+    /// `--set source=… --set is=true --set measure=time`.
+    History,
+}
+
+impl HelperKind {
+    /// Its table in `extensions/helpers.toml`, which is also its part of the API's path.
+    pub fn table(self) -> &'static str {
+        match self {
+            Self::Toggle => "toggles",
+            Self::Number => "numbers",
+            Self::Counter => "counters",
+            Self::Choice => "selects",
+            Self::Text => "texts",
+            Self::Button => "buttons",
+            Self::Date => "dates",
+            Self::Time => "times",
+            Self::Datetime => "datetimes",
+            Self::Timer => "timers",
+            Self::Schedule => "schedules",
+            Self::Group => "groups",
+            Self::Combined => "combined",
+            Self::SwitchAs => "switch_as",
+            Self::Threshold => "thresholds",
+            Self::Trend => "trends",
+            Self::Meter => "meters",
+            Self::Integral => "integrals",
+            Self::Derivative => "derivatives",
+            Self::Statistics => "statistics",
+            Self::History => "history",
+        }
+    }
+}
+
+/// What a helper is set up with. Each kind takes the ones that mean something to it, and
+/// Irori says so when it's given one that doesn't.
+#[derive(Debug, Default, Args)]
+pub struct HelperSettings {
+    /// The least a number or a counter can be.
+    #[arg(long, allow_negative_numbers = true)]
+    pub min: Option<f64>,
+    /// The most a number or a counter can be.
+    #[arg(long, allow_negative_numbers = true)]
+    pub max: Option<f64>,
+    /// How finely a number is set, how much one count is, or how long a timer runs (seconds).
+    #[arg(long)]
+    pub step: Option<f64>,
+    /// What a number counts in: `%`, `°C`, `min`.
+    #[arg(long)]
+    pub unit: Option<String>,
+    /// How a number is set on a page: `slider` or `box`.
+    #[arg(long)]
+    pub mode: Option<String>,
+    /// One thing a choice can be. Give it once for each.
+    #[arg(long = "option")]
+    pub options: Vec<String>,
+    /// The fewest characters a text takes.
+    #[arg(long)]
+    pub min_length: Option<u32>,
+    /// The most characters a text takes.
+    #[arg(long)]
+    pub max_length: Option<u32>,
+    /// What it is until someone sets it: `on` or `off` for a toggle, a number, an option, a
+    /// text, a date (`2026-10-14`), a time (`06:45`) or a moment (`2026-10-14T06:45:00Z`).
+    #[arg(long, allow_hyphen_values = true)]
+    pub initial: Option<String>,
+    /// Any setting, as `key=value`, the way it's written in `extensions/helpers.toml`: a value
+    /// that reads as JSON (a number, `true`, a list) is that, and anything else is text. Give
+    /// it once for each.
+    #[arg(long = "set", value_name = "KEY=VALUE", allow_hyphen_values = true)]
+    pub set: Vec<String>,
 }
 
 #[derive(Debug, Subcommand)]

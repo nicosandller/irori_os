@@ -4,9 +4,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use irori_types::{
-    Availability, BinarySensorCapabilities, BinarySensorClass, Capabilities, Device, DeviceId,
-    Entity, EntityId, EntityState, ExtensionId, LightTurnOn, SensorCapabilities, SensorClass,
-    SensorValue, State,
+    BinarySensorCapabilities, BinarySensorClass, Capabilities, Device, DeviceId, Entity, EntityId,
+    EntityState, ExtensionId, LightTurnOn, SensorCapabilities, SensorClass, SensorValue, State,
 };
 use leptos::ev;
 use leptos::prelude::*;
@@ -15,14 +14,18 @@ use leptos_router::components::A;
 
 use crate::api::Home;
 
+mod builder;
 mod controls;
 mod grouping;
 mod tables;
 mod updates;
 
+use self::builder::{HELPER_KINDS, HelperBuilder, HelperKind};
+pub(crate) use self::controls::moment::when as controls_when;
 pub(crate) use self::controls::{
-    climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words, number,
-    opening_words, unit_of, update_words, water_heater_words, wording,
+    alarm_words, camera_picture, camera_words, climate_words, fan_words, fill, humidifier_words,
+    lock_words, media_player_words, mower_words, number, opening_words, schedule_words,
+    timer_words, unit_of, update_words, vacuum_words, water_heater_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
 
@@ -103,7 +106,6 @@ impl Showing {
 #[component]
 pub fn Devices() -> impl IntoView {
     let live = expect_context::<crate::Live>();
-    let controls = expect_context::<Controls>();
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
     let adding_helper = RwSignal::new(false);
@@ -193,30 +195,42 @@ pub fn Devices() -> impl IntoView {
 
         {move || (showing.get() != Showing::Helpers).then(|| view! { <updates::Updates /> })}
 
-        {move || (showing.get() != Showing::Helpers).then(|| view! {
+        {move || view! {
             <input
                 class="filter"
                 type="search"
-                placeholder="Filter by name, id, area or make"
+                placeholder=if showing.get() == Showing::Helpers {
+                    "Filter by name, id or kind"
+                } else {
+                    "Filter by name, id, area or make"
+                }
                 aria-label="Filter"
                 prop:value=filter
                 on:input:target=move |ev| filter.set(ev.target().value())
             />
-        })}
+        }}
 
         // The two lists watch the home themselves, and only what they're made of (`tables.rs`).
-        // Helpers are few and hold nothing a person is typing, so they're drawn with each reading.
+        // Helpers are redrawn when a helper changes and not with every reading in the home, so
+        // a text being typed into one isn't taken away by a sensor across the house.
         {move || match showing.get() {
             Showing::Devices => view! { <tables::DeviceTable filter=filter /> }.into_any(),
             Showing::Entities => view! { <tables::EntityTable filter=filter /> }.into_any(),
-            Showing::Helpers => helpers(&live.home.get(), controls),
+            Showing::Helpers => view! {
+                {move || expect_context::<HelperTrouble>().0.get().map(|why| view! {
+                    <p class="banner">{why}</p>
+                })}
+                <tables::HelperTable filter=filter />
+            }
+            .into_any(),
         }}
         {move || adding_helper.get().then(|| view! {
             <crate::modal::Modal
                 title="Add a helper".to_owned()
                 on_close=move || adding_helper.set(false)
+                wide=true
             >
-                <AddToggle on_added=move || adding_helper.set(false) />
+                <HelperBuilder on_added=move || adding_helper.set(false) />
             </crate::modal::Modal>
         })}
     }
@@ -246,86 +260,56 @@ pub fn icon(protocol: &str, has_icon: bool) -> AnyView {
     }
 }
 
-/// The helpers in the home: the switches Irori keeps itself, each with its switch and a way to
-/// remove it. Redrawn with every reading, so it holds nothing a person is typing.
-fn helpers(home: &Home, controls: Controls) -> AnyView {
-    let states: BTreeMap<_, _> = home.states.iter().map(|s| (&s.entity_id, s)).collect();
-    let mut toggles: Vec<_> = home
-        .entities
-        .iter()
-        .filter(|entity| entity.protocol.as_str() == HELPERS)
-        .filter_map(|entity| {
-            let id = entity
-                .unique_id
-                .as_str()
-                .strip_prefix("toggle-")?
-                .to_owned();
-            Some((id, entity.clone(), states.get(&entity.id).copied().cloned()))
-        })
-        .collect();
-    toggles.sort_by(|a, b| a.1.name.as_str().cmp(b.1.name.as_str()));
-    if toggles.is_empty() {
-        return view! {
-            <section class="card">
-                <h2>"No helpers yet"</h2>
-                <p class="muted">
-                    "A helper is a value Irori keeps itself rather than a device reporting it: a "
-                    "switch for \"guests are over\" or \"holiday mode\", say. It stays as it was "
-                    "left through restarts, and rules (M1.4) will be able to read and flip it. "
-                    "Make one with \"+ Add helper\" above."
-                </p>
-            </section>
-        }
-        .into_any();
-    }
-    view! {
-        <section class="card">
-            <ul class="room-devices">
-                {toggles
-                    .into_iter()
-                    .map(|(id, entity, state)| {
-                        let name = entity.name.to_string();
-                        let shown = entity.id.to_string();
-                        let offline = state
-                            .as_ref()
-                            .is_some_and(|s| s.availability == Availability::Unavailable);
-                        let knob = control(&entity, state.as_ref(), offline, controls);
-                        view! {
-                            <li>
-                                <span class="name">{name.clone()}</span>
-                                <code class="muted small">{shown}</code>
-                                <span class="room-actions">
-                                    {knob}
-                                    <ToggleActions id=id entity_id=entity.id.clone() name=name />
-                                </span>
-                            </li>
-                        }
-                    })
-                    .collect_view()}
-            </ul>
-        </section>
-    }
-    .into_any()
-}
-
 /// The protocol that keeps helpers.
 const HELPERS: &str = "helpers";
 
-/// Renaming and removing a toggle. A toggle has one name, kept with its definition in
-/// `extensions/helpers.toml`; renaming it here changes that one (ROADMAP D36).
-#[component]
-fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView {
+/// Which kind of helper an entity is the helper itself of — its place in the kinds, table, word
+/// and icon — and nothing for the entities a helper has beside itself (a button's event).
+pub(crate) fn helper_kind_of(
+    entity: &Entity,
+) -> Option<(usize, &'static str, &'static str, &'static str)> {
+    let (prefix, _) = entity.unique_id.as_str().split_once('-')?;
+    HELPER_KINDS
+        .iter()
+        .enumerate()
+        .find(|(_, kind)| kind.prefix == prefix)
+        .map(|(at, kind)| {
+            (
+                at,
+                kind.table,
+                kind.word,
+                irori_ui_kit::entity_icon::helper(kind.table),
+            )
+        })
+}
+
+/// What a helper's row has beside an entity's: its name, changed where it stands; what it is
+/// and what flows start from; why it has no value, when it can't be worked out; and a way to
+/// remove it.
+pub(crate) struct HelperBits {
+    pub name: AnyView,
+    pub under: AnyView,
+    pub tools: AnyView,
+}
+
+pub(crate) fn helper_bits(entity: &Entity) -> Option<HelperBits> {
+    let (prefix, id) = entity.unique_id.as_str().split_once('-')?;
+    let kind: HelperKind = *HELPER_KINDS.iter().find(|kind| kind.prefix == prefix)?;
+    let id = id.to_owned();
     let live = expect_context::<crate::Live>();
     let trouble = expect_context::<HelperTrouble>().0;
-    let rename = {
-        let name = name.clone();
-        move |_| {
-            let Ok(Some(typed)) =
-                window().prompt_with_message_and_default("Rename this toggle", &name)
-            else {
-                return;
-            };
-            if typed.trim() == name {
+    let entity_id = entity.id.clone();
+    let name = entity.name.to_string();
+
+    // Renamed where it stands: it has one name, kept with its definition (ROADMAP D36).
+    let renaming = RwSignal::new(false);
+    let draft = RwSignal::new(String::new());
+    let save = {
+        let (entity_id, before) = (entity_id.clone(), name.clone());
+        move || {
+            let typed = draft.get_untracked();
+            renaming.set(false);
+            if typed.trim() == before {
                 return;
             }
             let Some(named) = crate::settings::named(typed, trouble) else {
@@ -343,18 +327,69 @@ fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView
             });
         }
     };
+    let names = {
+        let (shown, from) = (name.clone(), name.clone());
+        crate::inline::editable(
+            format!("Rename {name}"),
+            "What to call it",
+            renaming.into(),
+            draft,
+            move || view! { <span class="name">{shown.clone()}</span> }.into_any(),
+            move || {
+                draft.set(from.clone());
+                renaming.set(true);
+            },
+            save,
+            move || renaming.set(false),
+        )
+    };
+
+    // What a flow starts from, for a button or a timer: its event.
+    let fires = live.home.with_untracked(|home| {
+        let fired = [format!("pressed-{id}"), format!("timerevent-{id}")];
+        home.entities
+            .iter()
+            .filter(|other| other.protocol.as_str() == HELPERS)
+            .find(|other| {
+                fired
+                    .iter()
+                    .any(|unique| other.unique_id.as_str() == unique)
+            })
+            .map(|other| other.id.to_string())
+    });
+    let problem = {
+        let entity_id = entity_id.clone();
+        Memo::new(move |_| {
+            live.home.with(|home| {
+                home.states
+                    .iter()
+                    .find(|state| state.entity_id == entity_id && state.state.is_none())
+                    .and_then(|state| {
+                        state
+                            .attributes
+                            .iter()
+                            .find(|(key, _)| key.as_str() == "problem")
+                            .and_then(|(_, why)| why.as_str().map(str::to_owned))
+                    })
+            })
+        })
+    };
+    let under = view! {
+        <span class="helper-under">
+            {fires.map(|fires| view! {
+                <span class="muted small">"starts flows as " <code>{fires}</code></span>
+            })}
+        </span>
+        {move || problem.get().map(|why| view! { <span class="helper-problem">{why}</span> })}
+    }
+    .into_any();
+
+    // Removed after a second press, in the row: what goes is said where it is.
+    let asking = RwSignal::new(false);
     let remove = move |_| {
-        if !window()
-            .confirm_with_message(&format!(
-                "Remove {name}? Anything that reads it will find it gone."
-            ))
-            .unwrap_or(false)
-        {
-            return;
-        }
         let id = id.clone();
         spawn_local(async move {
-            match crate::api::remove_toggle(&id).await {
+            match crate::api::remove_helper(kind.table, &id).await {
                 Ok(()) => {
                     trouble.set(None);
                     crate::refresh(live);
@@ -363,66 +398,60 @@ fn ToggleActions(id: String, entity_id: EntityId, name: String) -> impl IntoView
             }
         });
     };
-    view! {
-        <button type="button" on:click=rename>"Rename"</button>
-        <button type="button" class="danger" on:click=remove>"Remove"</button>
+    let tools = view! {
+        <span class="helper-tools" class:asking=move || asking.get()>
+            <button
+                type="button"
+                class="icon-button trash"
+                aria-label=format!("Remove {name}")
+                title="Remove"
+                aria-expanded=move || asking.get().to_string()
+                on:click=move |_| asking.update(|asking| *asking = !*asking)
+            >
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <g class="trash-lid"><path d="M3.5 6h17" /><path d="M9 6V4.5a1.5 1.5 0 0 1 1.5-1.5h3A1.5 1.5 0 0 1 15 4.5V6" /></g>
+                    <path d="M18.5 6.5 17.6 19.6a2 2 0 0 1-2 1.9H8.4a2 2 0 0 1-2-1.9L5.5 6.5" />
+                    <path class="trash-lines" d="M10 10.5v6.5M14 10.5v6.5" />
+                </svg>
+            </button>
+            <span class="remove-ask" inert=move || (!asking.get()).then_some("")>
+                <span class="muted small">"Flows that read it will find it gone."</span>
+                <button type="button" class="danger small-button" on:click=remove>"Remove"</button>
+                <button type="button" class="quiet-button" on:click=move |_| asking.set(false)>
+                    "Keep"
+                </button>
+            </span>
+        </span>
     }
+    .into_any();
+    Some(HelperBits {
+        name: names,
+        under,
+        tools,
+    })
+}
+
+/// The Helpers tab with nothing on it: what a helper is, and how to make one.
+pub(crate) fn no_helpers() -> AnyView {
+    view! {
+        <section class="card">
+            <h2>"No helpers yet"</h2>
+            <p class="muted">
+                "A helper is a value Irori keeps itself rather than a device reporting it: a "
+                "switch for \"guests are over\", a number for how bright the evening should "
+                "be, a button for \"movie time\". It stays as it was left through restarts, "
+                "and flows read it, set it and start from it like anything else in the "
+                "home. Make one with \"+ Add helper\" above."
+            </p>
+        </section>
+    }
+    .into_any()
 }
 
 /// Why the last change to a helper was refused, shared by the form and the rows.
 #[derive(Debug, Clone, Copy)]
 struct HelperTrouble(RwSignal<Option<String>>);
-
-/// Making a toggle. Outside the list, which redraws with every reading, so what's being typed
-/// survives it (ROADMAP D33).
-#[component]
-fn AddToggle(#[prop(into)] on_added: Callback<()>) -> impl IntoView {
-    let live = expect_context::<crate::Live>();
-    let trouble = expect_context::<HelperTrouble>().0;
-    let name = RwSignal::new(String::new());
-    let add = move || {
-        let Some(named) = crate::settings::named(name.get(), trouble) else {
-            return;
-        };
-        name.set(String::new());
-        spawn_local(async move {
-            match crate::api::add_toggle(named).await {
-                Ok(()) => {
-                    trouble.set(None);
-                    crate::refresh(live);
-                    on_added.run(());
-                }
-                Err(why) => trouble.set(Some(why)),
-            }
-        });
-    };
-    view! {
-        <p class="muted">
-            "A helper is a value Irori keeps itself rather than a device reporting it: a switch "
-            "for \"guests are over\" or \"holiday mode\", say. It stays as it was left through "
-            "restarts, and rules (M1.4) will be able to read and flip it."
-        </p>
-        {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-        <form
-            class="inline-form"
-            on:submit=move |ev| {
-                ev.prevent_default();
-                add();
-            }
-        >
-            <input
-                type="text"
-                aria-label="Name of the new toggle"
-                placeholder="Guests are over"
-                prop:value=name
-                on:input:target=move |ev| name.set(ev.target().value())
-            />
-            <button type="submit" class="add" disabled=move || name.get().trim().is_empty()>
-                "Add helper"
-            </button>
-        </form>
-    }
-}
 
 /// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
 /// or low/ok from a battery binary sensor. `None` when it doesn't have one, which is most
@@ -1496,12 +1525,12 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
     let expanded = move || open.get().to_string();
     let chevron = view! { <span class="unroll-mark" aria-hidden="true"></span> };
     let hint = view! { <span class="visually-hidden">" — last 24 hours"</span> };
-    // A button has nothing to remember from one day to the next.
-    if matches!(entity.capabilities, Capabilities::Button(_)) {
-        return control;
-    }
     match entity.capabilities {
-        Capabilities::Sensor(_) | Capabilities::BinarySensor(_) | Capabilities::Event(_) => view! {
+        Capabilities::Sensor(_)
+        | Capabilities::BinarySensor(_)
+        | Capabilities::Event(_)
+        | Capabilities::DeviceTracker(_)
+        | Capabilities::Schedule(_) => view! {
             <button
                 type="button"
                 class="unroll reading-unroll"
@@ -1530,8 +1559,16 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::Select(_)
         | Capabilities::Text(_)
         | Capabilities::Button(_)
+        | Capabilities::Scene(_)
         | Capabilities::Cover(_)
         | Capabilities::Lock(_)
+        | Capabilities::AlarmControlPanel(_)
+        | Capabilities::Date(_)
+        | Capabilities::Time(_)
+        | Capabilities::Datetime(_)
+        | Capabilities::Vacuum(_)
+        | Capabilities::LawnMower(_)
+        | Capabilities::Timer(_)
         | Capabilities::Fan(_)
         | Capabilities::Valve(_)
         | Capabilities::Siren(_)
@@ -1539,6 +1576,7 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::WaterHeater(_)
         | Capabilities::Humidifier(_)
         | Capabilities::MediaPlayer(_)
+        | Capabilities::Camera(_)
         | Capabilities::Update(_) => view! {
             {control}
             <button

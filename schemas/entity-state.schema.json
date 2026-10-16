@@ -485,6 +485,259 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^alarm_control_panel\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "alarm_control_panel"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^date\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "date"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^time\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "time"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^datetime\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "datetime"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^vacuum\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "vacuum"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^lawn_mower\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "lawn_mower"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^scene\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "scene"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^device_tracker\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "device_tracker"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^timer\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "timer"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^schedule\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "schedule"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "entity_id": {
+            "pattern": "^camera\\."
+          }
+        },
+        "required": [
+          "entity_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "state": {
+            "properties": {
+              "kind": {
+                "const": "camera"
+              }
+            }
+          }
+        }
+      }
     }
   ],
   "required": [
@@ -497,6 +750,38 @@
     "state"
   ],
   "$defs": {
+    "AlarmStatus": {
+      "description": "What a panel is doing. Home Assistant's `AlarmControlPanelState`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "disarmed",
+            "armed_home",
+            "armed_away",
+            "armed_night",
+            "armed_vacation",
+            "armed_custom_bypass",
+            "disarming"
+          ]
+        },
+        {
+          "description": "Something tripped it, and it's counting down before it sounds.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "Told to arm, and counting down so people can leave.",
+          "type": "string",
+          "const": "arming"
+        },
+        {
+          "description": "Going off.",
+          "type": "string",
+          "const": "triggered"
+        }
+      ]
+    },
     "AttributeKey": {
       "description": "Format of a slug (attribute key): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
       "type": "string",
@@ -510,6 +795,38 @@
         "available",
         "unavailable"
       ]
+    },
+    "CameraStatus": {
+      "description": "What a camera is doing. Home Assistant's camera states, with `off` for one turned off.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "idle",
+            "recording"
+          ]
+        },
+        {
+          "description": "Someone is watching it live.",
+          "type": "string",
+          "const": "streaming"
+        }
+      ]
+    },
+    "CivilDate": {
+      "type": "string",
+      "examples": [
+        "2026-10-14"
+      ],
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+    },
+    "ClockTime": {
+      "type": "string",
+      "examples": [
+        "06:45:00"
+      ],
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$"
     },
     "ColorMode": {
       "type": "string",
@@ -630,6 +947,50 @@
         {
           "maxLength": 71,
           "pattern": "^update\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 84,
+          "pattern": "^alarm_control_panel\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^date\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^time\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^datetime\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^vacuum\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 79,
+          "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^timer\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^schedule\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^camera\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -713,6 +1074,29 @@
           "description": "Stuck: it tried and couldn't finish.",
           "type": "string",
           "const": "jammed"
+        }
+      ]
+    },
+    "MowerActivity": {
+      "description": "What a mower is doing. Home Assistant's `LawnMowerActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "mowing",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
         }
       ]
     },
@@ -1547,6 +1931,278 @@
             "kind",
             "available"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "alarm_control_panel"
+            },
+            "state": {
+              "$ref": "#/$defs/AlarmStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "date"
+            },
+            "value": {
+              "$ref": "#/$defs/CivilDate"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "time"
+            },
+            "value": {
+              "$ref": "#/$defs/ClockTime"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "datetime"
+            },
+            "value": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/VacuumActivity"
+            },
+            "fan_speed": {
+              "description": "One of its `fan_speeds` (checked by the core).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "vacuum"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/MowerActivity"
+            },
+            "kind": {
+              "type": "string",
+              "const": "lawn_mower"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "accuracy": {
+              "description": "How far off the position may be, in metres.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "home": {
+              "description": "At home.",
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "device_tracker"
+            },
+            "latitude": {
+              "description": "Degrees north, -90 to 90.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 90.0,
+              "minimum": -90.0
+            },
+            "longitude": {
+              "description": "Degrees east, -180 to 180.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 180.0,
+              "minimum": -180.0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "home"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "description": "How long it runs when started without being told, in seconds.",
+              "type": "number",
+              "format": "double",
+              "minimum": 0.0
+            },
+            "finishes_at": {
+              "description": "When it runs out. While it's active, and only then.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "timer"
+            },
+            "remaining": {
+              "description": "Seconds left. While it's paused, and only then.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "state": {
+              "$ref": "#/$defs/TimerStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state",
+            "duration"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "schedule"
+            },
+            "next_change": {
+              "description": "When it next turns on or off. Absent for a schedule that never changes (an empty week).",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "on": {
+              "description": "Within one of its times now.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "camera"
+            },
+            "motion_detection": {
+              "description": "Whether it's watching for motion, for one with `motion_detection`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "state": {
+              "$ref": "#/$defs/CameraStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        }
+      ]
+    },
+    "TimerStatus": {
+      "oneOf": [
+        {
+          "description": "Not counting: never started, run out, or cancelled.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "Counting down.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "Stopped part of the way, with time left.",
+          "type": "string",
+          "const": "paused"
         }
       ]
     },
@@ -1569,6 +2225,34 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "VacuumActivity": {
+      "description": "What a vacuum is doing. Home Assistant's `VacuumActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "cleaning",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "Off its dock and doing nothing.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
     },
     "WaterHeaterMode": {
       "description": "Home Assistant's operation modes.",

@@ -783,7 +783,16 @@ async fn supervise(
             }
         }
         core.set_status(&extension, ExtensionStatus::Starting);
-        let (ctx, host_end) = connect();
+        let (mut ctx, host_end) = connect();
+        // A built-in that works out values from the rest of the home reads it in-process,
+        // within the scopes its manifest asks for.
+        if !manifest.permissions.api.is_empty() {
+            ctx.give_home(std::sync::Arc::new(crate::home_access::CoreHome {
+                core: core.clone(),
+                extension: extension.clone(),
+                scopes: manifest.permissions.api.clone(),
+            }));
+        }
         // Only time spent actually running counts towards `healthy_after`; startup doesn't, and
         // a start that panics never ran at all.
         let mut running_since: Option<Instant> = None;
@@ -1620,6 +1629,12 @@ fn exit_reason(status: std::io::Result<std::process::ExitStatus>) -> String {
 }
 
 fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
+    if let Some(unique_id) = incoming.picturing() {
+        return ToExt::CameraPicture {
+            id,
+            unique_id: unique_id.clone(),
+        };
+    }
     match incoming.unpairing() {
         Some((unique_id, force)) => ToExt::UnpairDevice {
             id,
@@ -1905,6 +1920,16 @@ async fn apply_from_ext(
                 incoming.reply(match error {
                     None => Ok(()),
                     Some(error) => Err(error),
+                });
+            }
+            Ok(None)
+        }
+        FromExt::PictureResult { id, picture, error } => {
+            if let Some(incoming) = pending_actions.remove(&id) {
+                incoming.reply_picture(match (picture, error) {
+                    (_, Some(error)) => Err(error),
+                    (Some(picture), None) => irori_protocol::Picture::try_from(picture),
+                    (None, None) => Err("it sent no picture".to_owned()),
                 });
             }
             Ok(None)

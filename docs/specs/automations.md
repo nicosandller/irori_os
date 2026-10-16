@@ -283,8 +283,9 @@ with.
 
 Done so far: 1 (triggers, checks and waits take any kind by its value), 2 (a call names any
 kind's service, with that service's own fields, read off the `ServiceCall` schema), 3 (a state
-trigger on an `event` fires on every report), and 6 (the editor's pickers and the call form are
-drawn from what each entity offers). Still to do: 4, 5, 7. Until 7, a call can't carry a `code`.
+trigger on an `event` fires on every report), 4 (triggers, checks, waits and expressions read
+an entity's other values by name), 5 for temperatures, and 6 (the editor's pickers and the
+call form are drawn from what each entity offers). Still to do: 5 for other units, and 7. Until 7, a call can't carry a `code`.
 
 1. **Read entities by value, not by kind.** The engine and its page once parsed entities with
    `irori-types`' closed enums and refused what they didn't know. They read what every entity
@@ -310,7 +311,9 @@ drawn from what each entity offers). Still to do: 4, 5, 7. Until 7, a call can't
 4. **Read more than the main value.** `num(id, 'field')` and `text(id, 'field')`, and `field` on
    state triggers and conditions, for a blind's position or a thermostat's current temperature
    ([rules.md](rules.md) amendment).
-5. **Compare units properly.** Temperatures are °C throughout the model; other units are as
+5. **Compare units properly.** Temperatures are °C throughout the model, sensors and number
+   settings included ([entities.md](entities.md) §4.4), and a flow comparing a number with a
+   sensor Irori converts is warned. Other units are as
    reported, so comparing two numbers in different units is the author's to watch for until
    units are normalised.
 6. **Make the editor's choices depend on what each entity offers**: entity pickers by value

@@ -7,6 +7,7 @@
 //! so identity here is the device's MAC address plus that key — stable as long as the entity
 //! keeps its name, which is the same promise ESPHome makes to Home Assistant.
 
+pub mod alarm_control_panel;
 pub mod binary_sensor;
 pub mod button;
 pub mod climate;
@@ -15,6 +16,8 @@ pub mod event;
 pub mod fan;
 pub mod light;
 pub mod lock;
+pub mod media_player;
+pub mod moment;
 pub mod number;
 pub mod opening;
 pub mod select;
@@ -109,15 +112,10 @@ pub(crate) fn celsius(unit: TemperatureUnit, value: f32) -> f64 {
 pub fn unmodeled(device: &UniqueId, message: &EspHomeMessage) -> Option<Unmodeled> {
     use EspHomeMessage as M;
     let (platform, name) = match message {
-        M::ListEntitiesAlarmControlPanelResponse(e) => ("alarm_control_panel", &e.name),
         M::ListEntitiesCameraResponse(e) => ("camera", &e.name),
         M::ListEntitiesClimateResponse(e) => ("climate", &e.name),
-        M::ListEntitiesDateResponse(e) => ("date", &e.name),
-        M::ListEntitiesDateTimeResponse(e) => ("datetime", &e.name),
         M::ListEntitiesInfraredResponse(e) => ("infrared", &e.name),
-        M::ListEntitiesMediaPlayerResponse(e) => ("media_player", &e.name),
         M::ListEntitiesRadioFrequencyResponse(e) => ("radio_frequency", &e.name),
-        M::ListEntitiesTimeResponse(e) => ("time", &e.name),
         M::ListEntitiesWaterHeaterResponse(e) => ("water_heater", &e.name),
         _ => return None,
     };

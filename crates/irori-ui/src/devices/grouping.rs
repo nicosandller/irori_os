@@ -95,6 +95,8 @@ pub struct Section<Row> {
     pub note: Option<String>,
     /// The protocol whose icon heads the group, where a group has one.
     pub icon: Option<ProtocolIcon>,
+    /// An icon of the page's own, drawn where an extension's would be: a kind of helper's.
+    pub glyph: Option<&'static str>,
     pub rows: Vec<Row>,
 }
 
@@ -166,7 +168,12 @@ pub fn entities(home: &Home, needle: &str, by: EntitiesBy) -> Vec<Section<Entity
     let needle = needle.trim().to_lowercase();
     let devices: BTreeMap<_, _> = home.devices.iter().map(|d| (&d.id, d)).collect();
     let mut sections: BTreeMap<Place, Section<EntityLine>> = BTreeMap::new();
-    for entity in &home.entities {
+    // Helpers have a tab of their own.
+    for entity in home
+        .entities
+        .iter()
+        .filter(|entity| entity.protocol.as_str() != HELPERS)
+    {
         let device = entity.device_id.as_ref().and_then(|id| devices.get(id));
         // Its own area if it has one, else its device's: a sensor on a long lead can be in a
         // different room from the box it's wired to.
@@ -213,6 +220,61 @@ pub fn entities(home: &Home, needle: &str, by: EntitiesBy) -> Vec<Section<Entity
         .collect()
 }
 
+/// The protocol that keeps helpers.
+const HELPERS: &str = "helpers";
+
+/// The helpers in the home, a group for each kind in the order `kinds` gives them. `kind_of`
+/// says which kind an entity is the helper of — `(place, table, word, icon)` — and nothing for
+/// the entities a helper has beside itself (a button's event).
+pub fn helpers(
+    home: &Home,
+    needle: &str,
+    kind_of: impl Fn(&Entity) -> Option<(usize, &'static str, &'static str, &'static str)>,
+) -> Vec<Section<EntityLine>> {
+    let needle = needle.trim().to_lowercase();
+    let mut sections: BTreeMap<(usize, &'static str), Section<EntityLine>> = BTreeMap::new();
+    for entity in home
+        .entities
+        .iter()
+        .filter(|entity| entity.protocol.as_str() == HELPERS)
+    {
+        let Some((place, table, word, glyph)) = kind_of(entity) else {
+            continue;
+        };
+        let matches = needle.is_empty()
+            || entity.id.to_string().to_lowercase().contains(&needle)
+            || entity.name.as_str().to_lowercase().contains(&needle)
+            || word.to_lowercase().contains(&needle);
+        if !matches {
+            continue;
+        }
+        sections
+            .entry((place, table))
+            .or_insert_with(|| Section {
+                key: format!("helper:{table}"),
+                label: word.to_owned(),
+                note: None,
+                icon: None,
+                glyph: Some(glyph),
+                rows: Vec::new(),
+            })
+            .rows
+            .push(EntityLine {
+                entity: entity.clone(),
+                device: None,
+            });
+    }
+    sections
+        .into_values()
+        .map(|mut section| {
+            section
+                .rows
+                .sort_by(|a, b| a.entity.name.cmp(&b.entity.name));
+            section
+        })
+        .collect()
+}
+
 /// How many rows the sections hold between them.
 pub fn count<Row>(sections: &[Section<Row>]) -> usize {
     sections.iter().map(|section| section.rows.len()).sum()
@@ -241,6 +303,7 @@ impl Heading {
             label: self.label,
             note: self.note,
             icon: self.icon,
+            glyph: None,
             rows: Vec::new(),
         })
     }
@@ -370,6 +433,17 @@ fn kind_label(kind: EntityKind) -> &'static str {
         EntityKind::Event => "Events",
         EntityKind::Cover => "Covers",
         EntityKind::Lock => "Locks",
+        EntityKind::AlarmControlPanel => "Alarm panels",
+        EntityKind::Date => "Dates",
+        EntityKind::Time => "Times",
+        EntityKind::Datetime => "Dates and times",
+        EntityKind::Vacuum => "Vacuums",
+        EntityKind::LawnMower => "Lawn mowers",
+        EntityKind::Scene => "Scenes",
+        EntityKind::DeviceTracker => "Trackers",
+        EntityKind::Timer => "Timers",
+        EntityKind::Schedule => "Schedules",
+        EntityKind::Camera => "Cameras",
         EntityKind::Fan => "Fans",
         EntityKind::Valve => "Valves",
         EntityKind::Siren => "Sirens",

@@ -663,6 +663,7 @@ impl Engine {
     ) {
         let Trigger::State {
             entity,
+            field,
             from,
             to,
             above,
@@ -673,11 +674,16 @@ impl Engine {
             return;
         };
         let level = (above.is_some() || below.is_some()).then_some((*above, *below));
-        let read = to_read(eval::Read::of(entity, &self.states));
+        let read = to_read(eval::Read::of_field(entity, field.as_ref(), &self.states));
         let old_value = old
             .and_then(|state| state.state.as_ref())
-            .map(eval::value_of)
+            .map(|state| eval::read_of(state, field.as_ref()))
             .unwrap_or(serde_json::Value::Null);
+        // What the trigger watches, in a note: the entity, or one of its values by name.
+        let watched = match field {
+            Some(field) => format!("{entity}'s {field}"),
+            None => entity.to_string(),
+        };
         let new_value = read.value.clone();
         let was_available = old.is_some_and(|state| state.availability == Availability::Available);
 
@@ -700,6 +706,12 @@ impl Engine {
             }
             return;
         }
+        // A value the entity has stopped saying (a blind that no longer knows its position)
+        // is nothing to fire on, and nothing a hold can go on counting.
+        if field.is_some() && new_value.is_null() {
+            self.cancel_hold(flow, node);
+            return;
+        }
         // Something that happens rather than a value that lasts (a button's press): each one
         // counts, the same one twice included. The core says when it happened by moving
         // `last_changed`, and leaves it alone for what isn't one — the device coming back in
@@ -715,7 +727,7 @@ impl Engine {
                     node,
                     NearMissKind::SameValue,
                     format!(
-                        "{entity} reported {} again, but it already was, so a change to {} \
+                        "{watched} reported {} again, but it already was, so a change to {} \
                          didn't happen",
                         words(&new_value),
                         words(&new_value)
@@ -730,7 +742,7 @@ impl Engine {
             format!("{entity}: {}", words(&new_value))
         } else {
             format!(
-                "{entity} went {} → {}",
+                "{watched} went {} → {}",
                 words(&old_value),
                 words(&new_value)
             )
@@ -1952,6 +1964,7 @@ fn to_read(read: eval::Read) -> Read {
     Read {
         entity_id: read.entity_id,
         availability: read.availability,
+        field: read.field,
         value: read.value,
     }
 }
@@ -2028,6 +2041,8 @@ pub fn words(value: &serde_json::Value) -> String {
         serde_json::Value::Bool(false) => "off".into(),
         serde_json::Value::Null => "unknown".into(),
         serde_json::Value::String(text) => format!("\"{text}\""),
+        // 180, not 180.0: a brightness or a position is a whole number to the person reading.
+        serde_json::Value::Number(n) => n.as_f64().map_or_else(|| n.to_string(), |n| n.to_string()),
         other => other.to_string(),
     }
 }
@@ -2047,10 +2062,14 @@ pub fn describe(condition: &Condition) -> String {
     match condition {
         Condition::State {
             entity,
+            field,
             is,
             availability,
         } => match (is, availability) {
-            (Some(is), _) => format!("{entity} is {}", typed(is)),
+            (Some(is), _) => match field {
+                Some(field) => format!("{entity}'s {field} is {}", typed(is)),
+                None => format!("{entity} is {}", typed(is)),
+            },
             (None, Some(availability)) => format!("{entity} is {availability:?}").to_lowercase(),
             (None, None) => entity.to_string(),
         },
@@ -2122,8 +2141,16 @@ pub fn describe(condition: &Condition) -> String {
 fn describe_wait(until: &WaitUntil) -> String {
     match until {
         WaitUntil::State {
-            entity, is, hold, ..
+            entity,
+            field,
+            is,
+            hold,
+            ..
         } => {
+            let entity = match field {
+                Some(field) => format!("{entity}'s {field}"),
+                None => entity.to_string(),
+            };
             let is = is.as_ref().map(typed).unwrap_or_else(|| "available".into());
             match hold {
                 Some(hold) => format!("{entity} is {is} for {}", hold.as_str()),

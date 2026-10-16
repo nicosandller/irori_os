@@ -1,5 +1,5 @@
-//! A heat pump hot water tank with its own switch: it heats towards its target while it's on,
-//! and cools a little while it isn't.
+//! The basement's electric water boiler, with its own switch: it heats towards its target while
+//! it's on, faster in performance mode, and cools a little while it isn't.
 
 use tokio::time::Instant;
 
@@ -7,12 +7,13 @@ use irori_protocol::types::{
     Capabilities, Service, State, WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterState,
 };
 
-use super::{Device, Entity, Gadget, Room, cannot};
+use super::{Device, Entity, Gadget, cannot};
+use crate::world::World;
 
-const TANK: &str = "hot-water-tank";
-const TANK_HEATER: &str = "hot-water-tank-heater";
+const TANK: &str = "basement-boiler";
+const TANK_HEATER: &str = "basement-boiler-heater";
 
-pub(super) struct HotWaterTank {
+pub(super) struct WaterBoiler {
     state: WaterHeaterState,
     /// The mode it's in when its switch is on.
     on_mode: WaterHeaterMode,
@@ -22,7 +23,7 @@ fn capabilities() -> WaterHeaterCapabilities {
     WaterHeaterCapabilities {
         operation_modes: vec![
             WaterHeaterMode::Eco,
-            WaterHeaterMode::HeatPump,
+            WaterHeaterMode::Electric,
             WaterHeaterMode::Performance,
         ],
         min_temp: 40.0,
@@ -33,15 +34,15 @@ fn capabilities() -> WaterHeaterCapabilities {
     }
 }
 
-impl HotWaterTank {
+impl WaterBoiler {
     pub(super) fn new() -> Self {
         Self {
             state: WaterHeaterState {
-                operation_mode: WaterHeaterMode::HeatPump,
+                operation_mode: WaterHeaterMode::Electric,
                 current_temperature: Some(50.0),
                 target_temperature: Some(55.0),
             },
-            on_mode: WaterHeaterMode::HeatPump,
+            on_mode: WaterHeaterMode::Electric,
         }
     }
 
@@ -51,24 +52,16 @@ impl HotWaterTank {
     }
 }
 
-impl Gadget for HotWaterTank {
+impl Gadget for WaterBoiler {
     fn device(&self) -> Device {
-        Device {
-            unique_id: TANK,
-            name: "Demo hot water tank",
-            model: "Virtual heat pump water heater",
-            room: "Kitchen",
-        }
+        Device::new(TANK, "Water boiler", "electric water boiler", "Basement")
     }
 
     fn entities(&self) -> Vec<Entity> {
-        vec![Entity {
-            unique_id: TANK_HEATER,
-            name: None,
-            capabilities: Capabilities::WaterHeater(capabilities()),
-            suggested_object_id: None,
-            category: None,
-        }]
+        vec![Entity::main(
+            TANK_HEATER,
+            Capabilities::WaterHeater(capabilities()),
+        )]
     }
 
     fn states(&self) -> Vec<(&'static str, State)> {
@@ -102,10 +95,13 @@ impl Gadget for HotWaterTank {
 
     /// A degree a reading towards its target while it's on; a little lost to the room while it
     /// isn't.
-    fn tick(&mut self, _: Instant, _: Room, _: u64) -> Vec<&'static str> {
+    fn tick(&mut self, _: Instant, _: &World) -> Vec<&'static str> {
         let water = self.state.current_temperature.unwrap_or(50.0);
         let heated = match (self.state.operation_mode, self.state.target_temperature) {
             (WaterHeaterMode::Off, _) => (water - 0.2).max(20.0),
+            (WaterHeaterMode::Performance, Some(target)) if water < target => {
+                (water + 2.0).min(target)
+            }
             (_, Some(target)) if water < target => (water + 1.0).min(target),
             _ => water,
         };
@@ -122,25 +118,20 @@ impl Gadget for HotWaterTank {
 mod tests {
     use super::*;
 
-    const ROOM: Room = Room {
-        temperature: 21.0,
-        humidity: 50.0,
-    };
-
     #[test]
-    fn the_tank_heats_while_on_and_cools_while_off() {
+    fn the_boiler_heats_while_on_and_cools_while_off() {
         let now = Instant::now();
-        let mut tank = HotWaterTank::new();
-        tank.tick(now, ROOM, 0);
+        let mut tank = WaterBoiler::new();
+        tank.tick(now, &World::at(0));
         assert_eq!(tank.state.current_temperature, Some(51.0));
         tank.call(TANK_HEATER, &Service::WaterHeaterTurnOff, now)
             .expect("switches off");
         super::super::assert_fits(&tank, &tank.states());
-        tank.tick(now, ROOM, 0);
+        tank.tick(now, &World::at(0));
         super::super::assert_fits(&tank, &tank.states());
         assert_eq!(tank.state.current_temperature, Some(50.8));
         tank.call(TANK_HEATER, &Service::WaterHeaterTurnOn, now)
             .expect("switches on");
-        assert_eq!(tank.state.operation_mode, WaterHeaterMode::HeatPump);
+        assert_eq!(tank.state.operation_mode, WaterHeaterMode::Electric);
     }
 }

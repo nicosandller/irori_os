@@ -6,17 +6,22 @@
 //! What several share lives in its own module: [`setting`] (a setting, a reading, a power
 //! switch) and [`opening`] (what a cover and a valve both do).
 
+pub mod alarm_control_panel;
 pub mod binary_sensor;
 pub mod button;
 pub mod climate;
 pub mod cover;
+pub mod device_tracker;
 pub mod event;
 pub mod fan;
 pub mod humidifier;
+pub mod lawn_mower;
 pub mod light;
 pub mod lock;
+pub mod moment;
 pub mod number;
 pub mod opening;
+pub mod scene;
 pub mod select;
 pub mod sensor;
 pub mod setting;
@@ -24,6 +29,7 @@ pub mod siren;
 pub mod switch;
 pub mod text;
 pub mod update;
+pub mod vacuum;
 pub mod valve;
 pub mod water_heater;
 

@@ -1,7 +1,7 @@
 //! What a run leaves behind (`docs/specs/flows.md` §6): its record, step by step, and the
 //! near-misses of firings that didn't become runs.
 
-use irori_types::{Availability, ContextId, EntityId, RuleId, Timestamp};
+use irori_types::{Availability, ContextId, EntityId, ObjectId, RuleId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 use crate::{NodeId, Port, Wire};
@@ -13,6 +13,9 @@ pub struct Read {
     /// Absent when there was no such entity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub availability: Option<Availability>,
+    /// Which of its values was read, when not the main one: `position`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<ObjectId>,
     /// Its value, `null` if unknown.
     #[serde(default)]
     pub value: serde_json::Value,

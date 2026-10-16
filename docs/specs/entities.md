@@ -127,9 +127,9 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`.
-**Next, in likely order:** `alarm_control_panel`, `date`, `time`, `datetime`,
-`vacuum`, `lawn_mower`, `remote`, `scene`, `device_tracker`. Adding a kind is an
+`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`, `device_tracker`, `timer`, `schedule`, `camera`.
+That is every Home Assistant kind a device on Irori's protocols reports. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
+has one, so nothing could report it. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -168,6 +168,20 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `lock` | `open` | bool | `false` | Can open the door, not only unlock it |
 | | `requires_code` | bool | `false` | Locking, unlocking and opening need its code |
 | | `code_format` | regular expression | absent | The device's; pages show it |
+| `alarm_control_panel` | `arm_modes` | list of `home` \| `away` \| `night` \| `vacation` \| `custom_bypass`, no repeats | `[]` | The ways it can be armed. One with none is disarmed and watched |
+| | `trigger` | bool | `false` | Can be set off on purpose |
+| | `code_format` | `number` \| `text` | absent | What its code looks like, when it takes one. Pages show a keypad for digits |
+| | `code_arm_required`, `code_disarm_required` | bool | `false` | Arming, or disarming, needs the code. Only with a `code_format` |
+| `vacuum` | `start`, `pause`, `stop`, `return_home`, `locate`, `clean_spot` | bool | `false` | What it can be told to do |
+| | `fan_speeds` | list of strings, up to 32 | `[]` | Its fan speeds by its own names (`quiet`, `turbo`). Empty for one with no choice |
+| `lawn_mower` | `start_mowing`, `pause`, `dock` | bool | `false` | What it can be told to do |
+| `device_tracker` | `source_type` | `gps` \| `router` \| `bluetooth` \| `bluetooth_le` | absent | How it knows where it is. One seen on the network or heard over Bluetooth is there or not, with no position |
+| `schedule` | none | | | On during the times a week sets out. Read, never told |
+| `camera` | `on_off` | bool | `false` | Has a privacy switch: can be turned off and on |
+| | `motion_detection` | bool | `false` | Watches for motion, and can be told to stop and start again |
+| `timer` | none | | | Something that counts down. Home Assistant has timers only as helpers; here a device that counts down can be one too |
+| `scene` | none | | | A scene a device keeps (a Hue scene, a Zigbee group's) and can be told to set. Scenes Irori makes itself are flows |
+| `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
 | `valve` | `device_class` | `water` \| `gas` | absent | |
 | | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
 | `siren` | `tones` | up to 256 distinct strings | `[]` | The tones it can sound |
@@ -195,14 +209,31 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `install` | bool | `false` | Can be told to install. Without it, it only says an update exists |
 | | `check` | bool | `false` | Can be told to look for a newer version now |
 
-**Temperatures are °C** in climate entities and water heaters, in their capabilities, state and services alike.
-A protocol converts from what a device speaks (°F, K) on the way in and back on the way out
-(`irori_types::units`), so a rule comparing a thermostat's target with a temperature sensor never
-compares °F with °C. Pages show °C for now.
+**Temperatures are °C**: in climate entities and water heaters (capabilities, state and
+services alike), and in every `sensor` and `number` whose `device_class` is `temperature` or
+`temperature_delta`. Protocols convert what a device says in °F or K on the way in, and a
+number's value back on the way out; its range and step are converted too, and its `unit` reads
+`°C`. Otherwise `num('sensor.outside') < num('climate.hall', 'target_temperature')` silently
+compares °F with °C. A `temperature_delta` (a calibration offset) is a difference, so only its
+scale changes. Pages show °C for now.
 
-**Unlocking and opening let someone in.** Pages ask before sending them, in a window that also
-takes the code a lock needs. A code travels with its call (`lock.unlock {code}`), is never shown
-in logs (its `Debug` hides it), and is never kept.
+A converted entity's reports carry the attribute `native_unit` (`°F`, `K`): the unit its device
+speaks (§5.4). Two things read it:
+
+- **History.** Readings stored before Irori converted a sensor are in its device's unit. The
+  first converted reading has the recorder convert those once (changes and summaries), so a
+  chart doesn't jump at the upgrade. It remembers having done so.
+- **Flows.** A flow that compares a number with a converted entity gets a warning on that
+  node, naming the number: a `70` written when the sensor read °F now means 70 °C. Nothing
+  is rewritten.
+
+**Unlocking, opening and disarming let someone in.** Pages ask before sending them, in a window
+that also takes the code a lock or an alarm panel needs. A code travels with its call
+(`lock.unlock {code}`, `alarm_control_panel.alarm_disarm {code}`), is never shown in logs (its
+`Debug` hides it), and is never kept. Arming is sent at once, unless the panel wants its code
+for that too. A flow can't carry a code yet ([automations.md](automations.md) §B6.7), so it
+arms and disarms only a panel that doesn't need one for it; the core refuses the others and
+says why.
 
 **Installing an update takes the device away for a while** and can't be undone. Pages ask before
 sending `update.install`, in a window that says what version it is and is also where a version
@@ -285,6 +316,24 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `cover` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, for rules (`text()`) |
 | | `position`, `tilt` | integer 0 (closed) – 100 (open) | no | Only when it said it has them |
 | `lock` | `state` | `locked` \| `unlocked` \| `locking` \| `unlocking` \| `jammed` \| `open` \| `opening` | yes | Its typed value, for rules |
+| `vacuum` | `activity` | `cleaning` \| `docked` \| `idle` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `VacuumActivity` |
+| | `fan_speed` | string | no | One of its `fan_speeds` (checked by the core) |
+| `lawn_mower` | `activity` | `mowing` \| `docked` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `LawnMowerActivity` |
+| `device_tracker` | `home` | bool | yes | Its typed value, for rules (`on()`): at home. Named places other than home wait for Irori to have zones; a tracker in one is not home |
+| | `latitude`, `longitude` | degrees, -90 to 90 and -180 to 180 | no | Where it is, from one that knows |
+| | `accuracy` | metres, 0 or more | no | How far off that may be |
+| `camera` | `state` | `off` \| `idle` \| `recording` \| `streaming` | yes | Its typed value, for rules (`text()`). `off` only for one with `on_off`. Its picture isn't state: a page asks for it ([protocols.md](protocols.md) §5.2) |
+| | `motion_detection` | bool | no | Whether it's watching for motion, for one with `motion_detection` |
+| `schedule` | `on` | bool | yes | Its typed value, for rules (`on()`): within one of its times now |
+| | `next_change` | `Timestamp` | no | When it next turns on or off. Absent for one that never changes |
+| `timer` | `state` | `idle` \| `active` \| `paused` | yes | Its typed value, for rules (`text()`) |
+| | `duration` | seconds, 0 to a year | yes | How long it runs when started without being told |
+| | `finishes_at` | `Timestamp` | while `active` | When it runs out. A running timer says this rather than how long is left, so its state doesn't change every second |
+| | `remaining` | seconds | while `paused` | What's left |
+| `date` | `value` | a calendar day, `2026-10-14` | yes | Its typed value, as that text. A day that exists; no time zone, it's the day wherever the home is |
+| `time` | `value` | a time of day to the second, `06:45:00` (`06:45` is read as the same) | yes | Its typed value, as that text. No date and no zone |
+| `datetime` | `value` | `Timestamp` | yes | Its typed value, as its UTC text (`2026-10-14T06:45:00Z`). An instant: pages show and pick it on their own clock |
+| `alarm_control_panel` | `state` | `disarmed` \| `armed_home` \| `armed_away` \| `armed_night` \| `armed_vacation` \| `armed_custom_bypass` \| `pending` \| `arming` \| `disarming` \| `triggered` | yes | Its typed value, for rules (`text()`). Home Assistant's states: `arming` counts down before it's armed, `pending` before it sounds |
 | `valve` | `state` | `open` \| `opening` \| `closed` \| `closing` | yes | Its typed value, as a cover's |
 | | `position` | integer 0–100 | no | When it opens part of the way |
 | `siren` | `on` | bool | yes | Sounding or not |
@@ -320,6 +369,37 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | | `skipped_version` | string | no | The version someone passed over. **Set by the core**; a protocol's is dropped before the report is checked |
 | | `last_error` | string | no | Why the last install didn't finish: the protocol's reason when it has one, otherwise the core's. Cleared when the next install is sent |
 
+**Automations read the other values by name.** The typed value is what `on()`, `num()` and
+`text()` read and what a state trigger watches. The rest of a state is readable too, as
+*fields* ([rules.md](rules.md) §5.1): `num('cover.blind', 'position')`, or `field` on a trigger.
+A field is one of the names in the table above, with its value as on/off, a number or text:
+
+| Kind | Fields |
+|---|---|
+| `light` | `brightness`, `color_temp_kelvin`, `color_mode` |
+| `fan` | `percentage`, `oscillating`, `direction`, `preset_mode` |
+| `cover` | `position`, `tilt` |
+| `valve` | `position` |
+| `climate` | `hvac_action`, `current_temperature`, `current_humidity`, `target_temperature`, `target_temp_low`, `target_temp_high`, `target_humidity`, `fan_mode`, `swing_mode`, `preset_mode` |
+| `humidifier` | `target_humidity`, `current_humidity`, `action`, `mode` |
+| `water_heater` | `current_temperature`, `target_temperature` |
+| `media_player` | `volume`, `muted`, `title`, `artist`, `album`, `app`, `content_type`, `duration`, `position` |
+| `update` | `installed_version`, `latest_version`, `in_progress`, `progress` |
+| `vacuum` | `fan_speed` |
+| `device_tracker` | `latitude`, `longitude`, `accuracy` |
+| `timer` | `duration`, `remaining`, `finishes_at` |
+| `schedule` | `next_change` |
+| `camera` | `motion_detection` |
+
+An entity has the fields its capabilities allow (a light that can't dim has no `brightness`);
+readings nothing announces ahead of time, like a thermostat's `current_temperature`, are listed
+for every entity of the kind. Lists and objects (`rgb`) aren't fields. In code:
+`Capabilities::fields()` and `State::field()`, each kind answering in its own file.
+
+**Dates and times are text that sorts in time order.** Written the ISO 8601 way, an earlier
+one is also the lesser text, so rules compare them as they would any text:
+`text('time.wake_up') < '07:30:00'`, or a state trigger's `to: "2026-12-25"`.
+
 **An `event`'s every report is something happening.** Two `double` presses of a remote in a row
 are two changes: each moves `last_changed` and is a change for anything watching, even though the
 value is the same. A report the protocol marks `replayed` ([protocols.md](protocols.md) §6.3), only
@@ -339,6 +419,14 @@ A `button` has **no state**: there is no `button` tag, and its `EntityState.stat
 `null`. For a button that means "has no value", not "unknown" (§5.2): pressing it is something it
 does, not something it is. Rules can't read or compare it (`on()`, a state trigger), only press it.
 
+A `scene` is the same: no `scene` tag, no value, and one thing to ask of it, `scene.turn_on`.
+
+What a button or scene has instead is **presses**. Each `button.press` or `scene.turn_on` that
+reaches its protocol is kept in its history as a row with `state: null` and the attribute
+`pressed: true`, its context saying who asked. `GET /api/history/<entity_id>` returns them with
+the rest of its day, and pages draw that day from them. Nothing else in a button's history has
+`pressed`.
+
 **Brightness is 1–255**, not a percentage: that's what Zigbee and Home Assistant use, so no
 precision is lost converting. Services will accept `brightness_pct` for people (M0.3).
 
@@ -348,6 +436,10 @@ A free-form map for protocol-specific extras (`linkquality`, `battery_voltage`, 
 slugs; values are any JSON. Rules may read them, but they're **not type-checked**, so
 anything the core or rules rely on must become a typed field instead. Attributes are the
 escape hatch, not the model.
+
+One attribute has a meaning Irori reads: `native_unit`, on an entity whose temperature a
+protocol converts to °C (§4.4). It's about how the device speaks, not what the entity is, which
+is why it isn't a capability.
 
 ## 6. Context
 

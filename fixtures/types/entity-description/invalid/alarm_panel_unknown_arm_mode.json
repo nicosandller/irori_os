@@ -1,0 +1,10 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-alarm_control_panel-house",
+  "name": "House alarm",
+  "capabilities": {
+    "kind": "alarm_control_panel",
+    "arm_modes": [
+      "asleep"
+    ]
+  }
+}

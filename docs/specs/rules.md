@@ -198,6 +198,7 @@ Conditions (§6) are the level checks.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `entity` | `EntityId` | yes | Must exist at semantic check; kind must match `from`/`to` |
+| `field` | slug | no | One of the entity's values beside its main one, by name (below). Left out, the main value |
 | `from` | bool, number, string, or `null`; or a list of 1–16 of them | no | Previous typed value; with a list, any one of them (`["playing", "paused"]`). `null` is unknown |
 | `to` | same | no | New typed value; with a list, any one of them (`["paused", "idle", "off"]`) |
 | `above` | number | no | Numeric sensors only, not with `from`/`to`: fires when the reading goes above this from outside the range |
@@ -228,6 +229,25 @@ the kind's primary value ([entities.md](entities.md) §4.4), so every kind has o
 
 A `to: true` on a light does not fire because brightness changed. A numeric sensor trigger
 without `from`/`to`/`above`/`below` fires on any new reading.
+
+**A field: one of the entity's other values.** Many kinds know more than their main value: a
+blind its `position`, a thermostat its `current_temperature` and `hvac_action`, a fan its
+`percentage`, a player its `volume` and `title`. `field` names one, and the trigger then
+watches that value exactly as it would the main one: `from`/`to` for a change, `above`/`below`
+for a level, `for` to hold.
+
+```json
+{ "type": "state", "entity": "cover.bedroom_blind", "field": "position", "below": 20 }
+```
+
+- Each kind lists its fields ([entities.md](entities.md) §5.3), and an entity has those it is
+  able to report: a blind that can't say where it is has no `position`. The semantic check
+  refuses a field the entity doesn't have and says which it does.
+- The value's type is the field's: `to: true` on a number is refused the same way.
+- A change in the main value, or in another field, doesn't fire a trigger watching this one.
+- While the entity hasn't said the field, there's nothing to compare: the trigger doesn't
+  fire, and a `for` that was counting stops.
+- Kinds with only a main value (`switch`, `sensor`, `lock`…) take no `field`.
 
 **Levels.** `above`/`below` fire on the **crossing** into the range, like Home Assistant's
 `numeric_state`: from a reading outside it, or from not knowing the value. A reading already inside
@@ -384,6 +404,7 @@ the run ends `ConditionFailed` at that node path. The engine does not crash.
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `entity` | `EntityId` | yes | |
+| `field` | slug | no | One of the entity's other values, as on a trigger (§5.1). Left out, the main value |
 | `is` | bool, number, string, or `null` | no | Current typed value, same mapping as trigger `to` |
 | `availability` | `available` \| `unavailable` | no | |
 
@@ -570,7 +591,7 @@ shutting down. Does not check state.
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `until` | a wait matcher | yes | `state` or `expr`, **level**-triggered |
+| `until` | a wait matcher | yes | `state` or `expr`, **level**-triggered. A `state` matcher takes `field` as a condition does (§6.1) |
 | `timeout` | duration | yes | Always required, so a wait cannot pin a run forever |
 | `on_timeout` | `continue` \| `stop` | no | Default `continue` |
 
@@ -798,6 +819,7 @@ An expression is a single boolean or value. The grammar a person writes:
 
 | Function | Returns | Type-check at save | Runtime |
 |---|---|---|---|
+| `num(id, field)`, `on(id, field)`, `text(id, field)` | number, bool, string | both args string literals; the entity has a field by that name (§5.1) of the type the function reads: `num('cover.blind', 'position')`, `text('climate.hall', 'hvac_action')` | error if unavailable, null, or the entity hasn't said that field |
 | `num(id)` | number | `id` is a **string literal**; entity exists, its typed value (§5.1) is a number: today a `sensor` with `value_type: number` | error if unavailable or `state` is null |
 | `on(id)` | bool | string literal; entity exists, its typed value is on/off: `light`, `switch`, `binary_sensor` | error if unavailable or null |
 | `text(id)` | string | string literal; entity exists, its typed value is text: today a `sensor` with `value_type: text` | error if unavailable or null |
@@ -1268,8 +1290,10 @@ once it is hosted.
 
 ## 16. Helpers
 
-Helpers are not a rule feature. They are switch entities from `crates/irori-helpers` (built in,
-not an installable extension — ROADMAP D45), defined in `extensions/helpers.toml`:
+Helpers are not a rule feature. They are entities from `crates/irori-helpers` (built in, not an
+installable extension — ROADMAP D45), defined in `extensions/helpers.toml`
+([config.md](config.md) §3.6): a toggle is a `switch`, a number and a counter a `number`, a
+choice a `select`, a text a `text`, a button a `button` with an `event` for when it was pressed.
 
 ```toml
 [toggles.guests_over]
@@ -1277,11 +1301,14 @@ name = "Guests are over"
 initial = false
 ```
 
-That is `switch.guests_over` (the object id is the table key; see
-`crates/irori-helpers/src/lib.rs`). A person may equally have `switch.guests_are_over`
-if they named it that — [config.md](config.md) §3.6 uses that spelling. Rules refer to whatever
-entity id exists. Numbers, text, and timers are still later (D40); this spec does not invent
-them.
+Others are worked out from other entities: a group, a threshold, a meter, the hours something
+was on today ([config.md](config.md) §3.6), each an ordinary `binary_sensor`, `sensor` or the
+group's kind.
+
+That is `switch.guests_over` (the object id is the table key). Rules refer to whatever entity
+id exists, and read, set and trigger on a helper exactly as they would a device's entity of
+that kind: `num('number.evening_brightness')`, a call to `number.increment`, a trigger on
+`event.movie_time`.
 
 The first real condition:
 
@@ -1485,7 +1512,7 @@ is an obvious M1.4 win if 39 µs is allocation-dominated. Wasm compile of `cel` 
 | HA `trigger.id`, `trigger.to_state`, `trigger.platform` | not v1 (K3, §5.4) |
 | YAML rules | never (D18; JSON matches the schema and LLM output) |
 | Area / device / list targets | later; v1 is one entity per `call` |
-| Numeric / text / timer helpers | D40, after this |
+| Timer and schedule helpers | [config.md](config.md) §7 |
 | Custom protocol services (`esphome.reboot`) | [protocols.md](protocols.md) open question 1 |
 | Protocols emitting bus events | addendum to protocols.md when MQTT needs it |
 | Unit conversion in `num()` | [entities.md](entities.md) open question 3; `num` is the stored number |

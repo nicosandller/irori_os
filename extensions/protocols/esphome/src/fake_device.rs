@@ -320,11 +320,11 @@ fn entities() -> Vec<EspHomeMessage> {
                 ..Default::default()
             },
         ),
-        // ESPHome doesn't map media_player; the protocol lists it as unmodeled and keeps the rest.
-        EspHomeMessage::ListEntitiesMediaPlayerResponse(
-            esphome_client::types::ListEntitiesMediaPlayerResponse {
+        // Irori has no kind for a camera; the protocol lists it as unmodeled and keeps the rest.
+        EspHomeMessage::ListEntitiesCameraResponse(
+            esphome_client::types::ListEntitiesCameraResponse {
                 key: SPEAKER_KEY,
-                name: "Speaker".to_owned(),
+                name: "Porch camera".to_owned(),
                 ..Default::default()
             },
         ),

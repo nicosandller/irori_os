@@ -1,6 +1,6 @@
 [package]
 name = "irori-helpers"
-description = "Values Irori keeps itself, for rules to use: toggles, to begin with. Built in, not an installable extension."
+description = "Values Irori keeps itself, for flows to use and people to set: toggles, numbers, counters, choices, texts and buttons. Built in, not an installable extension."
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -11,10 +11,16 @@ license.workspace = true
 irori-types.workspace = true
 irori-protocol.workspace = true
 
+jiff = { workspace = true, features = ["tzdb-bundle-always"] }
+
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
 
 [lints]
 workspace = true

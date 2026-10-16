@@ -7,7 +7,7 @@ use std::sync::LazyLock;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{Data, Typed};
+use super::{Data, Field, Typed, named};
 use crate::{Service, ServiceName};
 
 use crate::InvariantError;
@@ -494,6 +494,52 @@ pub(crate) fn fits(caps: &ClimateCapabilities, state: &ClimateState) -> Result<(
         }
     }
     Ok(())
+}
+
+/// What a thermostat has beside its mode. Its readings (`current_temperature`, `hvac_action`)
+/// are listed for every one, since nothing says ahead of time which it reports.
+pub(crate) fn fields(caps: &ClimateCapabilities) -> Vec<Field> {
+    let mut fields = vec![
+        Field::text("hvac_action"),
+        Field::number("current_temperature"),
+        Field::number("current_humidity"),
+    ];
+    if caps.target_temperature {
+        fields.push(Field::number("target_temperature"));
+    }
+    if caps.target_temperature_range {
+        fields.push(Field::number("target_temp_low"));
+        fields.push(Field::number("target_temp_high"));
+    }
+    if caps.target_humidity.is_some() {
+        fields.push(Field::number("target_humidity"));
+    }
+    if !caps.fan_modes.is_empty() {
+        fields.push(Field::text("fan_mode"));
+    }
+    if !caps.swing_modes.is_empty() {
+        fields.push(Field::text("swing_mode"));
+    }
+    if !caps.preset_modes.is_empty() {
+        fields.push(Field::text("preset_mode"));
+    }
+    fields
+}
+
+pub(crate) fn field(state: &ClimateState, name: &str) -> Option<Typed> {
+    match name {
+        "hvac_action" => state.hvac_action.as_ref().and_then(named),
+        "current_temperature" => state.current_temperature.map(Typed::Number),
+        "current_humidity" => state.current_humidity.map(Typed::Number),
+        "target_temperature" => state.target_temperature.map(Typed::Number),
+        "target_temp_low" => state.target_temp_low.map(Typed::Number),
+        "target_temp_high" => state.target_temp_high.map(Typed::Number),
+        "target_humidity" => state.target_humidity.map(Typed::Number),
+        "fan_mode" => state.fan_mode.clone().map(Typed::Text),
+        "swing_mode" => state.swing_mode.clone().map(Typed::Text),
+        "preset_mode" => state.preset_mode.clone().map(Typed::Text),
+        _ => None,
+    }
 }
 
 pub(crate) fn primary(state: &ClimateState) -> Typed {

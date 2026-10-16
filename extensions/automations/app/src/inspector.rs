@@ -637,14 +637,25 @@ fn opens_something(service: RuleService, entity: Option<&irori_types::Entity>) -
                     | irori_types::CoverClass::Gate
             )
         ),
-        irori_types::Capabilities::Lock(_) => true,
+        irori_types::Capabilities::Lock(_) | irori_types::Capabilities::AlarmControlPanel(_) => {
+            true
+        }
         _ => false,
     });
+    // What shuts it rather than opens it: locking, closing, and arming an alarm.
     way_in
         && !matches!(
             service,
             RuleService::Named(
-                ServiceName::LockLock | ServiceName::CoverClose | ServiceName::CoverStop
+                ServiceName::LockLock
+                    | ServiceName::CoverClose
+                    | ServiceName::CoverStop
+                    | ServiceName::AlarmArmHome
+                    | ServiceName::AlarmArmAway
+                    | ServiceName::AlarmArmNight
+                    | ServiceName::AlarmArmVacation
+                    | ServiceName::AlarmArmCustomBypass
+                    | ServiceName::AlarmTrigger
             )
         )
 }

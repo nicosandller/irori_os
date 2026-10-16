@@ -211,6 +211,9 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     Some(irori_protocol::Incoming::Unpair(incoming)) => {
                         unpair(incoming, &mut registry, &client).await;
                     }
+                    Some(irori_protocol::Incoming::Picture(asked)) => {
+                        asked.reply(Err("Zigbee devices have no cameras".into()));
+                    }
                     None => break Ok(()),
                 }
             }
@@ -487,7 +490,7 @@ async fn apply(
                     ctx.report_state(StateReport {
                         unique_id,
                         state: Some(new_state),
-                        attributes: BTreeMap::default(),
+                        attributes: state::attributes(&entity.topics),
                         caused_by: None,
                         replayed: message.retained,
                     });

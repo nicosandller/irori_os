@@ -1,9 +1,9 @@
 //! Extensions, including the uninstall menu, and the built-in toggles.
 
 use irori_client::{CatalogEntry, Client, Home};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use super::args::{ExtensionsCmd, HelpersCmd, Remote, ToggleCmd};
+use super::args::{ExtensionsCmd, HelperKind, HelperSettings, HelpersCmd, Remote, ToggleCmd};
 use super::connect::{self, seg};
 use super::output::{self, explain};
 use super::prompt;
@@ -364,9 +364,139 @@ fn fresh_lines<'a>(lines: &'a [String], last: Option<&str>) -> &'a [String] {
     }
 }
 
+/// What was given on the command line, as the fields the API takes. `initial` is read as what
+/// the kind holds: a toggle's is `true` or `false`, a number's a number.
+fn helper_fields(kind: HelperKind, settings: HelperSettings) -> Result<Map<String, Value>, String> {
+    let mut fields = Map::new();
+    let mut put = |key: &str, value: Option<Value>| {
+        if let Some(value) = value {
+            fields.insert(key.to_owned(), value);
+        }
+    };
+    put("min", settings.min.map(|n| json!(n)));
+    put("max", settings.max.map(|n| json!(n)));
+    // A timer's step is how long it runs.
+    let step = if kind == HelperKind::Timer {
+        "duration"
+    } else {
+        "step"
+    };
+    put(step, settings.step.map(|n| json!(n)));
+    put("unit", settings.unit.map(|unit| json!(unit)));
+    put("mode", settings.mode.map(|mode| json!(mode)));
+    put(
+        "options",
+        (!settings.options.is_empty()).then(|| json!(settings.options)),
+    );
+    put("min_length", settings.min_length.map(|n| json!(n)));
+    put("max_length", settings.max_length.map(|n| json!(n)));
+    let initial = match (kind, settings.initial) {
+        (_, None) => None,
+        (HelperKind::Toggle, Some(text)) => Some(match text.as_str() {
+            "true" | "on" => json!(true),
+            "false" | "off" => json!(false),
+            other => return Err(format!("a toggle starts `on` or `off`, not `{other}`")),
+        }),
+        (HelperKind::Number | HelperKind::Counter, Some(text)) => Some(json!(
+            text.parse::<f64>()
+                .map_err(|_| format!("`{text}` isn't a number to start at"))?
+        )),
+        (_, Some(text)) => Some(json!(text)),
+    };
+    put("initial", initial);
+    for setting in settings.set {
+        let (key, value) = setting
+            .split_once('=')
+            .ok_or_else(|| format!("`--set {setting}` isn't a setting: write it as key=value"))?;
+        let value = value.trim();
+        fields.insert(
+            key.trim().to_owned(),
+            serde_json::from_str(value).unwrap_or_else(|_| json!(value)),
+        );
+    }
+    Ok(fields)
+}
+
 pub async fn helpers(remote: &Remote, cmd: HelpersCmd) -> Result<(), String> {
     let link = connect::connect(remote)?;
-    let HelpersCmd::Toggle { cmd } = cmd;
+    let cmd = match cmd {
+        HelpersCmd::Toggle { cmd } => cmd,
+        HelpersCmd::List => {
+            let helpers = link
+                .client
+                .get::<Vec<Value>>("/api/helpers")
+                .await
+                .map_err(err)?;
+            return output::show(link.json, &helpers, || {
+                for helper in &helpers {
+                    let text = |key: &str| helper[key].as_str().unwrap_or("—");
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        text("kind"),
+                        text("id"),
+                        text("entity_id"),
+                        text("name")
+                    );
+                }
+            });
+        }
+        HelpersCmd::Add {
+            kind,
+            name,
+            settings,
+        } => {
+            let mut body = helper_fields(kind, settings)?;
+            body.insert("name".into(), json!(name));
+            let made = link
+                .client
+                .post::<Value>(&format!("/api/helpers/{}", kind.table()), &body)
+                .await
+                .map_err(err)?;
+            return output::show(link.json, &made, || {
+                println!(
+                    "added {}",
+                    made["entity_id"].as_str().unwrap_or(name.as_str())
+                );
+            });
+        }
+        HelpersCmd::Set {
+            kind,
+            id,
+            name,
+            settings,
+        } => {
+            let mut body = helper_fields(kind, settings)?;
+            if let Some(name) = name {
+                body.insert("name".into(), json!(name));
+            }
+            if body.is_empty() {
+                return Err("nothing to change: give a setting, such as --max 80".into());
+            }
+            link.client
+                .empty(
+                    reqwest::Method::PATCH,
+                    &format!("/api/helpers/{}/{}", kind.table(), seg(&id)?),
+                    Some(&body),
+                )
+                .await
+                .map_err(err)?;
+            return output::done(link.json, &format!("changed {id}"));
+        }
+        HelpersCmd::Remove { kind, id } => {
+            if !prompt::confirm(&format!("Remove the helper {id}?"), link.yes, link.json)? {
+                return output::done(link.json, "left the helper");
+            }
+            link.client
+                .empty(
+                    reqwest::Method::DELETE,
+                    &format!("/api/helpers/{}/{}", kind.table(), seg(&id)?),
+                    None::<&()>,
+                )
+                .await
+                .map_err(err)?;
+            return output::done(link.json, &format!("removed {id}"));
+        }
+    };
     match cmd {
         ToggleCmd::Add { name } => {
             link.client

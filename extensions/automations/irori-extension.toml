@@ -1,17 +1,26 @@
 [extension]
 id = "automations"
 name = "Automations"
-version = "0.5.0"
+version = "0.7.0"
 irori = ">=1.4.0"
 # 1.4.0 has the `update` kind, and entity format 17 with it.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."
 icon = "icon.svg"
+# Format 26 adds cameras, whose value is what they are doing (`off`, `idle`, `recording`…).
+# Format 25 adds schedules, whose value is whether they are on.
+# Format 24 adds timers, whose value is `idle`, `active` or `paused`.
+# Format 23 adds device trackers, whose value is whether they are home.
+# Format 22 adds scenes, which have no value and one thing to ask of them: `turn_on`.
+# Format 21 adds lawn mowers, whose value is likewise what they are doing.
+# Format 20 adds vacuums, whose value is what they are doing (`cleaning`, `docked`, `returning`…).
+# Format 19 adds dates, times and datetimes, whose value is their ISO 8601 text.
+# Format 18 adds alarm panels, whose value is their state (`disarmed`, `armed_away`, `triggered`…).
 # Format 17 is the one that adds updates. An update's value is whether one is available, so a
 # state trigger's `to: true` fires when a new version comes out. Format 16 added media players,
 # whose value is their playback (`off`, `idle`, `playing`, `paused`, `buffering`, `standby`).
 # This format also includes every kind added before; the engine reads those by the same primary
 # value.
-entity_format = 17
+entity_format = 26
 
 [[contributes.automation]]
 run = { command = "bin/irori-ext-automations" }

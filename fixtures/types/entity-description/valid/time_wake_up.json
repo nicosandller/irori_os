@@ -1,0 +1,8 @@
+{
+  "unique_id": "a4:cf:12:34:56:80-time-wake",
+  "name": "Wake up",
+  "device_unique_id": "a4:cf:12:34:56:80",
+  "capabilities": {
+    "kind": "time"
+  }
+}

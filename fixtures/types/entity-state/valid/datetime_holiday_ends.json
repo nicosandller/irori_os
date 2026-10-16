@@ -1,0 +1,18 @@
+{
+  "entity_id": "datetime.holiday_ends",
+  "availability": "available",
+  "state": {
+    "kind": "datetime",
+    "value": "2026-10-14T06:45:00Z"
+  },
+  "last_changed": "2026-09-15T22:04:12Z",
+  "last_updated": "2026-09-15T22:04:12Z",
+  "last_reported": "2026-09-15T22:04:12Z",
+  "context": {
+    "id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+    "origin": {
+      "type": "device",
+      "protocol": "esphome"
+    }
+  }
+}

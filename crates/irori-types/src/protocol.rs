@@ -20,11 +20,14 @@ use crate::kinds::humidifier::HumidifierMode;
 use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::media_player::{MediaSeek, PlayMedia, VolumeMute, VolumeSet};
-use crate::kinds::number::NumberSetValue;
+use crate::kinds::moment::{DateSetValue, DatetimeSetValue, TimeSetValue};
+use crate::kinds::number::{NumberSetValue, NumberStep};
 use crate::kinds::opening::SetPosition;
 use crate::kinds::select::SelectOption;
 use crate::kinds::siren::SirenTurnOn;
 use crate::kinds::text::TextSetValue;
+use crate::kinds::timer::{TimerChange, TimerStart};
+use crate::kinds::vacuum::VacuumFanSpeed;
 use crate::kinds::water_heater::{WaterHeaterOperationMode, WaterHeaterSetTemperature};
 use crate::{
     Attributes, Capabilities, Context, ContextId, EntityCategory, EntityKind, InvariantError, Name,
@@ -392,6 +395,9 @@ pub enum Service {
     SwitchTurnOn,
     SwitchTurnOff,
     NumberSetValue(NumberSetValue),
+    /// Answered by the core, which sends the protocol a `set_value` (§7.1).
+    NumberIncrement(NumberStep),
+    NumberDecrement(NumberStep),
     SelectSelectOption(SelectOption),
     TextSetValue(TextSetValue),
     ButtonPress,
@@ -447,6 +453,36 @@ pub enum Service {
     UpdateCheck,
     UpdateSkip,
     UpdateClearSkipped,
+    AlarmArmHome(LockCode),
+    AlarmArmAway(LockCode),
+    AlarmArmNight(LockCode),
+    AlarmArmVacation(LockCode),
+    AlarmArmCustomBypass(LockCode),
+    AlarmDisarm(LockCode),
+    AlarmTrigger(LockCode),
+    DateSetValue(DateSetValue),
+    TimeSetValue(TimeSetValue),
+    DatetimeSetValue(DatetimeSetValue),
+    VacuumStart,
+    VacuumPause,
+    VacuumStop,
+    VacuumReturnToBase,
+    VacuumLocate,
+    VacuumCleanSpot,
+    VacuumSetFanSpeed(VacuumFanSpeed),
+    LawnMowerStartMowing,
+    LawnMowerPause,
+    LawnMowerDock,
+    SceneTurnOn,
+    CameraTurnOn,
+    CameraTurnOff,
+    CameraEnableMotionDetection,
+    CameraDisableMotionDetection,
+    TimerStart(TimerStart),
+    TimerPause,
+    TimerCancel,
+    TimerFinish,
+    TimerChange(TimerChange),
 }
 
 impl Service {
@@ -457,6 +493,8 @@ impl Service {
             Self::SwitchTurnOn => ServiceName::SwitchTurnOn,
             Self::SwitchTurnOff => ServiceName::SwitchTurnOff,
             Self::NumberSetValue(_) => ServiceName::NumberSetValue,
+            Self::NumberIncrement(_) => ServiceName::NumberIncrement,
+            Self::NumberDecrement(_) => ServiceName::NumberDecrement,
             Self::SelectSelectOption(_) => ServiceName::SelectSelectOption,
             Self::TextSetValue(_) => ServiceName::TextSetValue,
             Self::ButtonPress => ServiceName::ButtonPress,
@@ -512,6 +550,36 @@ impl Service {
             Self::UpdateCheck => ServiceName::UpdateCheck,
             Self::UpdateSkip => ServiceName::UpdateSkip,
             Self::UpdateClearSkipped => ServiceName::UpdateClearSkipped,
+            Self::AlarmArmHome(_) => ServiceName::AlarmArmHome,
+            Self::AlarmArmAway(_) => ServiceName::AlarmArmAway,
+            Self::AlarmArmNight(_) => ServiceName::AlarmArmNight,
+            Self::AlarmArmVacation(_) => ServiceName::AlarmArmVacation,
+            Self::AlarmArmCustomBypass(_) => ServiceName::AlarmArmCustomBypass,
+            Self::AlarmDisarm(_) => ServiceName::AlarmDisarm,
+            Self::AlarmTrigger(_) => ServiceName::AlarmTrigger,
+            Self::DateSetValue(_) => ServiceName::DateSetValue,
+            Self::TimeSetValue(_) => ServiceName::TimeSetValue,
+            Self::DatetimeSetValue(_) => ServiceName::DatetimeSetValue,
+            Self::VacuumStart => ServiceName::VacuumStart,
+            Self::VacuumPause => ServiceName::VacuumPause,
+            Self::VacuumStop => ServiceName::VacuumStop,
+            Self::VacuumReturnToBase => ServiceName::VacuumReturnToBase,
+            Self::VacuumLocate => ServiceName::VacuumLocate,
+            Self::VacuumCleanSpot => ServiceName::VacuumCleanSpot,
+            Self::VacuumSetFanSpeed(_) => ServiceName::VacuumSetFanSpeed,
+            Self::LawnMowerStartMowing => ServiceName::LawnMowerStartMowing,
+            Self::LawnMowerPause => ServiceName::LawnMowerPause,
+            Self::LawnMowerDock => ServiceName::LawnMowerDock,
+            Self::SceneTurnOn => ServiceName::SceneTurnOn,
+            Self::CameraTurnOn => ServiceName::CameraTurnOn,
+            Self::CameraTurnOff => ServiceName::CameraTurnOff,
+            Self::CameraEnableMotionDetection => ServiceName::CameraEnableMotionDetection,
+            Self::CameraDisableMotionDetection => ServiceName::CameraDisableMotionDetection,
+            Self::TimerStart(_) => ServiceName::TimerStart,
+            Self::TimerPause => ServiceName::TimerPause,
+            Self::TimerCancel => ServiceName::TimerCancel,
+            Self::TimerFinish => ServiceName::TimerFinish,
+            Self::TimerChange(_) => ServiceName::TimerChange,
         }
     }
 }
@@ -529,6 +597,10 @@ pub enum ServiceName {
     SwitchTurnOff,
     #[serde(rename = "number.set_value")]
     NumberSetValue,
+    #[serde(rename = "number.increment")]
+    NumberIncrement,
+    #[serde(rename = "number.decrement")]
+    NumberDecrement,
     #[serde(rename = "select.select_option")]
     SelectSelectOption,
     #[serde(rename = "text.set_value")]
@@ -639,6 +711,66 @@ pub enum ServiceName {
     UpdateSkip,
     #[serde(rename = "update.clear_skipped")]
     UpdateClearSkipped,
+    #[serde(rename = "alarm_control_panel.alarm_arm_home")]
+    AlarmArmHome,
+    #[serde(rename = "alarm_control_panel.alarm_arm_away")]
+    AlarmArmAway,
+    #[serde(rename = "alarm_control_panel.alarm_arm_night")]
+    AlarmArmNight,
+    #[serde(rename = "alarm_control_panel.alarm_arm_vacation")]
+    AlarmArmVacation,
+    #[serde(rename = "alarm_control_panel.alarm_arm_custom_bypass")]
+    AlarmArmCustomBypass,
+    #[serde(rename = "alarm_control_panel.alarm_disarm")]
+    AlarmDisarm,
+    #[serde(rename = "alarm_control_panel.alarm_trigger")]
+    AlarmTrigger,
+    #[serde(rename = "date.set_value")]
+    DateSetValue,
+    #[serde(rename = "time.set_value")]
+    TimeSetValue,
+    #[serde(rename = "datetime.set_value")]
+    DatetimeSetValue,
+    #[serde(rename = "vacuum.start")]
+    VacuumStart,
+    #[serde(rename = "vacuum.pause")]
+    VacuumPause,
+    #[serde(rename = "vacuum.stop")]
+    VacuumStop,
+    #[serde(rename = "vacuum.return_to_base")]
+    VacuumReturnToBase,
+    #[serde(rename = "vacuum.locate")]
+    VacuumLocate,
+    #[serde(rename = "vacuum.clean_spot")]
+    VacuumCleanSpot,
+    #[serde(rename = "vacuum.set_fan_speed")]
+    VacuumSetFanSpeed,
+    #[serde(rename = "lawn_mower.start_mowing")]
+    LawnMowerStartMowing,
+    #[serde(rename = "lawn_mower.pause")]
+    LawnMowerPause,
+    #[serde(rename = "lawn_mower.dock")]
+    LawnMowerDock,
+    #[serde(rename = "scene.turn_on")]
+    SceneTurnOn,
+    #[serde(rename = "camera.turn_on")]
+    CameraTurnOn,
+    #[serde(rename = "camera.turn_off")]
+    CameraTurnOff,
+    #[serde(rename = "camera.enable_motion_detection")]
+    CameraEnableMotionDetection,
+    #[serde(rename = "camera.disable_motion_detection")]
+    CameraDisableMotionDetection,
+    #[serde(rename = "timer.start")]
+    TimerStart,
+    #[serde(rename = "timer.pause")]
+    TimerPause,
+    #[serde(rename = "timer.cancel")]
+    TimerCancel,
+    #[serde(rename = "timer.finish")]
+    TimerFinish,
+    #[serde(rename = "timer.change")]
+    TimerChange,
 }
 
 impl ServiceName {
@@ -648,6 +780,8 @@ impl ServiceName {
         Self::SwitchTurnOn,
         Self::SwitchTurnOff,
         Self::NumberSetValue,
+        Self::NumberIncrement,
+        Self::NumberDecrement,
         Self::SelectSelectOption,
         Self::TextSetValue,
         Self::ButtonPress,
@@ -703,6 +837,36 @@ impl ServiceName {
         Self::UpdateCheck,
         Self::UpdateSkip,
         Self::UpdateClearSkipped,
+        Self::AlarmArmHome,
+        Self::AlarmArmAway,
+        Self::AlarmArmNight,
+        Self::AlarmArmVacation,
+        Self::AlarmArmCustomBypass,
+        Self::AlarmDisarm,
+        Self::AlarmTrigger,
+        Self::DateSetValue,
+        Self::TimeSetValue,
+        Self::DatetimeSetValue,
+        Self::VacuumStart,
+        Self::VacuumPause,
+        Self::VacuumStop,
+        Self::VacuumReturnToBase,
+        Self::VacuumLocate,
+        Self::VacuumCleanSpot,
+        Self::VacuumSetFanSpeed,
+        Self::LawnMowerStartMowing,
+        Self::LawnMowerPause,
+        Self::LawnMowerDock,
+        Self::SceneTurnOn,
+        Self::CameraTurnOn,
+        Self::CameraTurnOff,
+        Self::CameraEnableMotionDetection,
+        Self::CameraDisableMotionDetection,
+        Self::TimerStart,
+        Self::TimerPause,
+        Self::TimerCancel,
+        Self::TimerFinish,
+        Self::TimerChange,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -712,6 +876,8 @@ impl ServiceName {
             Self::SwitchTurnOn => "switch.turn_on",
             Self::SwitchTurnOff => "switch.turn_off",
             Self::NumberSetValue => "number.set_value",
+            Self::NumberIncrement => "number.increment",
+            Self::NumberDecrement => "number.decrement",
             Self::SelectSelectOption => "select.select_option",
             Self::TextSetValue => "text.set_value",
             Self::ButtonPress => "button.press",
@@ -767,6 +933,36 @@ impl ServiceName {
             Self::UpdateCheck => "update.check",
             Self::UpdateSkip => "update.skip",
             Self::UpdateClearSkipped => "update.clear_skipped",
+            Self::AlarmArmHome => "alarm_control_panel.alarm_arm_home",
+            Self::AlarmArmAway => "alarm_control_panel.alarm_arm_away",
+            Self::AlarmArmNight => "alarm_control_panel.alarm_arm_night",
+            Self::AlarmArmVacation => "alarm_control_panel.alarm_arm_vacation",
+            Self::AlarmArmCustomBypass => "alarm_control_panel.alarm_arm_custom_bypass",
+            Self::AlarmDisarm => "alarm_control_panel.alarm_disarm",
+            Self::AlarmTrigger => "alarm_control_panel.alarm_trigger",
+            Self::DateSetValue => "date.set_value",
+            Self::TimeSetValue => "time.set_value",
+            Self::DatetimeSetValue => "datetime.set_value",
+            Self::VacuumStart => "vacuum.start",
+            Self::VacuumPause => "vacuum.pause",
+            Self::VacuumStop => "vacuum.stop",
+            Self::VacuumReturnToBase => "vacuum.return_to_base",
+            Self::VacuumLocate => "vacuum.locate",
+            Self::VacuumCleanSpot => "vacuum.clean_spot",
+            Self::VacuumSetFanSpeed => "vacuum.set_fan_speed",
+            Self::LawnMowerStartMowing => "lawn_mower.start_mowing",
+            Self::LawnMowerPause => "lawn_mower.pause",
+            Self::LawnMowerDock => "lawn_mower.dock",
+            Self::SceneTurnOn => "scene.turn_on",
+            Self::CameraTurnOn => "camera.turn_on",
+            Self::CameraTurnOff => "camera.turn_off",
+            Self::CameraEnableMotionDetection => "camera.enable_motion_detection",
+            Self::CameraDisableMotionDetection => "camera.disable_motion_detection",
+            Self::TimerStart => "timer.start",
+            Self::TimerPause => "timer.pause",
+            Self::TimerCancel => "timer.cancel",
+            Self::TimerFinish => "timer.finish",
+            Self::TimerChange => "timer.change",
         }
     }
 
@@ -775,7 +971,9 @@ impl ServiceName {
         match self {
             Self::LightTurnOn | Self::LightTurnOff => EntityKind::Light,
             Self::SwitchTurnOn | Self::SwitchTurnOff => EntityKind::Switch,
-            Self::NumberSetValue => EntityKind::Number,
+            Self::NumberSetValue | Self::NumberIncrement | Self::NumberDecrement => {
+                EntityKind::Number
+            }
             Self::SelectSelectOption => EntityKind::Select,
             Self::TextSetValue => EntityKind::Text,
             Self::ButtonPress => EntityKind::Button,
@@ -827,6 +1025,36 @@ impl ServiceName {
             | Self::UpdateCheck
             | Self::UpdateSkip
             | Self::UpdateClearSkipped => EntityKind::Update,
+            Self::AlarmArmHome
+            | Self::AlarmArmAway
+            | Self::AlarmArmNight
+            | Self::AlarmArmVacation
+            | Self::AlarmArmCustomBypass
+            | Self::AlarmDisarm
+            | Self::AlarmTrigger => EntityKind::AlarmControlPanel,
+            Self::DateSetValue => EntityKind::Date,
+            Self::TimeSetValue => EntityKind::Time,
+            Self::DatetimeSetValue => EntityKind::Datetime,
+            Self::VacuumStart
+            | Self::VacuumPause
+            | Self::VacuumStop
+            | Self::VacuumReturnToBase
+            | Self::VacuumLocate
+            | Self::VacuumCleanSpot
+            | Self::VacuumSetFanSpeed => EntityKind::Vacuum,
+            Self::LawnMowerStartMowing | Self::LawnMowerPause | Self::LawnMowerDock => {
+                EntityKind::LawnMower
+            }
+            Self::SceneTurnOn => EntityKind::Scene,
+            Self::CameraTurnOn
+            | Self::CameraTurnOff
+            | Self::CameraEnableMotionDetection
+            | Self::CameraDisableMotionDetection => EntityKind::Camera,
+            Self::TimerStart
+            | Self::TimerPause
+            | Self::TimerCancel
+            | Self::TimerFinish
+            | Self::TimerChange => EntityKind::Timer,
         }
     }
 }
@@ -920,11 +1148,18 @@ impl JsonSchema for ServiceCall {
         let no_data = json_schema!({ "type": "object", "maxProperties": 0 });
         let light_turn_on = generator.subschema_for::<LightTurnOn>();
         let number_set_value = generator.subschema_for::<NumberSetValue>();
+        let number_step = generator.subschema_for::<NumberStep>();
         let select_option = generator.subschema_for::<SelectOption>();
         let text_set_value = generator.subschema_for::<TextSetValue>();
         let set_position = generator.subschema_for::<SetPosition>();
         let set_tilt = generator.subschema_for::<SetTilt>();
         let lock_code = generator.subschema_for::<LockCode>();
+        let timer_start = generator.subschema_for::<TimerStart>();
+        let timer_change = generator.subschema_for::<TimerChange>();
+        let vacuum_fan_speed = generator.subschema_for::<VacuumFanSpeed>();
+        let date_set = generator.subschema_for::<DateSetValue>();
+        let time_set = generator.subschema_for::<TimeSetValue>();
+        let datetime_set = generator.subschema_for::<DatetimeSetValue>();
         let fan_turn_on = generator.subschema_for::<FanTurnOn>();
         let fan_percentage = generator.subschema_for::<FanPercentage>();
         let fan_oscillate = generator.subschema_for::<FanOscillate>();
@@ -951,15 +1186,31 @@ impl JsonSchema for ServiceCall {
                 let data = match name {
                     ServiceName::LightTurnOn => light_turn_on.clone(),
                     ServiceName::NumberSetValue => number_set_value.clone(),
+                    ServiceName::NumberIncrement | ServiceName::NumberDecrement => {
+                        number_step.clone()
+                    }
                     ServiceName::SelectSelectOption => select_option.clone(),
                     ServiceName::TextSetValue => text_set_value.clone(),
                     ServiceName::CoverSetPosition | ServiceName::ValveSetPosition => {
                         set_position.clone()
                     }
                     ServiceName::CoverSetTilt => set_tilt.clone(),
-                    ServiceName::LockLock | ServiceName::LockUnlock | ServiceName::LockOpen => {
-                        lock_code.clone()
-                    }
+                    ServiceName::LockLock
+                    | ServiceName::LockUnlock
+                    | ServiceName::LockOpen
+                    | ServiceName::AlarmArmHome
+                    | ServiceName::AlarmArmAway
+                    | ServiceName::AlarmArmNight
+                    | ServiceName::AlarmArmVacation
+                    | ServiceName::AlarmArmCustomBypass
+                    | ServiceName::AlarmDisarm
+                    | ServiceName::AlarmTrigger => lock_code.clone(),
+                    ServiceName::DateSetValue => date_set.clone(),
+                    ServiceName::TimeSetValue => time_set.clone(),
+                    ServiceName::DatetimeSetValue => datetime_set.clone(),
+                    ServiceName::VacuumSetFanSpeed => vacuum_fan_speed.clone(),
+                    ServiceName::TimerChange => timer_change.clone(),
+                    ServiceName::TimerStart => timer_start.clone(),
                     ServiceName::FanTurnOn => fan_turn_on.clone(),
                     ServiceName::FanSetPercentage => fan_percentage.clone(),
                     ServiceName::FanOscillate => fan_oscillate.clone(),

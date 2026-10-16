@@ -1,0 +1,1 @@
+`scene.turn_on` takes no data

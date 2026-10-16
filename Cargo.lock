@@ -1653,16 +1653,20 @@ version = "0.0.0"
 dependencies = [
  "irori-protocol",
  "irori-types",
+ "jiff",
  "schemars",
  "serde",
  "serde_json",
  "tokio",
+ "toml 1.1.6+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
 name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "irori-types",
  "rustix",
  "schemars",

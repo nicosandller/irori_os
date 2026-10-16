@@ -2,14 +2,18 @@
 //! that's more than a knob has its own; [`control`] hands each entity to its kind's. Covers and
 //! valves share [`opening`].
 
+mod alarm_control_panel;
 mod button;
+mod camera;
 mod climate;
 mod event;
 mod fan;
 mod humidifier;
+mod lawn_mower;
 mod light;
 mod lock;
 mod media_player;
+pub(crate) mod moment;
 mod number;
 mod opening;
 mod select;
@@ -17,18 +21,25 @@ mod sensor;
 mod siren;
 mod switch;
 mod text;
+mod timer;
 mod update;
+mod vacuum;
 mod water_heater;
 
+pub(crate) use self::alarm_control_panel::alarm_words;
+pub(crate) use self::camera::{camera_picture, camera_words};
 pub(crate) use self::climate::climate_words;
 pub(crate) use self::fan::fan_words;
 pub(crate) use self::humidifier::humidifier_words;
+pub(crate) use self::lawn_mower::mower_words;
 pub(crate) use self::lock::lock_words;
 pub(crate) use self::media_player::media_player_words;
 pub(crate) use self::number::unit_of;
 pub(crate) use self::opening::opening_words;
 pub(crate) use self::sensor::wording;
+pub(crate) use self::timer::{schedule_words, timer_words};
 pub(crate) use self::update::update_words;
+pub(crate) use self::vacuum::vacuum_words;
 pub(crate) use self::water_heater::water_heater_words;
 
 use irori_types::{Capabilities, CoverState, Entity, EntityState, State};
@@ -63,13 +74,28 @@ pub(crate) fn control(
         Capabilities::Text(capabilities) => {
             text::text_control(entity, capabilities, value, offline, controls)
         }
+        Capabilities::Date(_) => moment::date_control(entity, value, offline, controls),
+        Capabilities::Time(_) => moment::time_control(entity, value, offline, controls),
+        Capabilities::Datetime(_) => moment::datetime_control(entity, value, offline, controls),
         Capabilities::Button(capabilities) => {
             button::button_control(entity, capabilities.device_class, offline, controls)
         }
+        Capabilities::Scene(_) => button::scene_control(entity, offline, controls),
         Capabilities::Event(_) => event::happened(state),
+        Capabilities::DeviceTracker(_) => sensor::tracker(value),
+        Capabilities::Schedule(_) => timer::schedule_reading(value),
+        Capabilities::Camera(capabilities) => {
+            camera::camera_control(entity, capabilities, value, offline, controls)
+        }
         // These three are drawn once and follow a state that changes (`kept`); here the
         // state is whatever it was when this was called.
-        Capabilities::Cover(_) | Capabilities::Valve(_) | Capabilities::Lock(_) => kept(
+        Capabilities::Cover(_)
+        | Capabilities::Valve(_)
+        | Capabilities::Lock(_)
+        | Capabilities::AlarmControlPanel(_)
+        | Capabilities::Vacuum(_)
+        | Capabilities::LawnMower(_)
+        | Capabilities::Timer(_) => kept(
             entity,
             Signal::stored(state.cloned()),
             Signal::stored(offline),
@@ -149,6 +175,28 @@ pub(crate) fn kept(
             offline,
             controls,
         )),
+        Capabilities::AlarmControlPanel(capabilities) => Some(alarm_control_panel::alarm_control(
+            entity,
+            capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::Timer(_) => Some(timer::timer_control(entity, value, offline, controls)),
+        Capabilities::LawnMower(capabilities) => Some(lawn_mower::mower_control(
+            entity,
+            *capabilities,
+            value,
+            offline,
+            controls,
+        )),
+        Capabilities::Vacuum(capabilities) => Some(vacuum::vacuum_control(
+            entity,
+            capabilities,
+            value,
+            offline,
+            controls,
+        )),
         Capabilities::MediaPlayer(capabilities) => Some(media_player::media_player_control(
             entity,
             capabilities,
@@ -163,7 +211,8 @@ pub(crate) fn kept(
             offline,
             controls,
         )),
-        Capabilities::Light(_)
+        Capabilities::Camera(_)
+        | Capabilities::Light(_)
         | Capabilities::Switch(_)
         | Capabilities::Sensor(_)
         | Capabilities::BinarySensor(_)
@@ -171,12 +220,18 @@ pub(crate) fn kept(
         | Capabilities::Select(_)
         | Capabilities::Text(_)
         | Capabilities::Button(_)
+        | Capabilities::Scene(_)
+        | Capabilities::DeviceTracker(_)
+        | Capabilities::Schedule(_)
         | Capabilities::Event(_)
         | Capabilities::Fan(_)
         | Capabilities::Siren(_)
         | Capabilities::Climate(_)
         | Capabilities::WaterHeater(_)
-        | Capabilities::Humidifier(_) => None,
+        | Capabilities::Humidifier(_)
+        | Capabilities::Date(_)
+        | Capabilities::Time(_)
+        | Capabilities::Datetime(_) => None,
     }
 }
 

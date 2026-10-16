@@ -18,6 +18,14 @@ pub enum Component {
     Event,
     Cover,
     Lock,
+    AlarmControlPanel,
+    Date,
+    Time,
+    Datetime,
+    Vacuum,
+    LawnMower,
+    Scene,
+    DeviceTracker,
     Fan,
     Valve,
     Siren,
@@ -41,6 +49,14 @@ impl Component {
             "event" => Some(Self::Event),
             "cover" => Some(Self::Cover),
             "lock" => Some(Self::Lock),
+            "alarm_control_panel" => Some(Self::AlarmControlPanel),
+            "date" => Some(Self::Date),
+            "time" => Some(Self::Time),
+            "datetime" => Some(Self::Datetime),
+            "vacuum" => Some(Self::Vacuum),
+            "lawn_mower" => Some(Self::LawnMower),
+            "scene" => Some(Self::Scene),
+            "device_tracker" => Some(Self::DeviceTracker),
             "fan" => Some(Self::Fan),
             "valve" => Some(Self::Valve),
             "siren" => Some(Self::Siren),
@@ -67,6 +83,14 @@ impl fmt::Display for Component {
             Self::Event => "event",
             Self::Cover => "cover",
             Self::Lock => "lock",
+            Self::AlarmControlPanel => "alarm_control_panel",
+            Self::Date => "date",
+            Self::Time => "time",
+            Self::Datetime => "datetime",
+            Self::Vacuum => "vacuum",
+            Self::LawnMower => "lawn_mower",
+            Self::Scene => "scene",
+            Self::DeviceTracker => "device_tracker",
             Self::Fan => "fan",
             Self::Valve => "valve",
             Self::Siren => "siren",
@@ -148,10 +172,10 @@ mod tests {
     fn an_unsupported_component_is_named() {
         let named = |t| unsupported_component(t, "homeassistant");
         assert_eq!(
-            named("homeassistant/vacuum/0x1234/robot/config"),
-            Some("vacuum")
+            named("homeassistant/camera/0x1234/robot/config"),
+            Some("camera")
         );
-        assert_eq!(named("homeassistant/vacuum/robot/config"), Some("vacuum"));
+        assert_eq!(named("homeassistant/camera/robot/config"), Some("camera"));
         assert_eq!(named("homeassistant/light/0x1234/light/config"), None);
         assert_eq!(named("homeassistant/fan/0x1234/state"), None);
         assert_eq!(named("other/fan/x/config"), None);
@@ -159,7 +183,7 @@ mod tests {
 
     #[test]
     fn an_unsupported_component_or_wrong_shape_is_skipped_not_an_error() {
-        assert!(parse("homeassistant/vacuum/x/config", "homeassistant").is_none());
+        assert!(parse("homeassistant/camera/x/config", "homeassistant").is_none());
         assert!(parse("somethingelse/switch/x/config", "homeassistant").is_none());
         assert!(parse("homeassistant/switch/x/state", "homeassistant").is_none());
         assert!(parse("homeassistant/switch//config", "homeassistant").is_none());
