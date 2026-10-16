@@ -121,7 +121,7 @@ const TOOLS: [Tool; 14] = [
              {\"op\":\"add_wall\",\"from\":[x,y],\"to\":[x,y],\"thickness\":10} (thickness optional); \
              {\"op\":\"add_opening\",\"wall\":1,\"kind\":\"door\",\"at\":200,\"width\":80,\"side\":\"left\",\"hinge\":\"near\"} \
              (kind is door or window; at is centimetres along the wall from its `from` end to the \
-             middle of the opening; width, side (left or right) and hinge (near or far) optional); \
+             middle of the opening; width, side (left or right) and hinge (near, far, or overhead for a garage door) optional); \
              {\"op\":\"trace_area\",\"area\":\"kitchen\",\"points\":[[x,y],[x,y],[x,y]],\"tint\":\"sky\"} \
              (area is the id of a room the home already has; at least three corners, not repeating \
              the first; tint optional: ember, moss, slate, sand, plum, teal, rose, sky, olive or stone); \

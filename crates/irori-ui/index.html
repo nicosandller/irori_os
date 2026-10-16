@@ -1814,10 +1814,15 @@
                                 color: color-mix(in oklab, var(--edge) 55%, var(--fg));
                                 opacity: .8; }
     .floorplan .marker .glyph .icon { width: 1.25rem; height: 1.25rem; display: block; }
-    /* The reading: always there, and no wider than nothing until there's one to show. */
-    .floorplan .marker .reading { max-width: 0; opacity: 0; overflow: hidden; }
-    .floorplan .marker.open .reading { max-width: 11rem; opacity: 1; padding-right: .85rem;
+    /* The reading: always there, and no wider than nothing until there's one to show. A grid
+       column going from 0fr to 1fr rather than a max-width, so it grows to the width the words
+       actually take and shrinks back from it, evenly both ways, instead of racing to a cap. */
+    .floorplan .marker .reading { display: grid; grid-template-columns: 0fr; opacity: 0;
+                                  padding-right: 0; }
+    .floorplan .marker .reading-text { min-width: 0; max-width: 11rem; overflow: hidden;
                                        text-overflow: ellipsis; }
+    .floorplan .marker.open .reading { grid-template-columns: 1fr; opacity: 1;
+                                       padding-right: .85rem; }
     .floorplan .marker.aimed.open .reading { padding-left: .6rem; }
     /* Doing something: on, playing, sensing someone. */
     .floorplan .marker.on { border-color: var(--edge);
@@ -2032,27 +2037,26 @@
                                    color: var(--muted); }
     .floorplan .device-picker ul { margin: 0; padding: 0; list-style: none; }
     .floorplan .device-picker li { padding: 0; }
-    .floorplan .device-picker button { display: flex; align-items: baseline; gap: .4rem;
+    .floorplan .device-picker li button { display: flex; align-items: baseline; gap: .4rem;
                                        width: 100%; padding: .3rem .4rem; font: inherit;
                                        font-size: .85rem; text-align: left; color: var(--fg);
                                        background: transparent; border: 1px solid transparent;
                                        border-radius: .3rem; cursor: pointer; }
-    .floorplan .device-picker button:hover { background: var(--sunk); }
-    .floorplan .device-picker button.chosen { color: var(--card); background: var(--ember);
+    .floorplan .device-picker li button:hover { background: var(--sunk); }
+    .floorplan .device-picker li button.chosen { color: var(--card); background: var(--ember);
                                               border-color: var(--ember); }
-    .floorplan .device-picker button.chosen .badge { color: var(--card); }
+    .floorplan .device-picker li button.chosen .badge { color: var(--card); }
     .floorplan .device-picker .offer { display: grid; min-width: 0; }
     .floorplan .device-picker .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .floorplan .device-picker .about { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
                                        font-size: .72rem; color: var(--muted); }
-    .floorplan .device-picker button.chosen .about { color: var(--card); opacity: .85; }
+    .floorplan .device-picker li button.chosen .about { color: var(--card); opacity: .85; }
     .floorplan .device-picker .badge { margin-left: auto; font-size: .6rem; flex: none; }
     .floorplan .device-picker { width: 16rem; }
     .floorplan .picker-search { width: 100%; margin: 0 0 .4rem; font-size: .85rem; }
-    .floorplan .picker-filters { display: flex; gap: .8rem; margin: 0 0 .4rem; font-size: .75rem;
-                                 color: var(--muted); }
-    .floorplan .picker-filters label { display: inline-flex; align-items: center; gap: .3rem;
-                                       cursor: pointer; }
+    .floorplan .picker-filters { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0 0 .5rem; }
+    .floorplan .picker-filters .switcher { font-size: .72rem; }
+    .floorplan .picker-filters .switcher button { padding: .2rem .5rem; }
 
     /* A room, faintly, where the plan will go. Sits in the middle of the canvas whatever the
        zoom is: it's a picture of a floorplan, not one. */
@@ -2090,9 +2094,12 @@
     .floorplan .inspector p { margin: 0 0 .4rem; overflow-wrap: anywhere; }
     /* A marker's icon, chosen from a grid; the first is the one its kind gets. */
     .floorplan .glyphs { display: grid; grid-template-columns: repeat(6, 1fr); gap: .2rem;
-                         margin: .6rem 0 .4rem; }
-    .floorplan .glyphs-label { grid-column: 1 / -1; font: .65rem var(--mono); letter-spacing: .08em;
-                               text-transform: uppercase; color: var(--muted); }
+                         margin: 0 0 .4rem; max-height: 9.5rem; overflow-y: auto;
+                         overscroll-behavior: contain; padding-right: .15rem; }
+    .floorplan .glyphs-label { display: block; margin-top: .6rem; font: .65rem var(--mono);
+                               letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .floorplan .glyphs-search { width: 100%; margin: .3rem 0 .35rem; font-size: .8rem; }
+    .floorplan .glyphs button.hidden { display: none; }
     .floorplan .glyphs button { display: grid; place-items: center; aspect-ratio: 1; padding: 0;
                                 color: var(--fg); background: transparent;
                                 border: 1px solid transparent; border-radius: .3rem; cursor: pointer; }
@@ -2362,9 +2369,9 @@
     .floorplan .marker.switchable:active, .floorplan .marker.movable:active { scale: .96; }
     .floorplan .marker .glyph { transition: color var(--dur-base) var(--ease-out),
                                             opacity var(--dur-base) var(--ease-out); }
-    .floorplan .marker .reading { transition: max-width 420ms var(--ease-out),
-                                              padding 420ms var(--ease-out),
-                                              opacity var(--dur-fast) var(--ease-out); }
+    .floorplan .marker .reading { transition: grid-template-columns 380ms var(--ease-emphasized),
+                                              padding 380ms var(--ease-emphasized),
+                                              opacity 240ms var(--ease-out); }
     .floorplan .marker-name { transition: opacity var(--dur-fast) var(--ease-out),
                                           visibility var(--dur-fast); }
     .floorplan .marker .facing { transition: rotate var(--dur-layout) var(--ease-out); }
@@ -2487,6 +2494,16 @@
         transition: opacity var(--dur-layout) var(--ease-out), stroke-opacity var(--dur-base),
                     stroke var(--dur-fast) var(--ease-out); }
     .floorplan .opening { transition: opacity var(--dur-base) var(--ease-out); }
+    /* An overhead door: down, a slab across the gap; up, its sections slide out of the wall one
+       after another and lie under the ceiling on the side it opens to. Each section is drawn
+       where it lies when up and pulled back into the wall by `--lift` while it is down. */
+    .floorplan .overhead-section { fill: var(--tone-opening); opacity: 0; transform-box: view-box;
+                                   transform: var(--lift);
+                                   transition: transform calc(var(--dur-expressive) * 2.2) var(--ease-out),
+                                               opacity var(--dur-layout) var(--ease-out); }
+    .floorplan .opening.open .overhead-section { opacity: .55; transform: none; }
+    .floorplan .opening.open .overhead-slab { opacity: 0; }
+    .floorplan .opening.previewing .overhead-section { fill: var(--ember); opacity: .35; }
 
     /* On a phone the tools take the width rather than a column down the side of a small canvas. */
     @media (max-width: 720px) {

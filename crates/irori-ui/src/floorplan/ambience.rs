@@ -193,6 +193,20 @@ pub fn seen_through(opening: &Opening, open: &BTreeSet<EntityId>) -> bool {
             .is_some_and(|sensor| open.contains(sensor))
 }
 
+/// Whether what an opening follows says it is open: a contact sensor that is on, or a cover —
+/// a garage door's opener — that isn't closed. `None` when it isn't saying: never reported,
+/// not answering, or not a thing that can say.
+pub fn says_open(state: &EntityState) -> Option<bool> {
+    if state.availability == Availability::Unavailable {
+        return None;
+    }
+    match &state.state {
+        Some(State::BinarySensor(contact)) => Some(contact.on),
+        Some(State::Cover(cover)) => Some(cover.state != irori_types::OpenState::Closed),
+        _ => None,
+    }
+}
+
 /// The contact sensors of this floor's doors that say their door is open.
 pub fn open_doors(level: &Level, states: &[EntityState]) -> BTreeSet<EntityId> {
     level
@@ -202,11 +216,9 @@ pub fn open_doors(level: &Level, states: &[EntityState]) -> BTreeSet<EntityId> {
         .filter(|opening| opening.kind == OpeningKind::Door)
         .filter_map(|opening| opening.sensor.as_ref())
         .filter(|sensor| {
-            states.iter().any(|state| {
-                &state.entity_id == *sensor
-                    && state.availability != Availability::Unavailable
-                    && matches!(&state.state, Some(State::BinarySensor(contact)) if contact.on)
-            })
+            states
+                .iter()
+                .any(|state| &state.entity_id == *sensor && says_open(state) == Some(true))
         })
         .cloned()
         .collect()
@@ -575,6 +587,43 @@ mod tests {
             blind.iter().all(|(x, _)| *x <= 395.0 + 1e-6),
             "a door with no sensor is drawn shut, and is shut to a radar"
         );
+    }
+
+    /// A garage door's opener says it's open unless it says closed; mid-way is open.
+    #[test]
+    fn an_opener_is_open_unless_it_is_closed() {
+        let opener: EntityId = "cover.garage_door".parse().expect("a valid entity id");
+        let at: irori_types::Timestamp = "2026-10-08T12:00:00Z".parse().expect("a timestamp");
+        let says = |state: irori_types::OpenState, availability: Availability| EntityState {
+            entity_id: opener.clone(),
+            state: Some(State::Cover(irori_types::CoverState {
+                state,
+                position: None,
+                tilt: None,
+            })),
+            availability,
+            attributes: Default::default(),
+            last_changed: at,
+            last_updated: at,
+            last_reported: at,
+            context: irori_types::Context {
+                id: "01K5B2Q9A1B2C3D4E5F6G7H8J9"
+                    .parse()
+                    .expect("a valid context id"),
+                parent_id: None,
+                origin: irori_types::Origin::System,
+            },
+        };
+        use irori_types::OpenState::{Closed, Closing, Open, Opening as Rising};
+        for (state, open) in [
+            (Open, true),
+            (Rising, true),
+            (Closing, true),
+            (Closed, false),
+        ] {
+            assert_eq!(says_open(&says(state, Availability::Available)), Some(open));
+        }
+        assert_eq!(says_open(&says(Open, Availability::Unavailable)), None);
     }
 
     /// Which doors are open comes from their contact sensors: on is open, and a sensor that

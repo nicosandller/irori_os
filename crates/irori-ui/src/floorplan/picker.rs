@@ -147,22 +147,18 @@ pub(super) fn DevicePicker(
                 on:input=move |event| needle.set(event_target_value(&event))
             />
             <div class="picker-filters">
-                <label>
-                    <input
-                        type="checkbox"
-                        prop:checked=move || every_floor.get()
-                        on:change=move |event| every_floor.set(event_target_checked(&event))
-                    />
-                    "Every floor"
-                </label>
-                <label>
-                    <input
-                        type="checkbox"
-                        prop:checked=move || with_placed.get()
-                        on:change=move |event| with_placed.set(event_target_checked(&event))
-                    />
-                    "Placed"
-                </label>
+                {crate::segmented::segmented(
+                    "Which floors",
+                    vec![(false, "This floor"), (true, "Every floor")],
+                    every_floor.into(),
+                    move |to| every_floor.set(to),
+                )}
+                {crate::segmented::segmented(
+                    "Which devices",
+                    vec![(false, "To place"), (true, "All")],
+                    with_placed.into(),
+                    move |to| with_placed.set(to),
+                )}
             </div>
             <ul>
                 {move || {
@@ -179,7 +175,7 @@ pub(super) fn DevicePicker(
                     if shown.is_empty() {
                         return view! {
                             <li class="muted small">
-                                "Nothing left to place here. Tick Every floor or Placed to see more."
+                                "Nothing left to place here. Every floor or All shows more."
                             </li>
                         }.into_any();
                     }

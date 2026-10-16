@@ -245,6 +245,16 @@ impl Viewport {
 /// How long the window of who's at the door stays open after a doorbell rings, in seconds.
 const PEEK_SECS: u64 = 30;
 
+/// Whether a glyph is one of those being looked for: every word typed is in its name or in what
+/// else it is called.
+fn glyph_matches(glyph: Glyph, typed: &str) -> bool {
+    let known = format!("{} {}", glyph.label(), crate::icons::also_called(glyph)).to_lowercase();
+    typed
+        .to_lowercase()
+        .split_whitespace()
+        .all(|word| known.contains(word))
+}
+
 /// How far from its original a duplicate is put down, in centimetres.
 const DUPLICATE_OFFSET: i32 = 40;
 
@@ -2878,6 +2888,13 @@ fn Inspector(
     live: crate::Live,
     remember: Callback<()>,
 ) -> impl IntoView {
+    // What has been typed to find an icon. Out here, so the inspector drawing itself again
+    // doesn't forget it.
+    let finding = RwSignal::new(String::new());
+    Effect::new(move |_| {
+        picked.track();
+        finding.set(String::new());
+    });
     move || {
         let here = level.get();
         match picked.get()? {
@@ -3044,12 +3061,13 @@ fn Inspector(
                         // A window is hinged at both jambs; only a door has an end it hangs from.
                         {(kind == OpeningKind::Door).then(|| view! {
                             <div class="choice">
-                                <span>"Hinge"</span>
+                                <span>"Hung"</span>
                                 {crate::segmented::segmented(
                                     "Which end it is hinged at",
                                     vec![
                                         (irori_types::Hinge::Near, "Near end"),
                                         (irori_types::Hinge::Far, "Far end"),
+                                        (irori_types::Hinge::Overhead, "Overhead"),
                                     ],
                                     Signal::derive(move || hinge),
                                     move |to| change(&|opening| opening.hinge = to),
@@ -3061,7 +3079,7 @@ fn Inspector(
                             <irori_ui_kit::combo::Combo
                                 choices=contacts
                                 value=following
-                                placeholder="Search contact sensors"
+                                placeholder="Search sensors and openers"
                                 pick=Callback::new(move |picked: String| {
                                     let picked = picked.parse::<EntityId>().ok();
                                     change(&|opening| opening.sensor = picked.clone());
@@ -3072,7 +3090,8 @@ fn Inspector(
                             {if sensor.is_some() {
                                 "It opens and shuts on the plan as its sensor says."
                             } else {
-                                "Give it a contact sensor and it opens and shuts on the plan."
+                                "Give it a contact sensor, or the opener that drives it, and it opens and shuts on \
+                                 the plan."
                             }}
                         </p>
                     </div>
@@ -3154,9 +3173,14 @@ fn Inspector(
             Pick::Device(d) => {
                 let placed = here.devices.get(d)?;
                 let marked = placed.marked()?;
-                let home = live.home.get();
-                let name = name_of(&home, &marked).unwrap_or_else(|| marked.to_string());
-                let look = looks(&home, &marked);
+                // Not followed: the inspector would be drawn again with every reading, and take
+                // the icon search's keyboard away halfway through a word.
+                let (name, look) = live.home.with_untracked(|home| {
+                    (
+                        name_of(home, &marked).unwrap_or_else(|| marked.to_string()),
+                        looks(home, &marked),
+                    )
+                });
                 // Only a radar points anywhere, so only a radar is asked which way.
                 let radar = look.radar;
                 let (facing, wide) = (placed.facing, placed.view_angle());
@@ -3206,8 +3230,16 @@ fn Inspector(
                             <button type="button" class="quiet-button" on:click=duplicate>
                                 "Duplicate"
                             </button>
+                            <span class="glyphs-label">"Icon"</span>
+                            <input
+                                type="search"
+                                class="glyphs-search"
+                                placeholder="Find an icon"
+                                aria-label="Find an icon"
+                                prop:value=move || finding.get()
+                                on:input=move |event| finding.set(event_target_value(&event))
+                            />
                             <div class="glyphs" role="radiogroup" aria-label="Icon">
-                                <span class="glyphs-label">"Icon"</span>
                                 <button
                                     type="button"
                                     role="radio"
@@ -3219,10 +3251,13 @@ fn Inspector(
                                 >
                                     {icon(own)}
                                 </button>
-                                {Glyph::ALL.into_iter().map(|glyph| view! {
+                                {Glyph::ALL.iter().copied().map(|glyph| view! {
                                     <button
                                         type="button"
                                         role="radio"
+                                        class:hidden=move || !finding.with(|typed| {
+                                            glyph_matches(glyph, typed)
+                                        })
                                         title=glyph.label()
                                         aria-label=glyph.label()
                                         aria-checked=(chosen_icon == Some(glyph)).to_string()
@@ -3293,14 +3328,23 @@ fn contacts(home: &Home, chosen: Option<&EntityId>) -> Vec<irori_ui_kit::combo::
     let mut found: Vec<Choice> = home
         .entities
         .iter()
-        .filter(|entity| {
-            matches!(
-                &entity.capabilities,
-                Capabilities::BinarySensor(sensor) if matches!(
-                    sensor.device_class,
-                    Some(Class::Door | Class::Window | Class::GarageDoor | Class::Opening)
+        .filter(|entity| match &entity.capabilities {
+            Capabilities::BinarySensor(sensor) => matches!(
+                sensor.device_class,
+                Some(Class::Door | Class::Window | Class::GarageDoor | Class::Opening)
+            ),
+            // What opens and shuts a door, gate or window says whether it's open as well as a
+            // contact on it would: a garage door's opener.
+            Capabilities::Cover(cover) => matches!(
+                cover.device_class,
+                Some(
+                    irori_types::CoverClass::Door
+                        | irori_types::CoverClass::Garage
+                        | irori_types::CoverClass::Gate
+                        | irori_types::CoverClass::Window
                 )
-            )
+            ),
+            _ => false,
         })
         .map(|entity| {
             let device = entity.device_id.as_ref().and_then(|id| {
@@ -3884,7 +3928,7 @@ fn marker(
             }
         >
             <span class="glyph">{icon(glyph)}</span>
-            <span class="reading">{reading}</span>
+            <span class="reading"><span class="reading-text">{reading}</span></span>
             // Which way a radar looks: a short arc on the marker's own ring, turned to face it.
             <svg
                 class="facing"
@@ -4154,16 +4198,14 @@ fn standing(opening: &Opening, states: &[irori_types::EntityState]) -> Standing 
     let Some(sensor) = &opening.sensor else {
         return Standing::Shut;
     };
-    let Some(state) = states.iter().find(|state| &state.entity_id == sensor) else {
-        return Standing::Unknown;
-    };
-    if state.availability == irori_types::Availability::Unavailable {
-        return Standing::Unknown;
-    }
-    match &state.state {
-        Some(irori_types::State::BinarySensor(contact)) if contact.on => Standing::Open,
-        Some(irori_types::State::BinarySensor(_)) => Standing::Shut,
-        _ => Standing::Unknown,
+    match states
+        .iter()
+        .find(|state| &state.entity_id == sensor)
+        .and_then(ambience::says_open)
+    {
+        Some(true) => Standing::Open,
+        Some(false) => Standing::Shut,
+        None => Standing::Unknown,
     }
 }
 
@@ -4239,6 +4281,12 @@ fn leaves(wall: &Wall, opening: &Opening) -> Vec<Leaf> {
         OpeningKind::Door => vec![match opening.hinge {
             irori_types::Hinge::Near => leaf(near, 1.0, width, thickness * 0.7),
             irori_types::Hinge::Far => leaf(far, -1.0, width, thickness * 0.7),
+            // Shut, an overhead door is a slab across the gap that doesn't turn: it runs up
+            // into the room instead ([`overhead`]).
+            irori_types::Hinge::Overhead => Leaf {
+                swing: 0.0,
+                ..leaf(near, 1.0, width, thickness * 0.7)
+            },
         }],
         OpeningKind::Window if opening.width < ONE_PANE => {
             vec![leaf(near, 1.0, (width - 1.0).max(0.5), thickness * 0.6)]
@@ -4295,11 +4343,13 @@ fn drawn_opening(
         .collect_view();
 
     let moving = leaves(wall, opening);
+    let lifts = is_door && opening.hinge == irori_types::Hinge::Overhead;
+    let lifted = lifts.then(|| overhead(wall, opening));
     // The floor a door passes over: the quarter circle between where its latch is shut and
     // where it is open.
     let sweeps = moving
         .iter()
-        .filter(|_| is_door)
+        .filter(|_| is_door && !lifts)
         .map(|leaf| {
             let open = leaf.opened(leaf.latch);
             let path = format!(
@@ -4326,7 +4376,11 @@ fn drawn_opening(
                 .join(" ");
             view! {
                 <polygon
-                    class=if is_door { "door-slab" } else { "window-pane" }
+                    class=match (is_door, lifts) {
+                        (true, true) => "door-slab overhead-slab",
+                        (true, false) => "door-slab",
+                        _ => "window-pane",
+                    }
                     points=points
                     style=format!(
                         "transform-origin:{:.2}px {:.2}px;--swing:{}deg",
@@ -4346,10 +4400,77 @@ fn drawn_opening(
             class:previewing=previewing
         >
             {sweeps}
+            {lifted}
             {edges}
             {panels}
         </g>
     }
+}
+
+/// How far into the room an overhead door runs when it is up, in centimetres: about the height
+/// of a garage door, which is what it lies flat under the ceiling as.
+const OVERHEAD_DEPTH: f64 = 220.0;
+/// How many sections an overhead door is drawn in.
+const SECTIONS: usize = 4;
+
+/// Where an overhead door's sections lie when it is up: one after another from the wall into
+/// the room, on the side it opens to. Each is drawn there and pulled back into the wall while
+/// the door is down (`--lift`), so opening it slides them out under the ceiling in a ripple.
+/// One section of an overhead door: its corners where it lies when up, and the move that puts
+/// it back in the wall.
+type Section = ([(f64, f64); 4], (f64, f64));
+
+fn overhead_sections(wall: &Wall, opening: &Opening) -> Vec<Section> {
+    let half = f64::from(opening.width) / 2.0;
+    let at = f64::from(opening.at);
+    let face = f64::from(wall.thickness) / 2.0;
+    let (near, _, normal) = along(wall, at - half);
+    let (far, _, _) = along(wall, at + half);
+    let towards = match opening.side {
+        irori_types::Side::Left => 1.0,
+        irori_types::Side::Right => -1.0,
+    };
+    let out = (normal.0 * towards, normal.1 * towards);
+    let step = OVERHEAD_DEPTH / SECTIONS as f64;
+    (0..SECTIONS)
+        .map(|section| {
+            let (from, to) = (
+                face + step * section as f64,
+                face + step * (section as f64 + 1.0) - 2.0,
+            );
+            let off = |point: (f64, f64), by: f64| (point.0 + out.0 * by, point.1 + out.1 * by);
+            let corners = [off(near, from), off(far, from), off(far, to), off(near, to)];
+            // Back to the wall's middle, where it is while the door is down.
+            let back = -(from + to) / 2.0;
+            (corners, (out.0 * back, out.1 * back))
+        })
+        .collect()
+}
+
+fn overhead(wall: &Wall, opening: &Opening) -> impl IntoView + use<> {
+    overhead_sections(wall, opening)
+        .into_iter()
+        .enumerate()
+        .map(|(section, (corners, back))| {
+            let points = corners
+                .iter()
+                .map(|(x, y)| format!("{x:.2},{y:.2}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            view! {
+                <polygon
+                    class="overhead-section"
+                    points=points
+                    style=format!(
+                        "--lift:translate({:.2}px,{:.2}px);transition-delay:{}ms",
+                        back.0,
+                        back.1,
+                        section * 70
+                    )
+                />
+            }
+        })
+        .collect_view()
 }
 
 /// The wall being drawn right now, from the last corner to the pointer.
@@ -5262,6 +5383,15 @@ mod tests {
     /// A floor is lined up with the nearest floor that has walls: below it if there is one, and
     /// above it for a basement, which has nothing under it.
     #[test]
+    fn an_icon_is_found_by_its_name_or_what_else_it_is_called() {
+        assert!(glyph_matches(Glyph::CeilingLight, "pendant"));
+        assert!(glyph_matches(Glyph::CeilingLight, "CEIL"));
+        assert!(glyph_matches(Glyph::GarageDoor, "garage door"));
+        assert!(glyph_matches(Glyph::Washer, ""));
+        assert!(!glyph_matches(Glyph::Washer, "lamp"));
+    }
+
+    #[test]
     fn a_floor_is_lined_up_with_the_nearest_one_drawn() {
         let floors: Vec<FloorId> = ["basement", "ground", "first", "attic"]
             .iter()
@@ -5385,6 +5515,53 @@ mod tests {
                         "{from:?}→{to:?} {side:?} {hinge:?}: {out}"
                     );
                 }
+            }
+        }
+    }
+
+    /// An overhead door runs up into the room on the side it opens to, in sections, and while
+    /// it is down every section is pulled back to the wall's middle.
+    #[test]
+    fn an_overhead_door_runs_into_the_room_it_opens_to() {
+        use irori_types::{Hinge, Side};
+        for (from, to) in [((0, 0), (400, 0)), ((0, 0), (0, 400)), ((400, 300), (0, 0))] {
+            let mut wall = wall(from, to);
+            for side in [Side::Left, Side::Right] {
+                wall.openings = vec![Opening {
+                    side,
+                    hinge: Hinge::Overhead,
+                    ..Opening::new(OpeningKind::Door, 200, 240)
+                }];
+                let opening = &wall.openings[0];
+                assert_eq!(leaves(&wall, opening)[0].swing, 0.0, "it doesn't turn");
+                let (middle, _, normal) = along(&wall, 200.0);
+                let out = |point: (f64, f64)| {
+                    (point.0 - middle.0) * normal.0 + (point.1 - middle.1) * normal.1
+                };
+                let sign = if side == Side::Left { 1.0 } else { -1.0 };
+                let sections = overhead_sections(&wall, opening);
+                assert_eq!(sections.len(), SECTIONS);
+                for (corners, back) in &sections {
+                    for corner in corners {
+                        assert!(
+                            out(*corner) * sign > 0.0,
+                            "{side:?}: in the room it opens to"
+                        );
+                    }
+                    let centre = (
+                        corners.iter().map(|c| c.0).sum::<f64>() / 4.0 + back.0,
+                        corners.iter().map(|c| c.1).sum::<f64>() / 4.0 + back.1,
+                    );
+                    assert!(out(centre).abs() < 1e-6, "down, it is in the wall");
+                }
+                let deepest = sections
+                    .iter()
+                    .flat_map(|(corners, _)| corners.iter().map(|c| out(*c) * sign))
+                    .fold(0.0, f64::max);
+                assert!(
+                    (deepest - (5.0 + OVERHEAD_DEPTH - 2.0)).abs() < 1e-6,
+                    "{deepest}"
+                );
             }
         }
     }

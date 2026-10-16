@@ -377,8 +377,9 @@ pub struct Opening {
     /// says nothing about one.
     #[serde(default, skip_serializing_if = "is_default")]
     pub hinge: Hinge,
-    /// The contact sensor that says whether it's open: a binary sensor on the door or window
-    /// itself, where `on` means open. Without one it is drawn shut. Like every other reference
+    /// What says whether it's open: a contact sensor on the door or window itself (a binary
+    /// sensor, where `on` means open), or the cover that drives it (a garage door's opener,
+    /// open unless it says closed). Without one it is drawn shut. Like every other reference
     /// in the config, one that points at an entity no longer in the home is kept and not obeyed
     /// (`docs/specs/config.md` §4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -410,12 +411,15 @@ pub enum Side {
 }
 
 /// Which end of its gap a door is hung from: the one nearer the wall's `from` end, or the other.
+/// Or neither: an overhead door — a garage's sectional or up-and-over door — runs up into the
+/// room on tracks, towards the side it [opens to](Side), rather than swinging on a hinge.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Hinge {
     #[default]
     Near,
     Far,
+    Overhead,
 }
 
 /// Whether a value is the one it would have been given anyway, and so needn't be written.
@@ -576,49 +580,128 @@ pub enum Glyph {
     Lamp,
     CeilingLight,
     LightStrip,
+    Spotlight,
+    Chandelier,
+    OutdoorLight,
     Plug,
     Switch,
+    Outlet,
     Fan,
     Tv,
     Speaker,
+    Remote,
+    Computer,
+    Router,
+    GameConsole,
     Camera,
     Doorbell,
     Bell,
     Lock,
+    Alarm,
+    Siren,
     Motion,
     Person,
     Vibration,
+    Door,
+    Window,
+    GarageDoor,
+    Gate,
+    Blind,
+    Curtain,
     Thermostat,
     Temperature,
+    Humidity,
+    Radiator,
+    AirConditioner,
     Air,
+    Smoke,
     Leak,
+    Valve,
+    WaterHeater,
+    Sprinkler,
+    Plant,
+    Washer,
+    Dishwasher,
+    Fridge,
+    Oven,
+    Kettle,
+    Coffee,
+    Vacuum,
+    Mower,
+    Battery,
+    Solar,
+    Charger,
+    Energy,
+    Sun,
+    Bed,
+    Pet,
     Button,
     Dot,
 }
 
 impl Glyph {
-    /// Every glyph, in the order a picker shows them.
-    pub const ALL: [Glyph; 22] = [
+    /// Every glyph, in the order a picker shows them: lights, power and media, security,
+    /// openings, climate, water, appliances, energy, and the rest.
+    pub const ALL: &[Glyph] = &[
         Glyph::Bulb,
         Glyph::Lamp,
         Glyph::CeilingLight,
         Glyph::LightStrip,
+        Glyph::Spotlight,
+        Glyph::Chandelier,
+        Glyph::OutdoorLight,
         Glyph::Plug,
         Glyph::Switch,
+        Glyph::Outlet,
         Glyph::Fan,
         Glyph::Tv,
         Glyph::Speaker,
+        Glyph::Remote,
+        Glyph::Computer,
+        Glyph::Router,
+        Glyph::GameConsole,
         Glyph::Camera,
         Glyph::Doorbell,
         Glyph::Bell,
         Glyph::Lock,
+        Glyph::Alarm,
+        Glyph::Siren,
         Glyph::Motion,
         Glyph::Person,
         Glyph::Vibration,
+        Glyph::Door,
+        Glyph::Window,
+        Glyph::GarageDoor,
+        Glyph::Gate,
+        Glyph::Blind,
+        Glyph::Curtain,
         Glyph::Thermostat,
         Glyph::Temperature,
+        Glyph::Humidity,
+        Glyph::Radiator,
+        Glyph::AirConditioner,
         Glyph::Air,
+        Glyph::Smoke,
         Glyph::Leak,
+        Glyph::Valve,
+        Glyph::WaterHeater,
+        Glyph::Sprinkler,
+        Glyph::Plant,
+        Glyph::Washer,
+        Glyph::Dishwasher,
+        Glyph::Fridge,
+        Glyph::Oven,
+        Glyph::Kettle,
+        Glyph::Coffee,
+        Glyph::Vacuum,
+        Glyph::Mower,
+        Glyph::Battery,
+        Glyph::Solar,
+        Glyph::Charger,
+        Glyph::Energy,
+        Glyph::Sun,
+        Glyph::Bed,
+        Glyph::Pet,
         Glyph::Button,
         Glyph::Dot,
     ];
@@ -630,22 +713,61 @@ impl Glyph {
             Glyph::Lamp => "Lamp",
             Glyph::CeilingLight => "Ceiling light",
             Glyph::LightStrip => "Light strip",
+            Glyph::Spotlight => "Spotlight",
+            Glyph::Chandelier => "Chandelier",
+            Glyph::OutdoorLight => "Outdoor light",
             Glyph::Plug => "Plug",
             Glyph::Switch => "Switch",
+            Glyph::Outlet => "Outlet",
             Glyph::Fan => "Fan",
             Glyph::Tv => "TV",
             Glyph::Speaker => "Speaker",
+            Glyph::Remote => "Remote",
+            Glyph::Computer => "Computer",
+            Glyph::Router => "Router",
+            Glyph::GameConsole => "Game console",
             Glyph::Camera => "Camera",
             Glyph::Doorbell => "Doorbell",
             Glyph::Bell => "Bell",
             Glyph::Lock => "Lock",
+            Glyph::Alarm => "Alarm",
+            Glyph::Siren => "Siren",
             Glyph::Motion => "Motion",
             Glyph::Person => "Person",
             Glyph::Vibration => "Vibration",
+            Glyph::Door => "Door",
+            Glyph::Window => "Window",
+            Glyph::GarageDoor => "Garage door",
+            Glyph::Gate => "Gate",
+            Glyph::Blind => "Blind",
+            Glyph::Curtain => "Curtain",
             Glyph::Thermostat => "Thermostat",
             Glyph::Temperature => "Thermometer",
+            Glyph::Humidity => "Humidity",
+            Glyph::Radiator => "Radiator",
+            Glyph::AirConditioner => "Air conditioner",
             Glyph::Air => "Air",
+            Glyph::Smoke => "Smoke",
             Glyph::Leak => "Leak",
+            Glyph::Valve => "Valve",
+            Glyph::WaterHeater => "Water heater",
+            Glyph::Sprinkler => "Sprinkler",
+            Glyph::Plant => "Plant",
+            Glyph::Washer => "Washing machine",
+            Glyph::Dishwasher => "Dishwasher",
+            Glyph::Fridge => "Fridge",
+            Glyph::Oven => "Oven",
+            Glyph::Kettle => "Kettle",
+            Glyph::Coffee => "Coffee machine",
+            Glyph::Vacuum => "Robot vacuum",
+            Glyph::Mower => "Mower",
+            Glyph::Battery => "Battery",
+            Glyph::Solar => "Solar",
+            Glyph::Charger => "Car charger",
+            Glyph::Energy => "Energy",
+            Glyph::Sun => "Light level",
+            Glyph::Bed => "Bed",
+            Glyph::Pet => "Pet",
             Glyph::Button => "Button",
             Glyph::Dot => "Dot",
         }
@@ -1235,6 +1357,29 @@ mod tests {
         assert!(text.contains("icon = \"ceiling_light\""), "{text}");
         let back: PlacedDevice = toml::from_str(&text).expect("toml");
         assert_eq!(back, shown);
+    }
+
+    /// Every glyph is listed once and reads back as itself, since its name is what a file keeps.
+    #[test]
+    fn every_glyph_is_listed_once_and_reads_back() {
+        let mut seen = std::collections::BTreeSet::new();
+        for glyph in Glyph::ALL {
+            let name = serde_json::to_string(glyph).expect("json");
+            assert!(seen.insert(name.clone()), "{name} twice");
+            assert_eq!(serde_json::from_str::<Glyph>(&name).expect("json"), *glyph);
+        }
+    }
+
+    /// An overhead door is written as one, and a door that says nothing is still hung near.
+    #[test]
+    fn an_overhead_door_is_written_as_one() {
+        let door = Opening {
+            hinge: Hinge::Overhead,
+            ..Opening::new(OpeningKind::Door, 150, 240)
+        };
+        let text = toml::to_string(&door).expect("toml");
+        assert!(text.contains("hinge = \"overhead\""), "{text}");
+        assert_eq!(toml::from_str::<Opening>(&text).expect("toml"), door);
     }
 
     /// The same room may be traced on two floors — a stairwell, a double-height hall — because

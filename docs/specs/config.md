@@ -508,17 +508,19 @@ which room the device is in when the plan is saved (below). When the original is
 the editor, the first copy becomes the original.
 
 `icon` draws a marker as something other than what its kind would get — that switch drawn as the
-light it powers. One of `bulb`, `lamp`, `ceiling_light`, `light_strip`, `plug`, `switch`, `fan`,
-`tv`, `speaker`, `camera`, `doorbell`, `bell`, `lock`, `motion`, `person`, `vibration`,
-`thermostat`, `temperature`, `air`, `leak`, `button` or `dot`; a name rather than a drawing for
-the reason `tint` is one. Each copy has its own.
+light it powers. One of a fixed list of names (`ceiling_light`, `garage_door`, `washer`, …; the
+whole list is `Glyph` in `schemas/floorplan.schema.json`); a name rather than a drawing for the
+reason `tint` is one. Each copy has its own.
 
 A door or window can say **which way it opens and whether it is open**. `side` is the side of
 the wall it swings to, `"left"` or `"right"`, standing at the wall's `from` end and looking
 towards `to`; left when it isn't said, which is how every door was drawn before the field
 existed. `hinge` is the end of the gap a door hangs from, `"near"` (the `from` end, and the
-default) or `"far"`; a window is hinged at both jambs, so it has no use for it. `sensor` is the
-id of the contact sensor on it: a `binary_sensor` whose `on` means open. With one, the plan
+default) or `"far"` — or `"overhead"` for a garage's sectional or up-and-over door, which runs
+up into the room on tracks towards its `side` instead of swinging; a window is hinged at both
+jambs, so it has no use for it. `sensor` is the id of what says whether it is open: a contact
+sensor on it (a `binary_sensor` whose `on` means open), or the `cover` that drives it — a garage
+door's opener — which is open unless it says `closed`. With one, the plan
 draws the door or window open and shut as the sensor says, and a radar's field goes through a
 door only while it is open. Without one it is drawn shut, and a radar doesn't see through it — a plan shouldn't claim a door is open that nothing
 says is. A `sensor` that names an entity no longer in the home is kept and not obeyed (§4), and
