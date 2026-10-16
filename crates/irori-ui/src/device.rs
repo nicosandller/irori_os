@@ -1386,10 +1386,9 @@ fn presses(states: &[EntityState]) -> AnyView {
     let pressed: Vec<&EntityState> = states
         .iter()
         .filter(|state| {
-            state
-                .attributes
-                .iter()
-                .any(|(key, value)| key.as_str() == "pressed" && value == &serde_json::Value::Bool(true))
+            state.attributes.iter().any(|(key, value)| {
+                key.as_str() == "pressed" && value == &serde_json::Value::Bool(true)
+            })
         })
         .collect();
     if pressed.is_empty() {

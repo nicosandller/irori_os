@@ -21,13 +21,13 @@ mod tables;
 mod updates;
 
 use self::builder::{HELPER_KINDS, HelperBuilder, HelperKind};
+pub(crate) use self::controls::moment::when as controls_when;
 pub(crate) use self::controls::{
-    alarm_words, camera_picture, camera_words, climate_words, fan_words, fill, humidifier_words, lock_words, media_player_words,
-    mower_words, number, opening_words, schedule_words, timer_words, unit_of, update_words,
-    vacuum_words, water_heater_words, wording,
+    alarm_words, camera_picture, camera_words, climate_words, fan_words, fill, humidifier_words,
+    lock_words, media_player_words, mower_words, number, opening_words, schedule_words,
+    timer_words, unit_of, update_words, vacuum_words, water_heater_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
-pub(crate) use self::controls::moment::when as controls_when;
 
 /// What a row needs to show a command on its way and what came back from it.
 #[derive(Debug, Clone, Copy)]

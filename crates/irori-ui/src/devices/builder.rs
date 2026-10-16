@@ -2027,7 +2027,12 @@ fn group_try(draft: Draft) -> Option<AnyView> {
     });
     // A switch shown as something else is tried on the switch itself.
     let (words, on, off, targets) = match (kind.as_deref(), switch) {
-        (_, Some(switch)) if draft.kind.get_untracked().is_some_and(|k| k.table == "switch_as") => {
+        (_, Some(switch))
+            if draft
+                .kind
+                .get_untracked()
+                .is_some_and(|k| k.table == "switch_as") =>
+        {
             ("switch", "On", "Off", vec![switch])
         }
         (Some("light"), _) => ("lights", "All on", "All off", listed(draft, "members")),

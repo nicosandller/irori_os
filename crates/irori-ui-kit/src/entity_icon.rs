@@ -124,7 +124,8 @@ const PLAYER: &str = concat!(
 
 // The helpers that have no entity kind of their own to look like: a counter is a number, a
 // threshold a binary sensor, and the icon says what the helper does rather than what it is.
-const COUNTER: &str = r#"<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 12h3M14.5 12h3M16 10.500v3"/>"#;
+const COUNTER: &str =
+    r#"<rect x="4" y="5" width="16" height="14" rx="2"/><path d="M8 12h3M14.5 12h3M16 10.500v3"/>"#;
 const HOURGLASS: &str = r#"<path d="M7 3.500h10M7 20.500h10M8 3.500c0 4.500 8 4.500 8 8.500s-8 4-8 8.500M16 3.500c0 4.500-8 4.500-8 8.500s8 4 8 8.500"/>"#;
 const WEEK: &str = r#"<rect x="3.500" y="5" width="17" height="14.500" rx="1.500"/><path d="M3.500 9.500h17M7 13h4M13 13h4M7 16.500h7"/>"#;
 const GROUP: &str = r#"<circle cx="8" cy="9" r="3.500"/><circle cx="16" cy="9" r="3.500"/><circle cx="12" cy="16" r="3.500"/>"#;
@@ -136,7 +137,8 @@ const SLOPE: &str = r#"<path d="M3 18c5 0 9-9 18-12"/><path d="M7 20 18 5"/>"#;
 const BARS: &str = r#"<path d="M6 19.500v-6M10 19.500V9M14 19.500v-8M18 19.500v-4"/><path d="M3 12h2M8 12h4M15 12h2M20 12h1"/>"#;
 const COMBINE: &str = r#"<path d="M4 6h5c3 0 3 6 6 6h5M4 18h5c3 0 3-6 6-6"/><circle cx="4" cy="6" r="1.300"/><circle cx="4" cy="18" r="1.300"/><path d="M17.500 9.500 20 12l-2.500 2.500"/>"#;
 const SWITCH_AS: &str = r#"<rect x="1.500" y="9" width="9" height="6" rx="3"/><circle cx="7.500" cy="12" r="1.500" fill="currentColor"/><path d="M12 12h2.500M13 10l1.800 2-1.800 2"/><path d="M18.400 15a3.200 3.200 0 1 1 2.700 0v1.600h-2.700Z"/><path d="M18.600 19h2.300"/>"#;
-const LOOKBACK: &str = r#"<path d="M4 12a8 8 0 1 0 2.400-5.700"/><path d="M4 3.500V7h3.500"/><path d="M12 8v4l3 2"/>"#;
+const LOOKBACK: &str =
+    r#"<path d="M4 12a8 8 0 1 0 2.400-5.700"/><path d="M4 3.500V7h3.500"/><path d="M12 8v4l3 2"/>"#;
 
 /// What to draw for a helper of the kind kept in `table` (`extensions/helpers.toml`).
 pub fn helper(table: &str) -> &'static str {
