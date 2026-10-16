@@ -13,8 +13,8 @@
 use std::collections::BTreeMap;
 
 use irori_types::{
-    AreaId, Capabilities, Device, DeviceId, EntityId, FloorId, Floorplan, Level, Opening,
-    OpeningKind, PlacedArea, PlacedDevice, Point, Timestamp, Tint, Wall,
+    AreaId, Capabilities, DeviceId, Entity, EntityId, EventClass, FloorId, Floorplan, Glyph, Level,
+    Marked, Opening, OpeningKind, PlacedArea, PlacedDevice, Point, Timestamp, Tint, Wall,
 };
 use leptos::ev;
 use leptos::html::Div;
@@ -29,6 +29,8 @@ use crate::icons::icon;
 mod ambience;
 mod look;
 mod many;
+mod more;
+mod picker;
 mod snapping;
 mod source;
 mod zoom;
@@ -240,6 +242,12 @@ impl Viewport {
     }
 }
 
+/// How long the window of who's at the door stays open after a doorbell rings, in seconds.
+const PEEK_SECS: u64 = 30;
+
+/// How far from its original a duplicate is put down, in centimetres.
+const DUPLICATE_OFFSET: i32 = 40;
+
 /// What a click on the canvas does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
@@ -392,7 +400,7 @@ pub fn Floorplan() -> impl IntoView {
     // The walls the run started off, for the angle its first line makes with them. Asked when
     // the run starts and only read until it has a wall of its own to turn on.
     let started_on = RwSignal::new(Hosts::default());
-    let arming = RwSignal::new(None::<DeviceId>);
+    let arming = RwSignal::new(None::<Marked>);
     // The room being traced, and which room it is. A shape only becomes part of the plan when
     // it closes, so backing out of one leaves nothing behind.
     let tracing = RwSignal::new(Vec::<Point>::new());
@@ -475,24 +483,27 @@ pub fn Floorplan() -> impl IntoView {
     let level = Memo::new(move |_| on_floor(&shown.get(), floor.get().as_ref()));
     // What each aimed sensor on this floor can see. Walls and aim decide it and readings don't,
     // so it is worked out when the plan changes rather than every time a sensor speaks.
-    // The doors a sensor says are shut: a radar doesn't see through those. Its own memo, so
-    // the fields are traced again when a door moves and not every time anything reports.
-    let shut = Memo::new(move |_| {
+    // The doors a sensor says are open: the only ones a radar sees through, as they are the
+    // only ones drawn open. Its own memo, so the fields are traced again when a door moves and
+    // not every time anything reports.
+    let open = Memo::new(move |_| {
         let level = level.get();
         live.home
-            .with(|home| ambience::shut_doors(&level, &home.states))
+            .with(|home| ambience::open_doors(&level, &home.states))
     });
-    let sightlines = Memo::new(move |_| ambience::sightlines(&level.get(), &shut.get()));
-    // The floor under this one, drawn faintly so an upstairs can be lined up with it.
+    let sightlines = Memo::new(move |_| ambience::sightlines(&level.get(), &open.get()));
+    // The nearest floor with walls on it, drawn faintly so this one can be lined up with it:
+    // the one below, for an upstairs, and the one above for a basement, which has nothing under
+    // it to line up with.
     let beneath = Memo::new(move |_| {
         let floors = floors.get();
         let here = floor.get()?;
-        let index = floors.iter().position(|floor| floor.id == here)?;
-        let below = floors.get(index.checked_sub(1)?)?;
         let plan = shown.get();
-        plan.level(&below.id)
-            .filter(|level| !level.walls.is_empty())
-            .cloned()
+        let ids: Vec<FloorId> = floors.iter().map(|floor| floor.id.clone()).collect();
+        let nearest = traced_beside(&ids, &here, |id| {
+            plan.level(id).is_some_and(|level| !level.walls.is_empty())
+        })?;
+        plan.level(&nearest).cloned()
     });
 
     // Where the canvas is in the window, so a pointer position can be turned into a place on the
@@ -837,6 +848,7 @@ pub fn Floorplan() -> impl IntoView {
         // A floor somebody opened, drew on, and cleared again shouldn't leave a heading in the
         // file for a plan that isn't there.
         draft.update(Floorplan::tidy);
+        draft.update(Floorplan::keep_originals);
         let plan = draft.get_untracked();
         saving.set(true);
         spawn_local(async move {
@@ -879,6 +891,7 @@ pub fn Floorplan() -> impl IntoView {
         if !many.is_empty() {
             remember();
             on_level(draft, floor, |level| many.remove(level));
+            draft.update(Floorplan::keep_originals);
             group.set(Group::default());
             return;
         }
@@ -910,6 +923,8 @@ pub fn Floorplan() -> impl IntoView {
                 }
             }
         });
+        // A copy left behind by the original it copied takes its place.
+        draft.update(Floorplan::keep_originals);
         picked.set(None);
         group.set(Group::default());
     };
@@ -1307,6 +1322,22 @@ pub fn Floorplan() -> impl IntoView {
     // their markers flash. Counted rather than flagged, so a second press while the first flash
     // is still fading starts it again instead of being lost in it.
     let flashes = RwSignal::new(BTreeMap::<DeviceId, u32>::new());
+    // Doorbells that have rung lately, for the small window of who's there beside them. Counted
+    // like the flashes, so a second ring keeps the window open from that ring.
+    let ringing = RwSignal::new(BTreeMap::<DeviceId, u32>::new());
+    // The marker held down (or right-clicked) for everything its device can do, by its place in
+    // this floor's list, and the camera whose picture is open big.
+    let held = RwSignal::new(None::<usize>);
+    let feed = RwSignal::new(None::<(EntityId, String)>);
+    // A press being timed to see whether it is a hold, and whether the press that just ended
+    // was one — in which case the click it ends with mustn't also switch the device.
+    let hold = Hold::default();
+    // What a marker opened belongs to the floor it is on, and to reading the plan.
+    Effect::new(move |_| {
+        floor.track();
+        editing.track();
+        held.set(None);
+    });
     // When each event entity last said something happened. Only a *change* is a happening: the
     // first sight of one is just the page arriving, and nothing plays as the page arrives.
     let heard = StoredValue::new(BTreeMap::<EntityId, Timestamp>::new());
@@ -1331,11 +1362,34 @@ pub fn Floorplan() -> impl IntoView {
                 };
                 let before = heard.insert(entity.id.clone(), state.last_changed);
                 if before.is_some_and(|before| before != state.last_changed) {
-                    rang.push(device);
+                    let bell = matches!(
+                        &entity.capabilities,
+                        Capabilities::Event(caps) if caps.device_class == Some(EventClass::Doorbell)
+                    );
+                    rang.push((device, bell));
                 }
             }
         });
-        for device in rang {
+        for (device, bell) in rang {
+            if bell {
+                let device = device.clone();
+                let mut count = 0;
+                ringing.update(|ringing| {
+                    let entry = ringing.entry(device.clone()).or_insert(0);
+                    *entry += 1;
+                    count = *entry;
+                });
+                set_timeout(
+                    move || {
+                        ringing.update(|ringing| {
+                            if ringing.get(&device) == Some(&count) {
+                                ringing.remove(&device);
+                            }
+                        });
+                    },
+                    std::time::Duration::from_secs(PEEK_SECS),
+                );
+            }
             let mut count = 0;
             flashes.update(|flashes| {
                 let entry = flashes.entry(device.clone()).or_insert(0);
@@ -1435,6 +1489,8 @@ pub fn Floorplan() -> impl IntoView {
     // then finding a new wall corner there would be maddening.
     let on_click = move |event: ev::MouseEvent| {
         let Some(screen) = at(&event) else { return };
+        // A click on the plan itself puts away whatever a marker had opened.
+        held.set(None);
         if !editing.get_untracked() || dragged.get_untracked() {
             return;
         }
@@ -1552,6 +1608,10 @@ pub fn Floorplan() -> impl IntoView {
                     ));
                     return;
                 };
+                let wanted = device.clone();
+                let is_it = move |placed: &PlacedDevice| {
+                    !placed.copy && placed.marked().as_ref() == Some(&wanted)
+                };
                 trouble.set(None);
                 remember();
                 let step = snap.get_untracked().step();
@@ -1566,21 +1626,22 @@ pub fn Floorplan() -> impl IntoView {
                     plan.floors
                         .values()
                         .flat_map(|level| &level.devices)
-                        .find(|placed| placed.device == device)
+                        .find(|placed| is_it(placed))
                         .cloned()
                 });
                 draft.update(|plan| {
                     for (id, level) in &mut plan.floors {
                         if Some(id) != here.as_ref() {
-                            level.devices.retain(|placed| placed.device != device);
+                            level.devices.retain(|placed| !is_it(placed));
                         }
                     }
                 });
                 on_level(draft, floor, |level| {
-                    level.devices.retain(|placed| placed.device != device);
-                    level.devices.push(match before {
-                        Some(before) => PlacedDevice { at, ..before },
-                        None => PlacedDevice::new(device, at),
+                    level.devices.retain(|placed| !is_it(placed));
+                    level.devices.push(match (before, device) {
+                        (Some(before), _) => PlacedDevice { at, ..before },
+                        (None, Marked::Device(device)) => PlacedDevice::new(device, at),
+                        (None, Marked::Entity(entity)) => PlacedDevice::entity(entity, at),
                     });
                     picked.set(Some(Pick::Device(level.devices.len() - 1)));
                 });
@@ -2014,14 +2075,13 @@ pub fn Floorplan() -> impl IntoView {
                             .iter()
                             .enumerate()
                             .filter_map(|(index, placed)| {
-                                let device = home
-                                    .devices
-                                    .iter()
-                                    .find(|device| device.id == placed.device)?;
+                                let marked = placed.marked()?;
+                                let name = name_of(&home, &marked)?;
                                 Some(marker(
                                     index,
                                     placed,
-                                    device,
+                                    &marked,
+                                    name,
                                     &home,
                                     here,
                                     is_editing,
@@ -2035,11 +2095,100 @@ pub fn Floorplan() -> impl IntoView {
                                     dropped,
                                     flashes,
                                     remember_cb,
+                                    Reach { held, feed, hold },
                                 ))
                             })
                             .collect_view()
                     }}
+                    // Who's at the door, beside each doorbell that has just rung. Only while
+                    // reading the plan, and only for one with a camera.
+                    {move || {
+                        if editing.get() {
+                            return None;
+                        }
+                        let rung = ringing.get();
+                        if rung.is_empty() {
+                            return None;
+                        }
+                        let home = live.home.get();
+                        let here = view.get();
+                        Some(
+                            level
+                                .get()
+                                .devices
+                                .iter()
+                                .filter(|placed| !placed.copy)
+                                .filter_map(|placed| {
+                                    let device = placed.device.clone()?;
+                                    if !rung.contains_key(&device) {
+                                        return None;
+                                    }
+                                    let marked = Marked::Device(device.clone());
+                                    let camera = looks(&home, &marked).camera?;
+                                    let name = name_of(&home, &marked)?;
+                                    let shown = name.clone();
+                                    let watched = camera.clone();
+                                    Some(view! {
+                                        <more::Peek
+                                            camera=camera
+                                            name=name
+                                            at=here.screen(placed.at)
+                                            on_open=move || {
+                                                feed.set(Some((watched.clone(), shown.clone())));
+                                            }
+                                            on_close=move || ringing.update(|ringing| {
+                                                ringing.remove(&device);
+                                            })
+                                        />
+                                    })
+                                })
+                                .collect_view(),
+                        )
+                    }}
+                    // Everything a held marker's device can do, beside it.
+                    {move || {
+                        let index = held.get()?;
+                        if editing.get() {
+                            return None;
+                        }
+                        let placed = level.with_untracked(|level| level.devices.get(index).cloned())?;
+                        let marked = placed.marked()?;
+                        let (name, entities) = live.home.with_untracked(|home| {
+                            (
+                                name_of(home, &marked),
+                                speaks_for(home, &marked).into_iter().cloned().collect::<Vec<_>>(),
+                            )
+                        });
+                        let page = match &marked {
+                            Marked::Device(device) => Some(format!("/devices/{device}")),
+                            Marked::Entity(_) => None,
+                        };
+                        Some(view! {
+                            <more::More
+                                name=name?
+                                entities=more::shown(entities)
+                                at=view.get_untracked().screen(placed.at)
+                                page=page
+                                on_close=move || held.set(None)
+                                on_watch=move |camera: EntityId| {
+                                    let name = live.home.with_untracked(|home| {
+                                        home.entities
+                                            .iter()
+                                            .find(|entity| entity.id == camera)
+                                            .map(|entity| entity.name.to_string())
+                                            .unwrap_or_default()
+                                    });
+                                    held.set(None);
+                                    feed.set(Some((camera, name)));
+                                }
+                            />
+                        })
+                    }}
                 </div>
+                // A camera's picture, big. Outside the canvas, over everything.
+                {move || feed.get().map(|(camera, name)| view! {
+                    <more::Feed camera=camera name=name on_close=move || feed.set(None) />
+                })}
 
                 {move || {
                     let to = pointer.get()?;
@@ -2268,7 +2417,7 @@ pub fn Floorplan() -> impl IntoView {
             })}
 
             {move || (editing.get() && tool.get() == Tool::Device).then(|| view! {
-                <DevicePicker plan=shown arming=arming live=live />
+                <picker::DevicePicker plan=shown floor=floor arming=arming live=live />
             })}
 
             {move || (editing.get() && tool.get() == Tool::Area).then(|| view! {
@@ -2991,23 +3140,86 @@ fn Inspector(
             }
             Pick::Device(d) => {
                 let placed = here.devices.get(d)?;
+                let marked = placed.marked()?;
                 let home = live.home.get();
-                let name = home
-                    .devices
-                    .iter()
-                    .find(|device| device.id == placed.device)
-                    .map(|device| device.name.to_string())
-                    .unwrap_or_else(|| placed.device.to_string());
+                let name = name_of(&home, &marked).unwrap_or_else(|| marked.to_string());
+                let look = looks(&home, &marked);
                 // Only a radar points anywhere, so only a radar is asked which way.
-                let radar = looks(&home, &placed.device).radar;
+                let radar = look.radar;
                 let (facing, wide) = (placed.facing, placed.view_angle());
+                let chosen_icon = placed.icon;
+                let own = look.glyph;
+                let copy = placed.copy;
+                let at = placed.at;
+                let duplicate = move |_| {
+                    remember.run(());
+                    on_level(draft, floor, |level| {
+                        let Some(original) = level.devices.get(d).cloned() else {
+                            return;
+                        };
+                        // A little down and to the right, where it can be seen and dragged.
+                        level.devices.push(PlacedDevice {
+                            at: Point::new(at.x + DUPLICATE_OFFSET, at.y + DUPLICATE_OFFSET),
+                            copy: true,
+                            ..original
+                        });
+                        picked.set(Some(Pick::Device(level.devices.len() - 1)));
+                    });
+                };
+                let set_icon = move |glyph: Option<Glyph>| {
+                    remember.run(());
+                    on_level(draft, floor, |level| {
+                        if let Some(placed) = level.devices.get_mut(d) {
+                            placed.icon = glyph;
+                        }
+                    });
+                };
                 Some(
                     view! {
                         <div class="inspector">
-                            <h2>"Device"</h2>
+                            <h2>{match (&marked, copy) {
+                                (Marked::Entity(_), _) => "Helper",
+                                (_, true) => "Device · copy",
+                                _ => "Device",
+                            }}</h2>
                             <p class="name">{name}</p>
-                            <p class="muted small">{placed.device.to_string()}</p>
-                            <p class="muted small">"Drag it to move it."</p>
+                            <p class="muted small">{marked.to_string()}</p>
+                            <p class="muted small">{if copy {
+                                "Drag it to move it. A copy shows and switches the same device, \
+                                 and doesn't decide which room it is in."
+                            } else {
+                                "Drag it to move it."
+                            }}</p>
+                            <button type="button" class="quiet-button" on:click=duplicate>
+                                "Duplicate"
+                            </button>
+                            <div class="glyphs" role="radiogroup" aria-label="Icon">
+                                <span class="glyphs-label">"Icon"</span>
+                                <button
+                                    type="button"
+                                    role="radio"
+                                    title="Its own"
+                                    aria-label="Its own icon"
+                                    aria-checked=chosen_icon.is_none().to_string()
+                                    class:chosen=chosen_icon.is_none()
+                                    on:click=move |_| set_icon(None)
+                                >
+                                    {icon(own)}
+                                </button>
+                                {Glyph::ALL.into_iter().map(|glyph| view! {
+                                    <button
+                                        type="button"
+                                        role="radio"
+                                        title=glyph.label()
+                                        aria-label=glyph.label()
+                                        aria-checked=(chosen_icon == Some(glyph)).to_string()
+                                        class:chosen=chosen_icon == Some(glyph)
+                                        on:click=move |_| set_icon(Some(glyph))
+                                    >
+                                        {icon(crate::icons::of_glyph(glyph))}
+                                    </button>
+                                }).collect_view()}
+                            </div>
                             {radar.then(|| aim(draft, floor, d, facing, wide, remember))}
                         </div>
                     }
@@ -3395,81 +3607,89 @@ fn EmptyPlan(
     }
 }
 
-/// The devices of the home, to pick one to place.
-///
-/// Every device, whatever floor is showing, and already-placed ones stay in the list: a device
-/// is in one place, so clicking one again moves it — to another spot, or to another floor —
-/// rather than adding a second of the same thing.
-#[component]
-fn DevicePicker(
-    plan: Memo<Floorplan>,
-    arming: RwSignal<Option<DeviceId>>,
-    live: crate::Live,
-) -> impl IntoView {
-    view! {
-        <div class="device-picker">
-            <h2>"Devices"</h2>
-            <ul>
-                {move || {
-                    let home = live.home.get();
-                    let placed = plan.get();
-                    let mut devices = home.devices.clone();
-                    devices.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
-                    if devices.is_empty() {
-                        return view! {
-                            <li class="muted">"No devices yet."</li>
-                        }.into_any();
-                    }
-                    devices
-                        .into_iter()
-                        .map(|device| {
-                            let id = device.id.clone();
-                            let armed = id.clone();
-                            // Anywhere on the plan, not just this floor: a device is in one
-                            // place, and putting it down here is how it moves between floors.
-                            let on_plan = placed.floors.values().any(|level| {
-                                level.devices.iter().any(|entry| entry.device == device.id)
-                            });
-                            view! {
-                                <li>
-                                    <button
-                                        type="button"
-                                        class:chosen=move || arming.get().as_ref() == Some(&armed)
-                                        on:click=move |_| arming.update(|current| {
-                                            *current = if current.as_ref() == Some(&id) {
-                                                None
-                                            } else {
-                                                Some(id.clone())
-                                            };
-                                        })
-                                    >
-                                        <span class="name">{device.name.to_string()}</span>
-                                        {on_plan.then(|| view! {
-                                            <span class="badge">"on the plan"</span>
-                                        })}
-                                    </button>
-                                </li>
-                            }
-                        })
-                        .collect_view()
-                        .into_any()
-                }}
-            </ul>
-        </div>
+/// What a marker needs to open onto more than its one click: the hold that shows everything
+/// its device can do, and the camera picture it can open.
+#[derive(Clone, Copy)]
+struct Reach {
+    held: RwSignal<Option<usize>>,
+    feed: RwSignal<Option<(EntityId, String)>>,
+    hold: Hold,
+}
+
+/// A press being timed. Kept by the page rather than the marker, because the page draws its
+/// markers again with every reading, and a hold must outlive the marker it started on.
+#[derive(Clone, Copy)]
+struct Hold {
+    timer: StoredValue<Option<TimeoutHandle>>,
+    /// Where the press went down, to tell a hold from the start of a drag.
+    from: StoredValue<Option<(f64, f64)>>,
+    /// The press that just ended was a hold, so the click it ends with does nothing.
+    was: StoredValue<bool>,
+}
+
+impl Default for Hold {
+    fn default() -> Self {
+        Self {
+            timer: StoredValue::new(None),
+            from: StoredValue::new(None),
+            was: StoredValue::new(false),
+        }
+    }
+}
+
+impl Hold {
+    fn start(self, at: (f64, f64), then: impl FnOnce() + 'static) {
+        self.stop();
+        self.was.set_value(false);
+        self.from.set_value(Some(at));
+        let was = self.was;
+        let handle = set_timeout_with_handle(
+            move || {
+                was.set_value(true);
+                then();
+            },
+            std::time::Duration::from_millis(more::HOLD_MS),
+        )
+        .ok();
+        self.timer.set_value(handle);
+    }
+
+    /// The pointer moved: far enough, and it is not a hold.
+    fn moved(self, to: (f64, f64)) {
+        if let Some(from) = self.from.get_value()
+            && (to.0 - from.0).hypot(to.1 - from.1) > more::HOLD_SLOP
+        {
+            self.stop();
+        }
+    }
+
+    fn stop(self) {
+        if let Some(handle) = self.timer.get_value() {
+            handle.clear();
+        }
+        self.timer.set_value(None);
+        self.from.set_value(None);
+    }
+
+    /// Whether the click arriving now ends a hold, which it then uses up.
+    fn swallow(self) -> bool {
+        let was = self.was.get_value();
+        self.was.set_value(false);
+        was
     }
 }
 
 /// One device where it was put: what kind of thing it is, and what it's doing.
 ///
-/// A round glyph in the tone of its kind, which opens out to the right into a short reading
+/// A round glyph in the tone of its kind, which opens out on both sides into a short reading
 /// only while it has something to say — a temperature, the watts a plug is drawing, what the TV
 /// is playing. Its name is a hover away, and always shown while arranging the plan, when names
 /// are what tell two lamps apart.
 ///
 /// HTML rather than something drawn in the SVG, because a marker is a control — it has a label,
-/// it can be focused, and in reading mode clicking it switches the device. It is also the one
-/// thing on the canvas that must *not* scale with the zoom: a reading is either readable or it
-/// isn't.
+/// it can be focused, and in reading mode clicking it switches the device. Held down, or
+/// right-clicked, it opens everything else the device can do. It is also the one thing on the
+/// canvas that must *not* scale with the zoom: a reading is either readable or it isn't.
 ///
 /// The page draws these again with every reading, in place. So the shape of what's returned
 /// never depends on the device's state — only classes, text and styles do — which is what lets
@@ -3481,7 +3701,8 @@ fn DevicePicker(
 fn marker(
     index: usize,
     placed: &PlacedDevice,
-    device: &Device,
+    marked: &Marked,
+    name: String,
     home: &Home,
     view: Viewport,
     editing: bool,
@@ -3494,10 +3715,10 @@ fn marker(
     dropped: RwSignal<Option<usize>>,
     flashes: RwSignal<BTreeMap<DeviceId, u32>>,
     remember: Callback<()>,
+    reach: Reach,
 ) -> impl IntoView + use<> {
     let (x, y) = view.screen(placed.at);
-    let look = looks(home, &device.id);
-    let name = device.name.to_string();
+    let look = looks(home, marked);
     let (on, offline) = (look.on, look.offline);
     // What a click does, if anything. A marker is a control only while reading the plan, and
     // only for a device that is answering: one that isn't must not look like one that is. In
@@ -3512,6 +3733,8 @@ fn marker(
         Some(Click::Act(entity, "media_play_pause"))
     } else if let Some(entity) = look.lock.clone() {
         Some(Click::Act(entity, "lock"))
+    } else if let Some(entity) = look.camera.clone() {
+        Some(Click::Watch(entity))
     } else {
         look.press.clone().map(|entity| Click::Act(entity, "press"))
     };
@@ -3532,7 +3755,15 @@ fn marker(
     let open = look.reading.is_some();
     let reading = look.reading.clone().unwrap_or_default();
     let tip = said.clone();
-    let (flashed, flashed_again) = (device.id.clone(), device.id.clone());
+    let glyph = placed.icon.map_or(look.glyph, crate::icons::of_glyph);
+    let device = placed.device.clone().filter(|_| placed.entity.is_none());
+    let (flashed, flashed_again) = (device.clone(), device);
+    let Reach { held, feed, hold } = reach;
+    let watched_as = name.clone();
+    let open_more = move || {
+        hold.stop();
+        held.set(Some(index));
+    };
 
     view! {
         <button
@@ -3543,15 +3774,19 @@ fn marker(
             class:lit=look.lit
             class:open=open
             class:pulse=look.pulse
+            class:shake=look.shake
             class:aimed=facing.is_some()
             class:rings=look.rings
+            class:copy=placed.copy
             class:offline=offline
             // A press or a ring: the same flash under two names, so one straight after another
             // starts it again.
-            class:flash-a=move || flashes.with(|all| all.get(&flashed).is_some_and(|n| n % 2 == 1))
-            class:flash-b=move || {
-                flashes.with(|all| all.get(&flashed_again).is_some_and(|n| n % 2 == 0))
-            }
+            class:flash-a=move || flashes.with(|all| {
+                flashed.as_ref().and_then(|id| all.get(id)).is_some_and(|n| n % 2 == 1)
+            })
+            class:flash-b=move || flashes.with(|all| {
+                flashed_again.as_ref().and_then(|id| all.get(id)).is_some_and(|n| n % 2 == 0)
+            })
             // Held, it lifts off the plan; put down, it settles with a bounce.
             class:lifted=move || matches!(drag.get(), Some(Drag::Device { device }) if device == index)
             class:dropped=move || dropped.get() == Some(index)
@@ -3561,6 +3796,7 @@ fn marker(
             style=format!("left:{x}px;top:{y}px")
             title=tip
             aria-label=label
+            aria-haspopup=(!editing).then_some("dialog")
             // Not `disabled`: a marker with nothing to switch still has a name and a reading to
             // show to whoever tabs to it, and a disabled button can't be tabbed to.
             aria-disabled=(!editing && !live).then_some("true")
@@ -3579,19 +3815,53 @@ fn marker(
                 remember.run(());
                 drag.set(Some(Drag::Device { device: index }));
             }
-            on:click=move |event: ev::MouseEvent| {
-                event.stop_propagation();
+            // Held down while reading the plan: everything the device can do.
+            on:pointerdown=move |event: ev::PointerEvent| {
+                if editing || event.button() != 0 {
+                    return;
+                }
+                hold.start(
+                    (f64::from(event.client_x()), f64::from(event.client_y())),
+                    move || held.set(Some(index)),
+                );
+            }
+            on:pointermove=move |event: ev::PointerEvent| {
+                hold.moved((f64::from(event.client_x()), f64::from(event.client_y())));
+            }
+            on:pointerup=move |_| hold.stop()
+            on:pointercancel=move |_| hold.stop()
+            on:pointerleave=move |_| hold.stop()
+            on:contextmenu=move |event: ev::MouseEvent| {
                 if editing {
                     return;
                 }
+                event.prevent_default();
+                event.stop_propagation();
+                open_more();
+            }
+            on:keydown=move |event: ev::KeyboardEvent| {
+                if !editing
+                    && (event.key() == "ContextMenu" || (event.shift_key() && event.key() == "F10"))
+                {
+                    event.prevent_default();
+                    open_more();
+                }
+            }
+            on:click=move |event: ev::MouseEvent| {
+                event.stop_propagation();
+                if editing || hold.swallow() {
+                    return;
+                }
+                held.set(None);
                 match click.clone() {
                     Some(Click::Switch(entity, to)) => controls.set_on.run((entity, to)),
                     Some(Click::Act(entity, action)) => controls.act.run((entity, action, None)),
+                    Some(Click::Watch(camera)) => feed.set(Some((camera, watched_as.clone()))),
                     None => {}
                 }
             }
         >
-            <span class="glyph">{icon(look.glyph)}</span>
+            <span class="glyph">{icon(glyph)}</span>
             <span class="reading">{reading}</span>
             // Which way a radar looks: a short arc on the marker's own ring, turned to face it.
             <svg
@@ -3617,16 +3887,54 @@ enum Click {
     Switch(EntityId, bool),
     /// One of its kind's own actions: play or pause, press.
     Act(EntityId, &'static str),
+    /// Show what a camera sees.
+    Watch(EntityId),
 }
 
-/// A device's look on the plan, from the home as it is right now ([`look_for`] has the rules).
-fn looks(home: &Home, device: &DeviceId) -> Look {
-    let entities: Vec<_> = home
-        .entities
+/// The entities a marker speaks for: a device's, or the one a helper is.
+fn speaks_for<'a>(home: &'a Home, marked: &Marked) -> Vec<&'a Entity> {
+    home.entities
         .iter()
-        .filter(|entity| entity.device_id.as_ref() == Some(device))
-        .collect();
-    look_for(&entities, &home.states)
+        .filter(|entity| match marked {
+            Marked::Device(device) => entity.device_id.as_ref() == Some(device),
+            Marked::Entity(id) => &entity.id == id,
+        })
+        .collect()
+}
+
+/// What a marker is called: its device's name, or its helper's. `None` while the thing isn't in
+/// the home, which is when it isn't drawn.
+fn name_of(home: &Home, marked: &Marked) -> Option<String> {
+    match marked {
+        Marked::Device(device) => home
+            .devices
+            .iter()
+            .find(|known| &known.id == device)
+            .map(|device| device.name.to_string()),
+        Marked::Entity(id) => home
+            .entities
+            .iter()
+            .find(|entity| &entity.id == id)
+            .map(|entity| entity.name.to_string()),
+    }
+}
+
+/// A marker's look on the plan, from the home as it is right now ([`look_for`] has the rules).
+fn looks(home: &Home, marked: &Marked) -> Look {
+    look_for(&speaks_for(home, marked), &home.states)
+}
+
+/// The floor nearest `here` that has something on it to line up with: the nearest below it,
+/// else the nearest above. `floors` is lowest first.
+fn traced_beside(
+    floors: &[FloorId],
+    here: &FloorId,
+    traced: impl Fn(&FloorId) -> bool,
+) -> Option<FloorId> {
+    let index = floors.iter().position(|floor| floor == here)?;
+    let below = floors[..index].iter().rev();
+    let above = floors[index + 1..].iter();
+    below.chain(above).find(|floor| traced(floor)).cloned()
 }
 
 // --- Drawing ------------------------------------------------------------------------------
@@ -4928,6 +5236,37 @@ const BIN: &str = r#"<path d="M4 7h16M10 7V5h4v2M6 7l1 13h10l1-13" fill="none" s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A floor is lined up with the nearest floor that has walls: below it if there is one, and
+    /// above it for a basement, which has nothing under it.
+    #[test]
+    fn a_floor_is_lined_up_with_the_nearest_one_drawn() {
+        let floors: Vec<FloorId> = ["basement", "ground", "first", "attic"]
+            .iter()
+            .map(|id| id.parse().expect("a valid floor id"))
+            .collect();
+        let drawn =
+            |ids: &'static [&'static str]| move |floor: &FloorId| ids.contains(&floor.as_ref());
+        let near = |here: &str, ids: &'static [&'static str]| {
+            traced_beside(
+                &floors,
+                &here.parse().expect("a valid floor id"),
+                drawn(ids),
+            )
+            .map(|floor| floor.to_string())
+        };
+        assert_eq!(near("basement", &["ground"]).as_deref(), Some("ground"));
+        assert_eq!(
+            near("first", &["ground", "attic"]).as_deref(),
+            Some("ground")
+        );
+        assert_eq!(
+            near("first", &["basement", "attic"]).as_deref(),
+            Some("basement")
+        );
+        assert_eq!(near("attic", &["first"]).as_deref(), Some("first"));
+        assert_eq!(near("ground", &["ground"]), None, "not itself");
+    }
 
     fn wall(from: (i32, i32), to: (i32, i32)) -> Wall {
         Wall::new(Point::new(from.0, from.1), Point::new(to.0, to.1))

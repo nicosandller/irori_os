@@ -56,12 +56,55 @@ pub enum Icon {
     Lock,
     Unlocked,
     Bell,
+    /// A video doorbell: a bell push under a lens.
+    Doorbell,
+    Camera,
+    /// Something that shakes: a vibration sensor.
+    Vibration,
+    /// A standing lamp.
+    Lamp,
+    CeilingLight,
+    LightStrip,
+    /// A wall switch.
+    Switch,
+    Fan,
+    /// Water where it shouldn't be.
+    Leak,
     Thermostat,
     /// Something that has stopped answering: a signal, struck through.
     NoSignal,
     /// Anything that isn't one of the others.
     Dot,
     Cast,
+}
+
+/// The glyph a marker was given in place of its own, by the name the plan writes.
+pub fn of_glyph(glyph: irori_types::Glyph) -> Icon {
+    use irori_types::Glyph;
+    match glyph {
+        Glyph::Bulb => Icon::Bulb,
+        Glyph::Lamp => Icon::Lamp,
+        Glyph::CeilingLight => Icon::CeilingLight,
+        Glyph::LightStrip => Icon::LightStrip,
+        Glyph::Plug => Icon::Plug,
+        Glyph::Switch => Icon::Switch,
+        Glyph::Fan => Icon::Fan,
+        Glyph::Tv => Icon::Tv,
+        Glyph::Speaker => Icon::Speaker,
+        Glyph::Camera => Icon::Camera,
+        Glyph::Doorbell => Icon::Doorbell,
+        Glyph::Bell => Icon::Bell,
+        Glyph::Lock => Icon::Lock,
+        Glyph::Motion => Icon::Motion,
+        Glyph::Person => Icon::Person,
+        Glyph::Vibration => Icon::Vibration,
+        Glyph::Thermostat => Icon::Thermostat,
+        Glyph::Temperature => Icon::Temperature,
+        Glyph::Air => Icon::Air,
+        Glyph::Leak => Icon::Leak,
+        Glyph::Button => Icon::Button,
+        Glyph::Dot => Icon::Dot,
+    }
 }
 
 /// What's drawn inside the icon's 24 × 24 box. Written here and nowhere else, so it's safe to
@@ -187,6 +230,42 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Bell => concat!(
             r#"<path d="M6 16.500V11a6 6 0 0 1 12 0v5.500l1.500 2h-15Z"/>"#,
             r#"<path d="M10.200 21a2 2 0 0 0 3.600 0M12 3v2"/>"#,
+        ),
+        Icon::Doorbell => concat!(
+            r#"<rect x="7" y="2.5" width="10" height="19" rx="3"/>"#,
+            r#"<circle cx="12" cy="8" r="2.2"/><circle cx="12" cy="16" r="2.4"/>"#,
+        ),
+        Icon::Camera => concat!(
+            r#"<path d="M3.5 7.5h11A1.5 1.5 0 0 1 16 9v6a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 2 15V9"#,
+            r#"a1.5 1.5 0 0 1 1.5-1.5Z"/><path d="m16 11 5-3v8l-5-3"/><circle cx="9" cy="12" r="2.2"/>"#,
+        ),
+        Icon::Vibration => concat!(
+            r#"<rect x="8" y="4" width="8" height="16" rx="1.8"/>"#,
+            r#"<path d="M4.5 8.5 3 10l1.5 1.5L3 13l1.5 1.5M19.5 8.5 21 10l-1.5 1.5L21 13l-1.5 1.5"/>"#,
+        ),
+        Icon::Lamp => r#"<path d="M8 3.5h8l2.5 7h-13Z"/><path d="M12 10.5V20M8.5 20.5h7"/>"#,
+        Icon::CeilingLight => concat!(
+            r#"<path d="M12 3v4M5 14a7 7 0 0 1 14 0Z"/>"#,
+            r#"<path d="M12 17.5v2M7.5 16.5l-1 1.7M16.5 16.5l1 1.7"/>"#,
+        ),
+        Icon::LightStrip => concat!(
+            r#"<rect x="2.5" y="9.5" width="19" height="5" rx="2.5"/>"#,
+            r#"<path d="M7 12h.01M12 12h.01M17 12h.01M7 6.5v-1M12 6.5v-1M17 6.5v-1"/>"#,
+        ),
+        Icon::Switch => concat!(
+            r#"<rect x="6" y="3" width="12" height="18" rx="2"/>"#,
+            r#"<rect x="9.5" y="6.5" width="5" height="11" rx="1.2"/><path d="M9.5 12h5"/>"#,
+        ),
+        Icon::Fan => concat!(
+            r#"<path d="M12 12h.01"/>"#,
+            r#"<path d="M12 10.5C11 7.5 12 4 14.5 3.5c2 .9 1.5 4.5-1 7.2"/>"#,
+            r#"<path d="M13.5 12c3-1 6.5 0 7 2.5-.9 2-4.5 1.5-7.2-1"/>"#,
+            r#"<path d="M12 13.5c1 3 0 6.5-2.5 7-2-.9-1.5-4.5 1-7.2"/>"#,
+            r#"<path d="M10.5 12c-3 1-6.5 0-7-2.5.9-2 4.5-1.5 7.2 1"/>"#,
+        ),
+        Icon::Leak => concat!(
+            r#"<path d="M12 3.5c3 3.6 5.5 6.6 5.5 10a5.5 5.5 0 0 1-11 0c0-3.4 2.5-6.4 5.5-10Z"/>"#,
+            r#"<path d="M9.5 14a2.5 2.5 0 0 0 2.5 2.5"/>"#,
         ),
         Icon::Thermostat => concat!(
             r#"<circle cx="12" cy="12" r="8.500"/><path d="M12 12l3.200-3.200"/>"#,

@@ -6,8 +6,9 @@
 //! tested here without a page to draw them on.
 
 use irori_types::{
-    Availability, BinarySensorClass, Capabilities, Entity, EntityId, EntityState, EventClass,
-    HvacAction, HvacMode, LockStatus, MediaPlayerClass, Playback, SensorClass, SensorValue, State,
+    Availability, BinarySensorClass, CameraStatus, Capabilities, Entity, EntityId, EntityState,
+    EventClass, HvacAction, HvacMode, LockStatus, MediaPlayerClass, Playback, SensorClass,
+    SensorValue, State,
 };
 
 use crate::icons::Icon;
@@ -83,6 +84,10 @@ pub struct Look {
     pub event: Option<EntityId>,
     /// A doorbell: its marker rings as well as flashing.
     pub rings: bool,
+    /// The camera a click shows the picture of: a camera's own, or a video doorbell's.
+    pub camera: Option<EntityId>,
+    /// A vibration sensor feeling something: the marker shakes.
+    pub shake: bool,
     /// A presence sensor that also says how far away its target is, so it can be aimed and
     /// its field drawn.
     pub radar: bool,
@@ -111,6 +116,8 @@ impl Look {
             lock: None,
             event: None,
             rings: false,
+            camera: None,
+            shake: false,
             radar: false,
             sensing: false,
             distance: None,
@@ -120,8 +127,9 @@ impl Look {
 }
 
 /// A device's look, from its entities and what they last said. The first of these that fits
-/// wins: a light, a player, a switch, a lock, a thermostat, a radar, a motion sensor, a
-/// doorbell or a button, a thermometer, an air monitor, anything else with a reading.
+/// wins: a light, a player, a switch, a lock, a thermostat, a doorbell, a camera, a vibration
+/// sensor, a radar, a motion sensor, a button, a thermometer, an air monitor, anything else
+/// with a reading.
 ///
 /// Chosen by what an entity **can do**, not by what it has said. An entity that has reported
 /// nothing yet still has a light's or a switch's capabilities, and a marker that refused to
@@ -361,6 +369,84 @@ pub fn look_for(entities: &[&Entity], states: &[EntityState]) -> Look {
         return look;
     }
 
+    // A doorbell. Ahead of the camera and the motion sensor a video doorbell also has, because
+    // ringing is what it is for. It has nothing to press from here — ringing somebody's bell
+    // from the plan isn't a thing — so a click shows its camera, when it has one.
+    let camera = main().find(|entity| matches!(entity.capabilities, Capabilities::Camera(_)));
+    if let Some(bell) = main().find(|entity| {
+        matches!(
+            &entity.capabilities,
+            Capabilities::Event(caps) if caps.device_class == Some(EventClass::Doorbell)
+        )
+    }) {
+        let mut look = Look {
+            offline: unreachable(&bell.id),
+            event: Some(bell.id.clone()),
+            rings: true,
+            camera: camera.map(|camera| camera.id.clone()),
+            saying: if camera.is_some() {
+                "Doorbell — click to see the door".into()
+            } else {
+                "Doorbell".into()
+            },
+            ..Look::plain(
+                if camera.is_some() {
+                    Icon::Doorbell
+                } else {
+                    Icon::Bell
+                },
+                Tone::Input,
+            )
+        };
+        offline_words(&mut look);
+        return look;
+    }
+
+    // A camera. Ahead of the motion sensor most of them carry. Recording is worth knowing from
+    // across the room; watching is what it always does, and says nothing.
+    if let Some(camera) = camera {
+        let status = match said(&camera.id) {
+            Some(State::Camera(camera)) => Some(camera.state),
+            _ => None,
+        };
+        let recording = status == Some(CameraStatus::Recording);
+        let off = status == Some(CameraStatus::Off);
+        let mut look = Look {
+            offline: unreachable(&camera.id),
+            reading: recording.then(|| "● Rec".into()),
+            active: recording,
+            camera: (!off).then(|| camera.id.clone()),
+            saying: match status {
+                Some(CameraStatus::Off) => "Off".into(),
+                Some(CameraStatus::Recording) => "Recording — click to watch".into(),
+                _ => "Click to watch".into(),
+            },
+            ..Look::plain(Icon::Camera, Tone::Secure)
+        };
+        offline_words(&mut look);
+        return look;
+    }
+
+    // A vibration sensor: shakes while it feels something.
+    if let Some(vibration) = main().find(|entity| {
+        matches!(
+            &entity.capabilities,
+            Capabilities::BinarySensor(sensor)
+                if sensor.device_class == Some(BinarySensorClass::Vibration)
+        )
+    }) {
+        let shaking = matches!(said(&vibration.id), Some(State::BinarySensor(sensor)) if sensor.on);
+        let mut look = Look {
+            offline: unreachable(&vibration.id),
+            active: shaking,
+            shake: shaking,
+            saying: if shaking { "Vibrating" } else { "Still" }.into(),
+            ..Look::plain(Icon::Vibration, Tone::Sense)
+        };
+        offline_words(&mut look);
+        return look;
+    }
+
     // 4 and 5. Something that senses whether anyone is there.
     if let Some(presence) = main().find(|entity| {
         matches!(
@@ -422,30 +508,19 @@ pub fn look_for(entities: &[&Entity], states: &[EntityState]) -> Look {
     let button = main().find(|entity| matches!(entity.capabilities, Capabilities::Button(_)));
     let event = main().find(|entity| matches!(entity.capabilities, Capabilities::Event(_)));
     if button.is_some() || event.is_some() {
-        // A doorbell is an event that says it is one. It has nothing to press from here —
-        // ringing somebody's bell from the plan isn't a thing — so it only ever tells.
-        let bell = event.is_some_and(|event| {
-            matches!(
-                &event.capabilities,
-                Capabilities::Event(caps) if caps.device_class == Some(EventClass::Doorbell)
-            )
-        });
         let offline = button
             .or(event)
             .is_some_and(|entity| unreachable(&entity.id));
         let mut look = Look {
             offline,
-            press: button.filter(|_| !bell).map(|button| button.id.clone()),
+            press: button.map(|button| button.id.clone()),
             event: event.map(|event| event.id.clone()),
-            saying: if bell {
-                "Doorbell".into()
-            } else if button.is_some() {
+            saying: if button.is_some() {
                 "Click to press".into()
             } else {
                 String::new()
             },
-            rings: bell,
-            ..Look::plain(if bell { Icon::Bell } else { Icon::Button }, Tone::Input)
+            ..Look::plain(Icon::Button, Tone::Input)
         };
         offline_words(&mut look);
         return look;
@@ -854,6 +929,98 @@ mod tests {
         assert_eq!(look.tone, Tone::Input);
         assert!(look.reading.is_none() && look.press.is_none());
         assert_eq!(look.event, Some(bell.id.clone()));
+    }
+
+    fn camera(id: &str) -> Entity {
+        entity(
+            id,
+            Capabilities::Camera(irori_types::CameraCapabilities {
+                on_off: true,
+                motion_detection: true,
+            }),
+        )
+    }
+
+    fn filming(id: &str, state: CameraStatus) -> EntityState {
+        says(
+            id,
+            State::Camera(irori_types::CameraState {
+                state,
+                motion_detection: Some(true),
+            }),
+        )
+    }
+
+    /// A video doorbell has a camera and a person sensor too. It is a doorbell first, and a
+    /// click shows who is at the door.
+    #[test]
+    fn a_video_doorbell_rings_and_shows_the_door() {
+        let bell = entity(
+            "event.doorbell",
+            Capabilities::Event(EventCapabilities {
+                event_types: vec!["ring".into()],
+                device_class: Some(EventClass::Doorbell),
+            }),
+        );
+        let (lens, person) = (
+            camera("camera.doorbell"),
+            flag(
+                "binary_sensor.doorbell_person",
+                BinarySensorClass::Occupancy,
+            ),
+        );
+        let look = look_for(
+            &[&person, &lens, &bell],
+            &[flagged("binary_sensor.doorbell_person", true)],
+        );
+        assert_eq!((look.tone, look.glyph), (Tone::Input, Icon::Doorbell));
+        assert!(look.rings && !look.pulse);
+        assert_eq!(look.camera, Some(lens.id.clone()));
+    }
+
+    /// A camera is a camera even though it watches for motion: it says when it records, and a
+    /// click shows what it sees — unless it's off, when there is nothing to see.
+    #[test]
+    fn a_camera_is_a_camera_before_it_is_a_motion_sensor() {
+        let (lens, motion) = (
+            camera("camera.garage"),
+            flag("binary_sensor.garage_motion", BinarySensorClass::Motion),
+        );
+        let watching = look_for(
+            &[&motion, &lens],
+            &[
+                flagged("binary_sensor.garage_motion", true),
+                filming("camera.garage", CameraStatus::Idle),
+            ],
+        );
+        assert_eq!(
+            (watching.tone, watching.glyph),
+            (Tone::Secure, Icon::Camera)
+        );
+        assert_eq!(watching.camera, Some(lens.id.clone()));
+        assert!(watching.reading.is_none() && !watching.active && !watching.pulse);
+
+        let recording = look_for(
+            &[&lens],
+            &[filming("camera.garage", CameraStatus::Recording)],
+        );
+        assert!(recording.active && recording.reading.is_some());
+
+        let off = look_for(&[&lens], &[filming("camera.garage", CameraStatus::Off)]);
+        assert_eq!(off.camera, None);
+    }
+
+    #[test]
+    fn a_vibration_sensor_shakes_while_it_feels_something() {
+        let table = flag("binary_sensor.table", BinarySensorClass::Vibration);
+        let shaking = look_for(&[&table], &[flagged("binary_sensor.table", true)]);
+        assert_eq!(
+            (shaking.tone, shaking.glyph),
+            (Tone::Sense, Icon::Vibration)
+        );
+        assert!(shaking.shake && shaking.active);
+        let still = look_for(&[&table], &[flagged("binary_sensor.table", false)]);
+        assert!(!still.shake && !still.active);
     }
 
     /// A doorbell is a bell, rings, and can't be rung from the plan.
