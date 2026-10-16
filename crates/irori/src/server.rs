@@ -735,15 +735,21 @@ fn place_devices(
         .floors
         .values()
         .flat_map(|level| {
-            level.devices.iter().filter_map(|placed| {
-                if !known.contains(&placed.device) && !settings.devices.contains_key(&placed.device)
-                {
-                    return None;
-                }
-                let room = level.areas.iter().find(|area| area.contains(placed.at))?;
-                settings.area(&room.area)?;
-                Some((placed.device.clone(), room.area.clone()))
-            })
+            // A copy is a second marker for a device that is somewhere else, and a helper is no
+            // device at all: only an original marker for a device says which room it is in.
+            level
+                .devices
+                .iter()
+                .filter(|placed| !placed.copy)
+                .filter_map(|placed| {
+                    let device = placed.device.as_ref().filter(|_| placed.entity.is_none())?;
+                    if !known.contains(device) && !settings.devices.contains_key(device) {
+                        return None;
+                    }
+                    let room = level.areas.iter().find(|area| area.contains(placed.at))?;
+                    settings.area(&room.area)?;
+                    Some((device.clone(), room.area.clone()))
+                })
         })
         .collect();
 
@@ -3629,6 +3635,32 @@ mod tests {
         // Saying so again moves nothing: it is where the plan says already.
         let (_, body) = server.json("PUT", "/api/floorplan", plan.clone()).await?;
         assert_eq!(body["placed"], 0, "{body}");
+
+        // A copy of the lamp standing in another room doesn't move it: only the original says
+        // where a device is.
+        server
+            .json("POST", "/api/areas", serde_json::json!({"name": "Hall"}))
+            .await?;
+        let mut copied = plan.clone();
+        copied["floors"]["ground"]["areas"]
+            .as_array_mut()
+            .expect("areas")
+            .push(serde_json::json!({
+                "area": "hall",
+                "points": [[500, 0], [900, 0], [900, 300], [500, 300]],
+            }));
+        copied["floors"]["ground"]["devices"]
+            .as_array_mut()
+            .expect("devices")
+            .push(serde_json::json!({
+                "device": "demo_living_room_lamp", "at": [600, 90], "copy": true,
+            }));
+        let (status, body) = server.json("PUT", "/api/floorplan", copied).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["placed"], 0, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = \"kitchen\""), "{devices}");
+        server.json("PUT", "/api/floorplan", plan.clone()).await?;
 
         // A device deliberately in no room stays in none. That answer exists so a guess can't
         // overrule it, and a dot standing on a floor is a guess.

@@ -156,6 +156,34 @@
         }
       ]
     },
+    "Glyph": {
+      "description": "A glyph a marker can be given in place of the one its kind would get.\n\nA name rather than a drawing, for the reason [`Tint`] is one: the page decides how each is\ndrawn. A short list of the things that are actually found in a home.",
+      "type": "string",
+      "enum": [
+        "bulb",
+        "lamp",
+        "ceiling_light",
+        "light_strip",
+        "plug",
+        "switch",
+        "fan",
+        "tv",
+        "speaker",
+        "camera",
+        "doorbell",
+        "bell",
+        "lock",
+        "motion",
+        "person",
+        "vibration",
+        "thermostat",
+        "temperature",
+        "air",
+        "leak",
+        "button",
+        "dot"
+      ]
+    },
     "Hinge": {
       "description": "Which end of its gap a door is hung from: the one nearer the wall's `from` end, or the other.",
       "type": "string",
@@ -281,14 +309,36 @@
       ]
     },
     "PlacedDevice": {
-      "description": "A device put somewhere on the plan.\n\nThe device may not be in the home right now — unplugged, or its extension uninstalled — and\nthe entry stays anyway, as every other config entry does (`docs/specs/config.md` §4). It\nsimply isn't drawn until the device is back.",
+      "description": "A device put somewhere on the plan — or a single entity that has no device, such as a\nhelper.\n\nThe device may not be in the home right now — unplugged, or its extension uninstalled — and\nthe entry stays anyway, as every other config entry does (`docs/specs/config.md` §4). It\nsimply isn't drawn until the device is back.\n\nExactly one of `device` and `entity` is set; [`Floorplan::check`] turns down anything else.\nTwo optional fields rather than one tagged value so that every plan written before a helper\ncould be put down (`device = \"…\"`) still reads as it did.",
       "type": "object",
       "properties": {
         "at": {
           "$ref": "#/$defs/Point"
         },
+        "copy": {
+          "description": "A second (or third…) marker for the same thing: a switch that drives several ceiling\nlights, drawn once over each of them. A copy controls and shows what the original does,\nbut it is never where the device *is* — only the one that isn't a copy decides which room\nthe device is in when the plan is saved.",
+          "type": "boolean"
+        },
         "device": {
-          "$ref": "#/$defs/DeviceId"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DeviceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "entity": {
+          "description": "An entity on its own: a helper, which belongs to no device.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityId"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "facing": {
           "description": "Which way a directional sensor points, in degrees clockwise from the plan's +x axis:\n0 is rightwards, 90 is down the page. Authored, because nothing a radar reports says\nwhich wall it was screwed to. Absent for a device that looks every way at once, and for\none nobody has aimed yet.\n\nUnder a full turn: [`Level::check`] turns down 360 and over, so the schema does too.",
@@ -309,11 +359,21 @@
           "format": "uint16",
           "maximum": 180,
           "minimum": 20
+        },
+        "icon": {
+          "description": "The glyph drawn instead of the one the device's kind would get: a switch shown as the\nlamp it powers. Absent, the plan picks one from what the device can do.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Glyph"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
       "required": [
-        "device",
         "at"
       ]
     },

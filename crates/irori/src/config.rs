@@ -616,7 +616,9 @@ fn forget(
     settings.devices.retain(|id, _| !device(id));
     settings.entities.retain(|key, _| !entity(key));
     for level in settings.floorplan.floors.values_mut() {
-        level.devices.retain(|placed| !device(&placed.device));
+        level
+            .devices
+            .retain(|placed| !placed.device.as_ref().is_some_and(&device));
     }
 }
 

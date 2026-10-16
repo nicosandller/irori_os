@@ -2216,10 +2216,14 @@ fn plan_brief(core: &Core, plan: &Floorplan, floor: &FloorId) -> String {
         text.push_str("Devices placed:\n");
     }
     for placed in &level.devices {
+        let Some(marked) = placed.marked() else {
+            continue;
+        };
         let known = devices
             .iter()
-            .find(|device| device.id == placed.device)
+            .find(|device| placed.is_device(&device.id))
             .map_or_else(String::new, |device| format!(" ({})", device.name));
+        let copy = if placed.copy { ", a copy" } else { "" };
         let standing = level
             .areas
             .iter()
@@ -2228,8 +2232,7 @@ fn plan_brief(core: &Core, plan: &Floorplan, floor: &FloorId) -> String {
                 format!(", standing in {}", room(&area.area))
             });
         text.push_str(&format!(
-            "- `{}`{known} at {}{standing}\n",
-            placed.device,
+            "- `{marked}`{known} at {}{standing}{copy}\n",
             at(placed.at)
         ));
     }

@@ -95,6 +95,30 @@ impl Floorplan {
         self.floors.entry(floor.clone()).or_default()
     }
 
+    /// Makes a copy the original wherever the original has gone: taking away the marker that
+    /// stood for a device mustn't leave its copies speaking for nothing. The first copy found —
+    /// floors in order, then the order they were put down — takes its place.
+    pub fn keep_originals(&mut self) {
+        let originals: std::collections::BTreeSet<Marked> = self
+            .floors
+            .values()
+            .flat_map(|level| &level.devices)
+            .filter(|placed| !placed.copy)
+            .filter_map(PlacedDevice::marked)
+            .collect();
+        let mut promoted = std::collections::BTreeSet::new();
+        for level in self.floors.values_mut() {
+            for placed in level.devices.iter_mut().filter(|placed| placed.copy) {
+                let Some(marked) = placed.marked() else {
+                    continue;
+                };
+                if !originals.contains(&marked) && promoted.insert(marked) {
+                    placed.copy = false;
+                }
+            }
+        }
+    }
+
     /// Forgets floors that have nothing on them, so cancelling out of an edit that touched a
     /// floor and then undid it doesn't leave a heading behind in the file.
     pub fn tidy(&mut self) {
@@ -424,15 +448,24 @@ impl OpeningKind {
     }
 }
 
-/// A device put somewhere on the plan.
+/// A device put somewhere on the plan — or a single entity that has no device, such as a
+/// helper.
 ///
 /// The device may not be in the home right now — unplugged, or its extension uninstalled — and
 /// the entry stays anyway, as every other config entry does (`docs/specs/config.md` §4). It
 /// simply isn't drawn until the device is back.
+///
+/// Exactly one of `device` and `entity` is set; [`Floorplan::check`] turns down anything else.
+/// Two optional fields rather than one tagged value so that every plan written before a helper
+/// could be put down (`device = "…"`) still reads as it did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct PlacedDevice {
-    pub device: DeviceId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceId>,
+    /// An entity on its own: a helper, which belongs to no device.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entity: Option<EntityId>,
     pub at: Point,
     /// Which way a directional sensor points, in degrees clockwise from the plan's +x axis:
     /// 0 is rightwards, 90 is down the page. Authored, because nothing a radar reports says
@@ -448,6 +481,32 @@ pub struct PlacedDevice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 20, max = 180))]
     pub field_of_view: Option<u16>,
+    /// A second (or third…) marker for the same thing: a switch that drives several ceiling
+    /// lights, drawn once over each of them. A copy controls and shows what the original does,
+    /// but it is never where the device *is* — only the one that isn't a copy decides which room
+    /// the device is in when the plan is saved.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub copy: bool,
+    /// The glyph drawn instead of the one the device's kind would get: a switch shown as the
+    /// lamp it powers. Absent, the plan picks one from what the device can do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon: Option<Glyph>,
+}
+
+/// What a marker on the plan stands for.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Marked {
+    Device(DeviceId),
+    Entity(EntityId),
+}
+
+impl std::fmt::Display for Marked {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Marked::Device(device) => device.fmt(f),
+            Marked::Entity(entity) => entity.fmt(f),
+        }
+    }
 }
 
 impl PlacedDevice {
@@ -462,16 +521,134 @@ impl PlacedDevice {
     /// A device put down at a point, not aimed anywhere.
     pub fn new(device: DeviceId, at: Point) -> Self {
         Self {
-            device,
+            device: Some(device),
+            entity: None,
             at,
             facing: None,
             field_of_view: None,
+            copy: false,
+            icon: None,
         }
+    }
+
+    /// One entity put down on its own: a helper.
+    pub fn entity(entity: EntityId, at: Point) -> Self {
+        Self {
+            device: None,
+            entity: Some(entity),
+            at,
+            facing: None,
+            field_of_view: None,
+            copy: false,
+            icon: None,
+        }
+    }
+
+    /// What it stands for: `None` only for an entry that names neither or both, which
+    /// [`Floorplan::check`] refuses.
+    pub fn marked(&self) -> Option<Marked> {
+        match (&self.device, &self.entity) {
+            (Some(device), None) => Some(Marked::Device(device.clone())),
+            (None, Some(entity)) => Some(Marked::Entity(entity.clone())),
+            _ => None,
+        }
+    }
+
+    /// Whether this marker is for `device`, original or copy.
+    pub fn is_device(&self, device: &DeviceId) -> bool {
+        self.entity.is_none() && self.device.as_ref() == Some(device)
     }
 
     /// How wide it sees: what was set, or the default.
     pub fn view_angle(&self) -> u16 {
         self.field_of_view.unwrap_or(Self::DEFAULT_FIELD_OF_VIEW)
+    }
+}
+
+/// A glyph a marker can be given in place of the one its kind would get.
+///
+/// A name rather than a drawing, for the reason [`Tint`] is one: the page decides how each is
+/// drawn. A short list of the things that are actually found in a home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Glyph {
+    Bulb,
+    Lamp,
+    CeilingLight,
+    LightStrip,
+    Plug,
+    Switch,
+    Fan,
+    Tv,
+    Speaker,
+    Camera,
+    Doorbell,
+    Bell,
+    Lock,
+    Motion,
+    Person,
+    Vibration,
+    Thermostat,
+    Temperature,
+    Air,
+    Leak,
+    Button,
+    Dot,
+}
+
+impl Glyph {
+    /// Every glyph, in the order a picker shows them.
+    pub const ALL: [Glyph; 22] = [
+        Glyph::Bulb,
+        Glyph::Lamp,
+        Glyph::CeilingLight,
+        Glyph::LightStrip,
+        Glyph::Plug,
+        Glyph::Switch,
+        Glyph::Fan,
+        Glyph::Tv,
+        Glyph::Speaker,
+        Glyph::Camera,
+        Glyph::Doorbell,
+        Glyph::Bell,
+        Glyph::Lock,
+        Glyph::Motion,
+        Glyph::Person,
+        Glyph::Vibration,
+        Glyph::Thermostat,
+        Glyph::Temperature,
+        Glyph::Air,
+        Glyph::Leak,
+        Glyph::Button,
+        Glyph::Dot,
+    ];
+
+    /// What it's called, for a picker to say.
+    pub fn label(self) -> &'static str {
+        match self {
+            Glyph::Bulb => "Bulb",
+            Glyph::Lamp => "Lamp",
+            Glyph::CeilingLight => "Ceiling light",
+            Glyph::LightStrip => "Light strip",
+            Glyph::Plug => "Plug",
+            Glyph::Switch => "Switch",
+            Glyph::Fan => "Fan",
+            Glyph::Tv => "TV",
+            Glyph::Speaker => "Speaker",
+            Glyph::Camera => "Camera",
+            Glyph::Doorbell => "Doorbell",
+            Glyph::Bell => "Bell",
+            Glyph::Lock => "Lock",
+            Glyph::Motion => "Motion",
+            Glyph::Person => "Person",
+            Glyph::Vibration => "Vibration",
+            Glyph::Thermostat => "Thermostat",
+            Glyph::Temperature => "Thermometer",
+            Glyph::Air => "Air",
+            Glyph::Leak => "Leak",
+            Glyph::Button => "Button",
+            Glyph::Dot => "Dot",
+        }
     }
 }
 
@@ -506,16 +683,26 @@ impl Floorplan {
         // floor, not once per floor as a room's shape is. A room can honestly be traced on two
         // floors (a stairwell, a double-height hall); a lamp cannot be in two of them, and a
         // plan that said so would leave whoever read it to pick, which is not a thing a reader
-        // should have to do.
+        // should have to do. Copies are the exception, and say so: a switch drawn again over
+        // each light it drives is still in one room, the original's.
         let mut placed = BTreeMap::new();
         for (floor, level) in &self.floors {
-            for device in &level.devices {
-                if let Some(already) = placed.insert(&device.device, floor) {
-                    return Err(PlanError(format!(
-                        "`{}` is drawn on two floors, `{already}` and `{floor}`; a device is in \
-                         one place",
-                        device.device
-                    )));
+            for device in level.devices.iter().filter(|device| !device.copy) {
+                let Some(marked) = device.marked() else {
+                    continue;
+                };
+                if let Some(already) = placed.insert(marked.clone(), floor) {
+                    return Err(PlanError(if already == floor {
+                        format!(
+                            "`{marked}` is drawn twice on floor `{floor}`; a device is in one \
+                             place, and any other marker for it is a copy"
+                        )
+                    } else {
+                        format!(
+                            "`{marked}` is drawn on two floors, `{already}` and `{floor}`; a \
+                             device is in one place"
+                        )
+                    }));
                 }
             }
         }
@@ -554,12 +741,24 @@ impl Level {
             }
         }
         for placed in &self.devices {
+            if placed.marked().is_none() {
+                return Err(PlanError(match &placed.device {
+                    Some(device) => format!(
+                        "`{device}` is placed as a device and as an entity at once; a marker is \
+                         one or the other"
+                    ),
+                    None => format!(
+                        "a marker at [{}, {}] names neither a device nor an entity",
+                        placed.at.x, placed.at.y
+                    ),
+                }));
+            }
             if let Some(facing) = placed.facing
                 && facing >= 360
             {
                 return Err(PlanError(format!(
                     "`{}` faces {facing}°; a direction is 0 to 359",
-                    placed.device
+                    placed.marked().expect("checked above")
                 )));
             }
             if let Some(view) = placed.field_of_view
@@ -567,7 +766,7 @@ impl Level {
             {
                 return Err(PlanError(format!(
                     "`{}` has a field of view of {view}°; it has to be {} to {}",
-                    placed.device,
+                    placed.marked().expect("checked above"),
                     PlacedDevice::FIELD_OF_VIEW_RANGE.start(),
                     PlacedDevice::FIELD_OF_VIEW_RANGE.end()
                 )));
@@ -923,6 +1122,119 @@ mod tests {
             .into(),
         };
         assert!(same_floor.check().is_err(), "or twice on one floor");
+    }
+
+    /// A switch that drives three ceiling lights can be drawn over each of them: every marker
+    /// after the first is a copy, on this floor or another, and only the original is where the
+    /// device is.
+    #[test]
+    fn a_device_may_have_copies_anywhere() {
+        let lamp = PlacedDevice::new(
+            "demo_lamp".parse().expect("a valid device id"),
+            Point::new(120, 90),
+        );
+        let copy = PlacedDevice {
+            copy: true,
+            ..lamp.clone()
+        };
+        let plan = Floorplan {
+            floors: [
+                (
+                    ground(),
+                    Level {
+                        devices: vec![lamp, copy.clone(), copy.clone()],
+                        ..Level::default()
+                    },
+                ),
+                (
+                    "upstairs".parse().expect("a valid floor id"),
+                    Level {
+                        devices: vec![copy],
+                        ..Level::default()
+                    },
+                ),
+            ]
+            .into(),
+        };
+        assert!(plan.check().is_ok(), "{:?}", plan.check());
+    }
+
+    /// Taking the original away hands its place to a copy, once.
+    #[test]
+    fn the_first_copy_becomes_the_original_when_it_goes() {
+        let copy = PlacedDevice {
+            copy: true,
+            ..PlacedDevice::new(
+                "demo_lamp".parse().expect("a valid device id"),
+                Point::new(0, 0),
+            )
+        };
+        let mut plan = on_ground(Level {
+            devices: vec![copy.clone(), copy],
+            ..Level::default()
+        });
+        plan.keep_originals();
+        let copies: Vec<bool> = plan.floors[&ground()]
+            .devices
+            .iter()
+            .map(|placed| placed.copy)
+            .collect();
+        assert_eq!(copies, [false, true]);
+        assert!(plan.check().is_ok());
+    }
+
+    /// A helper has no device, so it is put down as the entity it is. A marker is one or the
+    /// other: neither, or both, is refused.
+    #[test]
+    fn a_helper_is_placed_as_its_entity() {
+        let entity: EntityId = "switch.guests_over".parse().expect("a valid entity id");
+        let helper = PlacedDevice::entity(entity.clone(), Point::new(10, 10));
+        let text = toml::to_string(&helper).expect("toml");
+        assert!(text.contains("entity = \"switch.guests_over\""), "{text}");
+        assert!(!text.contains("device"), "{text}");
+        assert_eq!(helper.marked(), Some(Marked::Entity(entity.clone())));
+        assert!(
+            on_ground(Level {
+                devices: vec![helper.clone()],
+                ..Level::default()
+            })
+            .check()
+            .is_ok()
+        );
+
+        let both = PlacedDevice {
+            device: Some("demo_lamp".parse().expect("a valid device id")),
+            ..helper.clone()
+        };
+        let neither = PlacedDevice {
+            entity: None,
+            ..helper
+        };
+        for wrong in [both, neither] {
+            let plan = on_ground(Level {
+                devices: vec![wrong],
+                ..Level::default()
+            });
+            assert!(plan.check().is_err());
+        }
+    }
+
+    /// A chosen glyph is written by name, and a plan without one writes nothing.
+    #[test]
+    fn a_chosen_glyph_is_written_by_name() {
+        let lamp = PlacedDevice::new(
+            "demo_switch".parse().expect("a valid device id"),
+            Point::new(0, 0),
+        );
+        assert!(!toml::to_string(&lamp).expect("toml").contains("icon"));
+        let shown = PlacedDevice {
+            icon: Some(Glyph::CeilingLight),
+            ..lamp
+        };
+        let text = toml::to_string(&shown).expect("toml");
+        assert!(text.contains("icon = \"ceiling_light\""), "{text}");
+        let back: PlacedDevice = toml::from_str(&text).expect("toml");
+        assert_eq!(back, shown);
     }
 
     /// The same room may be traced on two floors — a stairwell, a double-height hall — because
