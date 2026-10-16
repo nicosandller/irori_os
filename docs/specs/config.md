@@ -446,6 +446,16 @@ device = "demo_mmwave_sensor"
 at = [0, 150]
 facing = 0              # optional: which way a directional sensor points, in degrees
 field_of_view = 100     # optional: how wide it sees, in degrees
+
+[[floors.ground.devices]]
+device = "demo_hall_switch"
+at = [300, 40]
+copy = true             # optional: a second marker for a device placed elsewhere
+icon = "ceiling_light"  # optional: drawn as this instead of what its kind would get
+
+[[floors.ground.devices]]
+entity = "switch.guests_over"   # a helper: an entity with no device, placed as itself
+at = [40, 40]
 ```
 
 Keyed by the **floor's id** from §3.1, because a plan *is* the plan of a floor: a house with an
@@ -488,14 +498,31 @@ in the home right now is **kept and simply not drawn** (§4), as is an entry for
 that has since been removed — a device unplugged for a week comes back to the spot it was put in,
 and making a deleted floor again brings its drawing back.
 
+A **helper** has no device, so it is placed by its entity id instead: `entity` in place of
+`device`. Every entry names exactly one of the two.
+
+A device is placed **once** in the whole home, because it is in one place. A switch that drives
+several ceiling lights can still be drawn over each of them: every marker after the first says
+`copy = true`. A copy shows and controls what the original does, but only the original says
+which room the device is in when the plan is saved (below). When the original is taken away in
+the editor, the first copy becomes the original.
+
+`icon` draws a marker as something other than what its kind would get — that switch drawn as the
+light it powers. One of a fixed list of names (`ceiling_light`, `garage_door`, `washer`, …; the
+whole list is `Glyph` in `schemas/floorplan.schema.json`); a name rather than a drawing for the
+reason `tint` is one. Each copy has its own.
+
 A door or window can say **which way it opens and whether it is open**. `side` is the side of
 the wall it swings to, `"left"` or `"right"`, standing at the wall's `from` end and looking
 towards `to`; left when it isn't said, which is how every door was drawn before the field
 existed. `hinge` is the end of the gap a door hangs from, `"near"` (the `from` end, and the
-default) or `"far"`; a window is hinged at both jambs, so it has no use for it. `sensor` is the
-id of the contact sensor on it: a `binary_sensor` whose `on` means open. With one, the plan
-draws the door or window open and shut as the sensor says, and a radar's field stops at a door
-that is shut. Without one it is drawn shut — a plan shouldn't claim a door is open that nothing
+default) or `"far"` — or `"overhead"` for a garage's sectional or up-and-over door, which runs
+up into the room on tracks towards its `side` instead of swinging; a window is hinged at both
+jambs, so it has no use for it. `sensor` is the id of what says whether it is open: a contact
+sensor on it (a `binary_sensor` whose `on` means open), or the `cover` that drives it — a garage
+door's opener — which is open unless it says `closed`. With one, the plan
+draws the door or window open and shut as the sensor says, and a radar's field goes through a
+door only while it is open. Without one it is drawn shut, and a radar doesn't see through it — a plan shouldn't claim a door is open that nothing
 says is. A `sensor` that names an entity no longer in the home is kept and not obeyed (§4), and
 none of the three is written when it holds its default.
 
@@ -505,14 +532,15 @@ is drawn: `0` is rightwards, `90` is down the page, `0` to `359`. `field_of_view
 sees, `20` to `180` degrees, and is 100 when `facing` is set and it isn't. Both are authored for
 the same reason the walls are: a radar reports that someone is 1.8 m away, and nothing it reports
 says which wall it was screwed to. The page uses them to draw what the sensor can see — stopped
-by walls, let through by doors — and where in it the target is. Left out, the device is drawn as
+by walls, let through by open doors — and where in it the target is. Left out, the device is drawn as
 a point that looks nowhere in particular, which is what every plan written before these fields
 existed says.
 
 Some rules are enforced rather than warned about, because breaking any of them leaves a plan
 that can't be drawn at all: a wall must have some length (a wall with none has no direction, so
 its openings have nowhere to sit), an opening must fit inside its wall, a room's shape needs
-at least three corners, and a `facing` or `field_of_view` must be inside its range. A file that breaks one is rejected whole, like any other unparseable file
+at least three corners, a `facing` or `field_of_view` must be inside its range, a device entry
+names exactly one of `device` and `entity`, and only one entry for each is not a `copy`. A file that breaks one is rejected whole, like any other unparseable file
 (§6), and the UI is held to exactly the same rules. A refusal says which floor it is about,
 because that is the first thing anybody needs in order to go and look.
 

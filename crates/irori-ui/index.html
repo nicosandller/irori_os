@@ -1779,15 +1779,16 @@
        follow the zoom — a reading is either readable or it isn't.
 
        A round glyph in the tone of its kind, standing on the device's own spot, that opens out
-       to the right into a short reading while it has one to give. Every state is mixed from the
+       evenly on both sides into a short reading while it has one to give. Every state is mixed from the
        one `--tone`, so a new kind of device is a new line in the list below and nothing else.
        `--edge` is that tone where it has to be seen as a line or a glyph: itself on the dark
        plan, deepened towards ink on the light one, where a pastel on paper disappears. */
     .floorplan .markers { position: absolute; inset: 0; pointer-events: none; }
     .floorplan .marker { --tone: var(--tone-other);
                          --edge: color-mix(in oklab, var(--tone) 65%, var(--ink));
-                         position: absolute; transform: translate(-1.25rem, -50%);
-                         transform-origin: 1.25rem 50%;
+                         position: absolute; transform: translate(-50%, -50%);
+                         transform-origin: 50% 50%;
+                         -webkit-touch-callout: none; user-select: none;
                          display: flex; align-items: center; pointer-events: auto;
                          height: 2.5rem; min-width: 2.5rem; padding: 0; font: inherit;
                          font-size: .8rem; font-weight: 500; font-variant-numeric: tabular-nums;
@@ -1813,10 +1814,15 @@
                                 color: color-mix(in oklab, var(--edge) 55%, var(--fg));
                                 opacity: .8; }
     .floorplan .marker .glyph .icon { width: 1.25rem; height: 1.25rem; display: block; }
-    /* The reading: always there, and no wider than nothing until there's one to show. */
-    .floorplan .marker .reading { max-width: 0; opacity: 0; overflow: hidden; }
-    .floorplan .marker.open .reading { max-width: 11rem; opacity: 1; padding-right: .85rem;
+    /* The reading: always there, and no wider than nothing until there's one to show. A grid
+       column going from 0fr to 1fr rather than a max-width, so it grows to the width the words
+       actually take and shrinks back from it, evenly both ways, instead of racing to a cap. */
+    .floorplan .marker .reading { display: grid; grid-template-columns: 0fr; opacity: 0;
+                                  padding-right: 0; }
+    .floorplan .marker .reading-text { min-width: 0; max-width: 11rem; overflow: hidden;
                                        text-overflow: ellipsis; }
+    .floorplan .marker.open .reading { grid-template-columns: 1fr; opacity: 1;
+                                       padding-right: .85rem; }
     .floorplan .marker.aimed.open .reading { padding-left: .6rem; }
     /* Doing something: on, playing, sensing someone. */
     .floorplan .marker.on { border-color: var(--edge);
@@ -1847,7 +1853,7 @@
     .floorplan .lost .icon { width: .92rem; height: .92rem; display: block; stroke-width: 2.2; }
     /* Red, not the ember: the ember is Irori's own colour and here means "picked up". */
     .floorplan .lost .icon .stripe { stroke: #d9433b; stroke-width: 2.6; }
-    .floorplan .marker .lost { top: -.45rem; left: 1.5rem; }
+    .floorplan .marker .lost { top: -.45rem; right: -.45rem; }
     .floorplan .marker.offline .lost { display: grid; }
     .floorplan .lost.on-plan { display: grid; translate: -50% -50%; pointer-events: auto; }
     /* Picked up and focused are the page talking, not the device: the ember, whatever its kind. */
@@ -1864,7 +1870,7 @@
     /* Its name, and what it's doing in words: over the marker when it's pointed at or tabbed
        to, and under it the whole time the plan is being arranged — when names are the only
        thing that tells two lamps apart. */
-    .floorplan .marker-name { position: absolute; left: 1.25rem; bottom: calc(100% + .45rem);
+    .floorplan .marker-name { position: absolute; left: 50%; bottom: calc(100% + .45rem);
                               translate: -50% 0; padding: .2rem .5rem; font-size: .75rem;
                               font-weight: 400; color: var(--bg); background: var(--fg);
                               border-radius: .35rem; pointer-events: none; opacity: 0;
@@ -1875,6 +1881,76 @@
     .floorplan.editing .marker-name { top: calc(100% + .3rem); bottom: auto; padding: 0 .3rem;
                                       color: var(--fg); background: var(--bg);
                                       opacity: .9; visibility: visible; }
+    /* An aimed radar keeps its glyph on its spot, where its field is drawn from, and opens to
+       the right: every other marker opens evenly on both sides. */
+    .floorplan .marker.aimed { transform: translate(-1.25rem, -50%); transform-origin: 1.25rem 50%; }
+    /* A copy, while arranging: a ring of dots says it stands for a device placed elsewhere. */
+    .floorplan.editing .marker.copy { border-style: dotted; }
+
+    /* Held, or right-clicked: everything the device can do, beside its marker. */
+    .floorplan .more { position: absolute; z-index: 4; pointer-events: auto; translate: -50% 1.6rem;
+                       width: min(22rem, calc(100vw - 2rem)); max-height: 60vh; overflow-y: auto;
+                       padding: .6rem .75rem .75rem; background: var(--card);
+                       border: 1px solid var(--line); border-radius: .6rem;
+                       box-shadow: 0 .6rem 1.6rem rgb(0 0 0 / .18);
+                       animation: more-in var(--dur-base) var(--ease-out); }
+    @keyframes more-in { from { opacity: 0; translate: -50% 1.2rem; } }
+    .floorplan .more-head { display: flex; align-items: center; gap: .5rem; margin-bottom: .3rem; }
+    .floorplan .more-head h2 { flex: 1; margin: 0; font-size: .95rem; font-weight: 600; }
+    .floorplan .more-rows { display: grid; gap: .1rem; }
+    .floorplan .more-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+                           padding: .45rem 0; border-top: 1px solid var(--line); }
+    .floorplan .more-row:first-child { border-top: none; }
+    .floorplan .more-row > .name { flex: 1; min-width: 6rem; font-size: .88rem; }
+    .floorplan .more-row .entity-icon { width: 1rem; height: 1rem; color: var(--muted); }
+    .floorplan .more-row.offline { opacity: .55; }
+    .floorplan .more-row .why { flex-basis: 100%; margin: 0; font-size: .75rem; color: var(--danger, #c0392b); }
+    .floorplan .more-page { display: inline-block; margin-top: .5rem; font-size: .8rem; }
+
+    /* A doorbell that has just rung: who's there, in a small window above it. */
+    .floorplan .peek { position: absolute; z-index: 3; pointer-events: auto; translate: -50% calc(-100% - 1.8rem);
+                       animation: peek-in var(--dur-layout) var(--ease-spring); }
+    @keyframes peek-in { from { opacity: 0; scale: .85; } }
+    .floorplan .peek-picture { display: grid; padding: 0; width: 12rem; overflow: hidden;
+                               background: var(--card); border: 2px solid var(--tone-input);
+                               border-radius: .6rem; cursor: zoom-in;
+                               box-shadow: 0 .5rem 1.4rem rgb(0 0 0 / .22); }
+    .floorplan .peek-picture img { display: block; width: 100%; aspect-ratio: 16 / 9;
+                                   object-fit: cover; background: var(--sunk); }
+    .floorplan .peek-says { padding: .25rem .5rem; font-size: .75rem; font-weight: 500;
+                            text-align: left; color: var(--fg); }
+    .floorplan .peek-close { position: absolute; top: .25rem; right: .25rem;
+                             color: #fff; background: rgb(0 0 0 / .45); }
+
+    /* A camera's picture, big, over the page: a new frame as soon as the last arrives, and
+       zoom that scales and moves the picture rather than the camera. */
+    .feed-backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
+                     padding: 1rem; background: rgb(0 0 0 / .55);
+                     animation: feed-fade var(--dur-base) var(--ease-out); }
+    @keyframes feed-fade { from { opacity: 0; } }
+    .feed { display: grid; gap: .6rem; width: min(64rem, 100%); padding: .75rem;
+            background: var(--card); border: 1px solid var(--line); border-radius: .8rem;
+            box-shadow: 0 1rem 3rem rgb(0 0 0 / .35); }
+    .feed-head { display: flex; align-items: center; gap: .75rem; }
+    .feed-head h2 { flex: 1; margin: 0; font-size: 1rem; font-weight: 600; }
+    .feed-live { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem;
+                 color: var(--muted); }
+    .feed-live .camera-dot { background: #e5484d; animation: recording 1.6s ease-in-out infinite; }
+    .feed-live.failed .camera-dot { background: var(--line); animation: none; }
+    .feed-frame { position: relative; overflow: hidden; aspect-ratio: 16 / 9;
+                  border-radius: .5rem; background: #000; touch-action: none; }
+    .feed-frame.zoomed { cursor: grab; }
+    .feed-frame.zoomed:active { cursor: grabbing; }
+    .feed-frame img { display: block; width: 100%; height: 100%; object-fit: contain;
+                      transform-origin: center; user-select: none;
+                      transition: transform var(--dur-fast) var(--ease-out); }
+    .feed-zoom { display: inline-flex; justify-self: center; border: 1px solid var(--line);
+                 border-radius: .5rem; overflow: hidden; }
+    .feed-zoom button { min-width: 2.5rem; padding: .3rem .6rem; font: inherit; font-size: .9rem;
+                        color: var(--fg); background: transparent; border: none; cursor: pointer; }
+    .feed-zoom button:disabled { color: var(--muted); cursor: default; }
+    .feed-zoom .feed-level { min-width: 4rem; font: .8rem var(--mono);
+                             border-inline: 1px solid var(--line); }
 
     /* Floating over the canvas: the page's own heading and what it can do. */
     .floorplan .plan-head { position: absolute; top: 0; left: 0; right: 0; z-index: 2;
@@ -1961,17 +2037,26 @@
                                    color: var(--muted); }
     .floorplan .device-picker ul { margin: 0; padding: 0; list-style: none; }
     .floorplan .device-picker li { padding: 0; }
-    .floorplan .device-picker button { display: flex; align-items: baseline; gap: .4rem;
+    .floorplan .device-picker li button { display: flex; align-items: baseline; gap: .4rem;
                                        width: 100%; padding: .3rem .4rem; font: inherit;
                                        font-size: .85rem; text-align: left; color: var(--fg);
                                        background: transparent; border: 1px solid transparent;
                                        border-radius: .3rem; cursor: pointer; }
-    .floorplan .device-picker button:hover { background: var(--sunk); }
-    .floorplan .device-picker button.chosen { color: var(--card); background: var(--ember);
+    .floorplan .device-picker li button:hover { background: var(--sunk); }
+    .floorplan .device-picker li button.chosen { color: var(--card); background: var(--ember);
                                               border-color: var(--ember); }
-    .floorplan .device-picker button.chosen .badge { color: var(--card); }
-    .floorplan .device-picker .name { overflow: hidden; text-overflow: ellipsis; }
-    .floorplan .device-picker .badge { margin-left: auto; font-size: .6rem; }
+    .floorplan .device-picker li button.chosen .badge { color: var(--card); }
+    .floorplan .device-picker .offer { display: grid; min-width: 0; }
+    .floorplan .device-picker .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .floorplan .device-picker .about { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                                       font-size: .72rem; color: var(--muted); }
+    .floorplan .device-picker li button.chosen .about { color: var(--card); opacity: .85; }
+    .floorplan .device-picker .badge { margin-left: auto; font-size: .6rem; flex: none; }
+    .floorplan .device-picker { width: 16rem; }
+    .floorplan .picker-search { width: 100%; margin: 0 0 .4rem; font-size: .85rem; }
+    .floorplan .picker-filters { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0 0 .5rem; }
+    .floorplan .picker-filters .switcher { font-size: .72rem; }
+    .floorplan .picker-filters .switcher button { padding: .2rem .5rem; }
 
     /* A room, faintly, where the plan will go. Sits in the middle of the canvas whatever the
        zoom is: it's a picture of a floorplan, not one. */
@@ -2007,6 +2092,20 @@
     .floorplan .inspector h2 { margin: 0 0 .5rem; font: .65rem var(--mono); letter-spacing: .08em;
                                text-transform: uppercase; color: var(--muted); }
     .floorplan .inspector p { margin: 0 0 .4rem; overflow-wrap: anywhere; }
+    /* A marker's icon, chosen from a grid; the first is the one its kind gets. */
+    .floorplan .glyphs { display: grid; grid-template-columns: repeat(6, 1fr); gap: .2rem;
+                         margin: 0 0 .4rem; max-height: 9.5rem; overflow-y: auto;
+                         overscroll-behavior: contain; padding-right: .15rem; }
+    .floorplan .glyphs-label { display: block; margin-top: .6rem; font: .65rem var(--mono);
+                               letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .floorplan .glyphs-search { width: 100%; margin: .3rem 0 .35rem; font-size: .8rem; }
+    .floorplan .glyphs button.hidden { display: none; }
+    .floorplan .glyphs button { display: grid; place-items: center; aspect-ratio: 1; padding: 0;
+                                color: var(--fg); background: transparent;
+                                border: 1px solid transparent; border-radius: .3rem; cursor: pointer; }
+    .floorplan .glyphs button:hover { background: var(--sunk); }
+    .floorplan .glyphs button.chosen { border-color: var(--ember); color: var(--ember); }
+    .floorplan .glyphs .icon { width: 1.1rem; height: 1.1rem; }
     .floorplan .measure-row { display: flex; justify-content: space-between; gap: .5rem;
                               font-size: .85rem; color: var(--muted); }
     .floorplan .figure { font: .8rem var(--mono); font-variant-numeric: tabular-nums;
@@ -2270,9 +2369,9 @@
     .floorplan .marker.switchable:active, .floorplan .marker.movable:active { scale: .96; }
     .floorplan .marker .glyph { transition: color var(--dur-base) var(--ease-out),
                                             opacity var(--dur-base) var(--ease-out); }
-    .floorplan .marker .reading { transition: max-width 420ms var(--ease-out),
-                                              padding 420ms var(--ease-out),
-                                              opacity var(--dur-fast) var(--ease-out); }
+    .floorplan .marker .reading { transition: grid-template-columns 380ms var(--ease-emphasized),
+                                              padding 380ms var(--ease-emphasized),
+                                              opacity 240ms var(--ease-out); }
     .floorplan .marker-name { transition: opacity var(--dur-fast) var(--ease-out),
                                           visibility var(--dur-fast); }
     .floorplan .marker .facing { transition: rotate var(--dur-layout) var(--ease-out); }
@@ -2308,6 +2407,14 @@
     .floorplan .marker.rings.flash-b .glyph .icon { animation: marker-ring-b 600ms ease-in-out; }
     @keyframes marker-ring-a { 20% { rotate: 18deg; } 45% { rotate: -14deg; } 70% { rotate: 8deg; } }
     @keyframes marker-ring-b { 20% { rotate: 18deg; } 45% { rotate: -14deg; } 70% { rotate: 8deg; } }
+    /* A vibration sensor feeling something shakes on the spot for as long as it does. */
+    .floorplan .marker.shake .glyph .icon { animation: marker-shake 360ms linear infinite; }
+    @keyframes marker-shake { 0%, 100% { translate: 0 0; rotate: 0deg; }
+                              25% { translate: -1.5px 0; rotate: -4deg; }
+                              75% { translate: 1.5px 0; rotate: 4deg; } }
+    /* A doorbell ringing swings its bell (or its push) for longer than a button's flash. */
+    .floorplan .marker.rings.flash-a .glyph .icon,
+    .floorplan .marker.rings.flash-b .glyph .icon { animation-iteration-count: 3; }
 
     /* The plan, alive (floorplan/ambience.rs): a lit light's pool of sand-coloured light, as
        bright as the light and stopped by its room's walls, fading as the light changes; a motion
@@ -2387,6 +2494,16 @@
         transition: opacity var(--dur-layout) var(--ease-out), stroke-opacity var(--dur-base),
                     stroke var(--dur-fast) var(--ease-out); }
     .floorplan .opening { transition: opacity var(--dur-base) var(--ease-out); }
+    /* An overhead door: down, a slab across the gap; up, its sections slide out of the wall one
+       after another and lie under the ceiling on the side it opens to. Each section is drawn
+       where it lies when up and pulled back into the wall by `--lift` while it is down. */
+    .floorplan .overhead-section { fill: var(--tone-opening); opacity: 0; transform-box: view-box;
+                                   transform: var(--lift);
+                                   transition: transform calc(var(--dur-expressive) * 2.2) var(--ease-out),
+                                               opacity var(--dur-layout) var(--ease-out); }
+    .floorplan .opening.open .overhead-section { opacity: .55; transform: none; }
+    .floorplan .opening.open .overhead-slab { opacity: 0; }
+    .floorplan .opening.previewing .overhead-section { fill: var(--ember); opacity: .35; }
 
     /* On a phone the tools take the width rather than a column down the side of a small canvas. */
     @media (max-width: 720px) {

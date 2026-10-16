@@ -19,7 +19,7 @@ const BULB: &str = concat!(
 );
 const TOGGLE: &str =
     r#"<rect x="3" y="7" width="18" height="10" rx="5"/><circle cx="16" cy="12" r="2.5"/>"#;
-const OUTLET: &str =
+pub const OUTLET: &str =
     r#"<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M9.5 10v3M14.5 10v3"/>"#;
 const GAUGE: &str = concat!(
     r#"<path d="M4.6 17a8.5 8.5 0 1 1 14.8 0"/><path d="M12 14l3.5-4.5"/>"#,
@@ -27,18 +27,18 @@ const GAUGE: &str = concat!(
 );
 const THERMOMETER: &str =
     r#"<path d="M14 14.8V5a2 2 0 0 0-4 0v9.8a4 4 0 1 0 4 0Z"/><path d="M12 9v8"/>"#;
-const DROPLET: &str =
+pub const DROPLET: &str =
     r#"<path d="M12 3.5c3 3.6 5.5 6.6 5.5 10a5.5 5.5 0 0 1-11 0c0-3.4 2.5-6.4 5.5-10Z"/>"#;
-const SUN: &str = concat!(
+pub const SUN: &str = concat!(
     r#"<circle cx="12" cy="12" r="3.5"/>"#,
     r#"<path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8"#,
     r#"M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>"#,
 );
-const BATTERY: &str = concat!(
+pub const BATTERY: &str = concat!(
     r#"<rect x="3" y="8" width="16" height="8" rx="1.5"/>"#,
     r#"<path d="M21.5 11v2M6.5 11v2M9.5 11v2"/>"#,
 );
-const BOLT: &str = r#"<path d="M13 3 5 13.5h6L10 21l8-10.5h-6Z"/>"#;
+pub const BOLT: &str = r#"<path d="M13 3 5 13.5h6L10 21l8-10.5h-6Z"/>"#;
 const CLOUD: &str =
     r#"<path d="M7 18.5a4 4 0 0 1-.6-7.96 5.5 5.5 0 0 1 10.7 1.2A3.4 3.4 0 0 1 16.5 18.5Z"/>"#;
 const SIGNAL: &str = concat!(
@@ -51,15 +51,15 @@ const WAVES: &str = concat!(
     r#"<path d="M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7"/>"#,
     r#"<path d="M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"/>"#,
 );
-const DOOR: &str = concat!(
+pub const DOOR: &str = concat!(
     r#"<path d="M6 21V4.5A1.5 1.5 0 0 1 7.5 3h9A1.5 1.5 0 0 1 18 4.5V21M3.5 21h17"/>"#,
     r#"<path d="M14.5 12.5h.01"/>"#,
 );
-const GARAGE: &str = concat!(
+pub const GARAGE: &str = concat!(
     r#"<path d="M3 21V9.5L12 4l9 5.5V21"/>"#,
     r#"<path d="M7 21v-8h10v8M7 15.7h10M7 18.3h10"/>"#,
 );
-const WINDOW: &str =
+pub const WINDOW: &str =
     r#"<rect x="4" y="3.5" width="16" height="17" rx="1.5"/><path d="M12 3.5v17M4 12h16"/>"#;
 const ALERT: &str = r#"<path d="M12 4 2.8 19.5h18.4Z"/><path d="M12 10v4.5M12 17.2h.01"/>"#;
 const DOT: &str = concat!(
@@ -74,7 +74,7 @@ const LIST: &str = r#"<path d="M8.5 7h11M8.5 12h11M8.5 17h11M4.5 7h.01M4.5 12h.0
 const LETTERS: &str = r#"<path d="M5 7V5h14v2M12 5v14M9.5 19h5"/>"#;
 const PRESS: &str = r#"<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.5"/>"#;
 const BELL: &str = r#"<path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15Z"/><path d="M10.5 21h3"/>"#;
-const BLIND: &str = r#"<path d="M4 4h16M6 4v13h12V4M6 8.5h12M6 13h12M12 17v3"/>"#;
+pub const BLIND: &str = r#"<path d="M4 4h16M6 4v13h12V4M6 8.5h12M6 13h12M12 17v3"/>"#;
 const PADLOCK: &str = concat!(
     r#"<rect x="5" y="11" width="14" height="9.5" rx="1.5"/>"#,
     r#"<path d="M8 11V8a4 4 0 0 1 8 0v3"/>"#,
@@ -83,15 +83,15 @@ const PADLOCK: &str = concat!(
 const CALENDAR: &str = r#"<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>"#;
 /// A robot vacuum from above: its body, its bumper and its lid.
 const CAMERA: &str = r#"<path d="M3.5 7.500h11a1.500 1.500 0 0 1 1.500 1.500v6a1.500 1.500 0 0 1-1.500 1.500h-11A1.500 1.500 0 0 1 2 15V9a1.500 1.500 0 0 1 1.500-1.500Z"/><path d="m16 11 5-3v8l-5-3"/><circle cx="9" cy="12" r="2.200"/>"#;
-const ROBOT: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M5.5 8.500a8.500 8.500 0 0 1 13 0"/><circle cx="12" cy="12.5" r="2.5"/>"#;
+pub const ROBOT: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M5.5 8.500a8.500 8.500 0 0 1 13 0"/><circle cx="12" cy="12.5" r="2.5"/>"#;
 /// A mower from the side: its deck, its wheels, and grass ahead of it.
-const MOWER: &str = r#"<path d="M4 15.5V12a3 3 0 0 1 3-3h6l4 6.5Z"/><circle cx="7" cy="17" r="2"/><circle cx="15" cy="17" r="2"/><path d="M20 17v-3M21.5 17v-2"/>"#;
+pub const MOWER: &str = r#"<path d="M4 15.5V12a3 3 0 0 1 3-3h6l4 6.5Z"/><circle cx="7" cy="17" r="2"/><circle cx="15" cy="17" r="2"/><path d="M20 17v-3M21.5 17v-2"/>"#;
 /// Three overlapping lights: a scene.
 const PALETTE: &str = r#"<circle cx="9" cy="9.5" r="4.5"/><circle cx="15" cy="9.5" r="4.5"/><circle cx="12" cy="14.5" r="4.5"/>"#;
 /// A map pin: something whose place is known.
 const PIN: &str = r#"<path d="M12 21c4-4.300 6-7.500 6-10.500a6 6 0 0 0-12 0C6 13.5 8 16.700 12 21Z"/><circle cx="12" cy="10.5" r="2.2"/>"#;
 /// A shield: an alarm panel.
-const SHIELD: &str = r#"<path d="M12 3.5l7 2.5v5.5c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.5 12l1.800 1.800 3.200-3.600"/>"#;
+pub const SHIELD: &str = r#"<path d="M12 3.5l7 2.5v5.5c0 4.300-2.900 7.500-7 9-4.100-1.500-7-4.700-7-9V6Z"/><path d="M9.5 12l1.800 1.800 3.200-3.600"/>"#;
 const FAN: &str = concat!(
     r#"<path d="M12 12h.01"/>"#,
     r#"<path d="M12 10.5C11 7.5 12 4 14.5 3.5c2 .9 1.5 4.5-1 7.200"/>"#,
@@ -99,13 +99,13 @@ const FAN: &str = concat!(
     r#"<path d="M12 13.5c1 3 0 6.500-2.500 7-2-.9-1.500-4.500 1-7.200"/>"#,
     r#"<path d="M10.500 12c-3 1-6.500 0-7-2.500.9-2 4.500-1.500 7.200 1"/>"#,
 );
-const VALVE: &str = r#"<path d="M3 14h5l1.5-2h5l1.5 2h5v5H3Z"/><path d="M12 12V7M8.5 7h7"/>"#;
-const SIREN: &str = concat!(
+pub const VALVE: &str = r#"<path d="M3 14h5l1.5-2h5l1.5 2h5v5H3Z"/><path d="M12 12V7M8.5 7h7"/>"#;
+pub const SIREN: &str = concat!(
     r#"<path d="M7 18v-5a5 5 0 0 1 10 0v5M4.5 18h15v2.5h-15Z"/>"#,
     r#"<path d="M12 3v2M4.5 6.500 6 8M19.500 6.500 18 8"/>"#,
 );
 const DIAL: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M12 12l3-4M8.500 16.500h7"/>"#;
-const TANK: &str = concat!(
+pub const TANK: &str = concat!(
     r#"<rect x="6" y="3" width="12" height="16" rx="3"/><path d="M9 21.500V19M15 21.500V19"/>"#,
     r#"<path d="M12 8c1.200 1.500 2 2.500 2 3.700a2 2 0 0 1-4 0c0-1.200.8-2.200 2-3.700Z"/>"#,
 );

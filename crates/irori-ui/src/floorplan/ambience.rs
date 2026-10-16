@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 
 use irori_types::{
-    Availability, Capabilities, DeviceId, EntityId, EntityState, Level, Opening, OpeningKind,
+    Availability, Capabilities, EntityId, EntityState, Level, Marked, Opening, OpeningKind,
     PlacedArea, Point, State, Wall,
 };
 use leptos::prelude::*;
@@ -36,11 +36,9 @@ const MOUNTED: f64 = 5.0;
 
 /// How brightly a device lights its room, 0 to 1 — nothing if it isn't a light at all. Off is 0;
 /// on at no stated level is full.
-pub fn light_level(home: &Home, device: &DeviceId) -> Option<f64> {
-    let light = home
-        .entities
-        .iter()
-        .filter(|entity| entity.device_id.as_ref() == Some(device))
+pub fn light_level(home: &Home, marked: &Marked) -> Option<f64> {
+    let light = super::speaks_for(home, marked)
+        .into_iter()
         .find(|entity| matches!(entity.capabilities, Capabilities::Light(_)))?;
     let state = home
         .states
@@ -94,8 +92,9 @@ fn outline(room: &PlacedArea) -> String {
 /// field of view, each stopped by the face of the first wall in its way or by `range`.
 ///
 /// `facing` and `view` are in degrees, clockwise from the plan's +x axis as the plan is drawn
-/// (y runs down the page). A **door is a hole** — the sensor sees through it into the next room
-/// — and a window is wall: glass stops a radar well enough, and nobody is tracked through one.
+/// (y runs down the page). A **door that is open is a hole** — the sensor sees through it into
+/// the next room — and a shut door and a window are wall: glass stops a radar well enough, and
+/// nobody is tracked through one.
 ///
 /// A sensor is usually screwed to a wall, which on the plan means standing *on* the line of
 /// one. That wall mustn't blind it, so for a wall it is mounted on the sensor is taken to sit on
@@ -105,7 +104,7 @@ pub fn sight(
     facing: f64,
     view: f64,
     walls: &[Wall],
-    shut: &BTreeSet<EntityId>,
+    open: &BTreeSet<EntityId>,
     range: f64,
 ) -> Vec<(f64, f64)> {
     struct Piece {
@@ -137,7 +136,7 @@ pub fn sight(
         } else {
             eye
         };
-        for (start, end) in super::runs(wall, |opening| seen_through(opening, shut)) {
+        for (start, end) in super::runs(wall, |opening| seen_through(opening, open)) {
             let (a, _, _) = super::along(wall, start);
             let (b, _, _) = super::along(wall, end);
             pieces.push(Piece {
@@ -183,19 +182,34 @@ pub fn sight(
         .collect()
 }
 
-/// Whether a sensor sees through an opening: a door, unless its own sensor says it's shut. A
-/// door nothing is known about is taken to be open — better a field that reaches into a room
-/// it can't quite see than one that stops at a door standing wide.
-pub fn seen_through(opening: &Opening, shut: &BTreeSet<EntityId>) -> bool {
+/// Whether a sensor sees through an opening: a door whose own sensor says it's open. A door
+/// nothing is known about is drawn shut, so it is shut to a radar too — a field that ran
+/// through a door the plan shows closed would be the plan disagreeing with itself.
+pub fn seen_through(opening: &Opening, open: &BTreeSet<EntityId>) -> bool {
     opening.kind == OpeningKind::Door
-        && !opening
+        && opening
             .sensor
             .as_ref()
-            .is_some_and(|sensor| shut.contains(sensor))
+            .is_some_and(|sensor| open.contains(sensor))
 }
 
-/// The contact sensors of this floor's doors that say their door is shut.
-pub fn shut_doors(level: &Level, states: &[EntityState]) -> BTreeSet<EntityId> {
+/// Whether what an opening follows says it is open: a contact sensor that is on, or a cover —
+/// a garage door's opener — that isn't closed. One on its way up or down counts as open: the
+/// gap is there, and so is a way through. `None` when it isn't saying: never reported,
+/// not answering, or not a thing that can say.
+pub fn says_open(state: &EntityState) -> Option<bool> {
+    if state.availability == Availability::Unavailable {
+        return None;
+    }
+    match &state.state {
+        Some(State::BinarySensor(contact)) => Some(contact.on),
+        Some(State::Cover(cover)) => Some(cover.state != irori_types::OpenState::Closed),
+        _ => None,
+    }
+}
+
+/// The contact sensors of this floor's doors that say their door is open.
+pub fn open_doors(level: &Level, states: &[EntityState]) -> BTreeSet<EntityId> {
     level
         .walls
         .iter()
@@ -203,11 +217,9 @@ pub fn shut_doors(level: &Level, states: &[EntityState]) -> BTreeSet<EntityId> {
         .filter(|opening| opening.kind == OpeningKind::Door)
         .filter_map(|opening| opening.sensor.as_ref())
         .filter(|sensor| {
-            states.iter().any(|state| {
-                &state.entity_id == *sensor
-                    && state.availability != Availability::Unavailable
-                    && matches!(&state.state, Some(State::BinarySensor(contact)) if !contact.on)
-            })
+            states
+                .iter()
+                .any(|state| &state.entity_id == *sensor && says_open(state) == Some(true))
         })
         .cloned()
         .collect()
@@ -216,7 +228,7 @@ pub fn shut_doors(level: &Level, states: &[EntityState]) -> BTreeSet<EntityId> {
 /// The field each placed device sees, as the path of its outline — `None` for a device nobody
 /// has aimed. Only the plan decides it, so it is worked out when the plan changes and not with
 /// every reading.
-pub fn sightlines(level: &Level, shut: &BTreeSet<EntityId>) -> Vec<Option<String>> {
+pub fn sightlines(level: &Level, open: &BTreeSet<EntityId>) -> Vec<Option<String>> {
     level
         .devices
         .iter()
@@ -227,7 +239,7 @@ pub fn sightlines(level: &Level, shut: &BTreeSet<EntityId>) -> Vec<Option<String
                 f64::from(facing),
                 f64::from(placed.view_angle()),
                 &level.walls,
-                shut,
+                open,
                 MMWAVE_RANGE,
             );
             let mut path = format!("M {} {}", placed.at.x, placed.at.y);
@@ -258,7 +270,7 @@ pub fn fields(
         .enumerate()
         .filter_map(|(index, placed)| {
             let outline = sightlines.get(index)?.clone()?;
-            let look = super::looks(home, &placed.device);
+            let look = super::looks(home, &placed.marked()?);
             if !look.radar {
                 return None;
             }
@@ -327,7 +339,12 @@ pub fn ambience(
         .devices
         .iter()
         .filter_map(|placed| {
-            let lit = light_level(home, &placed.device)?;
+            let marked = placed.marked()?;
+            let lit = light_level(home, &marked).or_else(|| {
+                // A switch drawn as a light lights its room as one.
+                let look = super::look::shown_as(super::looks(home, &marked), placed.icon);
+                (look.tone == super::look::Tone::Light).then_some(if look.lit { 1.0 } else { 0.0 })
+            })?;
             // Never quite nothing while on — a light at 1% still lights something.
             let strength = if lit > 0.0 { 0.25 + 0.75 * lit } else { 0.0 };
             Some(view! {
@@ -348,7 +365,10 @@ pub fn ambience(
         .devices
         .iter()
         .filter(|placed| {
-            let look = super::looks(home, &placed.device);
+            let Some(marked) = placed.marked() else {
+                return false;
+            };
+            let look = super::looks(home, &marked);
             look.pulse || (look.radar && look.sensing && placed.facing.is_none())
         })
         .map(|placed| {
@@ -450,22 +470,20 @@ mod tests {
         );
     }
 
-    /// A door is a hole a radar sees through; a window is wall.
+    /// An open door is a hole a radar sees through; a window is wall whatever it says.
     #[test]
-    fn a_door_lets_a_sensor_see_into_the_next_room() {
+    fn an_open_door_lets_a_sensor_see_into_the_next_room() {
+        let contact: EntityId = "binary_sensor.kitchen_door"
+            .parse()
+            .expect("a valid entity id");
+        let open: BTreeSet<EntityId> = [contact.clone()].into();
         let cut = |kind| {
             let mut walls = room();
-            walls[1]
-                .openings
-                .push(irori_types::Opening::new(kind, 150, 80));
-            sight(
-                p(200, 150),
-                0.0,
-                60.0,
-                &walls,
-                &BTreeSet::new(),
-                MMWAVE_RANGE,
-            )
+            walls[1].openings.push(Opening {
+                sensor: Some(contact.clone()),
+                ..Opening::new(kind, 150, 80)
+            });
+            sight(p(200, 150), 0.0, 60.0, &walls, &open, MMWAVE_RANGE)
         };
         let through = cut(OpeningKind::Door);
         let straight = through[RAYS / 2];
@@ -535,10 +553,10 @@ mod tests {
         );
     }
 
-    /// A door whose sensor says it's shut is wall to a radar; open, or with nothing to say, it
-    /// is a hole.
+    /// A door whose sensor says it's shut is wall to a radar, and so is one with no sensor at
+    /// all, or one whose sensor hasn't said: the plan draws all three shut.
     #[test]
-    fn a_shut_door_stops_what_a_sensor_sees() {
+    fn a_door_drawn_shut_stops_what_a_sensor_sees() {
         let contact: EntityId = "binary_sensor.kitchen_door"
             .parse()
             .expect("a valid entity id");
@@ -547,11 +565,11 @@ mod tests {
             sensor: Some(contact.clone()),
             ..Opening::new(OpeningKind::Door, 150, 80)
         });
-        let shut: BTreeSet<EntityId> = [contact].into();
-        let open = BTreeSet::new();
+        let open: BTreeSet<EntityId> = [contact].into();
+        let shut = BTreeSet::new();
 
-        let holes = |shut: &BTreeSet<EntityId>| {
-            super::super::runs(&walls[1], |opening| seen_through(opening, shut))
+        let holes = |open: &BTreeSet<EntityId>| {
+            super::super::runs(&walls[1], |opening| seen_through(opening, open))
         };
         assert_eq!(holes(&open), vec![(0.0, 110.0), (190.0, 300.0)], "a hole");
         assert_eq!(holes(&shut), vec![(0.0, 300.0)], "wall from end to end");
@@ -560,6 +578,92 @@ mod tests {
         assert!(through[RAYS / 2].0 > 600.0);
         let stopped = sight(p(200, 150), 0.0, 60.0, &walls, &shut, MMWAVE_RANGE);
         assert!(stopped.iter().all(|(x, _)| *x <= 395.0 + 1e-6));
+
+        let mut bare = room();
+        bare[1]
+            .openings
+            .push(Opening::new(OpeningKind::Door, 150, 80));
+        let blind = sight(p(200, 150), 0.0, 60.0, &bare, &open, MMWAVE_RANGE);
+        assert!(
+            blind.iter().all(|(x, _)| *x <= 395.0 + 1e-6),
+            "a door with no sensor is drawn shut, and is shut to a radar"
+        );
+    }
+
+    /// A garage door's opener says it's open unless it says closed; mid-way is open.
+    #[test]
+    fn an_opener_is_open_unless_it_is_closed() {
+        let opener: EntityId = "cover.garage_door".parse().expect("a valid entity id");
+        let at: irori_types::Timestamp = "2026-10-08T12:00:00Z".parse().expect("a timestamp");
+        let says = |state: irori_types::OpenState, availability: Availability| EntityState {
+            entity_id: opener.clone(),
+            state: Some(State::Cover(irori_types::CoverState {
+                state,
+                position: None,
+                tilt: None,
+            })),
+            availability,
+            attributes: Default::default(),
+            last_changed: at,
+            last_updated: at,
+            last_reported: at,
+            context: irori_types::Context {
+                id: "01K5B2Q9A1B2C3D4E5F6G7H8J9"
+                    .parse()
+                    .expect("a valid context id"),
+                parent_id: None,
+                origin: irori_types::Origin::System,
+            },
+        };
+        use irori_types::OpenState::{Closed, Closing, Open, Opening as Rising};
+        for (state, open) in [
+            (Open, true),
+            (Rising, true),
+            (Closing, true),
+            (Closed, false),
+        ] {
+            assert_eq!(says_open(&says(state, Availability::Available)), Some(open));
+        }
+        assert_eq!(says_open(&says(Open, Availability::Unavailable)), None);
+    }
+
+    /// Which doors are open comes from their contact sensors: on is open, and a sensor that
+    /// isn't answering says nothing.
+    #[test]
+    fn a_door_is_open_when_its_sensor_says_so() {
+        let contact: EntityId = "binary_sensor.kitchen_door"
+            .parse()
+            .expect("a valid entity id");
+        let mut walls = room();
+        walls[1].openings.push(Opening {
+            sensor: Some(contact.clone()),
+            ..Opening::new(OpeningKind::Door, 150, 80)
+        });
+        let level = Level {
+            walls,
+            ..Level::default()
+        };
+        let at: irori_types::Timestamp = "2026-10-08T12:00:00Z".parse().expect("a timestamp");
+        let says = |on: bool, availability: Availability| EntityState {
+            entity_id: contact.clone(),
+            state: Some(State::BinarySensor(irori_types::BinarySensorState { on })),
+            availability,
+            attributes: Default::default(),
+            last_changed: at,
+            last_updated: at,
+            last_reported: at,
+            context: irori_types::Context {
+                id: "01K5B2Q9A1B2C3D4E5F6G7H8J9"
+                    .parse()
+                    .expect("a valid context id"),
+                parent_id: None,
+                origin: irori_types::Origin::System,
+            },
+        };
+        assert!(open_doors(&level, &[says(true, Availability::Available)]).contains(&contact));
+        assert!(open_doors(&level, &[says(false, Availability::Available)]).is_empty());
+        assert!(open_doors(&level, &[says(true, Availability::Unavailable)]).is_empty());
+        assert!(open_doors(&level, &[]).is_empty());
     }
 
     #[test]
