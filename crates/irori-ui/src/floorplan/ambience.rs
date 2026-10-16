@@ -326,7 +326,12 @@ pub fn ambience(
         .devices
         .iter()
         .filter_map(|placed| {
-            let lit = light_level(home, &placed.marked()?)?;
+            let marked = placed.marked()?;
+            let lit = light_level(home, &marked).or_else(|| {
+                // A switch drawn as a light lights its room as one.
+                let look = super::look::shown_as(super::looks(home, &marked), placed.icon);
+                (look.tone == super::look::Tone::Light).then_some(if look.lit { 1.0 } else { 0.0 })
+            })?;
             // Never quite nothing while on — a light at 1% still lights something.
             let strength = if lit > 0.0 { 0.25 + 0.75 * lit } else { 0.0 };
             Some(view! {

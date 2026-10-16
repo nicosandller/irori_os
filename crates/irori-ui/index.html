@@ -1883,7 +1883,7 @@
     .floorplan.editing .marker.copy { border-style: dotted; }
 
     /* Held, or right-clicked: everything the device can do, beside its marker. */
-    .floorplan .more { position: absolute; z-index: 4; translate: -50% 1.6rem;
+    .floorplan .more { position: absolute; z-index: 4; pointer-events: auto; translate: -50% 1.6rem;
                        width: min(22rem, calc(100vw - 2rem)); max-height: 60vh; overflow-y: auto;
                        padding: .6rem .75rem .75rem; background: var(--card);
                        border: 1px solid var(--line); border-radius: .6rem;
@@ -1903,7 +1903,7 @@
     .floorplan .more-page { display: inline-block; margin-top: .5rem; font-size: .8rem; }
 
     /* A doorbell that has just rung: who's there, in a small window above it. */
-    .floorplan .peek { position: absolute; z-index: 3; translate: -50% calc(-100% - 1.8rem);
+    .floorplan .peek { position: absolute; z-index: 3; pointer-events: auto; translate: -50% calc(-100% - 1.8rem);
                        animation: peek-in var(--dur-layout) var(--ease-spring); }
     @keyframes peek-in { from { opacity: 0; scale: .85; } }
     .floorplan .peek-picture { display: grid; padding: 0; width: 12rem; overflow: hidden;

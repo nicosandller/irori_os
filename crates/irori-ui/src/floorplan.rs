@@ -1332,6 +1332,19 @@ pub fn Floorplan() -> impl IntoView {
     // A press being timed to see whether it is a hold, and whether the press that just ended
     // was one — in which case the click it ends with mustn't also switch the device.
     let hold = Hold::default();
+    // Escape puts away the picture first, then whatever a marker opened, wherever the keyboard
+    // happens to be.
+    let escape = window_event_listener(ev::keydown, move |event: ev::KeyboardEvent| {
+        if event.key() != "Escape" {
+            return;
+        }
+        if feed.get_untracked().is_some() {
+            feed.set(None);
+        } else if held.get_untracked().is_some() {
+            held.set(None);
+        }
+    });
+    on_cleanup(move || escape.remove());
     // What a marker opened belongs to the floor it is on, and to reading the plan.
     Effect::new(move |_| {
         floor.track();
@@ -3718,7 +3731,7 @@ fn marker(
     reach: Reach,
 ) -> impl IntoView + use<> {
     let (x, y) = view.screen(placed.at);
-    let look = looks(home, marked);
+    let look = look::shown_as(looks(home, marked), placed.icon);
     let (on, offline) = (look.on, look.offline);
     // What a click does, if anything. A marker is a control only while reading the plan, and
     // only for a device that is answering: one that isn't must not look like one that is. In

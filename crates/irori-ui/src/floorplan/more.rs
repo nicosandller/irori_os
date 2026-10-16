@@ -57,6 +57,7 @@ pub(super) fn More(
         .collect_view();
     let (x, y) = at;
     let said = format!("{name}: everything it can do");
+    let close = focused();
     view! {
         <div
             class="more"
@@ -78,7 +79,7 @@ pub(super) fn More(
                     type="button"
                     class="icon-button"
                     aria-label="Close"
-                    autofocus
+                    node_ref=close
                     on:click=move |_| on_close.run(())
                 >
                     {icon(Icon::Close)}
@@ -147,6 +148,18 @@ fn Row(entity: Entity, controls: Controls, on_watch: Callback<EntityId>) -> impl
     }
 }
 
+/// A close button that takes the keyboard as soon as it is drawn, so Escape and the zoom keys
+/// reach the window it closes. `autofocus` only works for what is there when the page loads.
+fn focused() -> NodeRef<leptos::html::Button> {
+    let close = NodeRef::<leptos::html::Button>::new();
+    Effect::new(move |_| {
+        if let Some(button) = close.get() {
+            let _ = button.focus();
+        }
+    });
+    close
+}
+
 /// A new picture as soon as the last one has arrived, no faster than `every`, for as long as
 /// `open` holds and the page is in view. The returned signal is the address of the next one.
 fn pictures(camera: EntityId, every: u64, open: Signal<bool>) -> (Signal<String>, Callback<()>) {
@@ -190,6 +203,7 @@ pub(super) fn Feed(
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
     let (src, next) = pictures(camera, FEED_MS, Signal::stored(true));
+    let close = focused();
     let failed = RwSignal::new(false);
     let zoom = RwSignal::new(1.0_f64);
     // How far the picture has been moved, in its own pixels at zoom 1.
@@ -240,7 +254,7 @@ pub(super) fn Feed(
                         type="button"
                         class="icon-button"
                         aria-label="Close"
-                        autofocus
+                        node_ref=close
                         on:click=move |_| on_close.run(())
                     >
                         {icon(Icon::Close)}

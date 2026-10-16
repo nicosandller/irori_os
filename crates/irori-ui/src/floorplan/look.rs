@@ -11,6 +11,8 @@ use irori_types::{
     SensorValue, State,
 };
 
+use irori_types::Glyph;
+
 use crate::icons::Icon;
 
 /// The kind of thing a device is, as a colour. One pastel each, so a plan full of round markers
@@ -595,6 +597,21 @@ pub fn look_for(entities: &[&Entity], states: &[EntityState]) -> Look {
     Look::plain(Icon::Dot, Tone::Other)
 }
 
+/// A marker given a light's glyph is drawn as a light when what it switches is a switch: the
+/// relay behind a row of ceiling lights, drawn over each of them, lights up with them.
+pub fn shown_as(mut look: Look, glyph: Option<Glyph>) -> Look {
+    let light = matches!(
+        glyph,
+        Some(Glyph::Bulb | Glyph::Lamp | Glyph::CeilingLight | Glyph::LightStrip)
+    );
+    if light && look.switch.is_some() && look.tone == Tone::Power {
+        look.tone = Tone::Light;
+        look.lit = look.on == Some(true);
+        look.reading = None;
+    }
+    look
+}
+
 /// The CO₂ level, in parts per million, at which a room wants a window opened.
 const STUFFY: f64 = 1000.0;
 
@@ -929,6 +946,18 @@ mod tests {
         assert_eq!(look.tone, Tone::Input);
         assert!(look.reading.is_none() && look.press.is_none());
         assert_eq!(look.event, Some(bell.id.clone()));
+    }
+
+    /// A switch drawn as a ceiling light lights up when it's on; drawn as a plug, it stays one.
+    #[test]
+    fn a_switch_drawn_as_a_light_is_lit_when_on() {
+        let on = look_for(&[&plug()], &[switched(true)]);
+        let lamp = shown_as(on.clone(), Some(Glyph::CeilingLight));
+        assert_eq!(lamp.tone, Tone::Light);
+        assert!(lamp.lit && lamp.reading.is_none());
+        assert_eq!(shown_as(on.clone(), Some(Glyph::Fan)), on);
+        let off = shown_as(look_for(&[&plug()], &[switched(false)]), Some(Glyph::Bulb));
+        assert!(!off.lit && off.tone == Tone::Light);
     }
 
     fn camera(id: &str) -> Entity {
