@@ -698,7 +698,11 @@ async fn save_floorplan(State(state): State<AppState>, Json(plan): Json<Floorpla
         .config
         .edit(&state.0.core, |settings| {
             plan.check().map_err(|why| Refused(why.to_string()))?;
-            settings.floorplan = plan.clone();
+            // A plan written by hand, or by the assistant, may keep only copies of a device;
+            // one of them is then where the device is, as the page would have made it.
+            let mut plan = plan.clone();
+            plan.keep_originals();
+            settings.floorplan = plan;
             Ok(place_devices(settings, &known))
         })
         .await;
@@ -3655,11 +3659,26 @@ mod tests {
             .push(serde_json::json!({
                 "device": "demo_living_room_lamp", "at": [600, 90], "copy": true,
             }));
-        let (status, body) = server.json("PUT", "/api/floorplan", copied).await?;
+        let (status, body) = server.json("PUT", "/api/floorplan", copied.clone()).await?;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["placed"], 0, "{body}");
         let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
         assert!(devices.contains("area = \"kitchen\""), "{devices}");
+
+        // A plan that keeps only the copy, written by hand, makes it the original: the lamp is
+        // then where the copy stands.
+        let mut only_copy = copied.clone();
+        only_copy["floors"]["ground"]["devices"]
+            .as_array_mut()
+            .expect("devices")
+            .retain(|placed| placed["device"] != "demo_living_room_lamp" || placed["copy"] == true);
+        let (status, body) = server.json("PUT", "/api/floorplan", only_copy).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["placed"], 1, "{body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(devices.contains("area = \"hall\""), "{devices}");
+        let saved = std::fs::read_to_string(server.config_dir().join("floorplan.toml"))?;
+        assert!(!saved.contains("copy"), "{saved}");
         server.json("PUT", "/api/floorplan", plan.clone()).await?;
 
         // A device deliberately in no room stays in none. That answer exists so a guess can't

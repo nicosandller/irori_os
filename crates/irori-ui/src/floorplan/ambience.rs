@@ -194,7 +194,8 @@ pub fn seen_through(opening: &Opening, open: &BTreeSet<EntityId>) -> bool {
 }
 
 /// Whether what an opening follows says it is open: a contact sensor that is on, or a cover —
-/// a garage door's opener — that isn't closed. `None` when it isn't saying: never reported,
+/// a garage door's opener — that isn't closed. One on its way up or down counts as open: the
+/// gap is there, and so is a way through. `None` when it isn't saying: never reported,
 /// not answering, or not a thing that can say.
 pub fn says_open(state: &EntityState) -> Option<bool> {
     if state.availability == Availability::Unavailable {

@@ -161,8 +161,9 @@ fn focused() -> NodeRef<leptos::html::Button> {
 }
 
 /// A new picture as soon as the last one has arrived, no faster than `every`, for as long as
-/// `open` holds and the page is in view. The returned signal is the address of the next one.
-fn pictures(camera: EntityId, every: u64, open: Signal<bool>) -> (Signal<String>, Callback<()>) {
+/// the window showing it is open and the page is in view. The returned signal is the address of
+/// the next one.
+fn pictures(camera: EntityId, every: u64) -> (Signal<String>, Callback<()>) {
     let frame = RwSignal::new(0u64);
     let alive = RwSignal::new(true);
     on_cleanup(move || alive.set(false));
@@ -178,7 +179,7 @@ fn pictures(camera: EntityId, every: u64, open: Signal<bool>) -> (Signal<String>
                 let hidden = web_sys::window()
                     .and_then(|window| window.document())
                     .is_some_and(|document| document.hidden());
-                if open.get_untracked() && !hidden {
+                if !hidden {
                     frame.update(|n| *n += 1);
                     return;
                 }
@@ -202,7 +203,7 @@ pub(super) fn Feed(
     name: String,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
-    let (src, next) = pictures(camera, FEED_MS, Signal::stored(true));
+    let (src, next) = pictures(camera, FEED_MS);
     let close = focused();
     let failed = RwSignal::new(false);
     let zoom = RwSignal::new(1.0_f64);
@@ -342,16 +343,19 @@ pub(super) fn Feed(
 pub(super) fn Peek(
     camera: EntityId,
     name: String,
-    at: (f64, f64),
+    /// Where its doorbell is on screen, which moves as the plan is panned and zoomed.
+    at: Signal<(f64, f64)>,
     #[prop(into)] on_open: Callback<()>,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
-    let (src, next) = pictures(camera, 1000, Signal::stored(true));
-    let (x, y) = at;
+    let (src, next) = pictures(camera, 1000);
     view! {
         <div
             class="peek"
-            style=format!("left:{x}px;top:{y}px")
+            style=move || {
+                let (x, y) = at.get();
+                format!("left:{x}px;top:{y}px")
+            }
             on:mousedown=|event: ev::MouseEvent| event.stop_propagation()
             on:click=|event: ev::MouseEvent| event.stop_propagation()
         >

@@ -1359,6 +1359,8 @@ pub fn Floorplan() -> impl IntoView {
     Effect::new(move |_| {
         floor.track();
         editing.track();
+        // It is found by its place in the floor's list, which a plan saved elsewhere can change.
+        level.track();
         held.set(None);
     });
     // When each event entity last said something happened. Only a *change* is a happening: the
@@ -2124,50 +2126,68 @@ pub fn Floorplan() -> impl IntoView {
                             .collect_view()
                     }}
                     // Who's at the door, beside each doorbell that has just rung. Only while
-                    // reading the plan, and only for one with a camera.
-                    {move || {
-                        if editing.get() {
-                            return None;
-                        }
-                        let rung = ringing.get();
-                        if rung.is_empty() {
-                            return None;
-                        }
-                        let home = live.home.get();
-                        let here = view.get();
-                        Some(
-                            level
-                                .get()
-                                .devices
-                                .iter()
-                                .filter(|placed| !placed.copy)
-                                .filter_map(|placed| {
-                                    let device = placed.device.clone()?;
-                                    if !rung.contains_key(&device) {
-                                        return None;
-                                    }
-                                    let marked = Marked::Device(device.clone());
-                                    let camera = looks(&home, &marked).camera?;
-                                    let name = name_of(&home, &marked)?;
-                                    let shown = name.clone();
-                                    let watched = camera.clone();
-                                    Some(view! {
-                                        <more::Peek
-                                            camera=camera
-                                            name=name
-                                            at=here.screen(placed.at)
-                                            on_open=move || {
-                                                feed.set(Some((watched.clone(), shown.clone())));
-                                            }
-                                            on_close=move || ringing.update(|ringing| {
-                                                ringing.remove(&device);
-                                            })
-                                        />
-                                    })
+                    // reading the plan, and only for one with a camera. Keyed by doorbell, so a
+                    // reading from anywhere else in the home — or panning the plan — moves the
+                    // window rather than drawing it afresh, which would start its picture over.
+                    {move || (!editing.get()).then(|| view! {
+                        <For
+                            each=move || {
+                                let rung = ringing.get();
+                                if rung.is_empty() {
+                                    return Vec::new();
+                                }
+                                level.with(|level| {
+                                    level
+                                        .devices
+                                        .iter()
+                                        .filter(|placed| !placed.copy && placed.entity.is_none())
+                                        .filter_map(|placed| placed.device.clone())
+                                        .filter(|device| rung.contains_key(device))
+                                        .collect::<Vec<_>>()
                                 })
-                                .collect_view(),
-                        )
-                    }}
+                            }
+                            key=|device| device.clone()
+                            children=move |device: DeviceId| {
+                                let marked = Marked::Device(device.clone());
+                                let (camera, name) = live.home.with_untracked(|home| {
+                                    (looks(home, &marked).camera, name_of(home, &marked))
+                                });
+                                let (Some(camera), Some(name)) = (camera, name) else {
+                                    return ().into_any();
+                                };
+                                let at = {
+                                    let device = device.clone();
+                                    Signal::derive(move || {
+                                        let spot = level.with(|level| {
+                                            level
+                                                .devices
+                                                .iter()
+                                                .find(|placed| {
+                                                    !placed.copy && placed.is_device(&device)
+                                                })
+                                                .map(|placed| placed.at)
+                                        });
+                                        spot.map_or((0.0, 0.0), |spot| view.get().screen(spot))
+                                    })
+                                };
+                                let (shown, watched) = (name.clone(), camera.clone());
+                                view! {
+                                    <more::Peek
+                                        camera=camera
+                                        name=name
+                                        at=at
+                                        on_open=move || {
+                                            feed.set(Some((watched.clone(), shown.clone())));
+                                        }
+                                        on_close=move || ringing.update(|ringing| {
+                                            ringing.remove(&device);
+                                        })
+                                    />
+                                }
+                                .into_any()
+                            }
+                        />
+                    })}
                     // Everything a held marker's device can do, beside it.
                     {move || {
                         let index = held.get()?;
@@ -3845,7 +3865,8 @@ fn marker(
         <button
             type="button"
             // Everything that is fixed for as long as this marker is drawn, in one attribute:
-            // a button takes at most 26 of them.
+            // a button takes at most 26 of them, and this one is close. Past that the page
+            // panics and draws no markers at all, so fold anything new into `classes`.
             class=classes
             data-tone=look.tone.as_str()
             // A press or a ring: the same flash under two names, so one straight after another
@@ -3915,7 +3936,10 @@ fn marker(
             }
             on:click=move |event: ev::MouseEvent| {
                 event.stop_propagation();
-                if editing || hold.swallow() {
+                // Only a pointer's click can end a hold: Enter or Space on a focused marker has
+                // no press before it, and is never swallowed by one that ended elsewhere.
+                let ended_hold = hold.swallow() && event.detail() > 0;
+                if editing || ended_hold {
                     return;
                 }
                 held.set(None);
