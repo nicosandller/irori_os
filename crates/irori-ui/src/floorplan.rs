@@ -3773,6 +3773,25 @@ fn marker(
     let (flashed, flashed_again) = (device.clone(), device);
     let Reach { held, feed, hold } = reach;
     let watched_as = name.clone();
+    let classes = [
+        ("marker", true),
+        ("on", look.active),
+        ("lit", look.lit),
+        ("open", open),
+        ("pulse", look.pulse),
+        ("shake", look.shake),
+        ("aimed", facing.is_some()),
+        ("rings", look.rings),
+        ("copy", placed.copy),
+        ("offline", offline),
+        ("chosen", chosen),
+        ("movable", editing),
+        ("switchable", !editing && live),
+    ]
+    .into_iter()
+    .filter_map(|(name, on)| on.then_some(name))
+    .collect::<Vec<_>>()
+    .join(" ");
     let open_more = move || {
         hold.stop();
         held.set(Some(index));
@@ -3781,17 +3800,10 @@ fn marker(
     view! {
         <button
             type="button"
-            class="marker"
+            // Everything that is fixed for as long as this marker is drawn, in one attribute:
+            // a button takes at most 26 of them.
+            class=classes
             data-tone=look.tone.as_str()
-            class:on=look.active
-            class:lit=look.lit
-            class:open=open
-            class:pulse=look.pulse
-            class:shake=look.shake
-            class:aimed=facing.is_some()
-            class:rings=look.rings
-            class:copy=placed.copy
-            class:offline=offline
             // A press or a ring: the same flash under two names, so one straight after another
             // starts it again.
             class:flash-a=move || flashes.with(|all| {
@@ -3803,9 +3815,6 @@ fn marker(
             // Held, it lifts off the plan; put down, it settles with a bounce.
             class:lifted=move || matches!(drag.get(), Some(Drag::Device { device }) if device == index)
             class:dropped=move || dropped.get() == Some(index)
-            class:chosen=chosen
-            class:movable=editing
-            class:switchable=!editing && live
             style=format!("left:{x}px;top:{y}px")
             title=tip
             aria-label=label
