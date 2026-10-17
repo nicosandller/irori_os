@@ -2,6 +2,7 @@
 
 mod args;
 mod automations;
+mod backup;
 mod connect;
 mod extensions;
 mod home;
@@ -37,6 +38,7 @@ pub fn execute(command: Command) -> anyhow::Result<()> {
             Ok(())
         }
         Cmd::Uninstall(args) => output::finish(false, uninstall::run(args)),
+        Cmd::Backup(args) => output::finish(args.json, backup::run(args)),
         Cmd::Completions { shell } => {
             let mut cmd = <Cli as clap::CommandFactory>::command();
             clap_complete::generate(shell, &mut cmd, "irori", &mut std::io::stdout());

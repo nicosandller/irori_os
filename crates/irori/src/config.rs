@@ -287,6 +287,13 @@ impl Config {
         Ok(made)
     }
 
+    /// `irori.toml`'s `[backup]`, as it stands.
+    pub async fn backup(&self) -> irori_config::BackupSection {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store.irori().backup
+    }
+
     /// How long entity history is kept, as `irori.toml`'s `[recorder]` stands.
     pub async fn recorder(&self) -> RecorderSection {
         let mut store = self.0.lock().await;

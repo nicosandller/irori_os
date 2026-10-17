@@ -236,6 +236,11 @@ retain_days = 10          # detailed history, in days; at least 1
 [updates]
 check = true              # look for a newer Irori without being asked
 
+[backup]
+enabled = false           # a scheduled backup; see docs/specs/backup.md
+every_hours = 24
+keep = 7
+
 ```
 
 A command-line flag, or its environment variable, wins over the file, and the file wins over the
@@ -248,6 +253,8 @@ it starts and twice a day, one request to GitHub that says nothing about the hom
 only thing Irori asks the internet without being told to. Left out, it is `true`. With `false`,
 the update on Irori's own device still looks when it is asked to (`update.check`). Read at
 startup.
+
+`[backup]` is scheduled backups (`docs/specs/backup.md` §3). Read at startup.
 
 `[recorder]` is how long entity history is kept. It applies while Irori runs: the History row
 in Settings writes it, and an edit of the file is picked up within a couple of seconds.

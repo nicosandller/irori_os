@@ -2,6 +2,7 @@
 
 #[cfg(feature = "assist")]
 mod assistant;
+mod backup;
 mod banner;
 mod build_info;
 mod cli;
@@ -155,6 +156,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
     let db = db::open(&data)?;
     let recorder_settings = store.irori().recorder.clone();
+    let backup_settings = store.irori().backup.clone();
     let _ = self_update::LOOKS.set(store.irori().updates.check);
     // Before anything can replace it: an update moves this file, and the restart after it
     // must run what took its place.
@@ -253,6 +255,13 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone(), history.clone()));
             tokio::spawn(settings.clone().forget_retired(core.clone()));
+            if backup_settings.enabled {
+                tokio::spawn(backup::schedule(
+                    backup_settings.clone(),
+                    config.clone(),
+                    data.clone(),
+                ));
+            }
             // The Ollama Irori installed for a local model, if there is one, comes up with the
             // server, and the model in use is loaded again. Nothing waits on it: the assistant
             // says "not ready" until it is.
