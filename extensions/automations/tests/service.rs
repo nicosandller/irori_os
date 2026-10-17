@@ -434,3 +434,168 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     );
     assert!(told["sun"]["sunset"].is_string(), "{told}");
 }
+
+/// A suggestion is checked and handed back to draw. The file stays as it was.
+#[tokio::test]
+async fn a_suggestion_is_checked_and_not_written() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    std::fs::create_dir_all(dir.path().join("flows")).expect("mkdir");
+    std::fs::write(
+        dir.path().join("flows/hallway_motion_light.json"),
+        include_str!("../../../fixtures/types/flow/valid/hallway.json"),
+    )
+    .expect("wrote the flow");
+
+    let (core_end, engine_end) = tokio::io::duplex(1 << 20);
+    let (calls_tx, _calls) = mpsc::unbounded_channel();
+    tokio::spawn(fake_core(core_end, calls_tx));
+    let (read, write) = tokio::io::split(engine_end);
+    let (_, client, _incoming) = irori_protocol::engine::connect(read, write)
+        .await
+        .expect("connects");
+    let store = Store::open(dir.path().join("flows"), dir.path().join("data"));
+    let (mut service, _answers) = Service::start(client, store).await.expect("starts");
+
+    let source = rpc::handle(
+        &mut service,
+        "flow.source",
+        serde_json::json!({ "id": "hallway_motion_light" }),
+    )
+    .await
+    .expect("the source");
+    let source = &source["flow"];
+    assert!(source.get("layout").is_none(), "{source}");
+    assert!(source.get("groups").is_none(), "{source}");
+    assert!(source.get("enabled").is_none(), "{source}");
+    assert!(source["nodes"]["motion"].is_object(), "{source}");
+
+    rpc::handle(
+        &mut service,
+        "flows.enable",
+        serde_json::json!({ "id": "hallway_motion_light", "enabled": false }),
+    )
+    .await
+    .expect("turned off");
+    let mut kept = rpc::handle(
+        &mut service,
+        "flows.get",
+        serde_json::json!({ "id": "hallway_motion_light" }),
+    )
+    .await
+    .expect("the saved flow");
+    kept["flow"]["groups"] = serde_json::json!({ "motion": "Night" });
+    rpc::handle(
+        &mut service,
+        "flows.save",
+        serde_json::json!({ "flow": kept["flow"] }),
+    )
+    .await
+    .expect("groups kept");
+
+    let mut suggested = source.clone();
+    suggested["nodes"]["on"]["data"]["brightness_pct"] = serde_json::json!(40);
+    suggested["nodes"]["pause"] = serde_json::json!({ "type": "delay", "for": "5s" });
+    suggested["enabled"] = serde_json::json!(true);
+    let proposed = rpc::handle(
+        &mut service,
+        "flows.propose",
+        serde_json::json!({ "id": "hallway_motion_light", "flow": suggested }),
+    )
+    .await
+    .expect("a suggestion");
+    assert_eq!(proposed["ok"], true, "{proposed}");
+    assert_eq!(
+        proposed["flow"]["enabled"], false,
+        "the switch stays as saved"
+    );
+    assert_eq!(proposed["flow"]["groups"]["motion"], "Night");
+    assert_eq!(
+        proposed["flow"]["layout"]["on"],
+        serde_json::json!([560.0, 0.0])
+    );
+    assert_eq!(
+        proposed["flow"]["layout"]["pause"],
+        serde_json::json!([1400.0, 0.0]),
+        "a new node sits to the right"
+    );
+    assert!(
+        proposed["problems"]
+            .as_array()
+            .is_some_and(|problems| problems.iter().any(|problem| {
+                problem["severity"] == "warning"
+                    && problem["message"]
+                        .as_str()
+                        .is_some_and(|message| message.contains("never runs"))
+            })),
+        "{proposed}"
+    );
+
+    let saved = rpc::handle(
+        &mut service,
+        "flows.get",
+        serde_json::json!({ "id": "hallway_motion_light" }),
+    )
+    .await
+    .expect("still the file");
+    assert_eq!(saved["flow"]["nodes"]["on"]["data"]["brightness_pct"], 60);
+    assert!(saved["flow"]["nodes"].get("pause").is_none(), "{saved}");
+
+    let mut omitted = source.clone();
+    omitted.as_object_mut().expect("an object").remove("id");
+    let filled = rpc::handle(
+        &mut service,
+        "flows.propose",
+        serde_json::json!({ "id": "hallway_motion_light", "flow": omitted }),
+    )
+    .await
+    .expect("the id filled in");
+    assert_eq!(filled["ok"], true, "{filled}");
+    assert_eq!(filled["flow"]["id"], "hallway_motion_light");
+
+    let mut other = source.clone();
+    other["id"] = serde_json::json!("other");
+    let refused = rpc::handle(
+        &mut service,
+        "flows.propose",
+        serde_json::json!({ "id": "hallway_motion_light", "flow": other }),
+    )
+    .await
+    .expect("refused");
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused["problems"][0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("keep that id")),
+        "{refused}"
+    );
+
+    let mut coded = source.clone();
+    coded["nodes"]["open"] = serde_json::json!({
+        "type": "call",
+        "service": "lock.unlock",
+        "entity": "lock.front_door",
+        "data": { "code": "1234" },
+    });
+    let refused = rpc::handle(
+        &mut service,
+        "flows.propose",
+        serde_json::json!({ "id": "hallway_motion_light", "flow": coded }),
+    )
+    .await
+    .expect("refused");
+    assert_eq!(refused["ok"], false, "{refused}");
+    assert!(
+        refused.to_string().contains("code"),
+        "a code is refused: {refused}"
+    );
+    assert!(refused.get("flow").is_none(), "{refused}");
+
+    let refused = rpc::handle(
+        &mut service,
+        "flows.propose",
+        serde_json::json!({ "id": "hallway_motion_light", "flow": { "name": "Nope" } }),
+    )
+    .await
+    .expect("refused");
+    assert_eq!(refused["ok"], false, "{refused}");
+}

@@ -101,6 +101,25 @@ fn Frame(id: String) -> impl IntoView {
         }
     };
 
+    // The Automations page draws a flow the assistant suggested. The callback is
+    // lifted when this frame goes, so a suggestion never arrives at a page that has gone.
+    if id == "automations" {
+        let desk = expect_context::<crate::assistant::Chats>().flow_desk();
+        desk.lay(Some(Callback::new(move |value: serde_json::Value| {
+            let Some(frame) = frame.get_untracked() else {
+                return;
+            };
+            let Some(target) = frame.content_window() else {
+                return;
+            };
+            let reply = Reply::event("flow", value);
+            if let Ok(text) = serde_json::to_string(&reply) {
+                let _ = target.post_message(&text.into(), "*");
+            }
+        })));
+        on_cleanup(move || desk.lay(None));
+    }
+
     let theme = move || Theme {
         dark: media("(prefers-color-scheme: dark)"),
         reduced_motion: !motion.0.get_untracked() || media("(prefers-reduced-motion: reduce)"),

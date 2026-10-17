@@ -1,6 +1,7 @@
 //! The tools a model may call. A few rounds, then a plain answer. Most only read, and writing
 //! the home is not among them: what changes anything changes a copy the person has open, theirs
-//! to undo and theirs to save: the floorplan being drawn, or the helper being made.
+//! to undo and theirs to save: the floorplan being drawn, the helper being made, or the
+//! automation on the canvas.
 
 use serde_json::{Value, json};
 
@@ -39,12 +40,19 @@ fn helpers(scope: &str) -> bool {
     scope == "helpers"
 }
 
+/// The chat about one automation open in the editor, which may suggest a new version of it.
+fn automation(scope: &str, _drawing: bool) -> bool {
+    scope
+        .strip_prefix("automation:")
+        .is_some_and(|id| !id.is_empty())
+}
+
 /// The chat about the whole home, which may ask about everything Irori holds.
 fn general(scope: &str) -> bool {
     scope == "general"
 }
 
-const TOOLS: [Tool; 14] = [
+const TOOLS: [Tool; 16] = [
     Tool {
         name: "list_devices",
         description: "List the devices in the home, with the room and the word each entity is reporting.",
@@ -184,6 +192,22 @@ const TOOLS: [Tool; 14] = [
             ),
         ],
         offered: |scope, _| helpers(scope),
+    },
+    Tool {
+        name: "read_flow",
+        description: "The automation this chat is about, as JSON, without where its nodes sit. Call this before propose_flow.",
+        params: &[],
+        offered: automation,
+    },
+    Tool {
+        name: "propose_flow",
+        description: "Show a new version of this automation on the canvas, for the person to look over, backtest and save. Nothing is saved until they press Save. What comes back says it is showing, or what is wrong, to put right and propose again. Keep the same id. Leave out layout, groups and enabled. Never put a code in a call.",
+        params: &[(
+            "flow",
+            "The whole automation as a JSON object, like {\"id\":\"hall\",\"name\":\"Hall\",\"nodes\":{...},\"wires\":[...]}.",
+            true,
+        )],
+        offered: automation,
     },
 ];
 
@@ -402,10 +426,32 @@ mod tests {
             builder
         );
         assert!(!tool_offered("general", false, "propose_helper"));
-        for scope in ["device:lamp", "automation:kettle"] {
-            assert_eq!(names(&openai_tools(scope, false), "/function/name"), home);
-            assert_eq!(names(&anthropic_tools(scope, false), "/name"), home);
-        }
+        assert_eq!(
+            names(&openai_tools("device:lamp", false), "/function/name"),
+            home
+        );
+        assert_eq!(names(&anthropic_tools("device:lamp", false), "/name"), home);
+        // The automation's own chat can read that flow and suggest a new version of it.
+        let editing = [
+            "list_devices",
+            "get_device",
+            "recent_states",
+            "read_flow",
+            "propose_flow",
+        ];
+        assert_eq!(
+            names(&openai_tools("automation:kettle", false), "/function/name"),
+            editing
+        );
+        assert_eq!(
+            names(&anthropic_tools("automation:kettle", false), "/name"),
+            editing
+        );
+        assert!(tool_offered("automation:kettle", false, "propose_flow"));
+        assert!(!tool_offered("general", false, "propose_flow"));
+        assert!(!tool_offered("general", false, "read_flow"));
+        assert!(!tool_offered("helpers", false, "propose_flow"));
+        assert!(!tool_offered("device:lamp", false, "read_flow"));
         let all = |scope| names(&openai_tools(scope, false), "/function/name");
         assert_eq!(all("general"), general);
         assert_eq!(names(&anthropic_tools("general", false), "/name"), general);

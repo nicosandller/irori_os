@@ -55,8 +55,8 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X7 | Shadow mode | Run alongside HA on the same devices to validate Irori | - | X5 |
 | X8 | Extension SDKs & templates | `cargo generate` templates, Python package, docs | - | C17 |
 | X9 | App contributions | Pages under `/apps/<id>/` beyond the sidebar slot that C31 delivered (config editor, log viewer, terminal) | - | C17, C26, C31 |
-| X10 | AI providers | `irori-assist`: Anthropic, OpenAI-compatible, and a local Ollama that Irori installs and manages. Settings, chats for the home, a device, an automation and Settings, and read-only tools are in; write tools are not | 🟠 | |
-| X11 | AI rule authoring | Natural language → validated flow; "why did/didn't this fire?". Explaining a flow from its last run and near-misses is in; authoring is not | 🟠 | X10, X19 |
+| X10 | AI providers | `irori-assist`: Anthropic, OpenAI-compatible, and a local Ollama that Irori installs and manages. Settings, chats for the home, a device, an automation and Settings, and read-only tools are in, plus `propose_helper` and `propose_flow`, which fill a copy the person has open and do not write until Create or Save. No service calls | 🟠 | |
+| X11 | AI rule authoring | Natural language → validated flow; "why did/didn't this fire?". Explaining a run is in. Authoring is in for the automation open in the editor, with a cloud model: the suggestion lands on the canvas, unsaved, and can be backtested | 🟠 | X10, X19 |
 | X12 | Dashboards & cards | Sandboxed HTML dashboards with `irori.js` bridge, installable as extensions | - | C17 |
 | X13 | AI dashboards | Generate dashboards from a prompt | - | X10, X12 |
 | X14 | HA backend adapter | Visualizer and AI features against an existing HA instance | - | X19 |
@@ -64,5 +64,5 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X16 | Z-Wave | Via `zwave-js-server` | - | C17 |
 | X17 | Matter | Via `rs-matter` | - | C6 |
 | X18 | Vendor cloud connector | e.g. SwitchBot: proves cloud polling/push and secrets | - | C6 |
-| X19 | Automations (flows) | Freeform flow engine + canvas editor: live validation, traces on the canvas, near-misses, live runs, test and dry runs, 24h backtest, versions, every entity kind (`docs/specs/flows.md`). Not yet: time and sun triggers (need a time zone and location), codes from secrets | 🟠 | C9, C30, C31 |
+| X19 | Automations (flows) | Freeform flow engine + canvas editor: live validation, traces on the canvas, near-misses, live runs, test and dry runs, 24h backtest, versions, every entity kind (`docs/specs/flows.md`). Time and sun triggers are in (armed from the home's time zone and location). Still open: a lock or alarm code comes from `secrets.toml` and never sits in the flow file or a trace | 🟠 | C9, C30, C31 |
 | X20 | Google Cast | Chromecasts, speakers and speaker groups on the local network, as media players | ✅ | C6, C32 |

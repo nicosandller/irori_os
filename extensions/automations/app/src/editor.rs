@@ -61,6 +61,11 @@ pub struct Editing {
     pub message: RwSignal<Option<String>>,
     /// Ticks every second while something is running, for countdowns.
     pub tick: RwSignal<u64>,
+    /// The draft from before a suggestion, so Discard can put it back. A later suggestion
+    /// does not replace it.
+    pub before: RwSignal<Option<Flow>>,
+    /// A suggestion that arrived before this flow had loaded.
+    pub waiting: RwSignal<Option<serde_json::Value>>,
 }
 
 impl Editing {
@@ -98,6 +103,36 @@ impl Editing {
     }
 }
 
+/// Draws `value` on this editor when it is the flow open here.
+///
+/// A new, unsaved flow is left alone. So is a suggestion for a different flow, and one already
+/// drawn: repeating it would undo Discard or wipe an edit. Nothing is written.
+fn offer(ed: Editing, value: serde_json::Value) {
+    if ed.is_new.get_untracked() || crate::flow_already_shown(&value) {
+        return;
+    }
+    let Some(current) = ed.draft.get_untracked() else {
+        ed.waiting.set(Some(value));
+        return;
+    };
+    ed.waiting.set(None);
+    let Ok(proposed) = serde_json::from_value::<Flow>(value.clone()) else {
+        return;
+    };
+    if proposed.id != current.id {
+        return;
+    }
+    // Comparing with a version stays that comparison; Done comes back to the suggestion.
+    // A run being played steps aside, so the suggestion is what's on the canvas.
+    if matches!(ed.view.get_untracked(), View::Trace { .. }) {
+        ed.view.set(View::Edit);
+    }
+    let (next, before) = model::suggest(current, ed.before.get_untracked(), proposed);
+    ed.draft.set(Some(next));
+    ed.before.set(Some(before));
+    crate::remember_flow(value);
+}
+
 #[component]
 pub fn Editor(id: String, is_new: bool) -> impl IntoView {
     let home = expect_context::<Home>();
@@ -113,9 +148,21 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
         armed: RwSignal::new(Armed::Disabled),
         message: RwSignal::new(None),
         tick: RwSignal::new(0),
+        before: RwSignal::new(None),
+        waiting: RwSignal::new(None),
     };
     provide_context(ed);
     let failed = RwSignal::new(None::<String>);
+
+    // A suggestion for the flow this editor has open. The same JSON twice is ignored, so a
+    // replay doesn't undo Discard or replace an edit. One that arrives early waits for the load.
+    if let Some(incoming) = crate::incoming_flow() {
+        Effect::new(move |_| {
+            if let Some(value) = incoming.get() {
+                offer(ed, value);
+            }
+        });
+    }
 
     if is_new {
         ed.draft.set(Some(model::blank(&home)));
@@ -128,6 +175,9 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     ed.draft.set(Some(detail.flow));
                     ed.problems.set(detail.problems);
                     ed.armed.set(detail.armed);
+                    if let Some(value) = ed.waiting.get_untracked() {
+                        offer(ed, value);
+                    }
                 }
                 Err(why) => failed.set(Some(why)),
             }
@@ -220,6 +270,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     ed.problems.set(saved.problems);
                     ed.saved.set(Some(flow.clone()));
                     ed.draft.set(Some(flow.clone()));
+                    ed.before.set(None);
                     ed.message.set(Some(if errors == 0 {
                         "Saved. It's running.".into()
                     } else {

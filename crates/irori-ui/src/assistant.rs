@@ -41,6 +41,8 @@ struct Thread {
     builder: StoredValue<Option<Callback<serde_json::Value>>>,
     /// The last helper handed to the builder (`BuilderDesk`).
     filled: StoredValue<Option<serde_json::Value>>,
+    /// The Automations page, while it is open: it takes a flow the model suggested.
+    flow_page: StoredValue<Option<Callback<serde_json::Value>>>,
     /// The picture or PDF that will go with the next question.
     attached: RwSignal<Option<api::Attachment>>,
     /// Floors and rooms the assistant asked to have removed, waiting on a yes or a no.
@@ -76,6 +78,7 @@ pub struct Chats {
     desk: StoredValue<Option<Desk>>,
     builder: StoredValue<Option<Callback<serde_json::Value>>>,
     filled: StoredValue<Option<serde_json::Value>>,
+    flow_page: StoredValue<Option<Callback<serde_json::Value>>>,
 }
 
 /// Where the helper builder takes what the model filled in, while it is open.
@@ -95,6 +98,19 @@ impl BuilderDesk {
     }
 }
 
+/// Where the Automations page takes a flow the model suggested, while that page is open.
+#[derive(Debug, Clone, Copy)]
+pub struct FlowDesk {
+    send: StoredValue<Option<Callback<serde_json::Value>>>,
+}
+
+impl FlowDesk {
+    /// The page saying it can take a suggestion, or — with `None` — that it has gone.
+    pub fn lay(self, send: Option<Callback<serde_json::Value>>) {
+        self.send.set_value(send);
+    }
+}
+
 impl Chats {
     /// Call from the shell, whose lifetime the conversations take.
     pub fn new() -> Self {
@@ -104,6 +120,7 @@ impl Chats {
             desk: StoredValue::new(None),
             builder: StoredValue::new(None),
             filled: StoredValue::new(None),
+            flow_page: StoredValue::new(None),
         }
     }
 
@@ -118,6 +135,13 @@ impl Chats {
         BuilderDesk {
             builder: self.builder,
             filled: self.filled,
+        }
+    }
+
+    /// Where the Automations page lays itself down while it is open.
+    pub fn flow_desk(&self) -> FlowDesk {
+        FlowDesk {
+            send: self.flow_page,
         }
     }
 
@@ -145,6 +169,7 @@ impl Chats {
             attached: RwSignal::new(None),
             asked: RwSignal::new(Vec::new()),
             answered: StoredValue::new(Vec::new()),
+            flow_page: self.flow_page,
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -211,6 +236,12 @@ impl Thread {
                 if let Some(builder) = self.builder.get_value() {
                     self.filled.set_value(Some(helper.clone()));
                     builder.run(helper);
+                }
+            }
+            // The Automations page, while it is the one on show.
+            Streamed::Flow(flow) => {
+                if let Some(send) = self.flow_page.get_value() {
+                    send.run(flow);
                 }
             }
             Streamed::Failed(_) | Streamed::Done => {}
@@ -612,6 +643,8 @@ impl Phase {
                 "list_helpers" => "Reading the helpers",
                 "helper_kinds" => "Reading the kinds of helper",
                 "propose_helper" => "Filling in the helper",
+                "read_flow" => "Reading the automation",
+                "propose_flow" => "Suggesting a change",
                 _ => "Looking something up",
             },
             Self::Writing => "Writing",
@@ -713,10 +746,11 @@ pub fn Chat(
 
     let empty = move || messages.with(Vec::is_empty) && !asking.get();
     let about = title.clone();
-    // The one conversation that can change something: the drawing on the Floorplan page.
+    // The conversations that can change a copy the person has open: the plan, a helper, a flow.
     let on_plan = scope.with_value(|scope| scope.starts_with("floorplan:"));
     // The helper builder's conversation, which fills the form in beside it.
     let building = scope.with_value(|scope| scope == "helpers");
+    let on_flow = scope.with_value(|scope| scope.starts_with("automation:"));
     let local = move || {
         assistant
             .0
@@ -889,6 +923,21 @@ pub fn Chat(
                              is too warm\u{201d}, \u{201c}hours the heating ran today\u{201d} — and \
                              the form is filled in from what's in your home. Change anything you \
                              like; nothing is made until you press Create."
+                        </p>
+                    }.into_any()
+                } else if on_flow && local() {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask why it did or didn't run. Suggesting a change on the canvas needs \
+                             a cloud model; the one on this machine can only answer."
+                        </p>
+                    }.into_any()
+                } else if on_flow {
+                    view! {
+                        <p class="chat-empty">
+                            "Ask why it did or didn't run, or say what you want changed. A \
+                             suggestion is drawn on the canvas, dashed where it differs, and \
+                             nothing is saved until you press Save. Discard puts the old one back."
                         </p>
                     }.into_any()
                 } else {
