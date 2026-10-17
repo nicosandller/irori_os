@@ -75,7 +75,7 @@ struct Reading {
     text: bool,
 }
 
-const READINGS: [Reading; 5] = [
+const READINGS: [Reading; 7] = [
     Reading {
         id: "version",
         name: "Version",
@@ -108,6 +108,22 @@ const READINGS: [Reading; 5] = [
         id: "disk",
         name: "Disk use",
         unit: Some("%"),
+        class: None,
+        text: false,
+    },
+    // So an automation can say when backups have stopped: the way Home Assistant leaves to an
+    // add-on, here a reading like any other.
+    Reading {
+        id: "backup_status",
+        name: "Backup",
+        unit: None,
+        class: None,
+        text: true,
+    },
+    Reading {
+        id: "backup_age",
+        name: "Hours since the last backup",
+        unit: Some("h"),
         class: None,
         text: false,
     },
@@ -276,6 +292,13 @@ async fn run(mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
                         if disk.total > 0 {
                             ctx.report_state(number("disk", round1(disk.used as f64 / disk.total as f64 * 100.0))?);
                         }
+                    }
+                }
+                if let Some(dir) = DATA_DIR.get().and_then(|db| db.parent()) {
+                    let (word, hours) = backup_reading(dir);
+                    ctx.report_state(text("backup_status", word)?);
+                    if let Some(hours) = hours {
+                        ctx.report_state(number("backup_age", hours)?);
                     }
                 }
                 if has_temperature && let Some(celsius) = temperature() {
@@ -542,6 +565,27 @@ fn text(id: &str, value: &str) -> Result<StateReport, ProtocolError> {
 
 fn round1(n: f64) -> f64 {
     (n * 10.0).round() / 10.0
+}
+
+/// How backups are going, as a word (`ok`, `failed`, or `none` before the first) and the hours
+/// since the last good one.
+fn backup_reading(data: &std::path::Path) -> (&'static str, Option<f64>) {
+    let status = crate::backup::schedule::status(data);
+    let hours = status
+        .last_success
+        .as_deref()
+        .and_then(|at| at.parse::<jiff::Timestamp>().ok())
+        .map(|at| {
+            round1((jiff::Timestamp::now().as_second() - at.as_second()).max(0) as f64 / 3600.0)
+        });
+    let failing =
+        status.last_error.is_some() || status.destinations.values().any(|d| d.last_error.is_some());
+    let word = match (&status.last_success, failing) {
+        (_, true) => "failed",
+        (Some(_), false) => "ok",
+        (None, false) => "none",
+    };
+    (word, hours)
 }
 
 /// The processor's temperature in °C, from Linux's first thermal zone.

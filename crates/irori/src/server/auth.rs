@@ -1010,6 +1010,8 @@ mod tests {
             (Method::POST, "/api/backups/upload", Run),
             (Method::PUT, "/api/backups/settings", Run),
             (Method::GET, "/api/backups/key", Run),
+            (Method::GET, "/api/backups/destinations/nas", Run),
+            (Method::POST, "/api/backups/destinations/nas/test", Run),
             (
                 Method::POST,
                 "/api/backups/irori-backup-1.tar.gz/restore",

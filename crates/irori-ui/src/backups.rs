@@ -205,6 +205,7 @@ pub fn Section() -> impl IntoView {
         {move || owner().then(|| view! {
             <Plan />
             <Seal />
+            <Places />
         })}
     }
 }
@@ -615,12 +616,17 @@ fn Plan() -> impl IntoView {
         });
     };
     let save = move |_| {
-        let Some(settings) = draft.get_untracked() else {
+        let Some(drafted) = draft.get_untracked() else {
+            return;
+        };
+        let Some(saved) = overview.with_untracked(|o| o.as_ref().map(|o| o.settings.clone()))
+        else {
             return;
         };
         if saving.get_untracked() || !changed() {
             return;
         }
+        let settings = merged(&saved, &drafted);
         saving.set(true);
         trouble.set(None);
         spawn_local(async move {
@@ -712,6 +718,21 @@ fn Plan() -> impl IntoView {
                             </span>
                         </span>
                     </button>
+                    <button type="button" class="scope-pick" class:on=d.before_update
+                        aria-pressed=d.before_update.to_string()
+                        on:click=move |_| edit(Box::new(|d| d.before_update = !d.before_update))>
+                        <svg class="scope-tick" viewBox="0 0 24 24" aria-hidden="true">
+                            <rect x="3.5" y="3.5" width="17" height="17" rx="4.5" />
+                            <path d="M7.5 12.5l3 3 6-6.5" pathLength="1" />
+                        </svg>
+                        <span class="scope-words">
+                            <span>"Back up before an update"</span>
+                            <span class="muted small">
+                                "Before Irori or an extension is updated. An update that can't be \
+                                 backed up first doesn't start. The last three are kept."
+                            </span>
+                        </span>
+                    </button>
                 }
             })}
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
@@ -747,15 +768,30 @@ fn toggle_day(settings: &mut BackupSettings, id: &str) {
     }
 }
 
+/// Whether the schedule form's own fields are as they were saved. The places and whether backups
+/// are sealed are other blocks' to change, so this form neither compares nor sends them.
 fn same(a: &BackupSettings, b: &BackupSettings) -> bool {
     a.enabled == b.enabled
-        && a.encrypt == b.encrypt
         && a.at == b.at
         && a.days == b.days
         && a.keep == b.keep
         && a.keep_days == b.keep_days
         && a.include_history == b.include_history
-        && a.destination == b.destination
+        && a.before_update == b.before_update
+}
+
+/// What was saved, with this form's fields changed to the draft's.
+fn merged(saved: &BackupSettings, draft: &BackupSettings) -> BackupSettings {
+    BackupSettings {
+        enabled: draft.enabled,
+        at: draft.at.clone(),
+        days: draft.days.clone(),
+        keep: draft.keep,
+        keep_days: draft.keep_days,
+        include_history: draft.include_history,
+        before_update: draft.before_update,
+        ..saved.clone()
+    }
 }
 
 // ----- the key -----
@@ -886,6 +922,348 @@ fn Seal() -> impl IntoView {
                     </div>
                 }
             })}
+            {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+        </div>
+    }
+}
+
+// ----- other places -----
+
+/// What a place is, in a few words.
+fn describe(destination: &api::BackupDestination) -> (&'static str, String) {
+    match destination {
+        api::BackupDestination::Path { path, .. } => ("Folder", path.clone()),
+        api::BackupDestination::Webdav { url, username, .. } => {
+            ("WebDAV", format!("{username} at {url}"))
+        }
+        api::BackupDestination::S3 {
+            endpoint,
+            bucket,
+            prefix,
+            ..
+        } => ("S3", format!("{bucket}/{prefix} at {endpoint}")),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Folder,
+    Webdav,
+    S3,
+}
+
+#[component]
+fn Places() -> impl IntoView {
+    let Backups(overview) = expect_context::<Backups>();
+    let trouble = RwSignal::new(None::<String>);
+    let adding = RwSignal::new(false);
+    let busy = RwSignal::new(false);
+    let kind = RwSignal::new(Kind::Folder);
+    let name = RwSignal::new(String::new());
+    let (path, url, user, password) = (
+        RwSignal::new(String::new()),
+        RwSignal::new(String::new()),
+        RwSignal::new(String::new()),
+        RwSignal::new(String::new()),
+    );
+    let (endpoint, bucket, region, prefix, access, secret) = (
+        RwSignal::new(String::new()),
+        RwSignal::new(String::new()),
+        RwSignal::new("us-east-1".to_owned()),
+        RwSignal::new(String::new()),
+        RwSignal::new(String::new()),
+        RwSignal::new(String::new()),
+    );
+    // What a Test said, by place: Ok(()) or the reason.
+    let tested = RwSignal::new(BTreeMap::<String, Result<(), String>>::new());
+    // The place whose backups are being looked through.
+    let browsing = RwSignal::new(None::<(String, Vec<api::BackupThere>)>);
+    let removing = RwSignal::new(None::<String>);
+
+    let save = move |settings: BackupSettings,
+                     secrets: BTreeMap<String, String>,
+                     then_test: Option<String>| {
+        busy.set(true);
+        trouble.set(None);
+        spawn_local(async move {
+            match api::save_backup_settings(&settings, &secrets).await {
+                Ok(fresh) => {
+                    overview.set(Some(fresh));
+                    if let Some(place) = then_test {
+                        let said = api::test_backup_destination(&place).await;
+                        tested.update(|t| {
+                            t.insert(place, said);
+                        });
+                    }
+                    adding.set(false);
+                    name.set(String::new());
+                    for field in [
+                        path, url, user, password, endpoint, bucket, prefix, access, secret,
+                    ] {
+                        field.set(String::new());
+                    }
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+            busy.set(false);
+        });
+    };
+
+    let add = move |event: leptos::ev::SubmitEvent| {
+        event.prevent_default();
+        if busy.get_untracked() {
+            return;
+        }
+        let Some(mut settings) =
+            overview.with_untracked(|o| o.as_ref().map(|o| o.settings.clone()))
+        else {
+            return;
+        };
+        let place = name.get_untracked().trim().to_lowercase().replace(' ', "-");
+        let (destination, secrets) = match kind.get_untracked() {
+            Kind::Folder => (
+                api::BackupDestination::Path {
+                    name: place.clone(),
+                    path: path.get_untracked().trim().to_owned(),
+                },
+                BTreeMap::new(),
+            ),
+            Kind::Webdav => (
+                api::BackupDestination::Webdav {
+                    name: place.clone(),
+                    url: url.get_untracked().trim().to_owned(),
+                    username: user.get_untracked().trim().to_owned(),
+                },
+                BTreeMap::from([(place.clone(), password.get_untracked())]),
+            ),
+            Kind::S3 => (
+                api::BackupDestination::S3 {
+                    name: place.clone(),
+                    endpoint: endpoint.get_untracked().trim().to_owned(),
+                    bucket: bucket.get_untracked().trim().to_owned(),
+                    region: region.get_untracked().trim().to_owned(),
+                    prefix: prefix.get_untracked().trim().to_owned(),
+                    access_key: access.get_untracked().trim().to_owned(),
+                },
+                BTreeMap::from([(place.clone(), secret.get_untracked())]),
+            ),
+        };
+        settings.destination.retain(|d| d.name() != place);
+        settings.destination.push(destination);
+        save(settings, secrets, Some(place));
+    };
+
+    let remove = move |place: String| {
+        let Some(mut settings) =
+            overview.with_untracked(|o| o.as_ref().map(|o| o.settings.clone()))
+        else {
+            return;
+        };
+        settings.destination.retain(|d| d.name() != place);
+        removing.set(None);
+        save(settings, BTreeMap::new(), None);
+    };
+    let test = move |place: String| {
+        spawn_local(async move {
+            let said = api::test_backup_destination(&place).await;
+            tested.update(|t| {
+                t.insert(place, said);
+            });
+        });
+    };
+    let browse = move |place: String| {
+        spawn_local(async move {
+            match api::browse_backup_destination(&place).await {
+                Ok(list) => browsing.set(Some((place, list))),
+                Err(why) => {
+                    trouble.set(Some(why));
+                    browsing.set(None);
+                }
+            }
+        });
+    };
+    let bring = move |place: String, file: String| {
+        spawn_local(async move {
+            match api::fetch_backup_from(&place, &file).await {
+                Ok(()) => {
+                    trouble.set(None);
+                    refresh(overview);
+                    if let Ok(list) = api::browse_backup_destination(&place).await {
+                        browsing.set(Some((place, list)));
+                    }
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+        });
+    };
+
+    let field =
+        |label: &'static str, hint: &'static str, signal: RwSignal<String>, secret_input: bool| {
+            view! {
+                <label class="settings-field">
+                    {label}
+                    <input
+                        type=if secret_input { "password" } else { "text" }
+                        autocomplete="off"
+                        spellcheck="false"
+                        placeholder=hint
+                        prop:value=move || signal.get()
+                        on:input=move |e| signal.set(event_target_value(&e))
+                    />
+                </label>
+            }
+        };
+
+    let kinds = NodeRef::<leptos::html::Div>::new();
+    crate::glide::across(kinds, "button.chosen", move || kind.track());
+
+    view! {
+        <div class="backup-block">
+            <h4 class="backup-heading">"Other places"</h4>
+            <p class="muted small">
+                "A copy of each backup goes to every place below, sealed. A folder is also how a \
+                 network share or a USB disk is reached: mount it, then name it here."
+            </p>
+            <ul class="tokens backups">
+                {move || {
+                    let Some(o) = overview.get() else { return ().into_any() };
+                    if o.settings.destination.is_empty() {
+                        return view! { <li class="tokens-none muted">"Only on this machine."</li> }.into_any();
+                    }
+                    o.settings
+                        .destination
+                        .iter()
+                        .map(|d| {
+                            let (label, detail) = describe(d);
+                            let place = d.name().to_owned();
+                            let state = o.status.destinations.get(&place).cloned().unwrap_or_default();
+                            let (t_place, b_place, r_place, a_place, k_place) =
+                                (place.clone(), place.clone(), place.clone(), place.clone(), place.clone());
+                            view! {
+                                <li class="token backup">
+                                    <span class="token-mark" aria-hidden="true">
+                                        <svg viewBox="0 0 24 24" inner_html=OPEN_BOX></svg>
+                                    </span>
+                                    <span class="token-words">
+                                        <span class="token-name">{place.clone()}</span>
+                                        <span class="token-may">
+                                            <span class="scope-chip">{label}</span>
+                                            <span class="scope-chip">{detail}</span>
+                                            {state.last_ok.as_deref().map(|at| view! {
+                                                <span class="scope-chip">"copied "{ago(at)}</span>
+                                            })}
+                                        </span>
+                                        {state.last_error.clone().map(|why| view! { <span class="why">{why}</span> })}
+                                        {move || tested.with(|t| t.get(&t_place).cloned()).map(|said| match said {
+                                            Ok(()) => view! { <span class="muted small">"Reached it, and it can be written to."</span> }.into_any(),
+                                            Err(why) => view! { <span class="why">{why}</span> }.into_any(),
+                                        })}
+                                    </span>
+                                    {move || if removing.get().as_deref() == Some(a_place.as_str()) {
+                                        let (go, keep) = (r_place.clone(), a_place.clone());
+                                        view! {
+                                            <span class="token-sure">
+                                                <span class="muted small">"Copies already there stay there."</span>
+                                                <button type="button" class="press danger" on:click=move |_| remove(go.clone())>"Remove"</button>
+                                                <button type="button" class="press" on:click=move |_| { let _ = &keep; removing.set(None); }>"Keep"</button>
+                                            </span>
+                                        }.into_any()
+                                    } else {
+                                        let (t, b, k) = (k_place.clone(), b_place.clone(), k_place.clone());
+                                        view! {
+                                            <span class="backup-actions">
+                                                <button type="button" class="press" on:click=move |_| test(t.clone())>"Test"</button>
+                                                <button type="button" class="press" on:click=move |_| browse(b.clone())>"Browse"</button>
+                                                <button type="button" class="press" on:click=move |_| removing.set(Some(k.clone()))>"Remove"</button>
+                                            </span>
+                                        }.into_any()
+                                    }}
+                                </li>
+                            }
+                        })
+                        .collect_view()
+                        .into_any()
+                }}
+            </ul>
+            {move || browsing.get().map(|(place, list)| view! {
+                <div class="backup-checked">
+                    <p>"Backups at "<b>{place.clone()}</b>":"</p>
+                    {if list.is_empty() {
+                        view! { <p class="muted small">"None yet."</p> }.into_any()
+                    } else {
+                        list.into_iter().map(|there| {
+                            let (p, n) = (place.clone(), there.name.clone());
+                            view! {
+                                <p class="backup-there">
+                                    <code>{there.name.clone()}</code>
+                                    {if there.here {
+                                        view! { <span class="muted small">"already in the list above"</span> }.into_any()
+                                    } else {
+                                        view! {
+                                            <button type="button" class="press" on:click=move |_| bring(p.clone(), n.clone())>
+                                                "Bring it here"
+                                            </button>
+                                        }.into_any()
+                                    }}
+                                </p>
+                            }
+                        }).collect_view().into_any()
+                    }}
+                    <button type="button" class="press" on:click=move |_| browsing.set(None)>"Close"</button>
+                </div>
+            })}
+            {move || (!adding.get()).then(|| view! {
+                <button type="button" class="press token-add" on:click=move |_| { trouble.set(None); adding.set(true); }>
+                    <span aria-hidden="true">"+"</span>" Add a place"
+                </button>
+            })}
+            <div class="drawer" class:open=move || adding.get() inert=move || (!adding.get()).then_some("")>
+                <form class="drawer-inner token-form" on:submit=add>
+                    {field("Name", "nas", name, false)}
+                    <div class="settings-field">
+                        <span id="place-kind">"It is"</span>
+                        <div class="switcher" role="group" aria-labelledby="place-kind" node_ref=kinds>
+                            <span class="glide" aria-hidden="true"></span>
+                            {[(Kind::Folder, "A folder"), (Kind::Webdav, "WebDAV"), (Kind::S3, "S3 storage")].into_iter().map(|(k, label)| view! {
+                                <button type="button" class:chosen=move || kind.get() == k
+                                    aria-pressed=move || (kind.get() == k).to_string()
+                                    on:click=move |_| kind.set(k)>{label}</button>
+                            }).collect_view()}
+                        </div>
+                    </div>
+                    {move || match kind.get() {
+                        Kind::Folder => view! {
+                            <div class="token-kind-body">
+                                {field("Folder", "/mnt/nas/irori", path, false)}
+                                <span class="muted small">"The full path on this machine. It has to be there, and Irori has to be able to write to it."</span>
+                            </div>
+                        }.into_any(),
+                        Kind::Webdav => view! {
+                            <div class="token-kind-body">
+                                {field("Address", "https://cloud.example.com/remote.php/dav/files/me/irori", url, false)}
+                                {field("User name", "me", user, false)}
+                                {field("Password", "an app password is best", password, true)}
+                            </div>
+                        }.into_any(),
+                        Kind::S3 => view! {
+                            <div class="token-kind-body">
+                                {field("Endpoint", "https://s3.us-west-000.backblazeb2.com", endpoint, false)}
+                                {field("Bucket", "my-irori-backups", bucket, false)}
+                                {field("Region", "us-east-1", region, false)}
+                                {field("Folder in the bucket (optional)", "home", prefix, false)}
+                                {field("Access key", "", access, false)}
+                                {field("Secret key", "", secret, true)}
+                            </div>
+                        }.into_any(),
+                    }}
+                    <div class="settings-form-actions">
+                        <button type="button" on:click=move |_| { trouble.set(None); adding.set(false); }>"Cancel"</button>
+                        <button type="submit" class="add" disabled=move || busy.get()>
+                            {move || if busy.get() { "Saving…" } else { "Add and test" }}
+                        </button>
+                    </div>
+                </form>
+            </div>
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
         </div>
     }

@@ -389,16 +389,16 @@ fn retention_keeps_the_newest_by_count_and_by_age_but_never_the_last_one() {
         ("irori-backup-2.tar.gz".into(), at(50)),
     ];
     assert_eq!(
-        expired(&entries, 3, None, now),
+        expired(&entries, PREFIX, 3, None, now),
         ["irori-backup-2.tar.gz"].map(String::from)
     );
     assert_eq!(
-        expired(&entries, 10, Some(30), now),
+        expired(&entries, PREFIX, 10, Some(30), now),
         ["irori-backup-3.tar.gz", "irori-backup-2.tar.gz"].map(String::from)
     );
     // Everything is old, and one is still kept.
     let old = vec![("irori-backup-1.tar.gz".to_owned(), at(400))];
-    assert!(expired(&old, 1, Some(30), now).is_empty());
+    assert!(expired(&old, PREFIX, 1, Some(30), now).is_empty());
 }
 
 #[test]

@@ -13,6 +13,7 @@ use jiff::civil::Weekday;
 use jiff::{Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 
+use super::dest;
 use super::settings::{self, Settings};
 use super::{Plan, dir};
 
@@ -95,11 +96,79 @@ pub fn run_once(config: &Path, data: &Path) -> Result<PathBuf, String> {
                 .collect();
             status.copies.retain(|name, _| have.contains(name));
             status.copies.entry(file_name(file)).or_default();
+            copy_out(config, &settings, file, &mut status, now);
         }
         Err(error) => status.last_error = Some(error.clone()),
     }
     save_status(data, &status);
     result
+}
+
+/// Copies a fresh backup to each destination and keeps each within its retention. A place that
+/// can't be reached is said in the status and tried again with the next backup; it doesn't
+/// undo the backup that was made here.
+fn copy_out(config: &Path, settings: &Settings, file: &Path, status: &mut Status, now: Timestamp) {
+    let name = file_name(file);
+    for destination in &settings.destination {
+        let place = destination.name().to_owned();
+        let state = status.destinations.entry(place.clone()).or_default();
+        // Nothing leaves this machine readable (`settings::Settings::check`), whatever the
+        // settings said when this backup was made.
+        if !name.ends_with(".enc") {
+            state.last_error = Some("this backup isn't encrypted, so it wasn't copied".to_owned());
+            continue;
+        }
+        let secret = destination
+            .secret_name()
+            .and_then(|s| settings::secret(config, &s));
+        match dest::put(destination, secret.as_deref(), file, &name) {
+            Ok(()) => {
+                state.last_ok = Some(now.to_string());
+                state.last_error = None;
+                status
+                    .copies
+                    .entry(name.clone())
+                    .or_default()
+                    .push(place.clone());
+                if let Ok(there) = dest::list(destination, secret.as_deref()) {
+                    for old in dest::expired_at(&there, settings.keep, settings.keep_days) {
+                        let _ = dest::delete(destination, secret.as_deref(), &old);
+                        if let Some(held) = status.copies.get_mut(&old) {
+                            held.retain(|p| p != &place);
+                        }
+                    }
+                }
+            }
+            Err(error) => state.last_error = Some(error),
+        }
+    }
+}
+
+/// Where this Irori's config and data are, for what runs without being handed them: an update
+/// about to be installed. Set once at start.
+pub static HOME: std::sync::OnceLock<(PathBuf, PathBuf)> = std::sync::OnceLock::new();
+
+/// Called as an update starts. Makes a backup first, unless that is turned off, and says why
+/// when it couldn't: an update that can't be taken back is better not started.
+pub async fn before_update() -> Result<(), String> {
+    let Some((config, data)) = HOME.get().cloned() else {
+        return Ok(());
+    };
+    tokio::task::spawn_blocking(move || {
+        let settings = settings::load(&config);
+        if !settings.before_update {
+            return Ok(());
+        }
+        let mut key = None;
+        let plan = plan_for(&config, &settings, &mut key)?;
+        let into = dir(&data);
+        super::create_named(&config, &data, &into, super::UPDATE_PREFIX, plan)
+            .map_err(|e| format!("couldn't back up before updating: {e:#}"))?;
+        super::prune_kind(&into, super::UPDATE_PREFIX, 3, None);
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn file_name(path: &Path) -> String {
@@ -260,5 +329,63 @@ mod tests {
         };
         assert!(!due(&settings, &failed, &at("2026-03-05T03:10:00Z")));
         assert!(due(&settings, &failed, &at("2026-03-05T03:16:00Z")));
+    }
+
+    #[test]
+    fn a_backup_is_copied_out_and_each_place_keeps_to_its_retention() {
+        let tmp = tempfile::tempdir().expect("dir");
+        let (config, data, place) = (
+            tmp.path().join("config"),
+            tmp.path().join("data"),
+            tmp.path().join("nas"),
+        );
+        std::fs::create_dir_all(&place).expect("dir");
+        std::fs::create_dir_all(&config).expect("dir");
+        std::fs::write(config.join("areas.toml"), "").expect("file");
+        let settings = Settings {
+            enabled: true,
+            keep: 1,
+            destination: vec![settings::Destination::Path {
+                name: "nas".into(),
+                path: place.clone(),
+            }],
+            ..Settings::default()
+        };
+        settings::save(&config, &settings).expect("saved");
+        // An old copy at the place, and something that isn't ours.
+        std::fs::write(place.join("irori-backup-20200101-000000.tar.gz.enc"), "old").expect("file");
+        std::fs::write(place.join("notes.txt"), "mine").expect("file");
+
+        let file = run_once(&config, &data).expect("backed up");
+        let name = file_name(&file);
+        assert!(name.ends_with(".tar.gz.enc"));
+        assert!(place.join(&name).exists(), "copied out");
+        assert!(
+            !place
+                .join("irori-backup-20200101-000000.tar.gz.enc")
+                .exists(),
+            "kept to its retention"
+        );
+        assert!(
+            place.join("notes.txt").exists(),
+            "what isn't ours is left alone"
+        );
+        let state = status(&data);
+        assert_eq!(state.copies[&name], ["nas"]);
+        assert!(
+            state.destinations["nas"].last_ok.is_some()
+                && state.destinations["nas"].last_error.is_none()
+        );
+
+        // A place that isn't there fails on its own, and the backup here still stands.
+        std::fs::remove_dir_all(&place).expect("gone");
+        let again = run_once(&config, &data).expect("backed up here");
+        assert!(again.exists());
+        assert!(
+            status(&data).destinations["nas"]
+                .last_error
+                .as_deref()
+                .is_some_and(|e| e.contains("mounted"))
+        );
     }
 }

@@ -197,6 +197,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
     // Irori's own device reports how full this volume is.
     let _ = system_device::DATA_DIR.set(db.path.clone());
     let storage = Arc::new(db::SqliteStorage::open(&db)?);
+    let _ = backup::schedule::HOME.set((config.clone(), data.clone()));
     let packages_dir = packages::packages_dir(&data);
     let _ = std::fs::create_dir_all(&packages_dir);
 

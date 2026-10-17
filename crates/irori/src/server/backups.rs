@@ -43,6 +43,15 @@ pub(super) fn routes() -> Router<AppState> {
         .route("/api/backups/key", get(show_key).post(set_key))
         .route("/api/backups/restore/cancel", post(cancel_restore))
         .route("/api/backups/restore/seen", post(restore_seen))
+        .route(
+            "/api/backups/destinations/{place}/test",
+            post(test_destination),
+        )
+        .route("/api/backups/destinations/{place}", get(browse_destination))
+        .route(
+            "/api/backups/destinations/{place}/fetch",
+            post(fetch_from_destination),
+        )
         .route("/api/backups/{name}", get(download).delete(remove))
         .route("/api/backups/{name}/verify", post(verify))
         .route("/api/backups/{name}/restore", post(restore))
@@ -614,6 +623,110 @@ async fn set_key(State(state): State<AppState>, Json(ask): Json<NewKey>) -> Resp
     {
         Ok(Ok(key)) => Json(serde_json::json!({ "key": key })).into_response(),
         Ok(Err(why)) => refused(StatusCode::INTERNAL_SERVER_ERROR, why),
+        Err(response) => response,
+    }
+}
+
+// ----- other places -----
+
+fn destination_named(
+    at: &Places,
+    place: &str,
+) -> Result<(settings::Destination, Option<String>), Response> {
+    let settings = settings::load(&at.config);
+    let Some(destination) = settings.destination.into_iter().find(|d| d.name() == place) else {
+        return Err(refused(
+            StatusCode::NOT_FOUND,
+            format!("no destination called `{place}`; save it first"),
+        ));
+    };
+    let secret = destination
+        .secret_name()
+        .and_then(|s| settings::secret(&at.config, &s));
+    Ok((destination, secret))
+}
+
+/// Whether the place can be reached and written to.
+async fn test_destination(State(state): State<AppState>, Path(place): Path<String>) -> Response {
+    let at = places(&state).await;
+    let (destination, secret) = match destination_named(&at, &place) {
+        Ok(found) => found,
+        Err(response) => return response,
+    };
+    match blocking(move || backup::dest::check(&destination, secret.as_deref())).await {
+        Ok(Ok(())) => Json(serde_json::json!({ "ok": true })).into_response(),
+        Ok(Err(why)) => failed(why),
+        Err(response) => response,
+    }
+}
+
+/// The backups that are at the place, and which of them are here too.
+async fn browse_destination(State(state): State<AppState>, Path(place): Path<String>) -> Response {
+    let at = places(&state).await;
+    let (destination, secret) = match destination_named(&at, &place) {
+        Ok(found) => found,
+        Err(response) => return response,
+    };
+    let here = at.dir();
+    match blocking(move || {
+        backup::dest::list(&destination, secret.as_deref()).map(|there| {
+            there
+                .into_iter()
+                .map(|r| {
+                    let local = here.join(&r.name).exists();
+                    serde_json::json!({ "name": r.name, "here": local })
+                })
+                .collect::<Vec<_>>()
+        })
+    })
+    .await
+    {
+        Ok(Ok(list)) => Json(list).into_response(),
+        Ok(Err(why)) => failed(why),
+        Err(response) => response,
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct Fetch {
+    name: String,
+}
+
+/// Brings a backup from the place to this machine's list, where it can be checked and restored.
+async fn fetch_from_destination(
+    State(state): State<AppState>,
+    Path(place): Path<String>,
+    Json(ask): Json<Fetch>,
+) -> Response {
+    let at = places(&state).await;
+    if !backup::is_backup_name(&ask.name) {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("no backup called `{}`", ask.name),
+        );
+    }
+    let (destination, secret) = match destination_named(&at, &place) {
+        Ok(found) => found,
+        Err(response) => return response,
+    };
+    let to = at.dir().join(&ask.name);
+    if to.exists() {
+        return Json(serde_json::json!({ "name": ask.name })).into_response();
+    }
+    let dir = at.dir();
+    let name = ask.name.clone();
+    match blocking(move || {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        backup::dest::get(&destination, secret.as_deref(), &name, &to)
+    })
+    .await
+    {
+        Ok(Ok(())) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({ "name": ask.name })),
+        )
+            .into_response(),
+        Ok(Err(why)) => failed(why),
         Err(response) => response,
     }
 }

@@ -1186,6 +1186,8 @@ pub struct BackupSettings {
     #[serde(default)]
     pub keep_days: Option<u32>,
     pub include_history: bool,
+    #[serde(default = "yes")]
+    pub before_update: bool,
     #[serde(default)]
     pub destination: Vec<BackupDestination>,
     /// Whether each destination's secret is on file. Never sent back.
@@ -1265,6 +1267,10 @@ pub struct BackupVerified {
     #[serde(default)]
     pub warnings: Vec<String>,
     pub files: usize,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -1361,6 +1367,43 @@ pub async fn new_backup_key(own: Option<&str>) -> Result<String, String> {
         .await
         .map_err(unreachable)?;
     read::<KeyBody>(response).await.map(|k| k.key)
+}
+
+/// One backup at a place, and whether it is already on this machine's list.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BackupThere {
+    pub name: String,
+    #[serde(default)]
+    pub here: bool,
+}
+
+pub async fn test_backup_destination(place: &str) -> Result<(), String> {
+    let response = post(&format!("/api/backups/destinations/{place}/test"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read::<serde_json::Value>(response).await.map(|_| ())
+}
+
+pub async fn browse_backup_destination(place: &str) -> Result<Vec<BackupThere>, String> {
+    read(
+        Request::get(&format!("/api/backups/destinations/{place}"))
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
+/// Brings a backup from a place to this machine's list.
+pub async fn fetch_backup_from(place: &str, name: &str) -> Result<(), String> {
+    let response = post(&format!("/api/backups/destinations/{place}/fetch"))
+        .json(&serde_json::json!({ "name": name }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read::<serde_json::Value>(response).await.map(|_| ())
 }
 
 pub async fn backup_restore_seen() {

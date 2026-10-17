@@ -38,6 +38,10 @@ pub struct Settings {
     /// Leave the entity history out, for a smaller file.
     #[serde(default = "yes")]
     pub include_history: bool,
+    /// Make a backup just before Irori or an extension is updated, so an update that goes
+    /// wrong can be taken back. Kept apart from the scheduled ones, three at a time.
+    #[serde(default = "yes")]
+    pub before_update: bool,
     /// Other places a backup is copied to, besides `<data>/backups`.
     #[serde(default)]
     pub destination: Vec<Destination>,
@@ -63,6 +67,7 @@ impl Default for Settings {
             keep: keep(),
             keep_days: None,
             include_history: true,
+            before_update: true,
             destination: Vec::new(),
         }
     }

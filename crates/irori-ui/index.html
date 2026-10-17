@@ -3368,6 +3368,11 @@
     .scope-chip.day.on { color: var(--fg); border-color: var(--ember);
                          background: color-mix(in srgb, var(--ember) 12%, var(--card)); }
     .scope-chip.day:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    /* A path or an address is as long as it is: it wraps inside the card, not past it. */
+    .backup .scope-chip { white-space: normal; overflow-wrap: anywhere; border-radius: .6rem; }
+    .backup .token-words { flex-basis: 10rem; }
+    .backup-there { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0; }
+    .backup-there code { font: .8rem var(--mono); overflow-wrap: anywhere; }
     .backup-key-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
     .welcome-later { padding: .5rem 1.1rem; font: inherit; color: var(--muted); background: transparent;
                      border: 1px solid var(--line); border-radius: .45rem; cursor: pointer; }

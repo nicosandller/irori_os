@@ -489,7 +489,8 @@ fn RestoreFirst(back: Callback<()>) -> impl IntoView {
             <div class="welcome-actions">
                 <button type="button" class="welcome-later" disabled=move || restarting.get()
                     on:click=move |_| back.run(())>"Back"</button>
-                <button type="button" disabled=move || busy.get() || name.get().is_none() on:click=check>
+                <button type="button" class="welcome-later"
+                    disabled=move || busy.get() || name.get().is_none() on:click=check>
                     "Check it"
                 </button>
                 <button type="button" class="welcome-next"

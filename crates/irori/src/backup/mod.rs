@@ -13,6 +13,7 @@
 //! config are opened (`apply_pending`). Nothing replaces files a running server has open.
 
 pub mod crypt;
+pub mod dest;
 pub mod schedule;
 pub mod settings;
 
@@ -35,6 +36,8 @@ const FORMAT: u32 = 2;
 pub const PREFIX: &str = "irori-backup-";
 /// What restore keeps of the home it is about to replace. Not pruned with the others.
 pub const SAFETY_PREFIX: &str = "pre-restore-";
+/// What is made just before an update. Kept three at a time, apart from the scheduled ones.
+pub const UPDATE_PREFIX: &str = "pre-update-";
 const SUFFIX_PLAIN: &str = ".tar.gz";
 const SUFFIX_SEALED: &str = ".tar.gz.enc";
 pub const DEFAULT_DIR: &str = "backups";
@@ -119,7 +122,7 @@ pub fn create(config: &Path, data: &Path, into: &Path, plan: Plan) -> anyhow::Re
     create_named(config, data, into, PREFIX, plan)
 }
 
-fn create_named(
+pub fn create_named(
     config: &Path,
     data: &Path,
     into: &Path,
@@ -308,7 +311,7 @@ pub fn list(dir: &Path) -> Vec<Entry> {
 
 /// Whether `name` is something this module wrote, and so something a request may name.
 pub fn is_backup_name(name: &str) -> bool {
-    (name.starts_with(PREFIX) || name.starts_with(SAFETY_PREFIX))
+    (name.starts_with(PREFIX) || name.starts_with(SAFETY_PREFIX) || name.starts_with(UPDATE_PREFIX))
         && (name.ends_with(SUFFIX_PLAIN) || name.ends_with(SUFFIX_SEALED))
         && name.len() < 128
         && name
@@ -321,13 +324,14 @@ pub fn is_backup_name(name: &str) -> bool {
 /// `keep`, and any older than `keep_days` days, but never the newest.
 pub fn expired(
     names_and_times: &[(String, jiff::Timestamp)],
+    prefix: &str,
     keep: u32,
     keep_days: Option<u32>,
     now: jiff::Timestamp,
 ) -> Vec<String> {
     names_and_times
         .iter()
-        .filter(|(name, _)| name.starts_with(PREFIX))
+        .filter(|(name, _)| name.starts_with(prefix))
         .enumerate()
         .filter(|(index, (_, at))| {
             *index > 0
@@ -342,6 +346,11 @@ pub fn expired(
 
 /// Deletes backups past retention in `dir`. Safety copies stay. Returns how many went.
 pub fn prune(dir: &Path, keep: u32, keep_days: Option<u32>) -> usize {
+    prune_kind(dir, PREFIX, keep, keep_days)
+}
+
+/// Retention for one kind of backup, by its name's prefix.
+pub fn prune_kind(dir: &Path, prefix: &str, keep: u32, keep_days: Option<u32>) -> usize {
     let entries: Vec<(String, jiff::Timestamp)> = list(dir)
         .into_iter()
         .filter_map(|entry| {
@@ -350,7 +359,7 @@ pub fn prune(dir: &Path, keep: u32, keep_days: Option<u32>) -> usize {
         })
         .collect();
     let mut removed = 0;
-    for name in expired(&entries, keep, keep_days, jiff::Timestamp::now()) {
+    for name in expired(&entries, prefix, keep, keep_days, jiff::Timestamp::now()) {
         if fs::remove_file(dir.join(&name)).is_ok() {
             removed += 1;
         }

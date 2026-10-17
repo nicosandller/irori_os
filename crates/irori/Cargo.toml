@@ -32,7 +32,7 @@ irori-assist = { workspace = true, optional = true }
 # barebones build still pushes home changes (`docs/specs/api.md` §4).
 futures-util = { version = "0.3.32", default-features = false, features = ["std", "sink"] }
 # The CLI talks to a running Irori. Linked in every build, including barebones.
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls", "blocking"] }
 tokio-stream = { version = "0.1.17", features = ["sync"], optional = true }
 # The checksum of the Ollama release Irori downloads on request (ollama.rs).
 
