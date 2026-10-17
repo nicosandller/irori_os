@@ -65,6 +65,16 @@ const RETRY_WRITE: Duration = Duration::from_secs(1);
 /// the process uses: the timeout belongs to the waiter.
 const BUSY: Duration = Duration::from_secs(5);
 
+/// The tables entity history lives in, for whoever needs to tell history from the rest of
+/// `irori.db`: a backup that leaves it out, or a restore that keeps the current one.
+pub const HISTORY_TABLES: &[&str] = &[
+    "state_history",
+    "converted_units",
+    "statistic_entities",
+    "statistics_short_term",
+    "statistics",
+];
+
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS state_history (
     id INTEGER PRIMARY KEY,

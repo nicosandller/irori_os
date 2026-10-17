@@ -19,7 +19,7 @@ use crate::fold::{Head, fold};
 use crate::icons::{Icon, icon};
 
 /// The rows, by the id each goes by in the address (`/settings#assistant`).
-const SECTIONS: [&str; 9] = [
+const SECTIONS: [&str; 10] = [
     "system",
     "appearance",
     "assistant",
@@ -28,6 +28,7 @@ const SECTIONS: [&str; 9] = [
     "users",
     "programs",
     "history",
+    "backups",
     "logs",
 ];
 
@@ -39,6 +40,7 @@ pub fn Settings() -> impl IntoView {
     let crate::place::Place(place) = expect_context::<crate::place::Place>();
     let crate::users::People(people) = expect_context::<crate::users::People>();
     let crate::programs::Programs(programs) = expect_context::<crate::programs::Programs>();
+    let crate::backups::Backups(backups) = expect_context::<crate::backups::Backups>();
     let crate::welcome::Showing(welcoming) = expect_context::<crate::welcome::Showing>();
     // Whether this browser may change how the home is set up. Yes until told otherwise, so
     // nothing blinks out and back while the first answer is on its way.
@@ -146,6 +148,16 @@ pub fn Settings() -> impl IntoView {
             recorder.update(|slot| {
                 if slot.is_none() {
                     *slot = Some(settings);
+                }
+            });
+        }
+    });
+    // Backups are the whole home, so only an owner is told about them.
+    Effect::new(move |_| {
+        if owner() && backups.with_untracked(Option::is_none) {
+            spawn_local(async move {
+                if let Ok(overview) = api::fetch_backups().await {
+                    backups.set(Some(overview));
                 }
             });
         }
@@ -310,6 +322,13 @@ pub fn Settings() -> impl IntoView {
                 }
                 .into_any(),
             )}
+            {move || owner().then(|| row(
+                "backups",
+                Icon::Backup,
+                "Backups",
+                (move || backups.with(|o| crate::backups::summary(o.as_ref()))).into_any(),
+                view! { <crate::backups::Section /> }.into_any(),
+            ))}
             {row(
                 "logs",
                 Icon::Logs,

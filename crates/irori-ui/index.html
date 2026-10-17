@@ -665,17 +665,17 @@
         background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
         cursor: pointer; }
     select.select-control:disabled { opacity: .5; cursor: default; }
-    .choices button, button.press {
+    .choices button, button.press, a.press, label.press {
         padding: .25rem .65rem; font: inherit; font-size: .8rem; color: var(--muted);
         background: var(--card); border: 1px solid var(--line); border-radius: .4rem;
         cursor: pointer;
         transition: color var(--dur-fast), background-color var(--dur-base) var(--ease-out),
                     border-color var(--dur-fast), transform var(--dur-fast) var(--ease-out); }
-    .choices button:hover:not(:disabled), button.press:hover:not(:disabled) {
+    .choices button:hover:not(:disabled), button.press:hover:not(:disabled), a.press:hover, label.press:hover {
         color: var(--fg); border-color: var(--ember); }
     .choices button[aria-pressed="true"] {
         color: var(--fg); background: var(--sunk); border-color: var(--ember); }
-    .choices button:focus-visible, button.press:focus-visible {
+    .choices button:focus-visible, button.press:focus-visible, a.press:focus-visible, label.press:focus-within {
         outline: 2px solid var(--ember); outline-offset: 2px; }
     .text-control { width: 12rem; padding: .2rem .5rem; font-size: .85rem; }
     .cover-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; }
@@ -3333,6 +3333,53 @@
     .token-secret-row .log-copy { flex: none; width: 2.3rem; display: grid; place-items: center; }
     .token-secret-foot { display: flex; flex-wrap: wrap; align-items: center;
                          justify-content: space-between; gap: .5rem; }
+
+    /* The Backups row: a list like the Programs', with what to do beside each; Restore opens
+       under its backup, and the schedule and the key are blocks below. */
+    a.press, label.press { display: inline-flex; align-items: center; text-decoration: none; }
+    label.press.disabled { opacity: .55; pointer-events: none; }
+    .backup-now { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem;
+                  margin-bottom: .8rem; }
+    .backup-state { flex: 1 1 14rem; }
+    .backup-actions { display: inline-flex; flex-wrap: wrap; gap: .4rem; }
+    .backup-drawer { flex-basis: 100%; }
+    .backup-restore { display: grid; gap: .8rem; padding: .7rem 0 .3rem; max-width: 34rem; }
+    .backup-checked, .backup-restored {
+        display: grid; gap: .4rem; padding: .65rem .85rem; border-radius: .65rem; font-size: .9rem;
+        border: 1px solid color-mix(in srgb, #3f8f6b 45%, var(--line)); background: var(--card);
+        animation: rise-in var(--dur-layout) var(--ease-emphasized) backwards; }
+    .backup-checked p, .backup-restored p { margin: 0; }
+    .backup-restored { max-width: 34rem; margin-bottom: .9rem; justify-items: start; }
+    .backup-restored.failed { border-color: color-mix(in srgb, var(--error) 50%, var(--line)); }
+    .backup-restored-head { font-weight: 500; }
+    .backup-block { display: grid; gap: .65rem; margin-top: 1.4rem; max-width: 34rem; }
+    .backup-heading { margin: 0; font-size: .74rem; font-weight: 600; letter-spacing: .07em;
+                      text-transform: uppercase; color: var(--muted); }
+    .backup-schedule { display: grid; gap: .7rem; padding: .1rem 0 .2rem .2rem;
+                       transition: opacity var(--dur-base) var(--ease-out); }
+    .backup-schedule.muted { opacity: .55; }
+    .backup-time input, .backup-keep input { max-width: 11rem; }
+    .backup-days { display: flex; flex-wrap: wrap; gap: .3rem; }
+    .scope-chip.day { font: inherit; font-size: .8rem; padding: .22rem .65rem; cursor: pointer;
+                      border: 1px solid var(--line); background: var(--card);
+                      transition: color var(--dur-fast), border-color var(--dur-fast),
+                                  background-color var(--dur-base) var(--ease-out); }
+    .scope-chip.day:hover { border-color: var(--ember); }
+    .scope-chip.day.on { color: var(--fg); border-color: var(--ember);
+                         background: color-mix(in srgb, var(--ember) 12%, var(--card)); }
+    .scope-chip.day:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    /* A path or an address is as long as it is: it wraps inside the card, not past it. */
+    .backup .scope-chip { white-space: normal; overflow-wrap: anywhere; border-radius: .6rem; }
+    .backup .token-words { flex-basis: 10rem; }
+    .backup-there { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin: 0; }
+    .backup-there code { font: .8rem var(--mono); overflow-wrap: anywhere; }
+    .backup-key-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+    .welcome-later { padding: .5rem 1.1rem; font: inherit; color: var(--muted); background: transparent;
+                     border: 1px solid var(--line); border-radius: .45rem; cursor: pointer; }
+    .welcome-later:hover:not(:disabled) { color: var(--fg); border-color: var(--ember); }
+    .welcome-later:disabled { opacity: .5; cursor: default; }
+    .welcome-actions label.backup-upload { margin: 0; }
+    .welcome-step > label.backup-upload { justify-self: start; }
 
     /* Location and time zone. */
     .place { display: grid; gap: .6rem; }

@@ -32,6 +32,7 @@ mod apps;
 #[cfg(feature = "assist")]
 mod assistant;
 mod auth;
+mod backups;
 mod live;
 mod people;
 mod tokens;
@@ -250,6 +251,7 @@ pub fn router(state: AppState) -> Router {
             get(assistant::transcript).delete(assistant::clear),
         );
     router
+        .merge(backups::routes())
         .fallback(get(ui::serve))
         // Over everything, the page included: one place decides who may ask for what.
         .layer(axum::middleware::from_fn_with_state(
@@ -2698,6 +2700,72 @@ mod tests {
             shutdown.as_mut().poll(&mut cx).is_ready(),
             "the shutdown was woken"
         );
+        Ok(())
+    }
+
+    /// A backup is made, listed, downloaded, checked and deleted over the API; only a backup's
+    /// own name is served; and the first-run restore routes close once there is an owner.
+    #[tokio::test]
+    async fn backups_are_made_listed_downloaded_and_checked() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let post = |path: &str, body: &str| {
+            Request::post(path)
+                .header("x-irori-ui", "1")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+        };
+        let (status, body) = server.send(post("/api/backups", "")?).await?;
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
+        let name = serde_json::from_slice::<serde_json::Value>(&body)?["name"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        assert!(name.starts_with("irori-backup-"), "{name}");
+        // Sealed by default: the key was made for it.
+        assert!(name.ends_with(".tar.gz.enc"), "{name}");
+        let view = server.read("/api/backups").await?;
+        assert_eq!(view["backups"][0]["name"], name.as_str(), "{view}");
+        assert_eq!(view["backups"][0]["encrypted"], true);
+        assert_eq!(view["key_set"], true);
+        let key = server.read("/api/backups/key").await?["key"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let (status, _) = server
+            .send(Request::get(format!("/api/backups/{name}")).body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _) = server
+            .send(Request::get("/api/backups/secrets.toml").body(Body::empty())?)
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = server
+            .send(post(
+                &format!("/api/backups/{name}/verify"),
+                r#"{"key":"wrong"}"#,
+            )?)
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, body) = server
+            .send(post(
+                &format!("/api/backups/{name}/verify"),
+                &format!(r#"{{"key":"{key}"}}"#),
+            )?)
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let (status, _) = server
+            .send(
+                Request::delete(format!("/api/backups/{name}"))
+                    .header("x-irori-ui", "1")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
         Ok(())
     }
 

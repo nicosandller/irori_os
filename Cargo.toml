@@ -82,6 +82,12 @@ jiff = { version = "0.2.37", default-features = false, features = ["std", "serde
 jsonschema = { version = "0.56.0", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Backups (`crates/irori/src/backup`): the archive is a gzipped tar read and written in-process, so
+# no link is ever created while one is unpacked, and it can be encrypted as a stream. Pure Rust.
+tar = { version = "0.4.46", default-features = false }
+flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+# The cipher for an encrypted backup. Already in the tree through the ESPHome Noise transport.
+chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 rust-embed = "8.12.0"
 schemars = { version = "1.2.2", features = ["jiff02"] }
 serde = { version = "1.0.229", features = ["derive"] }

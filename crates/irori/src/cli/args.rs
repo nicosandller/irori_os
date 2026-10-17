@@ -93,6 +93,9 @@ pub enum Command {
     },
     /// Remove the binary install.sh put down, its PATH line, and optionally a data directory.
     Uninstall(UninstallArgs),
+    /// Back up this home to one file, list backups, or restore one. Works on the files, so it
+    /// needs no running server; restore needs it stopped.
+    Backup(BackupArgs),
     /// Print a shell completion script.
     Completions {
         #[arg(value_enum)]
@@ -172,6 +175,71 @@ pub struct UninstallArgs {
     /// Don't ask. Does not choose what to remove: pass `--binary`, `--unit`, or `--purge`.
     #[arg(long)]
     pub yes: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BackupArgs {
+    /// The config directory, as for `irori serve`.
+    #[arg(long, env = "IRORI_CONFIG", default_value = "./config", global = true)]
+    pub config: PathBuf,
+    /// The data directory. Also `[server] data` in irori.toml; default ./data.
+    #[arg(long, env = "IRORI_DATA", global = true)]
+    pub data: Option<PathBuf>,
+    /// Print JSON.
+    #[arg(long, global = true)]
+    pub json: bool,
+    #[command(subcommand)]
+    pub cmd: BackupCmd,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum BackupCmd {
+    /// Write a backup now, the way `backup.toml` says (sealed unless turned off). Safe while
+    /// Irori is running.
+    Create {
+        /// Write it into this directory instead of `<data>/backups`.
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
+    /// List the backups on this machine, newest first.
+    List {
+        /// Look in this directory instead.
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
+    /// Open a backup and check it, as a restore would, without changing anything.
+    Verify {
+        /// A backup file, or the name of one in `<data>/backups`.
+        archive: PathBuf,
+        /// The recovery key of a sealed backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
+        #[arg(long, env = "IRORI_BACKUP_KEY", hide_env_values = true)]
+        key: Option<String>,
+    },
+    /// Replace this home with a backup. Irori must be stopped. The home as it is now is kept
+    /// first as `pre-restore-*` in `<data>/backups`.
+    Restore {
+        /// A backup file, or the name of one in `<data>/backups`.
+        archive: PathBuf,
+        /// The recovery key of a sealed backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
+        #[arg(long, env = "IRORI_BACKUP_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// Put back everything except entity history, which stays as it is now.
+        #[arg(long)]
+        keep_history: bool,
+        /// Put back only these, comma-separated: settings, extensions, state, history.
+        #[arg(long, value_delimiter = ',', conflicts_with = "keep_history")]
+        only: Vec<String>,
+        /// Don't ask.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Print the recovery key that seals backups on this machine. It is the only way into them
+    /// from somewhere else: keep a copy that isn't on this machine.
+    Key {
+        /// Make a new key. Backups already made keep the key they were made with.
+        #[arg(long)]
+        new: bool,
+    },
 }
 
 #[derive(Debug, Args)]

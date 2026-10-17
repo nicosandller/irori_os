@@ -56,6 +56,7 @@ config/
   secrets.toml    keys, passwords, tokens — one table per extension
   assistant.toml  which model answers, when one does (the key stays in secrets.toml)
   home.toml       where the home is, and its time zone
+  backup.toml     when backups are made and where else they go (docs/specs/backup.md)
   users.toml      the people allowed in, and what each may do
   extensions/
     <id>.toml     an extension's settings that aren't secret

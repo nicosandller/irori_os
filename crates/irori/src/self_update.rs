@@ -181,6 +181,7 @@ fn sha256(bytes: &[u8]) -> String {
 /// Downloads `version`, checks it, tries it, puts it in the running binary's place, and asks
 /// for a restart. `Ok` means the restart is on its way; this process ends a moment later.
 pub async fn install(version: &Version) -> Result<(), String> {
+    crate::backup::schedule::before_update().await?;
     if !installable() {
         return Err(
             "This Irori wasn't installed in a way it can update itself. Update it the way it \
