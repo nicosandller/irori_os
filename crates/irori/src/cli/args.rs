@@ -194,29 +194,51 @@ pub struct BackupArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BackupCmd {
-    /// Write a backup now. Safe while Irori is running.
+    /// Write a backup now, the way `backup.toml` says (sealed unless turned off). Safe while
+    /// Irori is running.
     Create {
-        /// Write it into this directory instead of `[backup] dir` (default `<data>/backups`).
+        /// Write it into this directory instead of `<data>/backups`.
         #[arg(long)]
         to: Option<PathBuf>,
-        /// After writing, delete older backups beyond `[backup] keep`.
-        #[arg(long)]
-        prune: bool,
     },
-    /// List the backups in the backup directory, newest first.
+    /// List the backups on this machine, newest first.
     List {
         /// Look in this directory instead.
         #[arg(long)]
         dir: Option<PathBuf>,
     },
-    /// Replace this home with a backup. Irori must be stopped. The home as it is now is kept
-    /// first as `pre-restore-*` in the backup directory.
-    Restore {
-        /// A backup file, or the name of one in the backup directory.
+    /// Open a backup and check it, as a restore would, without changing anything.
+    Verify {
+        /// A backup file, or the name of one in `<data>/backups`.
         archive: PathBuf,
+        /// The recovery key of a sealed backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
+        #[arg(long, env = "IRORI_BACKUP_KEY", hide_env_values = true)]
+        key: Option<String>,
+    },
+    /// Replace this home with a backup. Irori must be stopped. The home as it is now is kept
+    /// first as `pre-restore-*` in `<data>/backups`.
+    Restore {
+        /// A backup file, or the name of one in `<data>/backups`.
+        archive: PathBuf,
+        /// The recovery key of a sealed backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
+        #[arg(long, env = "IRORI_BACKUP_KEY", hide_env_values = true)]
+        key: Option<String>,
+        /// Put back everything except entity history, which stays as it is now.
+        #[arg(long)]
+        keep_history: bool,
+        /// Put back only these, comma-separated: settings, extensions, state, history.
+        #[arg(long, value_delimiter = ',', conflicts_with = "keep_history")]
+        only: Vec<String>,
         /// Don't ask.
         #[arg(long)]
         yes: bool,
+    },
+    /// Print the recovery key that seals backups on this machine. It is the only way into them
+    /// from somewhere else: keep a copy that isn't on this machine.
+    Key {
+        /// Make a new key. Backups already made keep the key they were made with.
+        #[arg(long)]
+        new: bool,
     },
 }
 

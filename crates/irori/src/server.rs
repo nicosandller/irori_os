@@ -32,6 +32,7 @@ mod apps;
 #[cfg(feature = "assist")]
 mod assistant;
 mod auth;
+mod backups;
 mod live;
 mod people;
 mod tokens;
@@ -174,8 +175,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/history/{entity_id}/summary", get(entity_summary))
         .route("/api/history/{entity_id}", get(entity_history))
         .route("/api/recorder", get(recorder_settings).put(set_recorder))
-        .route("/api/backups", get(list_backups).post(make_backup))
-        .route("/api/backups/{name}", get(download_backup))
         .route("/api/system", get(host_info))
         .route("/api/system/usage", get(usage))
         .route("/api/system/log", get(system_log))
@@ -252,6 +251,7 @@ pub fn router(state: AppState) -> Router {
             get(assistant::transcript).delete(assistant::clear),
         );
     router
+        .merge(backups::routes())
         .fallback(get(ui::serve))
         // Over everything, the page included: one place decides who may ask for what.
         .layer(axum::middleware::from_fn_with_state(
@@ -430,93 +430,6 @@ struct RecorderBody {
     retain_days: u32,
     #[serde(default)]
     summary_days: Option<u32>,
-}
-
-/// Backups are the whole home, secrets and password hashes included, so these routes are not
-/// in the auth table's read list: only the owner's session, with the page's header, gets in
-/// (`docs/specs/backup.md` §6).
-async fn backup_dir(
-    state: &AppState,
-) -> (
-    std::path::PathBuf,
-    std::path::PathBuf,
-    std::path::PathBuf,
-    u32,
-) {
-    let settings = state.0.config.backup().await;
-    let data = state
-        .0
-        .db
-        .path
-        .parent()
-        .map(std::path::Path::to_path_buf)
-        .unwrap_or_default();
-    let config = state.0.config.dir().await;
-    (
-        config,
-        crate::backup::dir(&data, settings.dir.as_deref()),
-        data,
-        settings.keep,
-    )
-}
-
-async fn list_backups(State(state): State<AppState>) -> Response {
-    let (_, dir, _, _) = backup_dir(&state).await;
-    match tokio::task::spawn_blocking(move || crate::backup::list(&dir)).await {
-        Ok(entries) => Json(entries).into_response(),
-        Err(error) => refused(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    }
-}
-
-async fn make_backup(State(state): State<AppState>) -> Response {
-    let (config, dir, data, keep) = backup_dir(&state).await;
-    let made = tokio::task::spawn_blocking(move || {
-        let file = crate::backup::create(&config, &data, &dir)?;
-        crate::backup::prune(&dir, keep);
-        Ok::<_, anyhow::Error>(file)
-    })
-    .await;
-    match made {
-        Ok(Ok(file)) => {
-            tracing::info!(file = %file.display(), "backup written");
-            let name = file
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            (
-                StatusCode::CREATED,
-                Json(serde_json::json!({ "name": name })),
-            )
-                .into_response()
-        }
-        Ok(Err(error)) => refused(StatusCode::INTERNAL_SERVER_ERROR, format!("{error:#}")),
-        Err(error) => refused(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
-    }
-}
-
-async fn download_backup(State(state): State<AppState>, Path(name): Path<String>) -> Response {
-    if !crate::backup::is_backup_name(&name) {
-        return refused(StatusCode::NOT_FOUND, format!("no backup called `{name}`"));
-    }
-    let (_, dir, _, _) = backup_dir(&state).await;
-    match tokio::fs::read(dir.join(&name)).await {
-        Ok(bytes) => (
-            [
-                (
-                    axum::http::header::CONTENT_TYPE,
-                    "application/gzip".to_owned(),
-                ),
-                (
-                    axum::http::header::CONTENT_DISPOSITION,
-                    format!("attachment; filename=\"{name}\""),
-                ),
-                (axum::http::header::CACHE_CONTROL, "no-store".to_owned()),
-            ],
-            bytes,
-        )
-            .into_response(),
-        Err(_) => refused(StatusCode::NOT_FOUND, format!("no backup called `{name}`")),
-    }
 }
 
 async fn recorder_settings(State(state): State<AppState>) -> Json<RecorderBody> {
@@ -2790,17 +2703,18 @@ mod tests {
         Ok(())
     }
 
-    /// A backup can be made, listed and downloaded, and only a backup's own name is served.
+    /// A backup is made, listed, downloaded, checked and deleted over the API; only a backup's
+    /// own name is served; and the first-run restore routes close once there is an owner.
     #[tokio::test]
-    async fn a_backup_is_made_listed_and_downloaded() -> anyhow::Result<()> {
+    async fn backups_are_made_listed_downloaded_and_checked() -> anyhow::Result<()> {
         let server = Server::new(core())?;
-        let (status, body) = server
-            .send(
-                Request::post("/api/backups")
-                    .header("x-irori-ui", "1")
-                    .body(Body::empty())?,
-            )
-            .await?;
+        let post = |path: &str, body: &str| {
+            Request::post(path)
+                .header("x-irori-ui", "1")
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_owned()))
+        };
+        let (status, body) = server.send(post("/api/backups", "")?).await?;
         assert_eq!(
             status,
             StatusCode::CREATED,
@@ -2812,8 +2726,16 @@ mod tests {
             .unwrap_or_default()
             .to_owned();
         assert!(name.starts_with("irori-backup-"), "{name}");
-        let listed = server.read("/api/backups").await?;
-        assert!(listed.to_string().contains(&name), "{listed}");
+        // Sealed by default: the key was made for it.
+        assert!(name.ends_with(".tar.gz.enc"), "{name}");
+        let view = server.read("/api/backups").await?;
+        assert_eq!(view["backups"][0]["name"], name.as_str(), "{view}");
+        assert_eq!(view["backups"][0]["encrypted"], true);
+        assert_eq!(view["key_set"], true);
+        let key = server.read("/api/backups/key").await?["key"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
         let (status, _) = server
             .send(Request::get(format!("/api/backups/{name}")).body(Body::empty())?)
             .await?;
@@ -2822,6 +2744,28 @@ mod tests {
             .send(Request::get("/api/backups/secrets.toml").body(Body::empty())?)
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _) = server
+            .send(post(
+                &format!("/api/backups/{name}/verify"),
+                r#"{"key":"wrong"}"#,
+            )?)
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, body) = server
+            .send(post(
+                &format!("/api/backups/{name}/verify"),
+                &format!(r#"{{"key":"{key}"}}"#),
+            )?)
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
+        let (status, _) = server
+            .send(
+                Request::delete(format!("/api/backups/{name}"))
+                    .header("x-irori-ui", "1")
+                    .body(Body::empty())?,
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
         Ok(())
     }
 

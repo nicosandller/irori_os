@@ -118,6 +118,14 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
     if matches!(path, "/api/health" | "/api/session" | "/api/setup") {
         return Needs::Nothing;
     }
+    // Restoring a backup instead of setting up. Open like setup is, and the handlers refuse
+    // once there is an owner.
+    if matches!(
+        path,
+        "/api/setup/backup/upload" | "/api/setup/backup/verify" | "/api/setup/backup/restore"
+    ) {
+        return Needs::Nothing;
+    }
     let Some(rest) = path.strip_prefix("/api/") else {
         return Needs::Run;
     };
@@ -999,6 +1007,16 @@ mod tests {
             (Method::GET, "/api/backups", Run),
             (Method::POST, "/api/backups", Run),
             (Method::GET, "/api/backups/irori-backup-1.tar.gz", Run),
+            (Method::POST, "/api/backups/upload", Run),
+            (Method::PUT, "/api/backups/settings", Run),
+            (Method::GET, "/api/backups/key", Run),
+            (
+                Method::POST,
+                "/api/backups/irori-backup-1.tar.gz/restore",
+                Run,
+            ),
+            (Method::POST, "/api/setup/backup/upload", Nothing),
+            (Method::POST, "/api/setup/backup/restore", Nothing),
             (Method::PUT, "/api/assistant", Run),
             (Method::POST, "/api/apps/automations/rpc", Run),
             (Method::PUT, "/api/extensions/mqtt/secrets", Run),

@@ -81,6 +81,29 @@ struct Resolved {
     log_level: tracing::Level,
 }
 
+/// Puts a staged restore in place, if one is waiting (`docs/specs/backup.md` §6). Nothing is
+/// running yet, so this speaks on stderr; the page tells the result when Irori is back.
+fn apply_restore(config: &std::path::Path, data_flag: Option<&std::path::Path>) {
+    let mut store = irori_config::Store::new(config);
+    let _ = store.reload();
+    let data = data_flag
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| store.irori().server.data.map(|d| config.join(d)))
+        .unwrap_or_else(|| PathBuf::from("./data"));
+    let Some(done) = backup::apply_pending(config, &data) else {
+        return;
+    };
+    if done.ok {
+        eprintln!("restored from {}", done.archive);
+    } else {
+        eprintln!(
+            "the restore from {} did not happen: {}",
+            done.archive,
+            done.error.as_deref().unwrap_or("unknown")
+        );
+    }
+}
+
 fn resolve(
     flags: Flags,
     file: &irori_config::ServerSettings,
@@ -118,6 +141,9 @@ fn resolve(
 }
 
 fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
+    // A restore that was asked for is put in place before anything is opened: the config is
+    // read just below, and the database after it, and neither may change under a running Irori.
+    apply_restore(&config, flags.data.as_deref());
     // Read before anything else: the log level and the address come from it.
     let mut store = irori_config::Store::new(&config);
     let problems = store.reload();
@@ -156,7 +182,6 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
     let db = db::open(&data)?;
     let recorder_settings = store.irori().recorder.clone();
-    let backup_settings = store.irori().backup.clone();
     let _ = self_update::LOOKS.set(store.irori().updates.check);
     // Before anything can replace it: an update moves this file, and the restart after it
     // must run what took its place.
@@ -255,13 +280,8 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             let settings = config::Config::open(store, &problems, &core);
             tokio::spawn(settings.clone().watch(core.clone(), history.clone()));
             tokio::spawn(settings.clone().forget_retired(core.clone()));
-            if backup_settings.enabled {
-                tokio::spawn(backup::schedule(
-                    backup_settings.clone(),
-                    config.clone(),
-                    data.clone(),
-                ));
-            }
+            // Reads backup.toml every time it wakes, so a change from the page applies at once.
+            tokio::spawn(backup::schedule::run(config.clone(), data.clone()));
             // The Ollama Irori installed for a local model, if there is one, comes up with the
             // server, and the model in use is loaded again. Nothing waits on it: the assistant
             // says "not ready" until it is.
@@ -288,6 +308,8 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // Irori's own device shows its extensions as updates, and installs them through
             // the host.
             let _ = extension_updates::RUNNING.set((core.clone(), host.clone()));
+            // After a restore: the extensions the backed-up home had, fetched again.
+            tokio::spawn(backup::reinstall_extensions(host.clone(), data.clone()));
 
             // With where each request came from: wrong passwords are counted per machine,
             // and one guessing can't make another wait.

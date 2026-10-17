@@ -1,47 +1,57 @@
 //! `irori backup` (`docs/specs/backup.md`). Works on the files of a home, not over the API, so
 //! it still works on a machine where Irori is not running, which is when a restore is wanted.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::args::{BackupArgs, BackupCmd};
 use super::{output, prompt};
-use crate::backup;
+use crate::backup::{self, NeedsKey, Parts, crypt, schedule, settings};
 
 pub fn run(args: BackupArgs) -> Result<(), String> {
     let json = args.json;
-    let mut store = irori_config::Store::new(&args.config);
-    // Problems with the files are the server's to report; a backup of a home with a typo in it
-    // is exactly the backup somebody wants.
+    let config = args.config;
+    let mut store = irori_config::Store::new(&config);
     let _ = store.reload();
-    let settings = store.irori();
     let data = args
         .data
-        .or_else(|| settings.server.data.as_ref().map(|d| args.config.join(d)))
+        .or_else(|| store.irori().server.data.map(|d| config.join(d)))
         .unwrap_or_else(|| PathBuf::from("./data"));
-    let default_dir = backup::dir(&data, settings.backup.dir.as_deref());
+    let kept = backup::dir(&data);
 
     match args.cmd {
-        BackupCmd::Create { to, prune } => {
-            let into = to.unwrap_or_else(|| default_dir.clone());
-            let file = backup::create(&args.config, &data, &into).map_err(|e| format!("{e:#}"))?;
-            let pruned = if prune {
-                backup::prune(&into, settings.backup.keep)
+        BackupCmd::Create { to } => {
+            let settings = settings::load(&config);
+            let mut key = None;
+            let (key_made, plan) = {
+                let existed = settings::secret(&config, settings::KEY).is_some();
+                let plan = schedule::plan_for(&config, &settings, &mut key)?;
+                (settings.encrypt && !existed, plan)
+            };
+            let into = to.unwrap_or_else(|| kept.clone());
+            let file = backup::create(&config, &data, &into, plan).map_err(|e| format!("{e:#}"))?;
+            let pruned = if into == kept {
+                backup::prune(&into, settings.keep, settings.keep_days)
             } else {
                 0
             };
             output::show(
                 json,
-                &serde_json::json!({ "file": file, "pruned": pruned }),
+                &serde_json::json!({ "file": file, "pruned": pruned, "key": key_made.then_some(&key) }),
                 || {
                     println!("Wrote {}", file.display());
                     if pruned > 0 {
                         println!("Deleted {pruned} older backup(s).");
                     }
+                    if let (true, Some(key)) = (key_made, &key) {
+                        println!(
+                            "\nThese backups are sealed with a new recovery key:\n\n    {key}\n\nWrite it down somewhere that isn't this machine. Without it a backup can't be opened."
+                        );
+                    }
                 },
             )
         }
         BackupCmd::List { dir } => {
-            let dir = dir.unwrap_or(default_dir);
+            let dir = dir.unwrap_or(kept);
             let entries = backup::list(&dir);
             output::show(json, &entries, || {
                 if entries.is_empty() {
@@ -53,53 +63,175 @@ pub fn run(args: BackupArgs) -> Result<(), String> {
                         .as_ref()
                         .map_or("?", |m| m.irori_version.as_str());
                     println!(
-                        "{:<42} {:>9}  Irori {version}  {}",
+                        "{:<46} {:>9}  {}  Irori {version}  {}",
                         e.name,
                         human_size(e.bytes),
+                        if e.encrypted { "sealed" } else { "plain " },
                         e.modified
                     );
                 }
             })
         }
-        BackupCmd::Restore { archive, yes } => {
-            // A bare name is one in the backup directory.
-            let file = if archive.components().count() == 1
-                && backup::is_backup_name(&archive.to_string_lossy())
-            {
-                default_dir.join(&archive)
-            } else {
-                archive
-            };
+        BackupCmd::Verify { archive, key } => {
+            let file = resolve(&archive, &kept);
+            let key = key_for(&file, key, &config, json)?;
+            let verified =
+                backup::verify(&file, key.as_deref(), &data.join("backups")).map_err(describe)?;
+            output::show(json, &verified, || {
+                println!(
+                    "{} opens: made by Irori {} on {}, {} files{}.",
+                    file.display(),
+                    verified.manifest.irori_version,
+                    verified.manifest.created_at,
+                    verified.files,
+                    if verified.manifest.history {
+                        ""
+                    } else {
+                        ", without history"
+                    }
+                );
+                for warning in &verified.warnings {
+                    println!("  note: {warning}");
+                }
+            })
+        }
+        BackupCmd::Restore {
+            archive,
+            key,
+            keep_history,
+            only,
+            yes,
+        } => {
+            let file = resolve(&archive, &kept);
+            let parts = parts_from(keep_history, &only)?;
             if backup::server_running(&data) {
                 return Err(format!(
-                    "Irori is running (see {}). Stop it first: a restore replaces files it has open.",
+                    "Irori is running (see {}). Stop it first: a restore replaces files it has open. \
+                     Or restore from the page, which does it for you.",
                     data.join("cli.url").display()
                 ));
             }
+            let key = key_for(&file, key, &config, json)?;
+            // Opened and checked before anyone is asked: a backup that can't be restored
+            // shouldn't need a yes first.
+            let verified = backup::stage(&file, key.as_deref(), parts, &data).map_err(describe)?;
             let question = format!(
-                "Replace the home in {} and {} with {}? The current one is kept as a pre-restore backup.",
-                args.config.display(),
+                "Replace this home ({} and {}) with {}? The current one is kept as a pre-restore backup.",
+                config.display(),
                 data.display(),
                 file.display()
             );
-            if !prompt::confirm(&question, yes, json)? {
+            if !prompt::confirm(&question, yes, json)
+                .inspect_err(|_| backup::cancel_pending(&data))?
+            {
+                backup::cancel_pending(&data);
                 return output::done(json, "Nothing changed.");
             }
-            let done = backup::restore(&file, &args.config, &data).map_err(|e| format!("{e:#}"))?;
+            let done = backup::apply_pending(&config, &data).ok_or("nothing was staged")?;
+            if !done.ok {
+                return Err(done
+                    .error
+                    .unwrap_or_else(|| "the restore failed".to_owned()));
+            }
             output::show(json, &done, || {
                 println!("Restored from {}.", file.display());
                 if let Some(copy) = &done.safety_copy {
-                    println!("The home as it was is kept in {}.", copy.display());
-                }
-                if !done.manifest.extensions.is_empty() {
                     println!(
-                        "Extensions were installed when this was made and are not in the backup: {}. Install them from the Extensions page or `irori extensions install`.",
-                        done.manifest.extensions.join(", ")
+                        "The home as it was is kept in {}.",
+                        kept.join(copy).display()
+                    );
+                }
+                for warning in &verified.warnings {
+                    println!("  note: {warning}");
+                }
+                let missing = backup::missing_extensions(&data, &verified.manifest);
+                if !missing.is_empty() {
+                    println!(
+                        "Extensions that were installed are fetched again the next time Irori starts: {}.",
+                        missing.join(", ")
                     );
                 }
             })
         }
+        BackupCmd::Key { new } => {
+            let key = if new {
+                let key = crypt::generate_key();
+                settings::set_secret(&config, settings::KEY, &key)?;
+                key
+            } else {
+                settings::key_or_make(&config)?.0
+            };
+            output::show(json, &serde_json::json!({ "key": key }), || {
+                println!("{key}")
+            })
+        }
     }
+}
+
+/// A bare backup name is one in the backup directory.
+fn resolve(archive: &Path, kept: &Path) -> PathBuf {
+    if archive.components().count() == 1 && backup::is_backup_name(&archive.to_string_lossy()) {
+        kept.join(archive)
+    } else {
+        archive.to_path_buf()
+    }
+}
+
+/// The key to open `file` with: the one given, else (for a sealed file) the one in this
+/// machine's `secrets.toml`, else one typed.
+fn key_for(
+    file: &Path,
+    given: Option<String>,
+    config: &Path,
+    json: bool,
+) -> Result<Option<String>, String> {
+    let sealed = backup::inspect(file).map_err(describe)?.0;
+    if !sealed || given.is_some() {
+        return Ok(given);
+    }
+    if let Some(local) = settings::secret(config, settings::KEY) {
+        return Ok(Some(local));
+    }
+    if json {
+        return Err(NeedsKey.to_string());
+    }
+    prompt::password("Recovery key: ", false).map(Some)
+}
+
+fn parts_from(keep_history: bool, only: &[String]) -> Result<Parts, String> {
+    if keep_history {
+        return Ok(Parts {
+            history: false,
+            ..Parts::ALL
+        });
+    }
+    if only.is_empty() {
+        return Ok(Parts::ALL);
+    }
+    let mut parts = Parts {
+        settings: false,
+        extensions: false,
+        state: false,
+        history: false,
+    };
+    for name in only {
+        match name.trim() {
+            "settings" => parts.settings = true,
+            "extensions" => parts.extensions = true,
+            "state" => parts.state = true,
+            "history" => parts.history = true,
+            other => {
+                return Err(format!(
+                    "`{other}` isn't something to restore: choose from settings, extensions, state, history"
+                ));
+            }
+        }
+    }
+    Ok(parts)
+}
+
+fn describe(error: anyhow::Error) -> String {
+    format!("{error:#}")
 }
 
 fn human_size(bytes: u64) -> String {

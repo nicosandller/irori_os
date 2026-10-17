@@ -327,8 +327,6 @@ pub struct IroriSettings {
     pub recorder: RecorderSection,
     #[serde(default)]
     pub updates: UpdatesSection,
-    #[serde(default)]
-    pub backup: BackupSection,
 }
 
 /// `[devices]`. Nothing in it is used any more: a device joins the home only when a person adds
@@ -388,45 +386,6 @@ impl Default for UpdatesSection {
     fn default() -> Self {
         Self {
             check: default_check(),
-        }
-    }
-}
-
-/// `[backup]`. Snapshots Irori takes on its own (`docs/specs/backup.md`). Read at startup.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BackupSection {
-    /// Take a backup on a schedule. A missing value is `false`: `irori backup create` and the
-    /// API work either way.
-    #[serde(default)]
-    pub enabled: bool,
-    /// Hours between scheduled backups. At least 1; a missing value is 24.
-    #[serde(default = "default_every_hours")]
-    pub every_hours: u32,
-    /// How many `irori-backup-*` files to keep; older ones are deleted after each new one.
-    /// At least 1; a missing value is 7.
-    #[serde(default = "default_keep")]
-    pub keep: u32,
-    /// Where backups go. Relative to the data directory; a missing value is `backups`.
-    #[serde(default)]
-    pub dir: Option<std::path::PathBuf>,
-}
-
-fn default_every_hours() -> u32 {
-    24
-}
-
-fn default_keep() -> u32 {
-    7
-}
-
-impl Default for BackupSection {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            every_hours: default_every_hours(),
-            keep: default_keep(),
-            dir: None,
         }
     }
 }

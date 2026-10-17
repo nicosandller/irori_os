@@ -25,8 +25,8 @@ use irori_types::{
 };
 
 pub use files::{
-    BackupSection, DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel,
-    RecorderSection, ServerSettings,
+    DevicesSection, ExtensionsSection, File, IroriSettings, LogLevel, RecorderSection,
+    ServerSettings,
 };
 
 /// Something wrong with one file, to be logged and shown. Never fatal: the file keeps whatever it
