@@ -132,10 +132,17 @@ pub fn Welcome() -> impl IntoView {
                     >
                         "Set it up"
                     </button>
+                    // A home that is being moved or rebuilt brings its past with it.
+                    {move || (!has_owner()).then(|| view! {
+                        <button type="button" class="welcome-later" on:click=move |_| go(4)>
+                            "Restore from a backup instead"
+                        </button>
+                    })}
                 </div>
             </div>
         }
         .into_any(),
+        4 => view! { <RestoreFirst back=Callback::new(move |()| go(0)) /> }.into_any(),
         1 => view! {
             <form class="welcome-step add-step" on:submit=you>
                 <h1>"Who are you?"</h1>
@@ -355,6 +362,141 @@ pub fn SignIn() -> impl IntoView {
                     </div>
                 </div>
             </form>
+        </div>
+    }
+}
+
+/// Instead of setting up: send a backup here and put it back. The home has no owner yet, so
+/// this is open the way setting up is; once restored, the people in the backup are the ones
+/// who sign in.
+#[component]
+fn RestoreFirst(back: Callback<()>) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let name = RwSignal::new(None::<String>);
+    let key = RwSignal::new(String::new());
+    let checked = RwSignal::new(None::<api::BackupVerified>);
+    let trouble = RwSignal::new(None::<String>);
+    let busy = RwSignal::new(false);
+    let restarting = RwSignal::new(false);
+    let from = RwSignal::new(None::<String>);
+    Effect::new(move |_| {
+        let (Some(from), Some(health)) = (from.get(), live.health.get()) else {
+            return;
+        };
+        if health.boot_id != from {
+            let _ = window().location().reload();
+        }
+    });
+
+    let picked = move |event: ev::Event| {
+        use web_sys::wasm_bindgen::JsCast as _;
+        let Some(input) = event
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok())
+        else {
+            return;
+        };
+        let Some(file) = input.files().and_then(|files| files.get(0)) else {
+            return;
+        };
+        busy.set(true);
+        trouble.set(None);
+        checked.set(None);
+        spawn_local(async move {
+            match api::upload_backup(file, true).await {
+                Ok(sent) => name.set(Some(sent)),
+                Err(why) => trouble.set(Some(why)),
+            }
+            busy.set(false);
+        });
+    };
+    let check = move |_| {
+        let Some(sent) = name.get_untracked() else {
+            return;
+        };
+        busy.set(true);
+        trouble.set(None);
+        let typed = key.get_untracked();
+        spawn_local(async move {
+            match api::setup_verify_backup(&sent, &typed).await {
+                Ok(verified) => checked.set(Some(verified)),
+                Err(why) => {
+                    checked.set(None);
+                    trouble.set(Some(why));
+                }
+            }
+            busy.set(false);
+        });
+    };
+    let restore = move |_| {
+        let (Some(sent), Some(boot)) = (
+            name.get_untracked(),
+            live.health.get_untracked().map(|h| h.boot_id),
+        ) else {
+            return;
+        };
+        busy.set(true);
+        trouble.set(None);
+        let typed = key.get_untracked();
+        spawn_local(async move {
+            match api::setup_restore_backup(&sent, &typed).await {
+                Ok(_) => {
+                    restarting.set(true);
+                    from.set(Some(boot));
+                }
+                Err(why) => {
+                    trouble.set(Some(why));
+                    busy.set(false);
+                }
+            }
+        });
+    };
+
+    view! {
+        <div class="welcome-step add-step">
+            <h1>"Restore a backup"</h1>
+            <p class="welcome-lede">
+                "Send the backup file from your old home. IroriOS checks it, puts the home back as \
+                 it was, and restarts. You'll sign in with the people and passwords that were in it."
+            </p>
+            <label class="press backup-upload" class:disabled=move || busy.get() || restarting.get()>
+                {move || match name.get() {
+                    Some(sent) => format!("Sent: {sent}. Choose a different one…"),
+                    None => "Choose the backup file…".to_owned(),
+                }}
+                <input type="file" hidden accept=".gz,.enc,application/gzip"
+                    disabled=move || busy.get() || restarting.get() on:change=picked />
+            </label>
+            {move || name.get().map(|_| view! {
+                <label class="settings-field">
+                    "Recovery key, if the backup is sealed"
+                    <input type="text" autocomplete="off" spellcheck="false"
+                        placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
+                        prop:value=move || key.get()
+                        on:input=move |e| { key.set(event_target_value(&e)); checked.set(None); } />
+                </label>
+            })}
+            {move || checked.get().map(|v| view! {
+                <div class="backup-checked" role="status">
+                    <p>
+                        "It opens: made by Irori "{v.manifest.irori_version.clone()}" on "
+                        {crate::backups::when(&v.manifest.created_at)}", "{v.files}" files."
+                    </p>
+                    {v.warnings.iter().map(|w| view! { <p class="muted small">"Note: "{w.clone()}</p> }).collect_view()}
+                </div>
+            })}
+            {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+            <div class="welcome-actions">
+                <button type="button" class="welcome-later" disabled=move || restarting.get()
+                    on:click=move |_| back.run(())>"Back"</button>
+                <button type="button" disabled=move || busy.get() || name.get().is_none() on:click=check>
+                    "Check it"
+                </button>
+                <button type="button" class="welcome-next"
+                    disabled=move || busy.get() || name.get().is_none() on:click=restore>
+                    {move || if restarting.get() { "Restarting…" } else { "Restore and restart" }}
+                </button>
+            </div>
         </div>
     }
 }

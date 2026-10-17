@@ -9,6 +9,7 @@
 mod api;
 mod app_frame;
 mod assistant;
+mod backups;
 mod chart;
 mod choices;
 mod count;
@@ -108,6 +109,8 @@ fn App() -> impl IntoView {
     provide_context(users::People(people));
     let programs = RwSignal::new(Vec::new());
     provide_context(programs::Programs(programs));
+    let backups = RwSignal::new(None);
+    provide_context(backups::Backups(backups));
     let welcoming = RwSignal::new(false);
     provide_context(welcome::Showing(welcoming));
     let must_sign_in =

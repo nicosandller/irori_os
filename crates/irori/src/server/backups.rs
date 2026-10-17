@@ -85,6 +85,13 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| refused(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
+/// The key typed, else the one this Irori has on file, which opens whatever it sealed itself.
+fn key_to_try(config: &FsPath, typed: Option<String>) -> Option<String> {
+    typed
+        .filter(|k| !k.trim().is_empty())
+        .or_else(|| settings::secret(config, settings::KEY))
+}
+
 fn failed(error: impl std::fmt::Display) -> Response {
     refused(StatusCode::UNPROCESSABLE_ENTITY, error.to_string())
 }
@@ -281,7 +288,8 @@ async fn verify(
         Err(response) => return response,
     };
     let scratch = at.dir();
-    match blocking(move || backup::verify(&path, ask.key.as_deref(), &scratch)).await {
+    let key = key_to_try(&at.config, ask.key);
+    match blocking(move || backup::verify(&path, key.as_deref(), &scratch)).await {
         Ok(Ok(verified)) => Json(verified).into_response(),
         Ok(Err(error)) => failed_anyhow(&error),
         Err(response) => response,
@@ -324,7 +332,8 @@ async fn stage_and_restart(
         return failed("choose something to restore");
     }
     let data = at.data.clone();
-    let staged = blocking(move || backup::stage(&path, ask.key.as_deref(), ask.parts, &data)).await;
+    let key = key_to_try(&at.config, ask.key);
+    let staged = blocking(move || backup::stage(&path, key.as_deref(), ask.parts, &data)).await;
     match staged {
         Ok(Ok(verified)) => {
             tracing::info!("restore staged; restarting to put it in place");
@@ -505,7 +514,8 @@ async fn setup_verify(State(state): State<AppState>, Json(ask): Json<SetupRestor
         Err(response) => return response,
     };
     let scratch = at.dir();
-    match blocking(move || backup::verify(&path, ask.key.as_deref(), &scratch)).await {
+    let key = key_to_try(&at.config, ask.key);
+    match blocking(move || backup::verify(&path, key.as_deref(), &scratch)).await {
         Ok(Ok(verified)) => Json(verified).into_response(),
         Ok(Err(error)) => failed_anyhow(&error),
         Err(response) => response,

@@ -1117,6 +1117,295 @@ pub async fn save_recorder(settings: &RecorderSettings) -> Result<RecorderSettin
     read(response).await
 }
 
+// ----- Backups (`docs/specs/backup.md`) -----
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BackupManifest {
+    pub irori_version: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    #[serde(default)]
+    pub history: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BackupEntry {
+    pub name: String,
+    pub bytes: u64,
+    pub modified: String,
+    pub encrypted: bool,
+    #[serde(default)]
+    pub manifest: Option<BackupManifest>,
+    /// The places that also hold it.
+    #[serde(default)]
+    pub copies: Vec<String>,
+}
+
+/// A place a backup is copied to. Written back whole, so a destination the page doesn't draw yet
+/// still survives a save.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum BackupDestination {
+    Path {
+        name: String,
+        path: String,
+    },
+    Webdav {
+        name: String,
+        url: String,
+        username: String,
+    },
+    S3 {
+        name: String,
+        endpoint: String,
+        bucket: String,
+        region: String,
+        #[serde(default)]
+        prefix: String,
+        access_key: String,
+    },
+}
+
+impl BackupDestination {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Path { name, .. } | Self::Webdav { name, .. } | Self::S3 { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BackupSettings {
+    pub enabled: bool,
+    pub encrypt: bool,
+    pub at: String,
+    #[serde(default)]
+    pub days: Vec<String>,
+    pub keep: u32,
+    #[serde(default)]
+    pub keep_days: Option<u32>,
+    pub include_history: bool,
+    #[serde(default)]
+    pub destination: Vec<BackupDestination>,
+    /// Whether each destination's secret is on file. Never sent back.
+    #[serde(default, skip_serializing)]
+    pub secrets_set: BTreeMap<String, bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct BackupDestinationState {
+    #[serde(default)]
+    pub last_ok: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct BackupStatus {
+    #[serde(default)]
+    pub last_attempt: Option<String>,
+    #[serde(default)]
+    pub last_success: Option<String>,
+    #[serde(default)]
+    pub last_error: Option<String>,
+    #[serde(default)]
+    pub destinations: BTreeMap<String, BackupDestinationState>,
+}
+
+/// What of a backup to put back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupParts {
+    pub settings: bool,
+    pub extensions: bool,
+    pub state: bool,
+    pub history: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BackupRestored {
+    pub ok: bool,
+    pub at: String,
+    pub archive: String,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub safety_copy: Option<String>,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub reinstalled: Vec<String>,
+    #[serde(default)]
+    pub awaiting_approval: Vec<String>,
+    #[serde(default)]
+    pub reinstall_failed: Vec<String>,
+    #[serde(default)]
+    pub extensions_handled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BackupOverview {
+    pub backups: Vec<BackupEntry>,
+    pub settings: BackupSettings,
+    #[serde(default)]
+    pub status: BackupStatus,
+    #[serde(default)]
+    pub key_set: bool,
+    #[serde(default)]
+    pub restore_pending: bool,
+    #[serde(default)]
+    pub last_restore: Option<BackupRestored>,
+    #[serde(default)]
+    pub free_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BackupVerified {
+    pub manifest: BackupManifest,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    pub files: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct Named {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyBody {
+    key: String,
+}
+
+pub async fn fetch_backups() -> Result<BackupOverview, String> {
+    read(
+        Request::get("/api/backups")
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
+pub async fn make_backup() -> Result<String, String> {
+    let response = post("/api/backups").send().await.map_err(unreachable)?;
+    read::<Named>(response).await.map(|made| made.name)
+}
+
+pub async fn delete_backup(name: &str) -> Result<(), String> {
+    checked(
+        delete(&format!("/api/backups/{name}"))
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
+pub async fn verify_backup(name: &str, key: &str) -> Result<BackupVerified, String> {
+    let response = post(&format!("/api/backups/{name}/verify"))
+        .json(&serde_json::json!({ "key": key }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+/// Starts a restore: the server checks the backup, stages it, and restarts to put it in place.
+pub async fn restore_backup(
+    name: &str,
+    key: &str,
+    parts: BackupParts,
+) -> Result<BackupVerified, String> {
+    let response = post(&format!("/api/backups/{name}/restore"))
+        .json(&serde_json::json!({ "key": key, "parts": parts }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+pub async fn save_backup_settings(
+    settings: &BackupSettings,
+    secrets: &BTreeMap<String, String>,
+) -> Result<BackupOverview, String> {
+    let mut body = serde_json::to_value(settings).map_err(|e| e.to_string())?;
+    if let Some(map) = body.as_object_mut() {
+        map.insert("secrets".to_owned(), serde_json::json!(secrets));
+    }
+    let response = put("/api/backups/settings")
+        .json(&body)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+pub async fn fetch_backup_key() -> Result<String, String> {
+    let response = Request::get("/api/backups/key")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read::<KeyBody>(response).await.map(|k| k.key)
+}
+
+/// A new recovery key, or one of the person's own.
+pub async fn new_backup_key(own: Option<&str>) -> Result<String, String> {
+    let response = post("/api/backups/key")
+        .json(&serde_json::json!({ "key": own }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read::<KeyBody>(response).await.map(|k| k.key)
+}
+
+pub async fn backup_restore_seen() {
+    let _ = post("/api/backups/restore/seen").send().await;
+}
+
+/// Sends a backup file from this computer to Irori. `setup` is the route that works before the
+/// home has an owner.
+pub async fn upload_backup(file: web_sys::File, setup: bool) -> Result<String, String> {
+    let url = if setup {
+        "/api/setup/backup/upload"
+    } else {
+        "/api/backups/upload"
+    };
+    let name = file.name();
+    let response = post(&format!("{url}?name={name}"))
+        .body(file)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read::<Named>(response).await.map(|made| made.name)
+}
+
+/// First run: check an uploaded backup, then restore it instead of setting up.
+pub async fn setup_verify_backup(name: &str, key: &str) -> Result<BackupVerified, String> {
+    let response = post("/api/setup/backup/verify")
+        .json(&serde_json::json!({ "name": name, "key": key }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
+pub async fn setup_restore_backup(name: &str, key: &str) -> Result<BackupVerified, String> {
+    let response = post("/api/setup/backup/restore")
+        .json(&serde_json::json!({ "name": name, "key": key }))
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    read(response).await
+}
+
 /// One hour of a sensor that measures or counts. `value` is the average, or how much a counter
 /// changed during that hour.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
