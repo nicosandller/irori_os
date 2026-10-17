@@ -416,3 +416,76 @@ fn only_our_own_names_may_be_asked_for() {
         assert!(!is_backup_name(bad), "{bad}");
     }
 }
+
+#[test]
+fn a_restore_that_fails_half_way_puts_the_home_back_as_it_was() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    // The home moves on after the backup was taken.
+    fs::write(
+        config.join("areas.toml"),
+        "[areas.hall]\nname = \"Changed\"\n",
+    )?;
+    let parts = Parts {
+        settings: true,
+        extensions: false,
+        state: true,
+        history: false,
+    };
+    stage(&backup, None, parts, &data)?;
+    // Damaged after it was checked: the settings go in, then the database can't be read.
+    fs::write(
+        data.join(PENDING).join("tree/data/irori.db"),
+        b"not a database",
+    )?;
+
+    let done = apply_pending(&config, &data).context("nothing was staged")?;
+    assert!(!done.ok);
+    let error = done.error.expect("says why");
+    assert!(error.contains("put back as it was"), "{error}");
+    assert!(
+        fs::read_to_string(config.join("areas.toml"))?.contains("Changed"),
+        "the settings are the ones the home had, not the backup's"
+    );
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
+    assert!(!data.join("restore-rollback").exists());
+    Ok(())
+}
+
+#[test]
+fn restoring_settings_that_open_the_network_says_so_first() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    fs::write(
+        config.join("irori.toml"),
+        "[server]\nallow_unauthenticated_lan = true\n",
+    )?;
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let verified = stage(&backup, None, Parts::ALL, &data)?;
+    assert!(
+        verified
+            .warnings
+            .iter()
+            .any(|w| w.contains("allow_unauthenticated_lan")),
+        "{:?}",
+        verified.warnings
+    );
+    Ok(())
+}
+
+#[test]
+fn the_last_three_safety_copies_are_kept() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    for _ in 0..5 {
+        restore_now(&backup, None, Parts::ALL, &config, &data)?;
+    }
+    let kept = fs::read_dir(dir(&data))?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().starts_with(SAFETY_PREFIX))
+        .count();
+    assert_eq!(kept, 3);
+    Ok(())
+}

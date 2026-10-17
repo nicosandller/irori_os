@@ -158,25 +158,19 @@ impl Settings {
                 Destination::Path { path, .. } if !path.is_absolute() => {
                     return Err(format!("`{name}`: the path has to be absolute"));
                 }
-                Destination::Webdav { url, .. }
-                    if !(url.starts_with("https://") || url.starts_with("http://")) =>
-                {
-                    return Err(format!(
-                        "`{name}`: the address has to start with https:// or http://"
-                    ));
-                }
+                Destination::Webdav { url, .. } => secure_address(name, url)?,
                 Destination::S3 {
                     endpoint,
                     bucket,
                     region,
                     ..
-                } if !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
-                    || bucket.is_empty()
-                    || region.is_empty() =>
-                {
-                    return Err(format!(
-                        "`{name}`: an S3 destination needs an https:// endpoint, a bucket and a region"
-                    ));
+                } => {
+                    if bucket.is_empty() || region.is_empty() {
+                        return Err(format!(
+                            "`{name}`: an S3 destination needs an https:// endpoint, a bucket and a region"
+                        ));
+                    }
+                    secure_address(name, endpoint)?;
                 }
                 _ => {}
             }
@@ -190,6 +184,41 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+/// An address a password may be sent to: https anywhere, or http only on a network of the
+/// home's own (a NAS by name or private address, `localhost`), where nobody is listening in.
+fn secure_address(name: &str, address: &str) -> Result<(), String> {
+    let url = reqwest::Url::parse(address).map_err(|_| {
+        format!("`{name}`: the address has to start with https:// (or http:// on your own network)")
+    })?;
+    let host = url.host_str().unwrap_or("");
+    match url.scheme() {
+        "https" if !host.is_empty() => Ok(()),
+        "http" if is_home_network(host) => Ok(()),
+        "http" if !host.is_empty() => Err(format!(
+            "`{name}`: this address sends the password in the clear across the internet; use https://"
+        )),
+        _ => Err(format!(
+            "`{name}`: the address has to start with https:// (or http:// on your own network)"
+        )),
+    }
+}
+
+fn is_home_network(host: &str) -> bool {
+    use std::net::IpAddr;
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
+            IpAddr::V6(ip) => ip.is_loopback() || (ip.segments()[0] & 0xfe00) == 0xfc00,
+        };
+    }
+    let name = host.trim_end_matches('.').to_ascii_lowercase();
+    !name.contains('.')
+        || ["local", "lan", "home", "internal", "localhost"]
+            .iter()
+            .any(|tld| name.ends_with(&format!(".{tld}")))
+        || name.ends_with(".home.arpa")
 }
 
 /// `HH:MM` as hour and minute.
@@ -355,6 +384,28 @@ mod tests {
             })
             .contains("encrypted")
         );
+        // A password doesn't cross the internet in the clear, but may cross the home's network.
+        let dav = |url: &str| {
+            Settings {
+                destination: vec![Destination::Webdav {
+                    name: "nas".into(),
+                    url: url.into(),
+                    username: "me".into(),
+                }],
+                ..Settings::default()
+            }
+            .check()
+        };
+        assert!(dav("https://cloud.example.com/dav").is_ok());
+        assert!(dav("http://192.168.1.5:5005/dav").is_ok());
+        assert!(dav("http://nas.local/dav").is_ok());
+        assert!(dav("http://nas/dav").is_ok());
+        assert!(
+            dav("http://cloud.example.com/dav")
+                .expect_err("refused")
+                .contains("in the clear")
+        );
+        assert!(dav("ftp://nas/dav").is_err());
         // Encryption off with nowhere to send is fine.
         let plain = Settings {
             encrypt: false,

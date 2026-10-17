@@ -382,22 +382,42 @@ fn wanted_name(query: Option<String>) -> Option<String> {
 /// Streams the request body into `<backups>/.upload-….part`, then checks it is a backup and
 /// gives it its name. Nothing is kept that isn't one.
 async fn receive(at: &Places, name: Option<String>, body: Body, length: Option<u64>) -> Response {
+    match receive_named(at, name, body, length).await {
+        Ok(name) => created(&name),
+        Err(response) => response,
+    }
+}
+
+fn created(name: &str) -> Response {
+    (
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "name": name })),
+    )
+        .into_response()
+}
+
+async fn receive_named(
+    at: &Places,
+    name: Option<String>,
+    body: Body,
+    length: Option<u64>,
+) -> Result<String, Response> {
     let dir = at.dir();
     if let Some(length) = length
         && length > MOST_UPLOADED
     {
-        return failed("that file is too big to be a backup");
+        return Err(failed("that file is too big to be a backup"));
     }
     if let Some(free) = free_bytes(&at.data)
         && length.is_some_and(|l| l > free)
     {
-        return failed("there isn't room for that file here");
+        return Err(failed("there isn't room for that file here"));
     }
     if std::fs::create_dir_all(&dir).is_err() {
-        return refused(
+        return Err(refused(
             StatusCode::INTERNAL_SERVER_ERROR,
             "couldn't make the backup directory".to_owned(),
-        );
+        ));
     }
     let mut suffix = [0_u8; 6];
     let _ = getrandom::fill(&mut suffix);
@@ -424,7 +444,7 @@ async fn receive(at: &Places, name: Option<String>, body: Body, length: Option<u
     .await;
     if let Err(error) = written {
         let _ = std::fs::remove_file(&part);
-        return failed(format!("the upload didn't finish: {error}"));
+        return Err(failed(format!("the upload didn't finish: {error}")));
     }
     let (dir2, part2) = (dir.clone(), part.clone());
     let finished = tokio::task::spawn_blocking(move || -> Result<String, String> {
@@ -445,18 +465,17 @@ async fn receive(at: &Places, name: Option<String>, body: Body, length: Option<u
     })
     .await;
     match finished {
-        Ok(Ok(name)) => (
-            StatusCode::CREATED,
-            Json(serde_json::json!({ "name": name })),
-        )
-            .into_response(),
+        Ok(Ok(name)) => Ok(name),
         Ok(Err(why)) => {
             let _ = std::fs::remove_file(&part);
-            failed(why)
+            Err(failed(why))
         }
         Err(error) => {
             let _ = std::fs::remove_file(&part);
-            refused(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
+            Err(refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error.to_string(),
+            ))
         }
     }
 }
@@ -502,8 +521,41 @@ async fn setup_send(
     if let Err(response) = unowned(&state).await {
         return response;
     }
+    // One at a time: nobody has signed in here, so nobody gets to fill the disk in parallel.
+    let Some(_turn) = SetupTurn::take() else {
+        return failed("another backup is being sent; wait for it to finish");
+    };
     let at = places(&state).await;
-    receive(&at, wanted_name(query), body, content_length(&headers)).await
+    let name = match receive_named(&at, wanted_name(query), body, content_length(&headers)).await {
+        Ok(name) => name,
+        Err(response) => return response,
+    };
+    // An owner may have been made while the file was coming in: then it is not wanted.
+    if let Err(response) = unowned(&state).await {
+        let _ = std::fs::remove_file(at.dir().join(&name));
+        return response;
+    }
+    created(&name)
+}
+
+/// Held while a file is being received on a home with no owner yet.
+static SETUP_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+struct SetupTurn;
+
+impl SetupTurn {
+    fn take() -> Option<Self> {
+        SETUP_BUSY
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            .then_some(Self)
+    }
+}
+
+impl Drop for SetupTurn {
+    fn drop(&mut self) {
+        SETUP_BUSY.store(false, Ordering::SeqCst);
+    }
 }
 
 #[derive(Debug, Deserialize)]

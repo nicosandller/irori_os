@@ -545,11 +545,27 @@ fn checked(manifest: &Manifest, root: &Path) -> anyhow::Result<Verified> {
         .iter()
         .map(|p| format!("{}: {}", p.file, p.reason))
         .collect();
+    let mut warnings: Vec<String> = warnings;
+    if opens_the_lan(&root.join("config/irori.toml")) {
+        warnings.push(
+            "irori.toml in this backup has allow_unauthenticated_lan on: restoring settings turns it back on, and anyone on the network can then use this home without signing in"
+                .to_owned(),
+        );
+    }
     Ok(Verified {
         manifest: manifest.clone(),
         warnings,
         files: count_files(root),
     })
+}
+
+/// Whether an `irori.toml` lets the network in without a sign-in.
+fn opens_the_lan(file: &Path) -> bool {
+    fs::read_to_string(file)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok())
+        .and_then(|t| t.get("server")?.get("allow_unauthenticated_lan")?.as_bool())
+        .unwrap_or(false)
 }
 
 fn count_files(root: &Path) -> usize {
@@ -749,6 +765,38 @@ fn swap_in(
         None
     };
 
+    if let Err(error) = put_back(tree, config, data, parts) {
+        // Half a restore is worse than none: put the home back as the safety copy had it.
+        let Some(name) = &safety else {
+            return Err(error);
+        };
+        return Err(match roll_back(&dir(data).join(name), config, data) {
+            Ok(()) => error.context("the restore failed; your home was put back as it was"),
+            Err(back) => error.context(format!(
+                "the restore failed, and putting your home back failed too ({back:#}); \
+                 {name} in the backups folder holds it as it was"
+            )),
+        });
+    }
+    // The safety copies are for a way back, not for ever: the last three stay.
+    prune_kind(&dir(data), SAFETY_PREFIX, 3, None);
+    Ok(safety)
+}
+
+/// Puts the home as `archive` (a safety copy) had it.
+fn roll_back(archive: &Path, config: &Path, data: &Path) -> anyhow::Result<()> {
+    let tree = data.join("restore-rollback");
+    let _ = fs::remove_dir_all(&tree);
+    fs::create_dir_all(&tree)?;
+    fs::set_permissions(&tree, fs::Permissions::from_mode(0o700))?;
+    let result = unpack(archive, None, &tree, room_at(data))
+        .and_then(|_| put_back(&tree, config, data, Parts::ALL));
+    let _ = fs::remove_dir_all(&tree);
+    result
+}
+
+/// Puts the chosen parts of the unpacked backup at `tree` in place of the home's own.
+fn put_back(tree: &Path, config: &Path, data: &Path, parts: Parts) -> anyhow::Result<()> {
     if parts.settings {
         // Replaced whole: a file the backup lacks is a file that wasn't there. Dot-entries are
         // someone else's (`.git`) and stay.
@@ -790,7 +838,7 @@ fn swap_in(
     if parts.state || parts.history {
         compose_database(&data.join("irori.db"), &tree.join("data/irori.db"), parts)?;
     }
-    Ok(safety)
+    Ok(())
 }
 
 /// Builds `irori.db` from the backup's and the current one: the state from one, the history

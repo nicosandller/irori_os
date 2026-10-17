@@ -91,6 +91,20 @@ fn answer(stream: TcpStream, seen: &Mutex<Seen>) {
                 Some(bytes) => (200, bytes.clone()),
                 None => (404, Vec::new()),
             },
+            "MOVE" => {
+                // The destination is a whole address; the path is what is after the host.
+                let to = headers
+                    .get("destination")
+                    .and_then(|d| d.split_once("://"))
+                    .and_then(|(_, rest)| rest.find('/').map(|i| rest[i..].to_owned()));
+                match (state.files.remove(path), to) {
+                    (Some(bytes), Some(to)) => {
+                        state.files.insert(to, bytes);
+                        (201, Vec::new())
+                    }
+                    _ => (404, Vec::new()),
+                }
+            }
             "DELETE" => {
                 state.files.remove(path);
                 (204, Vec::new())
@@ -185,13 +199,24 @@ fn webdav_puts_with_the_password_lists_by_name_and_brings_a_copy_back() {
     {
         let state = seen.lock().expect("lock");
         let (method, target, headers) = &state.requests[0];
+        // Sent under a part name and moved in, so a dropped connection leaves no short backup.
         assert_eq!(
             (method.as_str(), target.as_str()),
-            ("PUT", format!("/dav/irori/{NAME}").as_str())
+            ("PUT", format!("/dav/irori/.{NAME}.part").as_str())
         );
         assert_eq!(
             headers.get("authorization").map(String::as_str),
             Some(basic("me", "pw").as_str())
+        );
+        let (method, target, _) = &state.requests[1];
+        assert_eq!(
+            (method.as_str(), target.as_str()),
+            ("MOVE", format!("/dav/irori/.{NAME}.part").as_str())
+        );
+        assert!(
+            !state
+                .files
+                .contains_key(&format!("/dav/irori/.{NAME}.part"))
         );
         assert_eq!(state.files[&format!("/dav/irori/{NAME}")], b"sealed-bytes");
     }
@@ -315,4 +340,28 @@ fn xml_is_read_whatever_the_prefix_and_names_come_back_decoded() {
         ["/dav/irori/", "/dav/irori/irori-backup-1.tar.gz%2Benc"]
     );
     assert_eq!(percent_decode("a%2Bb%20c"), "a+b c");
+}
+
+#[test]
+fn a_name_from_a_server_cannot_bring_the_decoder_down() {
+    // `%a` followed by a two-byte character: the two bytes after `%` end inside it.
+    assert_eq!(percent_decode("%a\u{e9}"), "%a\u{e9}");
+    assert_eq!(percent_decode("100%"), "100%");
+    assert_eq!(percent_decode("%zz%41"), "%zzA");
+    assert_eq!(percent_decode("%C3%A9"), "\u{e9}");
+}
+
+#[test]
+fn xml_entities_in_a_name_are_read_as_what_they_stand_for() {
+    let xml = "<ListBucketResult><Key>a&amp;b&lt;c</Key></ListBucketResult>";
+    assert_eq!(tag_values(xml, "Key"), ["a&b<c"]);
+}
+
+#[test]
+fn the_signed_path_encodes_what_aws_encodes() {
+    let url = reqwest::Url::parse("http://h/bucket/we!ird(pre)fix+x/file.enc").expect("url");
+    assert_eq!(
+        canonical_path(&url),
+        "/bucket/we%21ird%28pre%29fix%2Bx/file.enc"
+    );
 }

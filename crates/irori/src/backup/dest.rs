@@ -22,13 +22,29 @@ pub struct Remote {
     pub name: String,
 }
 
+/// A client for small requests (listing, deleting, making a folder): a server that doesn't
+/// answer in a minute is not going to.
 fn client() -> Result<reqwest::blocking::Client, String> {
+    client_for(Duration::from_secs(60))
+}
+
+fn client_for(total: Duration) -> Result<reqwest::blocking::Client, String> {
     reqwest::blocking::Client::builder()
         .connect_timeout(Duration::from_secs(15))
-        // A backup can be big and a link slow: the whole transfer has hours, a stall doesn't.
-        .timeout(Duration::from_secs(6 * 3600))
+        .timeout(total)
         .build()
         .map_err(|e| e.to_string())
+}
+
+/// How long moving `bytes` may take: two minutes, and room for a link no slower than
+/// 256 KiB/s. A hung server then holds a thread for as long as the file warrants, not for hours.
+fn transfer_time(bytes: u64) -> Duration {
+    Duration::from_secs(120 + bytes / (256 * 1024))
+}
+
+/// For a download, whose size isn't known until it starts.
+fn long_transfer() -> Result<reqwest::blocking::Client, String> {
+    client_for(Duration::from_secs(6 * 3600))
 }
 
 fn said(error: impl std::fmt::Display) -> String {
@@ -99,6 +115,7 @@ pub fn delete(dest: &Destination, secret: Option<&str>, name: &str) -> Result<()
                 &s3_key(dest, name),
                 &[],
                 None,
+                client()?,
             )?;
             if response.status().is_success() || response.status().as_u16() == 404 {
                 Ok(())
@@ -121,7 +138,7 @@ pub fn get(dest: &Destination, secret: Option<&str>, name: &str, to: &Path) -> R
                 fs::copy(path.join(name), &part).map_err(said)?;
             }
             Destination::Webdav { url, username, .. } => {
-                let mut response = client()?
+                let mut response = long_transfer()?
                     .get(join(url, name))
                     .basic_auth(username, secret)
                     .send()
@@ -140,6 +157,7 @@ pub fn get(dest: &Destination, secret: Option<&str>, name: &str, to: &Path) -> R
                     &s3_key(dest, name),
                     &[],
                     None,
+                    long_transfer()?,
                 )?;
                 if !response.status().is_success() {
                     return Err(status_text(&response, "couldn't fetch it"));
@@ -219,12 +237,15 @@ fn put_webdav(
     file: &Path,
     name: &str,
 ) -> Result<(), String> {
-    let client = client()?;
+    let length = fs::metadata(file).map_err(said)?.len();
+    let client = client_for(transfer_time(length))?;
+    // Sent under a name nobody lists, then moved into place: a connection that drops half way
+    // leaves a stray part, never a short file with a backup's name that retention would count.
+    let part = format!(".{name}.part");
     let send = || -> Result<reqwest::blocking::Response, String> {
         let source = fs::File::open(file).map_err(said)?;
-        let length = source.metadata().map_err(said)?.len();
         client
-            .put(join(base, name))
+            .put(join(base, &part))
             .basic_auth(user, Some(password))
             .body(reqwest::blocking::Body::sized(source, length))
             .send()
@@ -245,12 +266,35 @@ fn put_webdav(
             response = send()?;
         }
     }
-    if response.status().is_success() {
-        Ok(())
-    } else if response.status().as_u16() == 401 {
-        Err("the server refused the user name or password".to_owned())
-    } else {
-        Err(status_text(&response, "couldn't copy it there"))
+    if response.status().as_u16() == 401 {
+        return Err("the server refused the user name or password".to_owned());
+    }
+    if !response.status().is_success() {
+        return Err(status_text(&response, "couldn't copy it there"));
+    }
+    let moved = client
+        .request(
+            reqwest::Method::from_bytes(b"MOVE").map_err(said)?,
+            join(base, &part),
+        )
+        .basic_auth(user, Some(password))
+        .header("Destination", join(base, name))
+        .header("Overwrite", "T")
+        .send()
+        .map_err(said);
+    match moved {
+        Ok(r) if r.status().is_success() => Ok(()),
+        other => {
+            let why = match other {
+                Ok(r) => status_text(&r, "couldn't put it in place"),
+                Err(e) => e,
+            };
+            let _ = client
+                .delete(join(base, &part))
+                .basic_auth(user, Some(password))
+                .send();
+            Err(why)
+        }
     }
 }
 
@@ -300,7 +344,7 @@ fn tag_values(xml: &str, tag: &str) -> Vec<String> {
         if local == tag && !name.starts_with('/') {
             let after = &rest[close + 1..];
             if let Some(end) = after.find("</") {
-                out.push(after[..end].trim().to_owned());
+                out.push(xml_unescape(after[..end].trim()));
             }
         }
         rest = &rest[close + 1..];
@@ -308,15 +352,27 @@ fn tag_values(xml: &str, tag: &str) -> Vec<String> {
     out
 }
 
+/// The five entities XML names; anything else is left as it was.
+fn xml_unescape(text: &str) -> String {
+    text.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+}
+
 fn percent_decode(text: &str) -> String {
     let bytes = text.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && let Ok(byte) = u8::from_str_radix(&text[i + 1..i + 3], 16)
-        {
+        // Worked out on bytes: the two after a `%` need not be a whole character, and a name
+        // that came from a server is not to bring this down.
+        let escaped = (bytes[i] == b'%')
+            .then(|| bytes.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|pair| Some((hex_digit(pair[0])? << 4) | hex_digit(pair[1])?));
+        if let Some(byte) = escaped {
             out.push(byte);
             i += 3;
         } else {
@@ -325,6 +381,10 @@ fn percent_decode(text: &str) -> String {
         }
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    char::from(b).to_digit(16).map(|d| d as u8)
 }
 
 // ----- S3 -----
@@ -376,6 +436,7 @@ fn put_s3(dest: &Destination, secret: &str, file: &Path, name: &str) -> Result<(
         &s3_key(dest, name),
         &[],
         Some((hash, body)),
+        client_for(transfer_time(length))?,
     )?;
     if response.status().is_success() {
         Ok(())
@@ -406,7 +467,7 @@ fn list_s3(dest: &Destination, secret: &str) -> Result<Vec<Remote>, String> {
         if let Some(t) = &token {
             query.push(("continuation-token".to_owned(), t.clone()));
         }
-        let response = s3_request(dest, secret, "GET", "", &query, None)?;
+        let response = s3_request(dest, secret, "GET", "", &query, None, client()?)?;
         if matches!(response.status().as_u16(), 401 | 403) {
             return Err("the storage refused the access key or the secret".to_owned());
         }
@@ -447,6 +508,7 @@ fn s3_request(
     key: &str,
     query: &[(String, String)],
     payload: Option<(String, reqwest::blocking::Body)>,
+    client: reqwest::blocking::Client,
 ) -> Result<reqwest::blocking::Response, String> {
     let (endpoint, bucket, region, _, access) = s3_parts(dest);
     let mut url = reqwest::Url::parse(endpoint.trim_end_matches('/'))
@@ -472,7 +534,7 @@ fn s3_request(
     let now = jiff::Timestamp::now();
     let headers = sign(method, &url, region, access, secret, &hash, now);
     let method = reqwest::Method::from_bytes(method.as_bytes()).map_err(said)?;
-    let mut request = client()?.request(method, url);
+    let mut request = client.request(method, url);
     for (name, value) in headers {
         request = request.header(name, value);
     }
@@ -515,7 +577,7 @@ fn sign(
     let signed = "host;x-amz-content-sha256;x-amz-date";
     let canonical = format!(
         "{method}\n{}\n{canonical_query}\nhost:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{stamp}\n\n{signed}\n{payload_hash}",
-        url.path()
+        canonical_path(url)
     );
     let scope = format!("{day}/{region}/s3/aws4_request");
     let to_sign = format!(
@@ -537,6 +599,16 @@ fn sign(
             ),
         ),
     ]
+}
+
+/// The path as SigV4 writes it for S3: each segment encoded once, with everything but the
+/// unreserved characters as `%XX`. (`Url` leaves `!'()*+,;=:@` alone, and AWS does not.)
+fn canonical_path(url: &reqwest::Url) -> String {
+    let segments: Vec<String> = url
+        .path_segments()
+        .map(|parts| parts.map(|p| uri_encode(&percent_decode(p))).collect())
+        .unwrap_or_default();
+    format!("/{}", segments.join("/"))
 }
 
 fn hmac(key: &[u8], data: &[u8]) -> Vec<u8> {

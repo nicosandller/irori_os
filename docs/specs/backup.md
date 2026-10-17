@@ -37,7 +37,7 @@ the copy is checked (`PRAGMA quick_check`) before it goes in. A backup is safe t
 Irori runs. With `include_history = false` the five history tables are emptied in the copy.
 
 Backups made by hand or on the schedule are `irori-backup-…`; the one made before a restore is
-`pre-restore-…` (kept until deleted); the one made before an update is `pre-update-…` (the last
+`pre-restore-…` (the last three are kept); the one made before an update is `pre-update-…` (the last
 three are kept). Two in the same second get `-2`.
 
 ## 2. Sealed
@@ -124,8 +124,12 @@ After a backup is made it is copied to every destination, then each is kept to `
 that would send an unsealed one off the machine are refused. Retention at a place deletes only
 names this module writes (`is_backup_name`): a folder with other things in it loses none of
 them. A place that can't be reached is said in the status and tried again with the next backup;
-it doesn't undo the one made here. WebDAV is PUT, PROPFIND, DELETE and GET (the folder is made
-if it isn't there). S3 is path-style, signed with Signature Version 4.
+it doesn't undo the one made here. WebDAV is PUT, MOVE, PROPFIND, DELETE and GET (the folder is made
+if it isn't there); a file is sent as `.name.part` and moved into place, so a dropped connection
+never leaves a short backup under a real name. S3 is path-style, signed with Signature Version 4.
+A password is only sent over `https://`, or over `http://` to the home's own network (a private
+address, `localhost`, a name with no dot or ending `.local`/`.lan`). Small requests give up after a
+minute; a transfer is given time for a link of 256 KiB/s.
 
 ## 6. Restore
 
@@ -138,7 +142,10 @@ opened**: nothing replaces files a running server has open.
 2. The page asks Irori to restart (`irori backup restore` just goes on).
 3. At start the plan is applied. First the home as it is is kept as `pre-restore-…`; if that
    fails nothing is replaced. Then the parts chosen are put back, and what happened is written
-   to `restore-result.json`, which the page shows until dismissed.
+   to `restore-result.json`, which the page shows until dismissed. If putting the parts back fails
+   half way, the home is put back from the safety copy and the result says so; the plan also
+   warns, before anything is staged, when the backup's `irori.toml` has `allow_unauthenticated_lan`
+   on, since restoring settings brings it back.
 
 **Parts.** A part left out stays as it is now.
 
