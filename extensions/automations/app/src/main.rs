@@ -52,6 +52,13 @@ pub(crate) fn flow_already_shown(value: &serde_json::Value) -> bool {
     })
 }
 
+/// Lets the same suggestion be drawn again, after Discard put the flow back.
+pub(crate) fn forget_flow() {
+    if let Some(shown) = SHOWN.with(|cell| cell.get().copied()) {
+        shown.set_value(None);
+    }
+}
+
 /// Remembers a suggestion only after the editor actually drew it.
 pub(crate) fn remember_flow(value: serde_json::Value) {
     if let Some(shown) = SHOWN.with(|cell| cell.get().copied()) {

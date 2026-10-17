@@ -615,6 +615,7 @@ pub fn Canvas() -> impl IntoView {
                                 if let Some(before) = ed.before.get_untracked() {
                                     ed.draft.set(Some(before));
                                     ed.before.set(None);
+                                    crate::forget_flow();
                                     ed.selected.set(Selected::Nothing);
                                     ed.message.set(Some("Back to the flow you had.".into()));
                                 }

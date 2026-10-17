@@ -43,6 +43,9 @@ struct Thread {
     filled: StoredValue<Option<serde_json::Value>>,
     /// The Automations page, while it is open: it takes a flow the model suggested.
     flow_page: StoredValue<Option<Callback<serde_json::Value>>>,
+    /// Whether this is the chat about an automation that is not saved yet, so the page can
+    /// tell its suggestion from another flow's.
+    for_new_flow: bool,
     /// The picture or PDF that will go with the next question.
     attached: RwSignal<Option<api::Attachment>>,
     /// Floors and rooms the assistant asked to have removed, waiting on a yes or a no.
@@ -170,6 +173,7 @@ impl Chats {
             asked: RwSignal::new(Vec::new()),
             answered: StoredValue::new(Vec::new()),
             flow_page: self.flow_page,
+            for_new_flow: scope == "new-automation",
         });
         self.threads.update_value(|threads| {
             threads.insert(scope.to_owned(), thread);
@@ -241,7 +245,7 @@ impl Thread {
             // The Automations page, while it is the one on show.
             Streamed::Flow(flow) => {
                 if let Some(send) = self.flow_page.get_value() {
-                    send.run(flow);
+                    send.run(serde_json::json!({ "new": self.for_new_flow, "flow": flow }));
                 }
             }
             Streamed::Failed(_) | Streamed::Done => {}

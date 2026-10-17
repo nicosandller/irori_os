@@ -105,15 +105,18 @@ impl Editing {
 
 /// Draws `value` on this editor when it is the flow open here.
 ///
-/// A new, unsaved flow takes any suggestion: it has no id yet, and Save names it. A saved one
-/// takes only its own. One already drawn is ignored: repeating it would undo Discard or wipe an
+/// A new, unsaved flow takes only a suggestion from the new-automation chat: it has no id yet,
+/// and Save names it. A saved one takes only its own, from its own chat. One already drawn is ignored: repeating it would undo Discard or wipe an
 /// edit. Nothing is written.
-fn offer(ed: Editing, value: serde_json::Value) {
-    if crate::flow_already_shown(&value) {
+fn offer(ed: Editing, wrapped: serde_json::Value) {
+    // The shell says which chat it came from: a new flow's, or a saved one's.
+    let for_new = wrapped["new"].as_bool() == Some(true);
+    if for_new != ed.is_new.get_untracked() || crate::flow_already_shown(&wrapped) {
         return;
     }
+    let value = wrapped["flow"].clone();
     let Some(current) = ed.draft.get_untracked() else {
-        ed.waiting.set(Some(value));
+        ed.waiting.set(Some(wrapped));
         return;
     };
     ed.waiting.set(None);
@@ -131,7 +134,7 @@ fn offer(ed: Editing, value: serde_json::Value) {
     let (next, before) = model::suggest(current, ed.before.get_untracked(), proposed);
     ed.draft.set(Some(next));
     ed.before.set(Some(before));
-    crate::remember_flow(value);
+    crate::remember_flow(wrapped);
 }
 
 #[component]
