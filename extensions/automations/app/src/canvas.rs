@@ -607,7 +607,10 @@ pub fn Canvas() -> impl IntoView {
                         <div class="banner suggest">
                             <span>"Suggested change, not saved. Dashed nodes are new or changed."</span>
                             {move || tried.get().map(|line| view! { <span class="muted">{line}</span> })}
-                            <button class="btn small" disabled=move || checking.get() on:click=move |_| backtest_suggestion()>"Backtest the last 24 hours"</button>
+                            // A flow that is not saved has no history to try it on.
+                            {move || (!ed.is_new.get()).then(|| view! {
+                                <button class="btn small" disabled=move || checking.get() on:click=move |_| backtest_suggestion()>"Backtest the last 24 hours"</button>
+                            })}
                             <button class="btn small" on:click=move |_| {
                                 if let Some(before) = ed.before.get_untracked() {
                                     ed.draft.set(Some(before));

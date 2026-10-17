@@ -105,10 +105,11 @@ impl Editing {
 
 /// Draws `value` on this editor when it is the flow open here.
 ///
-/// A new, unsaved flow is left alone. So is a suggestion for a different flow, and one already
-/// drawn: repeating it would undo Discard or wipe an edit. Nothing is written.
+/// A new, unsaved flow takes any suggestion: it has no id yet, and Save names it. A saved one
+/// takes only its own. One already drawn is ignored: repeating it would undo Discard or wipe an
+/// edit. Nothing is written.
 fn offer(ed: Editing, value: serde_json::Value) {
-    if ed.is_new.get_untracked() || crate::flow_already_shown(&value) {
+    if crate::flow_already_shown(&value) {
         return;
     }
     let Some(current) = ed.draft.get_untracked() else {
@@ -119,7 +120,7 @@ fn offer(ed: Editing, value: serde_json::Value) {
     let Ok(proposed) = serde_json::from_value::<Flow>(value.clone()) else {
         return;
     };
-    if proposed.id != current.id {
+    if !ed.is_new.get_untracked() && proposed.id != current.id {
         return;
     }
     // Comparing with a version stays that comparison; Done comes back to the suggestion.
@@ -357,9 +358,10 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                     {status}
                     <span class="grow"></span>
                     {move || ed.message.get().map(|m| view! { <span class="muted" style="font-size:.85rem">{m}</span> })}
-                    {move || (!ed.is_new.get()).then(|| view! {
-                        <button class="btn ask" title="Ask about this automation" on:click=move |event| {
+                    {move || view! {
+                        <button class="btn ask" title=move || if ed.is_new.get() { "Ask for an automation" } else { "Ask about this automation" } on:click=move |event| {
                             let id = ed.id();
+                            let new = ed.is_new.get_untracked();
                             // The shell draws the chat, outside this frame, so it is told
                             // where the button is.
                             let rect = event
@@ -372,7 +374,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                                 }));
                             spawn_local(async move {
                                 let _ = crate::bridge()
-                                    .call("assistant", serde_json::json!({ "id": id, "rect": rect }))
+                                    .call("assistant", serde_json::json!({ "id": id, "new": new, "rect": rect }))
                                     .await;
                             });
                         }>
@@ -383,7 +385,7 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                             </svg>
                             "Ask"
                         </button>
-                    })}
+                    }}
                     <inspector::FlowJson class="btn" />
                     <button class="btn" on:click=move |_| { ed.tab.set(Tab::Test); if !right_open.get_untracked() { flip(right_open, RIGHT_KEY); } }>"Test"</button>
                     <button class="btn primary" disabled=move || !ed.dirty() on:click=move |_| save()>

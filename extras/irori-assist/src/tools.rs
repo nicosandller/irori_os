@@ -40,11 +40,16 @@ fn helpers(scope: &str) -> bool {
     scope == "helpers"
 }
 
-/// The chat about one automation open in the editor, which may suggest a new version of it.
-fn automation(scope: &str, _drawing: bool) -> bool {
+/// The chat about a saved automation open in the editor, which may read it.
+fn saved_automation(scope: &str) -> bool {
     scope
         .strip_prefix("automation:")
         .is_some_and(|id| !id.is_empty())
+}
+
+/// The chat about an automation open in the editor, saved or new, which may suggest a version.
+fn automation(scope: &str, _drawing: bool) -> bool {
+    saved_automation(scope) || scope == "new-automation"
 }
 
 /// The chat about the whole home, which may ask about everything Irori holds.
@@ -197,7 +202,7 @@ const TOOLS: [Tool; 16] = [
         name: "read_flow",
         description: "The automation this chat is about, as JSON, without where its nodes sit. Call this before propose_flow.",
         params: &[],
-        offered: automation,
+        offered: |scope, _| saved_automation(scope),
     },
     Tool {
         name: "propose_flow",
@@ -448,6 +453,17 @@ mod tests {
             editing
         );
         assert!(tool_offered("automation:kettle", false, "propose_flow"));
+        // A new automation has nothing saved to read, but can still be drawn.
+        assert_eq!(
+            names(&openai_tools("new-automation", false), "/function/name"),
+            [
+                "list_devices",
+                "get_device",
+                "recent_states",
+                "propose_flow"
+            ]
+        );
+        assert!(!tool_offered("new-automation", false, "read_flow"));
         assert!(!tool_offered("general", false, "propose_flow"));
         assert!(!tool_offered("general", false, "read_flow"));
         assert!(!tool_offered("helpers", false, "propose_flow"));

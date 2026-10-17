@@ -751,6 +751,7 @@ pub fn Chat(
     // The helper builder's conversation, which fills the form in beside it.
     let building = scope.with_value(|scope| scope == "helpers");
     let on_flow = scope.with_value(|scope| scope.starts_with("automation:"));
+    let on_new_flow = scope.with_value(|scope| scope == "new-automation");
     let local = move || {
         assistant
             .0
@@ -923,6 +924,22 @@ pub fn Chat(
                              is too warm\u{201d}, \u{201c}hours the heating ran today\u{201d} — and \
                              the form is filled in from what's in your home. Change anything you \
                              like; nothing is made until you press Create."
+                        </p>
+                    }.into_any()
+                } else if on_new_flow && local() {
+                    view! {
+                        <p class="chat-empty">
+                            "Describing an automation in words needs a cloud model; the one on \
+                             this machine can't draw one. Choose one in Settings, or build it on \
+                             the canvas."
+                        </p>
+                    }.into_any()
+                } else if on_new_flow {
+                    view! {
+                        <p class="chat-empty">
+                            "Say what the automation should do, like \"turn the hall light on at \
+                             sunset\". It is drawn on the canvas, dashed, and nothing is saved \
+                             until you press Save. Discard puts the blank canvas back."
                         </p>
                     }.into_any()
                 } else if on_flow && local() {

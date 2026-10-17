@@ -1,7 +1,7 @@
 [extension]
 id = "automations"
 name = "Automations"
-version = "0.7.0"
+version = "0.7.1"
 irori = ">=1.4.0"
 # 1.4.0 has the `update` kind, and entity format 17 with it.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."

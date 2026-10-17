@@ -53,15 +53,25 @@ fn not_suggested(message: impl Into<String>) -> Value {
 /// The saved flow's on/off switch is kept, and so are the positions of nodes that
 /// remain and the names of their groups. A node the suggestion adds is placed to
 /// the right of the rightmost one. The file is not touched.
+///
+/// Without an `id` the flow is a new one the editor has not saved: there is nothing to keep, so
+/// the nodes are laid out left to right along their wires, and the editor names it on Save.
 fn propose(service: &Service, raw: Value) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct Suggested {
-        id: RuleId,
+        id: Option<RuleId>,
         flow: Value,
     }
     let Suggested { id, flow } = params(raw)?;
-    let Some(saved) = service.store.flow(&id).cloned() else {
-        return Err(format!("there's no flow `{id}`"));
+    let saved = match &id {
+        Some(id) => Some(
+            service
+                .store
+                .flow(id)
+                .cloned()
+                .ok_or_else(|| format!("there's no flow `{id}`"))?,
+        ),
+        None => None,
     };
     let Value::Object(mut object) = flow else {
         return answer(not_suggested("a suggestion has to be a JSON object"));
@@ -69,18 +79,30 @@ fn propose(service: &Service, raw: Value) -> Result<Value, String> {
     object.remove("layout");
     object.remove("groups");
     object.remove("enabled");
-    object.entry("id").or_insert_with(|| json!(id));
+    match &id {
+        Some(id) => {
+            object.entry("id").or_insert_with(|| json!(id));
+        }
+        None => {
+            object.entry("id").or_insert_with(|| json!("new_flow"));
+        }
+    }
     let parsed = match draft(Value::Object(object)) {
         Ok(flow) => flow,
         Err(problem) => return answer(json!({ "ok": false, "problems": [problem] })),
     };
-    if parsed.id != id {
+    if let Some(id) = &id
+        && parsed.id != *id
+    {
         return answer(not_suggested(format!(
             "this chat is about `{id}`; keep that id"
         )));
     }
     let mut flow = parsed;
-    lay(&saved, &mut flow);
+    match &saved {
+        Some(saved) => lay(saved, &mut flow),
+        None => arrange(&mut flow),
+    }
     let problems = service.problems(&flow);
     let ok = problems.iter().all(|problem| !problem.is_error());
     if ok {
@@ -88,6 +110,41 @@ fn propose(service: &Service, raw: Value) -> Result<Value, String> {
     } else {
         answer(json!({ "ok": false, "problems": problems }))
     }
+}
+
+/// Places a new flow's nodes in columns by how far along the wires they are, so a flow with
+/// no saved layout reads left to right.
+fn arrange(flow: &mut Flow) {
+    let mut depth: BTreeMap<_, usize> = flow.nodes.keys().map(|id| (id.clone(), 0)).collect();
+    // As many passes as there are nodes settle every chain; a loop stops there.
+    for _ in 0..flow.nodes.len() {
+        let mut moved = false;
+        for wire in &flow.wires {
+            let Some(from) = depth.get(&wire.from.node).copied() else {
+                continue;
+            };
+            if let Some(to) = depth.get_mut(&wire.to)
+                && *to <= from
+                && from < flow.nodes.len()
+            {
+                *to = from + 1;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    let mut rows: BTreeMap<usize, f64> = BTreeMap::new();
+    flow.layout = depth
+        .into_iter()
+        .map(|(id, column)| {
+            let row = rows.entry(column).or_insert(0.0);
+            let at = [60.0 + column as f64 * NODE_ACROSS, 80.0 + *row];
+            *row += NODE_DOWN;
+            (id, at)
+        })
+        .collect();
 }
 
 /// Copies the saved flow's switch, positions and group names onto a suggestion.

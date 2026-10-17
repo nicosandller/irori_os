@@ -71,6 +71,10 @@ const LOCAL_GENERAL_AUTOMATIONS: usize = 1_000;
 /// The longest a tool's answer gets.
 const TOOL_ANSWER: usize = 4_000;
 
+/// The chat on an automation that has not been saved yet. There is no flow to read, so it
+/// starts from what the person says.
+const NEW_AUTOMATION: &str = "new-automation";
+
 /// How a cloud model writes a flow. A model on this machine is not offered the tools, so it
 /// is not handed this: it would not fit, and it could not call them.
 const FLOW_GRAMMAR: &str = "\
@@ -1013,8 +1017,7 @@ async fn answer(
         }
         // Drawing a floor, filling in a helper, or rewriting a flow takes more goes than
         // looking something up: a batch that was refused is worth another try.
-        let authoring =
-            floor_of(&scope).is_some() || scope == "helpers" || scope.starts_with("automation:");
+        let authoring = floor_of(&scope).is_some() || scope == "helpers" || writes_flow(&scope);
         let with_tools = tools_work
             && if authoring {
                 rounds < PLAN_ROUNDS
@@ -1697,6 +1700,11 @@ async fn run_tool(
         "helper_kinds" => irori_helpers::guide(),
         "propose_helper" => return propose(env, &args, proposed).await,
         "read_flow" => {
+            if scope == NEW_AUTOMATION {
+                return "Nothing is saved yet: the person is making a new automation. Write it \
+                        from what they ask, and look up the devices with `list_devices`."
+                    .to_owned();
+            }
             let Some(id) = automation_of(scope) else {
                 return "read_flow is only for one automation.".to_owned();
             };
@@ -2167,8 +2175,14 @@ async fn propose_flow(
     args: &Value,
     suggested: &mut Option<Value>,
 ) -> String {
-    let Some(id) = automation_of(scope) else {
-        return "propose_flow is only for one automation.".to_owned();
+    // A new automation has no id yet: the editor names it when it is saved.
+    let id = if scope == NEW_AUTOMATION {
+        None
+    } else {
+        match automation_of(scope) {
+            Some(id) => Some(id),
+            None => return "propose_flow is only for one automation.".to_owned(),
+        }
     };
     // Some models send the flow as an object, some as the text of one.
     let flow = match args.get("flow") {
@@ -2367,6 +2381,11 @@ fn plan_brief(core: &Core, plan: &Floorplan, floor: &FloorId) -> String {
 
 fn automations_extension() -> ExtensionId {
     ExtensionId::try_from("automations").expect("automations is an extension id")
+}
+
+/// Whether the conversation may suggest a flow for the canvas: a saved automation's, or a new one's.
+fn writes_flow(scope: &str) -> bool {
+    scope == NEW_AUTOMATION || scope.starts_with("automation:")
 }
 
 /// The id of the automation a conversation is about, when it is about one.
@@ -2869,6 +2888,19 @@ async fn system_prompt(
         ));
         return Ok(prompt);
     }
+    if scope == NEW_AUTOMATION {
+        prompt.push_str(
+            "The person is making a new automation in the editor and has not saved anything. \
+             Ask what they want only if you cannot tell. Look up the devices with \
+             `list_devices`, then call `propose_flow` with the whole flow: an id of your \
+             choosing is fine, the editor names it from its title when they save. Use only \
+             entities the home has.\n",
+        );
+        if local.is_none() {
+            prompt.push_str(FLOW_GRAMMAR);
+        }
+        return Ok(prompt);
+    }
     if let Some(id) = scope.strip_prefix("automation:") {
         let brief = automation_brief(env, id, within(LOCAL_BRIEF, AUTOMATION_BRIEF)).await;
         prompt.push_str(
@@ -3200,7 +3232,7 @@ async fn set_key(config: &Config, core: &Core, key: &str) -> Result<(), String> 
 }
 
 pub fn check_scope(scope: &str) -> Result<(), String> {
-    if scope == "general" || scope == "settings" || scope == "helpers" {
+    if matches!(scope, "general" | "settings" | "helpers") || scope == NEW_AUTOMATION {
         return Ok(());
     }
     let Some((kind, id)) = scope.split_once(':') else {

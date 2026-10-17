@@ -269,7 +269,12 @@ fn Frame(id: String) -> impl IntoView {
                 // Ask button is and the shell opens the chat under it.
                 "assistant" => {
                     let flow = request.args["id"].as_str().unwrap_or_default().trim();
-                    let scope = (!flow.is_empty()).then(|| format!("automation:{flow}"));
+                    // A flow that is not saved yet has no id; it is asked about as a new one.
+                    let scope = if request.args["new"].as_bool() == Some(true) {
+                        Some("new-automation".to_owned())
+                    } else {
+                        (!flow.is_empty()).then(|| format!("automation:{flow}"))
+                    };
                     // The button's edges are measured inside the frame. Where the frame is on
                     // the page turns them into edges on the page.
                     let (left, top, right) = frame

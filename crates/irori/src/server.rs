@@ -6157,6 +6157,18 @@ mod tests {
                 "{text}"
             );
 
+            // A new automation, not saved yet, is asked about the same way.
+            let said = lines(events(&server, "new-automation", "Dim the light").await?);
+            assert!(
+                said.iter().all(|event| event.get("flow").is_none()),
+                "nothing to draw: {said:?}"
+            );
+            let text = serde_json::Value::from(said).to_string();
+            assert!(
+                text.contains("isn't installed") && text.contains("Nothing was changed"),
+                "{text}"
+            );
+
             // The general chat is not offered the tool, so the call is turned away.
             let said = lines(events(&server, "general", "Dim the hallway light").await?);
             assert!(

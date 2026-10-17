@@ -599,3 +599,48 @@ async fn a_suggestion_is_checked_and_not_written() {
     .expect("refused");
     assert_eq!(refused["ok"], false, "{refused}");
 }
+
+/// A suggestion for a flow nobody has saved yet is checked, laid out left to right, and
+/// not written.
+#[tokio::test]
+async fn a_suggestion_for_a_new_flow_is_laid_out_and_not_written() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    std::fs::create_dir_all(dir.path().join("flows")).expect("mkdir");
+
+    let (core_end, engine_end) = tokio::io::duplex(1 << 20);
+    let (calls_tx, _calls) = mpsc::unbounded_channel();
+    tokio::spawn(fake_core(core_end, calls_tx));
+    let (read, write) = tokio::io::split(engine_end);
+    let (_, client, _incoming) = irori_protocol::engine::connect(read, write)
+        .await
+        .expect("connects");
+    let store = Store::open(dir.path().join("flows"), dir.path().join("data"));
+    let (mut service, _answers) = Service::start(client, store).await.expect("starts");
+
+    let proposed = rpc::handle(
+        &mut service,
+        "flows.propose",
+        serde_json::json!({ "flow": {
+            "name": "Morning",
+            "nodes": {
+                "at": { "type": "trigger", "trigger": { "type": "startup" } },
+                "pause": { "type": "delay", "for": "5s" },
+                "stop": { "type": "stop" }
+            },
+            "wires": [["at", "pause"], ["pause", "stop"]]
+        }}),
+    )
+    .await
+    .expect("answers");
+    assert_eq!(proposed["ok"], true, "{proposed}");
+    let layout = &proposed["flow"]["layout"];
+    let x = |node: &str| layout[node][0].as_f64().expect("placed");
+    assert!(x("at") < x("pause") && x("pause") < x("stop"), "{layout}");
+    assert!(
+        std::fs::read_dir(dir.path().join("flows"))
+            .expect("flows")
+            .next()
+            .is_none(),
+        "nothing was written"
+    );
+}
