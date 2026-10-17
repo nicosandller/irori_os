@@ -5847,6 +5847,34 @@ mod tests {
                         )
                             .into_response();
                     }
+                    // Suggests a flow, then says what the tool answered. The Automations
+                    // engine is not running in this test, so the answer is a refusal.
+                    if body["model"] == "proposes-flow" {
+                        let report = body["messages"].as_array().and_then(|messages| {
+                            messages
+                                .iter()
+                                .find(|message| message["role"] == "tool")
+                                .and_then(|message| message["content"].as_str().map(str::to_owned))
+                        });
+                        let line = match report {
+                            Some(report) => serde_json::json!({"choices": [{"delta": {
+                                "content": format!("Told: {report}"),
+                            }}]}),
+                            None => serde_json::json!({"choices": [{"delta": {
+                                "tool_calls": [{"index": 0, "id": "a", "function": {
+                                    "name": "propose_flow",
+                                    "arguments": serde_json::json!({
+                                        "flow": {"id": "hallway", "name": "Hall"}
+                                    }).to_string(),
+                                }}],
+                            }}]}),
+                        };
+                        return (
+                            [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                            format!("data: {line}\n\ndata: [DONE]\n\n"),
+                        )
+                            .into_response();
+                    }
                     // Fills in the helper builder: a toggle, or with `proposes-badly` a threshold
                     // on a sensor the home doesn't have. Says what came back.
                     if body["model"] == "proposes" || body["model"] == "proposes-badly" {
@@ -6148,6 +6176,58 @@ mod tests {
                 said.iter().all(|event| event.get("helper").is_none()),
                 "{said:?}"
             );
+            Ok(())
+        }
+
+        /// Suggesting a flow is only offered about the automation being asked about, and
+        /// nothing is written when Automations isn't there to check it.
+        #[tokio::test]
+        async fn a_flow_suggestion_is_refused_when_automations_is_not_running() -> anyhow::Result<()>
+        {
+            let base = cloud().await;
+            let server = Server::new(core())?;
+            let (status, body) = server
+                .json("PUT", "/api/assistant", configure(&base, "proposes-flow"))
+                .await?;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            let lines = |text: String| -> Vec<serde_json::Value> {
+                text.lines()
+                    .filter_map(|line| {
+                        serde_json::from_str(line.strip_prefix("data:")?.trim()).ok()
+                    })
+                    .collect()
+            };
+            let said = lines(events(&server, "automation:hallway", "Dim the light").await?);
+            assert!(
+                said.iter().all(|event| event.get("flow").is_none()),
+                "nothing to draw: {said:?}"
+            );
+            let text = serde_json::Value::from(said).to_string();
+            assert!(
+                text.contains("isn't installed") && text.contains("Nothing was changed"),
+                "{text}"
+            );
+
+            // A new automation, not saved yet, is asked about the same way.
+            let said = lines(events(&server, "new-automation", "Dim the light").await?);
+            assert!(
+                said.iter().all(|event| event.get("flow").is_none()),
+                "nothing to draw: {said:?}"
+            );
+            let text = serde_json::Value::from(said).to_string();
+            assert!(
+                text.contains("isn't installed") && text.contains("Nothing was changed"),
+                "{text}"
+            );
+
+            // The general chat is not offered the tool, so the call is turned away.
+            let said = lines(events(&server, "general", "Dim the hallway light").await?);
+            assert!(
+                said.iter().all(|event| event.get("flow").is_none()),
+                "{said:?}"
+            );
+            let text = serde_json::Value::from(said).to_string();
+            assert!(text.contains("there is no tool"), "{text}");
             Ok(())
         }
 

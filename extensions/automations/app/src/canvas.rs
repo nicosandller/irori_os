@@ -6,10 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use irori_flow_types::trace::Outcome;
 use irori_flow_types::{Flow, Node, NodeId, Port, PortRef, Wire};
 use leptos::prelude::*;
+use leptos::task::spawn_local;
 use web_sys::wasm_bindgen::JsCast;
 
 use crate::editor::{Editing, Selected, View};
-use crate::{Home, live, model, time};
+use crate::{Home, api, live, model, time};
 
 /// A place for a new node: right of everything, level with the first.
 pub fn free_spot(flow: &Flow) -> [f64; 2] {
@@ -71,6 +72,44 @@ pub fn Canvas() -> impl IntoView {
     let show = live::Show::new();
     provide_context(show);
     live::watch(ed, show);
+    // What the last backtest of a suggestion said. Cleared when the draft changes, or when
+    // Discard or Save puts the suggestion away: the sentence would otherwise be about a flow
+    // that is no longer on the canvas.
+    let tried = RwSignal::new(None::<String>);
+    let checking = RwSignal::new(false);
+    Effect::new(move |_| {
+        ed.draft.track();
+        ed.before.track();
+        tried.set(None);
+    });
+    let backtest_suggestion = move || {
+        if checking.get_untracked() {
+            return;
+        }
+        let Some(flow) = ed.draft.get_untracked() else {
+            return;
+        };
+        let id = flow.id.to_string();
+        if id.is_empty() {
+            return;
+        }
+        let dirty = ed.is_new.get_untracked() || ed.saved.get_untracked().as_ref() != Some(&flow);
+        checking.set(true);
+        tried.set(None);
+        spawn_local(async move {
+            let sent = dirty.then_some(flow);
+            let line = match api::backtest(&id, sent.as_ref()).await {
+                Ok(result) => format!(
+                    "Would have run {}; the saved one ran {}.",
+                    times(result.would.len()),
+                    times(result.did.len())
+                ),
+                Err(why) => why,
+            };
+            let _ = tried.try_set(Some(line));
+            let _ = checking.try_set(false);
+        });
+    };
 
     // What's drawn: the draft, or the definition a run ran.
     let flow = Memo::new(move |_| match ed.view.get() {
@@ -120,9 +159,15 @@ pub fn Canvas() -> impl IntoView {
         (visits, taken)
     });
 
-    // The version being compared against: what's new or changed in the draft.
+    // What's new or changed: against a version while comparing, and against the draft from
+    // before a suggestion while editing. A run being played isn't a diff.
     let diff = Memo::new(move |_| -> BTreeMap<NodeId, &'static str> {
-        let View::Diff { other, .. } = ed.view.get() else {
+        let other = match ed.view.get() {
+            View::Diff { other, .. } => Some(*other),
+            View::Edit => ed.before.get(),
+            View::Trace { .. } => None,
+        };
+        let Some(other) = other else {
             return BTreeMap::new();
         };
         ed.draft
@@ -558,6 +603,25 @@ pub fn Canvas() -> impl IntoView {
                             }>"Remove it"</button>
                         </div>
                     }.into_any()),
+                    _ if ed.before.get().is_some() => Some(view! {
+                        <div class="banner suggest">
+                            <span>"Suggested change, not saved. Dashed nodes are new or changed."</span>
+                            {move || tried.get().map(|line| view! { <span class="muted">{line}</span> })}
+                            // A flow that is not saved has no history to try it on.
+                            {move || (!ed.is_new.get()).then(|| view! {
+                                <button class="btn small" disabled=move || checking.get() on:click=move |_| backtest_suggestion()>"Backtest the last 24 hours"</button>
+                            })}
+                            <button class="btn small" on:click=move |_| {
+                                if let Some(before) = ed.before.get_untracked() {
+                                    ed.draft.set(Some(before));
+                                    ed.before.set(None);
+                                    crate::forget_flow();
+                                    ed.selected.set(Selected::Nothing);
+                                    ed.message.set(Some("Back to the flow you had.".into()));
+                                }
+                            }>"Discard"</button>
+                        </div>
+                    }.into_any()),
                     _ => None,
                 },
             }}
@@ -576,6 +640,14 @@ pub fn Canvas() -> impl IntoView {
                 <button class="btn small" on:click=move |_| fit()>"Fit"</button>
             </div>
         </div>
+    }
+}
+
+/// "1 time", "2 times".
+fn times(n: usize) -> String {
+    match n {
+        1 => "1 time".to_owned(),
+        n => format!("{n} times"),
     }
 }
 

@@ -274,13 +274,15 @@ history already holds what really happened).
 
 ## 8. The extension's methods
 
-What the page calls through the bridge's `rpc`:
+What the page calls through the bridge's `rpc`. The assistant calls `flow.source` and `flows.propose` the same way; a suggestion is drawn on the open canvas and not written until Save.
 
 | Method | Params | Answer |
 |---|---|---|
 | `flows.list` | — | Each flow: id, name, enabled, armed, problems count, last run, near-miss count |
 | `flows.get` | `id` | Definition, version, problems |
 | `flows.validate` | `flow` | Problems |
+| `flow.source` | `id` | The saved flow for the assistant to read and rewrite: the definition without `layout`, `groups` or `enabled`. Missing flow is an error. The core never opens the file |
+| `flows.propose` | `id` (optional), `flow` | Checks a suggestion and hands back the flow to draw (`ok`, `flow`, `problems`), or `ok: false` and `problems` with no flow. `id` is this chat's flow. Without `id` the flow is a new one the editor has not saved: nothing is kept from a saved flow, nodes are laid out left to right along their wires, and the editor names it on Save. It is filled in when the suggestion omits it, and a different id is refused. `layout`, `groups` and `enabled` on the suggestion are ignored: the saved on/off switch is kept, positions of nodes that remain are kept, a new node is placed to the right of the rightmost, and group names whose nodes remain are kept. An error refuses it. A warning comes back with the flow. Nothing is written and nothing is armed |
 | `flows.save` | `flow` | Version, problems. Writes the file atomically |
 | `flows.enable` | `id`, `enabled` | |
 | `flows.delete` | `id` | |

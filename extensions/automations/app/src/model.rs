@@ -118,6 +118,15 @@ pub fn positions(flow: &Flow) -> BTreeMap<NodeId, [f64; 2]> {
         .collect()
 }
 
+/// The draft a suggestion becomes, and the flow Discard puts back.
+///
+/// The first suggestion keeps `current`. A later one replaces the draft and leaves that first
+/// copy alone, so Discard still restores what was there before any suggestion.
+pub fn suggest(current: Flow, stashed: Option<Flow>, proposed: Flow) -> (Flow, Flow) {
+    let before = stashed.unwrap_or(current);
+    (proposed, before)
+}
+
 /// The node's colour family, for its stripe and the palette.
 pub fn family(node: &Node) -> &'static str {
     match node {
@@ -1246,5 +1255,18 @@ mod tests {
         );
         assert_eq!(branch_name(&f, &found[1]), "Idle · Paused · Presence");
         assert_eq!(part_name(&f, &playing.parts[0]), "Dining dim");
+    }
+
+    #[test]
+    fn a_second_suggestion_keeps_the_flow_from_before_the_first() {
+        let original = flow(&[("on", "trigger")], &[]);
+        let first = flow(&[("on", "trigger"), ("wait", "delay")], &[["on", "wait"]]);
+        let second = flow(&[("on", "trigger"), ("stop", "delay")], &[["on", "stop"]]);
+        let (draft, before) = suggest(original.clone(), None, first.clone());
+        assert_eq!(before, original, "the first suggestion stashes the draft");
+        assert_eq!(draft, first);
+        let (draft, before) = suggest(draft, Some(before), second.clone());
+        assert_eq!(before, original, "a later suggestion leaves the stash");
+        assert_eq!(draft, second);
     }
 }

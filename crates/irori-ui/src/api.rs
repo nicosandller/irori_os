@@ -1336,6 +1336,9 @@ pub enum Streamed {
     /// The model filled in the helper builder: `{kind, name, settings, entities}`, checked
     /// and not made. The builder takes it for the person to change and Create.
     Helper(serde_json::Value),
+    /// The model suggested a new version of the automation open in the editor. Nothing
+    /// has been saved; the canvas takes it for the person to change, backtest and Save.
+    Flow(serde_json::Value),
     Failed(String),
     Done,
 }
@@ -1627,6 +1630,8 @@ impl Events {
                 }
             } else if let Some(helper) = value.get("helper") {
                 events.push(Streamed::Helper(helper.clone()));
+            } else if let Some(flow) = value.get("flow") {
+                events.push(Streamed::Flow(flow.clone()));
             } else if value["done"] == true {
                 events.push(Streamed::Done);
             }
@@ -1737,6 +1742,18 @@ mod tests {
             panic!("{got:?}");
         };
         assert_eq!(helper["kind"], "toggles");
+    }
+
+    /// A flow the model suggested comes through whole, for the canvas to take.
+    #[test]
+    fn a_flow_the_model_suggested_is_read_off_the_stream() {
+        let mut events = Events::default();
+        let got =
+            events.push(b"data: {\"flow\":{\"id\":\"hall\",\"name\":\"Hall\",\"nodes\":{}}}\n\n");
+        let [Streamed::Flow(flow)] = got.as_slice() else {
+            panic!("{got:?}");
+        };
+        assert_eq!(flow["id"], "hall");
     }
 
     #[test]

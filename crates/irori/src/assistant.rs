@@ -70,6 +70,34 @@ const LOCAL_GENERAL_SETTINGS: usize = 1_500;
 const LOCAL_GENERAL_AUTOMATIONS: usize = 1_000;
 /// The longest a tool's answer gets.
 const TOOL_ANSWER: usize = 4_000;
+
+/// The chat on an automation that has not been saved yet. There is no flow to read, so it
+/// starts from what the person says.
+const NEW_AUTOMATION: &str = "new-automation";
+
+/// How a cloud model writes a flow. A model on this machine is not offered the tools, so it
+/// is not handed this: it would not fit, and it could not call them.
+const FLOW_GRAMMAR: &str = "\
+To change it, call `read_flow`, then `propose_flow` with the whole flow as JSON. Keep this \
+flow's id. Leave out layout, groups and enabled: the canvas keeps those. Never put a `code` \
+in a call; a lock or an alarm code is refused. Nothing is saved until the person presses \
+Save, and Discard puts the old flow back, so say what you changed and that they can throw \
+it away.\n\
+A node is one of: {\"type\":\"trigger\",\"trigger\":{...}}; \
+{\"type\":\"gate\",\"condition\":{...}}; {\"type\":\"switch\",\"cases\":[...]}; \
+{\"type\":\"call\",\"service\":\"light.turn_on\",\"entity\":\"light.hall\",\"data\":{\"brightness_pct\":60}}; \
+{\"type\":\"set\",\"name\":\"level\",\"expr\":\"num('sensor.lux')\"}; \
+{\"type\":\"delay\",\"for\":\"5s\"}; \
+{\"type\":\"wait\",\"until\":{\"type\":\"state\",\"entity\":\"binary_sensor.motion\",\"is\":false,\"for\":\"2m\"},\"timeout\":\"10m\"}; \
+{\"type\":\"join\",\"mode\":\"all\",\"timeout\":\"1m\"}; {\"type\":\"stop\"}.\n\
+Wires are [\"from\", \"to\"] or [\"from:yes\", \"to\"]. A gate's ports are yes and no, a \
+wait's are matched and timeout, a call's are out and error, and a switch's are case_1, \
+case_2, and else. From without a port means out.\n\
+A trigger is {\"type\":\"state\",\"entity\":\"binary_sensor.motion\",\"to\":true}, \
+{\"type\":\"time\",\"at\":\"07:00\"}, {\"type\":\"sun\",\"event\":\"sunset\",\"offset\":\"-30m\"}, \
+or {\"type\":\"startup\"}. A condition is {\"type\":\"expr\",\"expr\":\"num('sensor.lux') < 30\"} \
+or {\"type\":\"state\",\"entity\":\"binary_sensor.motion\",\"is\":true}. A number in a call \
+may be worked out: {\"brightness_pct\":{\"expr\":\"var('level')\"}}.\n";
 /// How much of a log one `read_logs` hands back, newest lines kept.
 const LOG_ANSWER: usize = 4_000;
 
@@ -140,6 +168,9 @@ pub enum ChatEvent {
     /// The model has filled in the helper builder the person has open: `{kind, name,
     /// settings, entities}`, for the page to take into its form. Nothing has been made.
     Helper(Value),
+    /// The model has suggested a new version of the automation open in the editor. The page
+    /// shows it on the canvas. Nothing has been saved.
+    Flow(Value),
     Error(String),
     Done,
 }
@@ -984,10 +1015,11 @@ async fn answer(
         if tx.is_closed() {
             return;
         }
-        // Drawing a floor takes more goes than looking something up: rooms may have to be
-        // made first, and a batch that was refused is worth one more try.
+        // Drawing a floor, filling in a helper, or rewriting a flow takes more goes than
+        // looking something up: a batch that was refused is worth another try.
+        let authoring = floor_of(&scope).is_some() || scope == "helpers" || writes_flow(&scope);
         let with_tools = tools_work
-            && if floor_of(&scope).is_some() || scope == "helpers" {
+            && if authoring {
                 rounds < PLAN_ROUNDS
             } else {
                 execute_round(rounds)
@@ -1025,6 +1057,7 @@ async fn answer(
                     let before = drawing.clone();
                     let mut removals = Vec::new();
                     let mut proposed = None;
+                    let mut suggested = None;
                     let result = run_tool(
                         &env,
                         &scope,
@@ -1035,11 +1068,17 @@ async fn answer(
                             removals: &mut removals,
                             added: &mut added,
                             proposed: &mut proposed,
+                            flow: &mut suggested,
                         },
                     )
                     .await;
                     if let Some(helper) = proposed
                         && tx.send(ChatEvent::Helper(helper)).await.is_err()
+                    {
+                        return;
+                    }
+                    if let Some(flow) = suggested
+                        && tx.send(ChatEvent::Flow(flow)).await.is_err()
                     {
                         return;
                     }
@@ -1541,6 +1580,8 @@ struct Asked<'a> {
     added: &'a mut usize,
     /// The helper the model filled the builder in with, when it did.
     proposed: &'a mut Option<Value>,
+    /// The flow the model suggested for the canvas, when it did. Nothing is saved.
+    flow: &'a mut Option<Value>,
 }
 
 async fn run_tool(
@@ -1556,6 +1597,7 @@ async fn run_tool(
         removals,
         added,
         proposed,
+        flow: suggested,
     } = asked;
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
@@ -1657,6 +1699,21 @@ async fn run_tool(
         "list_helpers" => helpers_brief(env).await,
         "helper_kinds" => irori_helpers::guide(),
         "propose_helper" => return propose(env, &args, proposed).await,
+        "read_flow" => {
+            if scope == NEW_AUTOMATION {
+                return "Nothing is saved yet: the person is making a new automation. Write it \
+                        from what they ask, and look up the devices with `list_devices`."
+                    .to_owned();
+            }
+            let Some(id) = automation_of(scope) else {
+                return "read_flow is only for one automation.".to_owned();
+            };
+            return match automations_call(env, "flow.source", json!({ "id": id })).await {
+                Ok(value) => value["flow"].to_string(),
+                Err(error) => format!("The flow can't be read ({error})."),
+            };
+        }
+        "propose_flow" => return propose_flow(env, scope, &args, suggested).await,
         "edit_home" => return arrange(env, scope, &args, removals, added).await,
         "read_logs" => {
             let source = args
@@ -2075,6 +2132,92 @@ async fn propose(env: &Env<'_>, args: &Value, proposed: &mut Option<Value>) -> S
     )
 }
 
+/// What `flows.propose` answered: the flow to show, and any warnings, or why it was refused.
+fn suggested_flow(answer: &Value) -> Result<(Value, Vec<String>), String> {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    for problem in answer["problems"].as_array().into_iter().flatten() {
+        let message = problem["message"]
+            .as_str()
+            .unwrap_or("something is wrong")
+            .to_owned();
+        let line = match problem["node"].as_str() {
+            Some(node) => format!("`{node}`: {message}"),
+            None => message,
+        };
+        if problem["severity"] == "warning" {
+            warnings.push(line);
+        } else {
+            errors.push(line);
+        }
+    }
+    if answer["ok"] != true || !errors.is_empty() {
+        return Err(if errors.is_empty() {
+            "That isn't a flow. Put it right and propose it again.".to_owned()
+        } else {
+            format!(
+                "That wouldn't be saved: {}. Put it right and propose it again.",
+                errors.join(" ")
+            )
+        });
+    }
+    let Some(flow) = answer.get("flow").filter(|flow| flow.is_object()).cloned() else {
+        return Err("Automations didn't hand back a flow.".to_owned());
+    };
+    Ok((flow, warnings))
+}
+
+/// Fills the canvas in with a new version of the automation this chat is about. The file is
+/// not written: the person saves it, or discards it.
+async fn propose_flow(
+    env: &Env<'_>,
+    scope: &str,
+    args: &Value,
+    suggested: &mut Option<Value>,
+) -> String {
+    // A new automation has no id yet: the editor names it when it is saved.
+    let id = if scope == NEW_AUTOMATION {
+        None
+    } else {
+        match automation_of(scope) {
+            Some(id) => Some(id),
+            None => return "propose_flow is only for one automation.".to_owned(),
+        }
+    };
+    // Some models send the flow as an object, some as the text of one.
+    let flow = match args.get("flow") {
+        Some(Value::String(text)) => serde_json::from_str::<Value>(text).unwrap_or(Value::Null),
+        Some(other) => other.clone(),
+        None => Value::Null,
+    };
+    if !flow.is_object() {
+        return "propose_flow needs flow: the automation as a JSON object.".to_owned();
+    }
+    let answer =
+        match automations_call(env, "flows.propose", json!({ "id": id, "flow": flow })).await {
+            Ok(answer) => answer,
+            Err(error) => {
+                return format!("The suggestion wasn't checked ({error}). Nothing was changed.");
+            }
+        };
+    match suggested_flow(&answer) {
+        Ok((flow, warnings)) => {
+            *suggested = Some(flow);
+            let warnings = if warnings.is_empty() {
+                String::new()
+            } else {
+                format!(" Warnings: {}.", warnings.join(" "))
+            };
+            format!(
+                "The canvas is showing the suggestion. Nothing is saved until the person presses \
+                 Save, and Discard puts the old flow back.{warnings} Tell them in a sentence \
+                 what changed."
+            )
+        }
+        Err(why) => format!("{why} Nothing was changed."),
+    }
+}
+
 fn draw(core: &Core, scope: &str, args: &Value, drawing: &mut Option<Floorplan>) -> String {
     let (Some(plan), Some(floor)) = (drawing.as_mut(), floor_of(scope)) else {
         return "The plan isn't open for editing. Ask the person to press Edit on the Floorplan \
@@ -2241,6 +2384,31 @@ fn plan_brief(core: &Core, plan: &Floorplan, floor: &FloorId) -> String {
 
 fn automations_extension() -> ExtensionId {
     ExtensionId::try_from("automations").expect("automations is an extension id")
+}
+
+/// Whether the conversation may suggest a flow for the canvas: a saved automation's, or a new one's.
+fn writes_flow(scope: &str) -> bool {
+    scope == NEW_AUTOMATION || scope.starts_with("automation:")
+}
+
+/// The id of the automation a conversation is about, when it is about one.
+fn automation_of(scope: &str) -> Option<&str> {
+    scope
+        .strip_prefix("automation:")
+        .filter(|id| !id.is_empty())
+}
+
+/// Asks the Automations engine. The core does not read a flow file.
+async fn automations_call(env: &Env<'_>, method: &str, params: Value) -> Result<Value, String> {
+    env.core
+        .app_request(&automations_extension(), method.to_owned(), params)
+        .await
+        .map_err(|error| match error {
+            irori_core::AppRequestError::NotRunning(_) => {
+                "the Automations extension isn't installed, or isn't running".to_owned()
+            }
+            other => other.to_string(),
+        })
 }
 
 /// One automation written out by the Automations extension, in at most `budget` characters.
@@ -2723,6 +2891,19 @@ async fn system_prompt(
         ));
         return Ok(prompt);
     }
+    if scope == NEW_AUTOMATION {
+        prompt.push_str(
+            "The person is making a new automation in the editor and has not saved anything. \
+             Ask what they want only if you cannot tell. Look up the devices with \
+             `list_devices`, then call `propose_flow` with the whole flow: an id of your \
+             choosing is fine, the editor names it from its title when they save. Use only \
+             entities the home has.\n",
+        );
+        if local.is_none() {
+            prompt.push_str(FLOW_GRAMMAR);
+        }
+        return Ok(prompt);
+    }
     if let Some(id) = scope.strip_prefix("automation:") {
         let brief = automation_brief(env, id, within(LOCAL_BRIEF, AUTOMATION_BRIEF)).await;
         prompt.push_str(
@@ -2737,6 +2918,11 @@ async fn system_prompt(
              in the automation's editor to fix it. If nothing here answers the question, say \
              so.\n",
         );
+        // A model on this machine has no tools and a small context. It explains; it does not
+        // rewrite the flow.
+        if local.is_none() {
+            prompt.push_str(FLOW_GRAMMAR);
+        }
         prompt.push_str(&brief);
         return Ok(prompt);
     }
@@ -3049,7 +3235,7 @@ async fn set_key(config: &Config, core: &Core, key: &str) -> Result<(), String> 
 }
 
 pub fn check_scope(scope: &str) -> Result<(), String> {
-    if scope == "general" || scope == "settings" || scope == "helpers" {
+    if matches!(scope, "general" | "settings" | "helpers") || scope == NEW_AUTOMATION {
         return Ok(());
     }
     let Some((kind, id)) = scope.split_once(':') else {
@@ -3373,6 +3559,8 @@ pub struct Progress {
     pub plan: Option<Arc<Floorplan>>,
     /// The helper as the model last proposed it, when it has.
     pub helper: Option<Value>,
+    /// The flow as the model last suggested it, when it has. Nothing has been saved.
+    pub flow: Option<Value>,
     pub ended: Option<Ended>,
 }
 
@@ -3426,6 +3614,7 @@ impl Pending {
             let mut step = None;
             let mut drawn = None;
             let mut proposed = None;
+            let mut suggested = None;
             let mut asked = 0usize;
             loop {
                 let now = progress.borrow_and_update().clone();
@@ -3453,6 +3642,14 @@ impl Pending {
                     proposed = now.helper.clone();
                     if let Some(helper) = now.helper
                         && tx.send(ChatEvent::Helper(helper)).await.is_err()
+                    {
+                        return;
+                    }
+                }
+                if now.flow != suggested {
+                    suggested = now.flow.clone();
+                    if let Some(flow) = now.flow
+                        && tx.send(ChatEvent::Flow(flow)).await.is_err()
                     {
                         return;
                     }
@@ -3589,6 +3786,11 @@ impl Turns {
                         pending
                             .progress
                             .send_modify(|progress| progress.helper = Some(helper));
+                    }
+                    ChatEvent::Flow(flow) => {
+                        pending
+                            .progress
+                            .send_modify(|progress| progress.flow = Some(flow));
                     }
                     ChatEvent::Error(why) => return Ended::Failed(why),
                     ChatEvent::Done => return Ended::Done,
@@ -3898,5 +4100,73 @@ mod tests {
             })
             .await;
         assert!(turns.pending("general").is_none());
+    }
+
+    #[test]
+    fn a_suggestion_is_shown_only_when_it_would_be_saved() {
+        let refused = serde_json::json!({
+            "ok": false,
+            "problems": [{ "severity": "error", "node": "on", "message": "no such entity" }]
+        });
+        let why = suggested_flow(&refused).expect_err("refused");
+        assert!(why.contains("`on`"), "{why}");
+        assert!(why.contains("no such entity"), "{why}");
+
+        let warned = serde_json::json!({
+            "ok": true,
+            "flow": { "id": "hall" },
+            "problems": [{ "severity": "warning", "message": "this never runs" }]
+        });
+        let (flow, warnings) = suggested_flow(&warned).expect("shown");
+        assert_eq!(flow["id"], "hall");
+        assert_eq!(warnings, ["this never runs"]);
+
+        let empty = serde_json::json!({ "ok": true, "problems": [] });
+        assert!(suggested_flow(&empty).is_err());
+    }
+
+    /// Suggests a flow, then never finishes, so a page can arrive in the middle.
+    async fn suggests(tx: mpsc::Sender<ChatEvent>) {
+        let _ = tx
+            .send(ChatEvent::Flow(serde_json::json!({ "id": "hall" })))
+            .await;
+        let _ = tx.send(ChatEvent::Delta("Dimmer.".into())).await;
+        std::future::pending::<()>().await;
+    }
+
+    #[tokio::test]
+    async fn a_suggestion_can_be_read_by_a_page_that_arrives_late() {
+        let turns = Arc::new(Turns::default());
+        let pending = turns.begin("automation:hall", "Dimmer").expect("taken");
+        let running = Arc::clone(&turns);
+        let task =
+            tokio::spawn(async move { running.run("automation:hall", pending, suggests).await });
+        let mut late = loop {
+            let pending = turns.pending("automation:hall").expect("still there");
+            if pending.view().text == "Dimmer." {
+                break pending.follow();
+            }
+            tokio::task::yield_now().await;
+        };
+        let mut saw_flow = false;
+        let mut saw_text = false;
+        while let Some(event) = late.recv().await {
+            match event {
+                ChatEvent::Flow(flow) => {
+                    assert_eq!(flow["id"], "hall");
+                    saw_flow = true;
+                }
+                ChatEvent::Delta(text) if text == "Dimmer." => saw_text = true,
+                ChatEvent::Done => break,
+                _ => {}
+            }
+            if saw_flow && saw_text {
+                break;
+            }
+        }
+        assert!(saw_flow, "the suggestion was not in the stream");
+        assert!(saw_text);
+        turns.stop("automation:hall");
+        task.await.expect("the turn ended");
     }
 }

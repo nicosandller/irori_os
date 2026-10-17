@@ -101,6 +101,25 @@ fn Frame(id: String) -> impl IntoView {
         }
     };
 
+    // The Automations page draws a flow the assistant suggested. The callback is
+    // lifted when this frame goes, so a suggestion never arrives at a page that has gone.
+    if id == "automations" {
+        let desk = expect_context::<crate::assistant::Chats>().flow_desk();
+        desk.lay(Some(Callback::new(move |value: serde_json::Value| {
+            let Some(frame) = frame.get_untracked() else {
+                return;
+            };
+            let Some(target) = frame.content_window() else {
+                return;
+            };
+            let reply = Reply::event("flow", value);
+            if let Ok(text) = serde_json::to_string(&reply) {
+                let _ = target.post_message(&text.into(), "*");
+            }
+        })));
+        on_cleanup(move || desk.lay(None));
+    }
+
     let theme = move || Theme {
         dark: media("(prefers-color-scheme: dark)"),
         reduced_motion: !motion.0.get_untracked() || media("(prefers-reduced-motion: reduce)"),
@@ -250,7 +269,12 @@ fn Frame(id: String) -> impl IntoView {
                 // Ask button is and the shell opens the chat under it.
                 "assistant" => {
                     let flow = request.args["id"].as_str().unwrap_or_default().trim();
-                    let scope = (!flow.is_empty()).then(|| format!("automation:{flow}"));
+                    // A flow that is not saved yet has no id; it is asked about as a new one.
+                    let scope = if request.args["new"].as_bool() == Some(true) {
+                        Some("new-automation".to_owned())
+                    } else {
+                        (!flow.is_empty()).then(|| format!("automation:{flow}"))
+                    };
                     // The button's edges are measured inside the frame. Where the frame is on
                     // the page turns them into edges on the page.
                     let (left, top, right) = frame

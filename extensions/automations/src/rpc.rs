@@ -35,6 +35,146 @@ struct WithFlow {
     flow: Value,
 }
 
+/// How far a new node sits from the one before it, the same spacing the canvas uses.
+const NODE_ACROSS: f64 = 280.0;
+/// And down, when several new nodes arrive together.
+const NODE_DOWN: f64 = 170.0;
+
+/// A suggestion that is not a flow, or not this flow. Nothing is written.
+fn not_suggested(message: impl Into<String>) -> Value {
+    json!({
+        "ok": false,
+        "problems": [{ "severity": "error", "message": message.into() }],
+    })
+}
+
+/// Checks a suggestion for `id` and hands back the flow to draw, or why not.
+///
+/// The saved flow's on/off switch is kept, and so are the positions of nodes that
+/// remain and the names of their groups. A node the suggestion adds is placed to
+/// the right of the rightmost one. The file is not touched.
+///
+/// Without an `id` the flow is a new one the editor has not saved: there is nothing to keep, so
+/// the nodes are laid out left to right along their wires, and the editor names it on Save.
+fn propose(service: &Service, raw: Value) -> Result<Value, String> {
+    #[derive(Deserialize)]
+    struct Suggested {
+        id: Option<RuleId>,
+        flow: Value,
+    }
+    let Suggested { id, flow } = params(raw)?;
+    let saved = match &id {
+        Some(id) => Some(
+            service
+                .store
+                .flow(id)
+                .cloned()
+                .ok_or_else(|| format!("there's no flow `{id}`"))?,
+        ),
+        None => None,
+    };
+    let Value::Object(mut object) = flow else {
+        return answer(not_suggested("a suggestion has to be a JSON object"));
+    };
+    object.remove("layout");
+    object.remove("groups");
+    object.remove("enabled");
+    match &id {
+        Some(id) => {
+            object.entry("id").or_insert_with(|| json!(id));
+        }
+        None => {
+            object.entry("id").or_insert_with(|| json!("new_flow"));
+        }
+    }
+    let parsed = match draft(Value::Object(object)) {
+        Ok(flow) => flow,
+        Err(problem) => return answer(json!({ "ok": false, "problems": [problem] })),
+    };
+    if let Some(id) = &id
+        && parsed.id != *id
+    {
+        return answer(not_suggested(format!(
+            "this chat is about `{id}`; keep that id"
+        )));
+    }
+    let mut flow = parsed;
+    match &saved {
+        Some(saved) => lay(saved, &mut flow),
+        None => arrange(&mut flow),
+    }
+    let problems = service.problems(&flow);
+    let ok = problems.iter().all(|problem| !problem.is_error());
+    if ok {
+        answer(json!({ "ok": true, "flow": flow, "problems": problems }))
+    } else {
+        answer(json!({ "ok": false, "problems": problems }))
+    }
+}
+
+/// Places a new flow's nodes in columns by how far along the wires they are, so a flow with
+/// no saved layout reads left to right.
+fn arrange(flow: &mut Flow) {
+    let mut depth: BTreeMap<_, usize> = flow.nodes.keys().map(|id| (id.clone(), 0)).collect();
+    // As many passes as there are nodes settle every chain; a loop stops there.
+    for _ in 0..flow.nodes.len() {
+        let mut moved = false;
+        for wire in &flow.wires {
+            let Some(from) = depth.get(&wire.from.node).copied() else {
+                continue;
+            };
+            if let Some(to) = depth.get_mut(&wire.to)
+                && *to <= from
+                && from < flow.nodes.len()
+            {
+                *to = from + 1;
+                moved = true;
+            }
+        }
+        if !moved {
+            break;
+        }
+    }
+    let mut rows: BTreeMap<usize, f64> = BTreeMap::new();
+    flow.layout = depth
+        .into_iter()
+        .map(|(id, column)| {
+            let row = rows.entry(column).or_insert(0.0);
+            let at = [60.0 + column as f64 * NODE_ACROSS, 80.0 + *row];
+            *row += NODE_DOWN;
+            (id, at)
+        })
+        .collect();
+}
+
+/// Copies the saved flow's switch, positions and group names onto a suggestion.
+fn lay(saved: &Flow, flow: &mut Flow) {
+    flow.enabled = saved.enabled;
+    flow.groups = saved
+        .groups
+        .iter()
+        .filter(|(id, _)| flow.nodes.contains_key(*id))
+        .map(|(id, name)| (id.clone(), name.clone()))
+        .collect();
+    let mut layout = BTreeMap::new();
+    let mut right = 0.0_f64;
+    for (id, at) in &saved.layout {
+        if flow.nodes.contains_key(id) {
+            layout.insert(id.clone(), *at);
+            right = right.max(at[0]);
+        }
+    }
+    let mut down = 0.0_f64;
+    for id in flow.nodes.keys() {
+        if layout.contains_key(id) {
+            continue;
+        }
+        layout.insert(id.clone(), [right + NODE_ACROSS, down]);
+        down += NODE_DOWN;
+    }
+    flow.layout = layout;
+}
+
 /// A draft from the page: a flow, or the reason it isn't one yet, as a problem the page shows.
 fn draft(value: Value) -> Result<Flow, Problem> {
     serde_json::from_value::<Flow>(value).map_err(|error| Problem {
@@ -139,6 +279,25 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 Err(problem) => vec![problem],
             })
         }
+        // The saved flow, without where it is drawn, for the assistant to read and rewrite.
+        // The core never opens the file.
+        "flow.source" => {
+            let ById { id } = params(raw)?;
+            let flow = service
+                .store
+                .flow(&id)
+                .cloned()
+                .ok_or_else(|| format!("there's no flow `{id}`"))?;
+            let mut value = serde_json::to_value(&flow).map_err(|error| error.to_string())?;
+            if let Some(object) = value.as_object_mut() {
+                object.remove("layout");
+                object.remove("groups");
+                object.remove("enabled");
+            }
+            answer(json!({ "flow": value }))
+        }
+        // A suggestion for the canvas. Checked the same way as a save, and not written.
+        "flows.propose" => propose(service, raw),
         "flows.save" => {
             let WithFlow { flow } = params(raw)?;
             let flow = draft(flow).map_err(|problem| problem.message)?;

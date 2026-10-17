@@ -20,6 +20,8 @@ pub enum Event {
     Theme(Theme),
     /// Back or forward moved to this path inside the page.
     Path(String),
+    /// A flow the assistant suggested. The editor shows it, unsaved.
+    Flow(serde_json::Value),
 }
 
 /// The page's handle on the shell. Cheap to clone.
@@ -84,6 +86,7 @@ impl Bridge {
                             on_event(Event::Path(path.to_owned()));
                         }
                     }
+                    Some("flow") => on_event(Event::Flow(value)),
                     _ => {}
                 }
             });

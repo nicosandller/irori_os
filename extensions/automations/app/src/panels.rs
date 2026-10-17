@@ -779,6 +779,7 @@ pub fn Versions() -> impl IntoView {
                                         {
                                             ed.saved.set(Some(detail.flow.clone()));
                                             ed.draft.set(Some(detail.flow));
+                                            ed.before.set(None);
                                             ed.view.set(View::Edit);
                                             ed.message.set(Some("Restored.".into()));
                                             load();

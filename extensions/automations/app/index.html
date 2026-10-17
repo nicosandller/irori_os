@@ -312,6 +312,8 @@
     .banner { position: absolute; left: 50%; top: .75rem; translate: -50% 0; background: var(--card);
               border: 1px solid var(--line); border-radius: 2rem; padding: .3rem .9rem; font-size: .85rem;
               display: flex; gap: .6rem; align-items: center; box-shadow: 0 2px 8px rgb(0 0 0 / .08); }
+    .banner.suggest { max-width: min(44rem, calc(100% - 1.5rem)); flex-wrap: wrap; justify-content: center;
+                      text-align: center; border-radius: 1rem; }
     /* Motion. Things arrive, lift, and settle; nothing makes anyone wait. */
     @keyframes pop-in { from { opacity: 0; scale: .9; } }
     @keyframes rise-in { from { opacity: 0; translate: 0 8px; } }

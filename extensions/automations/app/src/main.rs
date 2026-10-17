@@ -32,6 +32,38 @@ use serde::Deserialize;
 
 thread_local! {
     static BRIDGE: OnceCell<Bridge> = const { OnceCell::new() };
+    /// The latest flow the assistant suggested, for whichever editor is open.
+    static INCOMING: OnceCell<RwSignal<Option<serde_json::Value>>> = const { OnceCell::new() };
+    /// The suggestion last drawn. The same JSON again — a stream read twice, or this page
+    /// opened again — must not undo Discard or wipe an edit.
+    static SHOWN: OnceCell<StoredValue<Option<serde_json::Value>>> = const { OnceCell::new() };
+}
+
+/// The suggestion signal, once [`App`] has made it.
+pub(crate) fn incoming_flow() -> Option<RwSignal<Option<serde_json::Value>>> {
+    INCOMING.with(|cell| cell.get().copied())
+}
+
+/// Whether this exact suggestion was already drawn.
+pub(crate) fn flow_already_shown(value: &serde_json::Value) -> bool {
+    SHOWN.with(|cell| {
+        cell.get()
+            .is_some_and(|shown| shown.with_value(|kept| kept.as_ref() == Some(value)))
+    })
+}
+
+/// Lets the same suggestion be drawn again, after Discard put the flow back.
+pub(crate) fn forget_flow() {
+    if let Some(shown) = SHOWN.with(|cell| cell.get().copied()) {
+        shown.set_value(None);
+    }
+}
+
+/// Remembers a suggestion only after the editor actually drew it.
+pub(crate) fn remember_flow(value: serde_json::Value) {
+    if let Some(shown) = SHOWN.with(|cell| cell.get().copied()) {
+        shown.set_value(Some(value));
+    }
 }
 
 /// The page's line to the shell.
@@ -41,6 +73,11 @@ pub fn bridge() -> Bridge {
             Bridge::connect(|event| match event {
                 Event::Theme(theme) => apply_theme(&theme),
                 Event::Path(path) => set_hash(&path),
+                Event::Flow(flow) => {
+                    if let Some(incoming) = INCOMING.with(|cell| cell.get().copied()) {
+                        incoming.set(Some(flow));
+                    }
+                }
             })
         })
         .clone()
@@ -232,6 +269,17 @@ fn main() {
 
 #[component]
 fn App() -> impl IntoView {
+    // Before any child, and before the bridge is first used: a suggestion can arrive as the
+    // page is still opening the flow it belongs to.
+    let incoming = RwSignal::new(None::<serde_json::Value>);
+    let shown = StoredValue::new(None::<serde_json::Value>);
+    INCOMING.with(|cell| {
+        let _ = cell.set(incoming);
+    });
+    SHOWN.with(|cell| {
+        let _ = cell.set(shown);
+    });
+
     let route = RwSignal::new(Route::parse(
         &window().location().hash().unwrap_or_default(),
     ));
