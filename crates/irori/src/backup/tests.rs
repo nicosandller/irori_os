@@ -244,9 +244,150 @@ fn everything_but_the_history_can_be_restored_keeping_the_history_there_is() -> 
         extensions: false,
         state: false,
         history: false,
+        activity: false,
     };
     restore_now(&backup, None, only_settings, &config, &data)?;
     assert!(fs::read_to_string(config.join("areas.toml"))?.contains("Hall"));
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
+    Ok(())
+}
+
+/// Now, as the log counts it. A row older than the days it is kept is pruned as the log opens.
+fn now() -> i64 {
+    i64::try_from(jiff::Timestamp::now().as_nanosecond()).unwrap_or(i64::MAX)
+}
+
+/// The activity log is the record of who changed the home, so a restore is not a way to take the
+/// last month out of it: it stays as it is unless it is asked for (`docs/specs/access.md` §3).
+#[test]
+fn the_activity_log_stays_as_it_is_unless_a_restore_asks_for_it() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    // The log, with one row in it, then a backup, then a row more.
+    drop(crate::audit::Audit::open(&data.join("irori.db"))?);
+    let row = |what: &str| -> anyhow::Result<()> {
+        Connection::open(data.join("irori.db"))?.execute(
+            "INSERT INTO audit (at_ns, actor_kind, action, outcome) VALUES (?1, 'irori', ?2, 'ok')",
+            rusqlite::params![now(), what],
+        )?;
+        Ok(())
+    };
+    row("then")?;
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    assert!(inspect(&backup)?.1.activity);
+    row("since")?;
+    let rows = |data: &Path| sql(data, "SELECT count(*) FROM audit");
+
+    // The usual restore: the state goes back, the log is left alone.
+    Connection::open(data.join("irori.db"))?.execute_batch("UPDATE t SET n = 7")?;
+    restore_now(&backup, None, Parts::USUAL, &config, &data)?;
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
+    assert_eq!(rows(&data)?, "2", "the row since the backup is still there");
+
+    // Only the settings: the same.
+    restore_now(
+        &backup,
+        None,
+        Parts {
+            settings: true,
+            extensions: false,
+            state: false,
+            history: false,
+            activity: false,
+        },
+        &config,
+        &data,
+    )?;
+    assert_eq!(rows(&data)?, "2");
+
+    // Asked for, and only that: the log is the backup's and nothing else moves.
+    Connection::open(data.join("irori.db"))?.execute_batch("UPDATE t SET n = 9")?;
+    restore_now(
+        &backup,
+        None,
+        Parts {
+            settings: false,
+            extensions: false,
+            state: false,
+            history: false,
+            activity: true,
+        },
+        &config,
+        &data,
+    )?;
+    assert_eq!(rows(&data)?, "1", "the log as the backup had it");
+    assert_eq!(
+        sql(&data, "SELECT n FROM t")?,
+        "9",
+        "and the state is not touched"
+    );
+
+    // Everything, on a machine that has nothing: the log comes with it.
+    let fresh = tempfile::tempdir()?;
+    let (c2, d2) = (fresh.path().join("c"), fresh.path().join("d"));
+    restore_now(&backup, None, Parts::ALL, &c2, &d2)?;
+    assert_eq!(rows(&d2)?, "1");
+    Ok(())
+}
+
+/// After the restart that applies a restore, the log says so once, as Irori itself, and says
+/// whether the log was brought back or left.
+#[tokio::test]
+async fn a_restore_is_written_down_once_after_it_is_applied() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    restore_now(&backup, None, Parts::USUAL, &config, &data)?;
+    let audit = crate::audit::Audit::open(&data.join("irori.db"))?;
+    record_restore(&audit, &data);
+    record_restore(&audit, &data);
+    let mut rows = Vec::new();
+    for _ in 0..200 {
+        rows = audit
+            .list(&crate::audit::Query {
+                action: Some("restore_applied".to_owned()),
+                ..Default::default()
+            })
+            .map_err(anyhow::Error::msg)?
+            .entries;
+        if !rows.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(rows.len(), 1, "once: {rows:?}");
+    assert_eq!(rows[0].actor.to_string(), "Irori");
+    let said = rows[0].detail.clone().unwrap_or_default();
+    assert!(
+        said.contains("settings") && said.contains("left as it was"),
+        "{said}"
+    );
+    assert!(last_restore(&data).is_some_and(|r| r.audited));
+    Ok(())
+}
+
+/// A backup from before the log existed has no table for it. Restoring the state from one must
+/// not take the home's own log with it.
+#[test]
+fn a_backup_from_before_the_log_leaves_the_log_there_is() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    // The backup has the table (this version makes it in every backup), so take it out of the
+    // archive's database the way an older version would have left it.
+    let staged = tempfile::tempdir()?;
+    let tree = staged.path().join("tree");
+    fs::create_dir_all(&tree)?;
+    unpack(&backup, None, &tree, room_at(&data))?;
+    let old = tree.join("data/irori.db");
+    Connection::open(&old)?.execute_batch("DROP TABLE IF EXISTS audit")?;
+    drop(crate::audit::Audit::open(&data.join("irori.db"))?);
+    Connection::open(data.join("irori.db"))?.execute(
+        "INSERT INTO audit (at_ns, actor_kind, action, outcome) VALUES (?1, 'irori', 'kept', 'ok')",
+        [now()],
+    )?;
+    compose_database(&data.join("irori.db"), &old, Parts::USUAL)?;
+    assert_eq!(sql(&data, "SELECT count(*) FROM audit")?, "1");
     assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
     Ok(())
 }
@@ -286,6 +427,7 @@ fn forged(
         extensions: vec![],
         encrypted: false,
         history: true,
+        activity: true,
     })?;
     let mut all: Vec<Member> = vec![("manifest.json", tar::EntryType::Regular, &manifest, None)];
     all.extend_from_slice(entries);
@@ -432,6 +574,7 @@ fn a_restore_that_fails_half_way_puts_the_home_back_as_it_was() -> anyhow::Resul
         extensions: false,
         state: true,
         history: false,
+        activity: false,
     };
     stage(&backup, None, parts, &data)?;
     // Damaged after it was checked: the settings go in, then the database can't be read.

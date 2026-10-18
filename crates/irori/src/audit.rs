@@ -345,7 +345,8 @@ impl Audit {
         found
     }
 
-    /// How many rows there are. For tests and the page's "N rows kept".
+    /// How many rows there are.
+    #[cfg(test)]
     pub fn count(&self) -> u64 {
         connect(&self.shared.db)
             .and_then(|conn| conn.query_row("SELECT count(*) FROM audit", [], |row| row.get(0)))
@@ -374,8 +375,10 @@ fn nanos(at: Timestamp) -> i64 {
 }
 
 fn from_nanos(ns: i64) -> Timestamp {
-    jiff::Timestamp::from_nanosecond(i128::from(ns))
-        .map_or_else(|_| Timestamp::from_jiff(jiff::Timestamp::UNIX_EPOCH), Timestamp::from_jiff)
+    jiff::Timestamp::from_nanosecond(i128::from(ns)).map_or_else(
+        |_| Timestamp::from_jiff(jiff::Timestamp::UNIX_EPOCH),
+        Timestamp::from_jiff,
+    )
 }
 
 /// Splits an actor into the columns it is kept in.
@@ -404,7 +407,9 @@ fn columns(
             person.as_ref().map(|p| p.id.as_str().to_owned()),
             person.as_ref().map(|p| p.name.clone()),
         ),
-        AuditActor::Extension { id } => ("extension", Some(id.as_str().to_owned()), None, None, None),
+        AuditActor::Extension { id } => {
+            ("extension", Some(id.as_str().to_owned()), None, None, None)
+        }
         AuditActor::Irori => ("irori", None, None, None, None),
         AuditActor::Nobody => ("nobody", None, None, None, None),
     }
@@ -423,8 +428,9 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
                 id,
                 name: name.clone().unwrap_or_default(),
             }),
-        "token" => id.and_then(|id| TokenId::try_from(id).ok()).map(|id| {
-            AuditActor::Token {
+        "token" => id
+            .and_then(|id| TokenId::try_from(id).ok())
+            .map(|id| AuditActor::Token {
                 id,
                 name: name.clone().unwrap_or_default(),
                 person: person_id
@@ -433,8 +439,7 @@ fn read_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AuditEntry> {
                         id,
                         name: person_name.clone().unwrap_or_default(),
                     }),
-            }
-        }),
+            }),
         "extension" => id
             .and_then(|id| ExtensionId::try_from(id).ok())
             .map(|id| AuditActor::Extension { id }),
@@ -530,8 +535,9 @@ fn write_forever(shared: &Shared, waiting: &Receiver<Message>) {
             tracing::warn!(lost, "the activity log fell behind and lost rows");
             rows.push(Stamped {
                 at: Timestamp::from_jiff(jiff::Timestamp::now()),
-                row: Row::new(AuditActor::Irori, "activity_lost", Outcome::Failed)
-                    .detail(format!("{lost} rows could not be written: the log fell behind")),
+                row: Row::new(AuditActor::Irori, "activity_lost", Outcome::Failed).detail(format!(
+                    "{lost} rows could not be written: the log fell behind"
+                )),
             });
         }
         let unwritten = shared.unwritten_tries.swap(0, Ordering::Relaxed);
@@ -788,8 +794,14 @@ mod tests {
         denied.context_id = Some(other.clone());
         audit.record_and_wait(denied).await;
         let found = audit.who_for(&[context.clone(), other.clone()]);
-        assert_eq!(found.get(&context).map(ToString::to_string).as_deref(), Some("Leo"));
-        assert!(!found.contains_key(&other), "a command that was refused turned nothing on");
+        assert_eq!(
+            found.get(&context).map(ToString::to_string).as_deref(),
+            Some("Leo")
+        );
+        assert!(
+            !found.contains_key(&other),
+            "a command that was refused turned nothing on"
+        );
         Ok(())
     }
 
@@ -820,6 +832,11 @@ mod tests {
         });
         audit
             .record_and_wait(Row::new(person("leo", "Leo"), "sign_out", Outcome::Ok))
+            .await;
+        // The writer answers a batch before it prunes after it; the next one is answered only
+        // when the cutting is done.
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "sign_in", Outcome::Ok))
             .await;
         let conn = connect(&dir.path().join("irori.db"))?;
         let rows: i64 = conn.query_row("SELECT count(*) FROM audit", [], |r| r.get(0))?;
@@ -911,7 +928,10 @@ mod tests {
             .await;
         let page = audit.list(&Query::default()).map_err(anyhow::Error::msg)?;
         assert_eq!(
-            page.entries.iter().map(|e| e.action.as_str()).collect::<Vec<_>>(),
+            page.entries
+                .iter()
+                .map(|e| e.action.as_str())
+                .collect::<Vec<_>>(),
             ["new"]
         );
         Ok(())

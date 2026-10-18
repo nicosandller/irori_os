@@ -441,7 +441,14 @@ pub async fn revoke(
     Path(id): Path<TokenId>,
 ) -> Response {
     // What it was called and who it was for, taken before it is gone from its table.
-    if let Some(token) = state.0.auth.tokens.list().iter().find(|token| token.id == id) {
+    if let Some(token) = state
+        .0
+        .auth
+        .tokens
+        .list()
+        .iter()
+        .find(|token| token.id == id)
+    {
         trail.detail(format!("{}, for {}", token.name, token.user));
     }
     match state.0.auth.tokens.revoke(&id) {

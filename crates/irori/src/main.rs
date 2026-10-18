@@ -277,6 +277,9 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // so a person's change never waits on the recorder or the other way round.
             let audit = audit::Audit::open(&db.path).context("failed to open the activity log")?;
             audit.keep(audit_keep);
+            // After a restore, the log says it was done; before the extensions are looked after,
+            // which rewrite the same result.
+            backup::record_restore(&audit, &data);
             // Engines that ask for history (`history:read`) read the same shelf, and engines
             // whose permissions name the config directory are told where it is.
             core.use_history(Arc::new(history.clone()));
@@ -285,9 +288,11 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // the name and the room its owner gave it, rather than appearing under its old name
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
-            tokio::spawn(settings
+            tokio::spawn(
+                settings
                     .clone()
-                    .watch(core.clone(), history.clone(), audit.clone()));
+                    .watch(core.clone(), history.clone(), audit.clone()),
+            );
             tokio::spawn(settings.clone().forget_retired(core.clone()));
             // Reads backup.toml every time it wakes, so a change from the page applies at once.
             tokio::spawn(backup::schedule::run(config.clone(), data.clone()));

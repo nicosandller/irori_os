@@ -764,7 +764,9 @@ async fn admit(state: &AppState, mut request: Request, next: Next, trail: &Trail
                 return turned_away(
                     trail,
                     StatusCode::FORBIDDEN,
-                    &format!("a change needs the `{UI_HEADER}: 1` header, which only the page sends"),
+                    &format!(
+                        "a change needs the `{UI_HEADER}: 1` header, which only the page sends"
+                    ),
                 );
             }
         }

@@ -90,7 +90,8 @@ refuses unless `--yes` is set. `--yes` does not skip the full-access sentence.
 | `users` | List, add, edit, remove. A person may be given only some rooms: `add Leo --areas hall,study`; `edit leo --areas hall`, `--no-rooms` (can sign in and sees nothing), `--whole-home` (all of it again). `list` says which rooms each person has. See `docs/specs/access.md`. |
 | `place` | Show, or set coordinates, an optional label, and a time zone. No map search. |
 | `recorder` | How long history is kept. |
-| `backup` | `create`, `list`, `verify`, `restore`, `key`. Works on the files of a home (`--config`, `--data`), not the API, so it runs with no server; `restore` needs it stopped (`--keep-history`, or `--only settings,extensions,state,history`). A encrypted backup asks for its key (`--key`, `IRORI_BACKUP_KEY`). See `docs/specs/backup.md`. |
+| `audit` | Who did what, for an owner. `list` is the newest rows first: `--user <id>` (a person, and the programs made for them), `--kind <name>` (`command`, `sign_in`, `person_changed`…), `--outcome ok\|denied\|failed`, `--since <time>` (an RFC 3339 time, or a span back from now: `12h`, `7d`), `--limit <n>` (50). `--json` gives the page the API does. A token cannot read it. |
+| `backup` | `create`, `list`, `verify`, `restore`, `key`. Works on the files of a home (`--config`, `--data`), not the API, so it runs with no server; `restore` needs it stopped (`--keep-history`, or `--only settings,extensions,state,history,activity`; without `--only` the activity log stays as it is). A encrypted backup asks for its key (`--key`, `IRORI_BACKUP_KEY`). See `docs/specs/backup.md`. |
 | `logs` | What this Irori has said since it started. |
 | `restart` | Start this Irori again. It stays where it runs. |
 | `automations` | Flows. Also `rules`. The extension has to be installed. |

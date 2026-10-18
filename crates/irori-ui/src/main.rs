@@ -6,6 +6,7 @@
 //! One place fetches what the home looks like and hands it to whichever page is showing, so
 //! moving between pages doesn't refetch and the two can't disagree.
 
+mod activity;
 mod api;
 mod app_frame;
 mod assistant;

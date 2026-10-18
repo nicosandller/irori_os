@@ -939,6 +939,32 @@ pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
 
 /// Irori's own log, oldest line first: what this process has said since it started, which
 /// includes the lines an extension's output arrived as. The Settings page's log window shows it.
+/// A hundred rows of the activity log, newest first: of one person (by id) if asked, only what
+/// was `outcome` if asked, and the ones older than `before` when reading on.
+pub async fn fetch_audit(
+    user: Option<&str>,
+    outcome: Option<irori_types::Outcome>,
+    before: Option<u64>,
+) -> Result<irori_types::AuditPage, String> {
+    let mut query = vec!["limit=100".to_owned()];
+    if let Some(user) = user {
+        query.push(format!("user={user}"));
+    }
+    if let Some(outcome) = outcome {
+        query.push(format!("outcome={outcome}"));
+    }
+    if let Some(before) = before {
+        query.push(format!("before={before}"));
+    }
+    read(
+        Request::get(&format!("/api/audit?{}", query.join("&")))
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
 pub async fn fetch_system_log() -> Result<Vec<String>, String> {
     fetch_log("/api/system/log").await
 }
@@ -1127,6 +1153,9 @@ pub struct BackupManifest {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub history: bool,
+    /// Whether the activity log is in it (backups from before it existed have none).
+    #[serde(default)]
+    pub activity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1222,6 +1251,10 @@ pub struct BackupParts {
     pub extensions: bool,
     pub state: bool,
     pub history: bool,
+    /// The activity log. Off unless asked for: a restore is not a way to take what was done
+    /// since the backup out of the record.
+    #[serde(default)]
+    pub activity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

@@ -144,9 +144,9 @@ pub const ACTIONS: &[(&str, &str, Log)] = &[
     ("GET", "/api/backups/{name}", Now("backup_downloaded")),
     ("DELETE", "/api/backups/{name}", Later("backup_removed")),
     ("POST", "/api/backups/{name}/verify", Quiet),
-    ("POST", "/api/backups/{name}/restore", Now("backup_restored")),
+    ("POST", "/api/backups/{name}/restore", Now("restore_asked")),
     ("POST", "/api/setup/backup/upload", Later("backup_uploaded")),
-    ("POST", "/api/setup/backup/restore", Now("backup_restored")),
+    ("POST", "/api/setup/backup/restore", Now("restore_asked")),
     ("POST", "/api/setup/backup/verify", Quiet),
 ];
 
@@ -226,9 +226,9 @@ pub async fn record(
         .target
         .or_else(|| first_capture(pattern, path))
         .filter(|target| !target.is_empty());
-    row.detail = notes.detail.or_else(|| {
-        (log == Log::Row("change")).then(|| format!("{method} {pattern}"))
-    });
+    row.detail = notes
+        .detail
+        .or_else(|| (log == Log::Row("change")).then(|| format!("{method} {pattern}")));
     row.context_id = notes.context_id;
     // Where from, for the rows that are about getting in or being turned away.
     if matches!(action, "sign_in" | "owner_set_up") || outcome != Outcome::Ok {
@@ -318,11 +318,7 @@ mod tests {
         let forgotten: Vec<_> = routed
             .iter()
             .filter(|(method, _)| method != "GET")
-            .filter(|(method, path)| {
-                !ACTIONS
-                    .iter()
-                    .any(|(m, p, _)| m == method && p == path)
-            })
+            .filter(|(method, path)| !ACTIONS.iter().any(|(m, p, _)| m == method && p == path))
             .collect();
         assert!(
             forgotten.is_empty(),
@@ -362,8 +358,11 @@ mod tests {
             Some("lamp")
         );
         assert_eq!(
-            first_capture("/api/extensions/{id}/actions/{action_id}", "/api/extensions/zwave/actions/heal")
-                .as_deref(),
+            first_capture(
+                "/api/extensions/{id}/actions/{action_id}",
+                "/api/extensions/zwave/actions/heal"
+            )
+            .as_deref(),
             Some("zwave")
         );
         assert_eq!(first_capture("/api/command", "/api/command"), None);

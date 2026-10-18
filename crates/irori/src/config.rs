@@ -521,7 +521,11 @@ impl Config {
                 let irori = store.irori();
                 core.apply_disabled_extensions(irori.extensions.disabled.clone());
                 core.apply_home(store.home());
-                (irori.recorder.clone(), irori.server.clone(), irori.audit.clone())
+                (
+                    irori.recorder.clone(),
+                    irori.server.clone(),
+                    irori.audit.clone(),
+                )
             };
             // Where Irori listens can't change under a running server. Say so, once per edit,
             // rather than leaving someone wondering why their change did nothing.

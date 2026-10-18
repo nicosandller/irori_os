@@ -133,6 +133,8 @@ pub enum Command {
     Recorder(RecorderArgs),
     /// What this Irori has said since it started.
     Logs(OnlyRemote),
+    /// Who did what in the home. For an owner.
+    Audit(AuditArgs),
     /// Start this Irori again. It stays where it runs.
     Restart(OnlyRemote),
     /// Flows. The extension has to be installed. Also spelled `rules`.
@@ -226,7 +228,9 @@ pub enum BackupCmd {
         /// Put back everything except entity history, which stays as it is now.
         #[arg(long)]
         keep_history: bool,
-        /// Put back only these, comma-separated: settings, extensions, state, history.
+        /// Put back only these, comma-separated: settings, extensions, state, history, activity.
+        /// Without this, the activity log stays as it is: a restore is not a way to take
+        /// what was done last month out of the record.
         #[arg(long, value_delimiter = ',', conflicts_with = "keep_history")]
         only: Vec<String>,
         /// Don't ask.
@@ -728,6 +732,37 @@ pub enum UsersCmd {
     },
     Remove {
         id: String,
+    },
+}
+
+#[derive(Debug, Args)]
+pub struct AuditArgs {
+    #[command(flatten)]
+    pub remote: Remote,
+    #[command(subcommand)]
+    pub cmd: AuditCmd,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AuditCmd {
+    /// The newest rows first.
+    List {
+        /// Only what this person did, by id. Programs made for them are included.
+        #[arg(long)]
+        user: Option<String>,
+        /// Only this kind of row, such as `command`, `sign_in` or `person_changed`.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Only `ok`, `denied` or `failed`.
+        #[arg(long)]
+        outcome: Option<String>,
+        /// Only since then: a time like 2026-10-19T08:00:00Z, or a span back from now like
+        /// `12h` or `7d`.
+        #[arg(long)]
+        since: Option<String>,
+        /// At most this many rows.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
     },
 }
 

@@ -475,11 +475,21 @@ struct HistoryView {
     entity: EntityId,
     /// The changes, oldest first. Empty when the entity has no stored change in the last day.
     states: Vec<EntityState>,
+    /// Who sent the command a change answered, by the `parent_id` of its context. Only a
+    /// command a person or a program sent is here: a switch pressed on the wall, or a flow,
+    /// is not. Whoever has the whole home is told who; a person with some rooms is told their
+    /// own name, and "someone" for the rest.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    by: BTreeMap<ContextId, String>,
 }
+
+/// How many calls one answer looks up the sender of.
+const HISTORY_BY_AT_MOST: usize = 500;
 
 async fn entity_history(
     State(state): State<AppState>,
     Extension(reach): Extension<Reach>,
+    Extension(who): Extension<auth::Actor>,
     Path(entity_id): Path<EntityId>,
 ) -> Response {
     // Outside a person's rooms it is answered as an entity that was never there.
@@ -489,9 +499,36 @@ async fn entity_history(
             format!("there's no entity `{entity_id}`"),
         );
     }
+    let states = state.0.history.for_entity(&entity_id);
+    // The calls the changes answered, found in the activity log. At most as many as there are
+    // changes in a day worth drawing.
+    let calls: Vec<ContextId> = states
+        .iter()
+        .filter_map(|change| change.context.parent_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .take(HISTORY_BY_AT_MOST)
+        .collect();
+    let audit = state.0.audit.clone();
+    let found = tokio::task::spawn_blocking(move || audit.who_for(&calls))
+        .await
+        .unwrap_or_default();
+    let me = who.user.as_ref().map(|user| user.id.clone());
+    let by = found
+        .into_iter()
+        .map(|(call, actor)| {
+            let said = if reach.is_whole() || (me.is_some() && actor.person() == me.as_ref()) {
+                actor.to_string()
+            } else {
+                "someone".to_owned()
+            };
+            (call, said)
+        })
+        .collect();
     Json(HistoryView {
         entity: entity_id.clone(),
-        states: state.0.history.for_entity(&entity_id),
+        states,
+        by,
     })
     .into_response()
 }
@@ -9782,9 +9819,8 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("the lamp has a light"))?;
 
         // Leo turns the lamp on, asks for the camera he has no room for, and tries to add a room.
-        let command = |entity: &str, name: &str| {
-            serde_json::json!({ "entity_id": entity, "command": name })
-        };
+        let command =
+            |entity: &str, name: &str| serde_json::json!({ "entity_id": entity, "command": name });
         let (status, why, _) = ask(
             &app,
             "POST",
@@ -9804,7 +9840,11 @@ mod tests {
             true,
         )
         .await?;
-        assert_eq!(status, StatusCode::NOT_FOUND, "answered as if it was never there");
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "answered as if it was never there"
+        );
         let (status, _, _) = ask(
             &app,
             "POST",
@@ -9842,9 +9882,12 @@ mod tests {
         }
 
         let rows = log_of(&app, &owner, |rows| {
-            rows.iter().any(|row| row["action"] == "sign_in" && row["outcome"] == "denied")
+            rows.iter()
+                .any(|row| row["action"] == "sign_in" && row["outcome"] == "denied")
                 && rows.iter().filter(|row| row["action"] == "command").count() >= 3
-                && rows.iter().any(|row| row["action"] == "room_added" && row["outcome"] == "denied")
+                && rows
+                    .iter()
+                    .any(|row| row["action"] == "room_added" && row["outcome"] == "denied")
         })
         .await?;
 
@@ -9856,17 +9899,26 @@ mod tests {
             .expect("Leo being added");
         assert_eq!(added["actor"]["name"], "Nico");
         assert!(
-            added["detail"].as_str().is_some_and(|d| d.contains("Leo") && d.contains(&rooms[0])),
+            added["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("Leo") && d.contains(&rooms[0])),
             "{added}"
         );
         // What Leo did: the lamp, with the context of the call so history can say who.
         let on = rows
             .iter()
-            .find(|row| row["action"] == "command" && row["actor"]["name"] == "Leo" && row["outcome"] == "ok")
+            .find(|row| {
+                row["action"] == "command"
+                    && row["actor"]["name"] == "Leo"
+                    && row["outcome"] == "ok"
+            })
             .expect("Leo turning the lamp on");
         assert_eq!(on["target"], lamp.as_str());
         assert_eq!(on["detail"], "turn_on");
-        assert!(on["context_id"].as_str().is_some_and(|id| !id.is_empty()), "{on}");
+        assert!(
+            on["context_id"].as_str().is_some_and(|id| !id.is_empty()),
+            "{on}"
+        );
         // The camera: denied, with the reason only an owner is told.
         let camera = rows
             .iter()
@@ -9875,7 +9927,9 @@ mod tests {
         assert_eq!(camera["outcome"], "denied");
         assert_eq!(camera["actor"]["name"], "Leo");
         assert!(
-            camera["detail"].as_str().is_some_and(|d| d.contains("not in their rooms")),
+            camera["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("not in their rooms")),
             "{camera}"
         );
         // A change that was refused is a row.
@@ -9897,11 +9951,20 @@ mod tests {
             .collect();
         assert_eq!(wrong.len(), 2, "{wrong:?}");
         assert!(wrong.iter().all(|row| row["actor"]["kind"] == "nobody"));
-        assert!(wrong.iter().any(|row| row["target"] == "leo" && row["detail"] == "wrong password"));
+        assert!(
+            wrong
+                .iter()
+                .any(|row| row["target"] == "leo" && row["detail"] == "wrong password")
+        );
         assert!(wrong.iter().any(|row| row["detail"] == "a name nobody has"));
         // And no secret anywhere: not a password somebody set or typed, nor what a nobody typed.
         let all = serde_json::Value::Array(rows.clone()).to_string();
-        for secret in ["let me in!", "correct horse", "Zqwrong-password", "Zqhunter2"] {
+        for secret in [
+            "let me in!",
+            "correct horse",
+            "Zqwrong-password",
+            "Zqhunter2",
+        ] {
             assert!(!all.contains(secret), "the log holds {secret:?}: {all}");
         }
 
@@ -9918,8 +9981,8 @@ mod tests {
     /// A page reads the newest rows first, narrowed by what it asks, and goes on from where it
     /// left off.
     #[tokio::test]
-    async fn the_log_is_read_newest_first_by_who_and_what_and_a_page_at_a_time() -> anyhow::Result<()>
-    {
+    async fn the_log_is_read_newest_first_by_who_and_what_and_a_page_at_a_time()
+    -> anyhow::Result<()> {
         let House {
             server: _server,
             _host,
@@ -10007,7 +10070,9 @@ mod tests {
             &app,
             "POST",
             "/api/tokens",
-            Some(serde_json::json!({ "name": "Tablet", "scopes": ["services:call", "states:read"] })),
+            Some(
+                serde_json::json!({ "name": "Tablet", "scopes": ["services:call", "states:read"] }),
+            ),
             Some(&owner),
             true,
         )
@@ -10035,7 +10100,15 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{why}");
         let (status, _) = bearer(&app, "GET", "/api/audit", None, &secret).await?;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, _, _) = ask(&app, "DELETE", "/api/tokens/tablet", None, Some(&owner), true).await?;
+        let (status, _, _) = ask(
+            &app,
+            "DELETE",
+            "/api/tokens/tablet",
+            None,
+            Some(&owner),
+            true,
+        )
+        .await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
 
         let rows = log_of(&app, &owner, |rows| {
@@ -10054,7 +10127,9 @@ mod tests {
         let revoked = row_by(&rows, "token_revoked", "Nico").expect("the revoking");
         assert_eq!(revoked["target"], "tablet");
         assert!(
-            revoked["detail"].as_str().is_some_and(|d| d.contains("Tablet")),
+            revoked["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("Tablet")),
             "{revoked}"
         );
         let made = row_by(&rows, "token_made", "Nico").expect("the making");
@@ -10062,6 +10137,80 @@ mod tests {
             !made.to_string().contains(&secret),
             "the secret is shown once and never written down"
         );
+        Ok(())
+    }
+
+    /// A change a command made says who sent the command, through the call it answered: the
+    /// owner and a person with the whole home are told, a person with some rooms is told their
+    /// own name and "someone" for anybody else.
+    #[tokio::test]
+    async fn history_says_who_sent_the_command_a_change_answered() -> anyhow::Result<()> {
+        let House {
+            server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            lamp_entities,
+            ..
+        } = house_with_a_vault().await?;
+        let light = lamp_entities
+            .iter()
+            .find(|id| id.starts_with("light."))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("the lamp has a light"))?;
+        let entity: EntityId = light.parse()?;
+        for cookie in [&leo, &mia] {
+            let (status, changed, _) = ask(
+                &app,
+                "POST",
+                "/api/command",
+                Some(serde_json::json!({ "entity_id": light, "command": "toggle" })),
+                Some(cookie),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{changed}");
+            // The server under test isn't subscribed to the core, so the change is handed to the
+            // diary the endpoint reads.
+            server
+                .history
+                .record(entity.clone(), serde_json::from_value(changed)?);
+        }
+        let told = |cookie: String| {
+            let (app, light) = (app.clone(), light.clone());
+            async move {
+                for _ in 0..300 {
+                    let (status, history, _) = ask(
+                        &app,
+                        "GET",
+                        &format!("/api/history/{light}"),
+                        None,
+                        Some(&cookie),
+                        false,
+                    )
+                    .await?;
+                    assert_eq!(status, StatusCode::OK, "{history}");
+                    let mut said: Vec<String> = history["by"]
+                        .as_object()
+                        .map(|by| {
+                            by.values()
+                                .filter_map(|name| name.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if said.len() == 2 {
+                        said.sort();
+                        return anyhow::Ok(said);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                anyhow::bail!("history never said who")
+            }
+        };
+        assert_eq!(told(owner).await?, ["Leo", "Mia"]);
+        assert_eq!(told(leo).await?, ["Leo", "someone"]);
         Ok(())
     }
 }

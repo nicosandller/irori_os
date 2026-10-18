@@ -4,7 +4,7 @@
 //! In the order someone setting a home up is likely to want them: the instance and the machine
 //! under it, how the page moves, whether a model answers, the floors and areas that say what's
 //! where, where the home is, the people allowed in, the programs that can reach the home,
-//! the history it keeps, and what Irori has been saying. Every row starts
+//! the history it keeps, who did what, and what Irori has been saying. Every row starts
 //! folded; what it says beside its name is usually all that was wanted.
 
 use std::collections::BTreeSet;
@@ -19,7 +19,7 @@ use crate::fold::{Head, fold};
 use crate::icons::{Icon, icon};
 
 /// The rows, by the id each goes by in the address (`/settings#assistant`).
-const SECTIONS: [&str; 10] = [
+const SECTIONS: [&str; 11] = [
     "system",
     "appearance",
     "assistant",
@@ -29,6 +29,7 @@ const SECTIONS: [&str; 10] = [
     "programs",
     "history",
     "backups",
+    "activity",
     "logs",
 ];
 
@@ -334,6 +335,13 @@ pub fn Settings() -> impl IntoView {
                 "Backups",
                 (move || backups.with(|o| crate::backups::summary(o.as_ref()))).into_any(),
                 view! { <crate::backups::Section /> }.into_any(),
+            ))}
+            {move || owner().then(|| row(
+                "activity",
+                Icon::Activity,
+                "Activity",
+                crate::activity::summary().into_any(),
+                view! { <crate::activity::Section open=is_open("activity") /> }.into_any(),
             ))}
             {move || owner().then(|| row(
                 "logs",

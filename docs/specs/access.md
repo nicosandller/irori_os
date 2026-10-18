@@ -152,12 +152,27 @@ on what, **whether it was allowed** (`ok`, `denied`, `failed`), and a few words 
 | Areas, floors, devices, entities, the floor plan, settings, the place changed | |
 | An extension installed, updated, uninstalled, its secrets set | |
 | An update installed or skipped | |
-| A backup made, deleted, restored | |
+| A backup made, uploaded, deleted, fetched; the recovery key looked at or changed; a backup downloaded (the two reads that take something out of the house); a restore asked for, and, after the restart, applied | |
 | A flow saved, turned on or off, deleted, by a person; a flow turned off because of a change in rooms | |
 
-Every request that changes something is recorded at the one place all requests pass through, with
-who, the address and the answer; the part that knows more (what was renamed to what) adds its words.
-A new address that forgets to say anything still leaves a row.
+Every request that changes something is recorded at the one place all requests pass through
+(the guard), with who, the address and the answer; the part that knows more (the entity a command
+was for, which command, what was changed about a person) adds its words. A table in
+`crates/irori/src/server/trail.rs` names the row each address leaves, and a test fails when an
+address is added without a row; one that slips through anyway is still recorded, as `change`.
+Details are words, never what was typed: the **name of a command, not its data** (a lock's code
+is data), and "password" in a list of what changed, not the password.
+
+A refusal is a row with the reason in it ("not in their rooms", "only an owner can change how the
+home is set up"). The person is told what a thing that is out of their rooms always says, that
+it is not there (§2); the owner reading the log is told what it was.
+
+A person who is **nobody** (a wrong password, a request with no sign-in) leaves a row only for
+signing in and for setting the home up, and at most 30 of them a minute: anyone who can reach Irori
+can make those, and a log that wrote them all would be a way to push out what matters. The ones
+over are counted and said once (`tries_unwritten`). A wrong password for a name that is somebody
+names them; a name that is nobody's is not written at all, because it may be a password typed in
+the wrong box.
 
 **Who** is kept as the id and the name at the time. An id can be made again after a person is
 removed (`config.md` §3.10), and a token is gone from its table when it is revoked; the row
@@ -165,7 +180,11 @@ keeps the name of the person, the token and the person it belonged to, so it sti
 
 A command row keeps the id of the call's context. The state change that follows carries that id as
 its `parent_id`, which is how an entity's history can say "turned on by Leo" without the recorder
-storing a person on every point. That needs the log to be kept at least as long as history.
+storing a person on every point. That needs the log to be kept at least as long as history, so
+`retain_days` is never less than the recorder's. `GET /api/history/<entity_id>` carries it as
+`by`, a map from a call's context to a name. Whoever has the whole home is told who. A person with
+some rooms is told their own name, and "someone" for the rest. Only a command a person or a program
+sent is there: a switch pressed on the wall, or a flow, is not.
 
 ### 3.2 Keeping it
 
@@ -173,15 +192,19 @@ storing a person on every point. That needs the log to be kept at least as long 
 
 | Key | Default | |
 |---|---|---|
-| `retain_days` | 90 | Older rows are removed once a day. Never less than `[recorder] retain_days`. |
-| `max_rows` | 100000 | Oldest first. A program that calls the API every few seconds is recorded by design, and this is what it can cost; the page says when rows went for size, and which token fills it. |
+| `retain_days` | 90 | Older rows are removed. Never less than `[recorder] retain_days`. |
+| `max_rows` | 100000 | Oldest first. A program that calls the API every few seconds is recorded by design, and this is what it can cost. Cutting goes down to 90% so it does not happen at the next row; the log says so (`activity_trimmed`) and names the actor that wrote more than half of what is left. |
 
-Rows are written by a writer of their own that batches, except sign-ins and changes to people,
-which are written before the answer goes back.
+Rows are written by a writer of their own that batches. Sign-ins and sign-outs, changes to
+people and to tokens, a restart, the recovery key and a restore are written **before the answer goes
+back**, because a crash or a restart is what follows them. A row that cannot be written because
+the queue is full is counted and said in the log (`activity_lost`), so a gap is never silent.
 
 **A backup holds it as its own part, "activity", and a restore leaves the log as it is** unless
-that part is chosen (`backup.md` §6). A restore is itself written to the log afterwards. The
-record of a restore that rolled itself back would be worthless.
+that part is chosen (`backup.md` §6). A restore is itself written to the log: once when it is asked
+for (`restore_asked`), and again by Irori when it has been applied, in the log as it then stands
+(`restore_applied`), so a restore that brings the backup's log back still leaves the line that
+says it did. The record of a restore that rolled itself back would be worthless.
 
 ### 3.3 Reading it
 

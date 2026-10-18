@@ -84,8 +84,8 @@ it needs and no others.
 | `services:call` | `POST /api/command` |
 | `events:read`, with the two reads above | `GET /api/ws` |
 
-Anything else — users, extensions, the floorplan's edits, restart, the assistant, tokens —
-answers `403` to a token. The message names the limit: `this token doesn't include
+Anything else — users, extensions, the floorplan's edits, restart, the assistant, tokens, the
+activity log (`GET /api/audit`) — answers `403` to a token. The message names the limit: `this token doesn't include
 states:read`, or `a token can't change how the home is set up`.
 
 A service call made with a token is recorded as `origin.type = "api"` and that token's id
@@ -109,6 +109,19 @@ protocol has confirmed, or an error.
 `Content-Security-Policy` that lets nothing in it run, since a picture may be an SVG. `404` for
 anything that isn't a camera, `504` when the camera didn't answer within 5 seconds, `502` with
 the protocol's reason when it had no picture to give.
+
+`GET /api/history/<entity_id>` is `{ "entity", "states", "by"? }`. `by` maps the context of a
+command (the `parent_id` of a state change that answered it) to who sent it, when the activity
+log has the command: the owner and a person with the whole home are told the name, a person with
+some rooms is told their own and "someone" for the rest (`docs/specs/access.md` §3.1).
+
+`GET /api/audit` is the activity log, for an owner (a token gets `403`):
+`{ "entries": [AuditEntry…], "older"? }`, newest first. The query narrows it: `user` (an id; what
+that person did and what programs made for them did), `action` (`command`, `sign_in`…), `outcome`
+(`ok`, `denied`, `failed`), `since` (RFC 3339), `limit` (at most 1000, 200 if left out) and
+`before` (a row's `id`; `older` is the one to ask with to read on). An `AuditEntry` is `id`, `at`,
+`actor` (`{kind: person|token|extension|irori|nobody, …}` with the name as it was), `action`,
+`target?`, `outcome`, `detail?`, `context_id?`, `client?`. A query it can't read is `422`.
 
 ## 4. The websocket
 
