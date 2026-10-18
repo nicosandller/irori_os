@@ -332,6 +332,8 @@ pub struct IroriSettings {
     #[serde(default)]
     pub recorder: RecorderSection,
     #[serde(default)]
+    pub audit: AuditSection,
+    #[serde(default)]
     pub updates: UpdatesSection,
 }
 
@@ -413,6 +415,62 @@ pub struct RecorderSection {
 
 fn default_retain_days() -> u32 {
     10
+}
+
+/// `[audit]`. How long the activity log is kept and how large it may grow
+/// (`docs/specs/access.md` §3.2). Applied while Irori runs, like `[recorder]`; the page does not
+/// rewrite it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditSection {
+    /// Days to keep a row. At least 1; a missing value is 90. Never shorter than
+    /// `[recorder] retain_days`, which a state change's "who" is read back from: a shorter
+    /// value is raised to it where the log is pruned.
+    #[serde(default = "default_audit_days")]
+    pub retain_days: u32,
+    /// The most rows to keep, oldest going first. At least 1000; a missing value is 100000.
+    #[serde(default = "default_audit_rows")]
+    pub max_rows: u32,
+}
+
+fn default_audit_days() -> u32 {
+    90
+}
+
+fn default_audit_rows() -> u32 {
+    100_000
+}
+
+impl Default for AuditSection {
+    fn default() -> Self {
+        Self {
+            retain_days: default_audit_days(),
+            max_rows: default_audit_rows(),
+        }
+    }
+}
+
+impl AuditSection {
+    /// The fewest rows a log may be held to: less than this would drop a day's ordinary use.
+    pub const LEAST_ROWS: u32 = 1000;
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.retain_days == 0 {
+            return Err("audit.retain_days must be at least 1".to_owned());
+        }
+        if self.max_rows < Self::LEAST_ROWS {
+            return Err(format!(
+                "audit.max_rows must be at least {}",
+                Self::LEAST_ROWS
+            ));
+        }
+        Ok(())
+    }
+
+    /// The days a row is kept for, given how long history is: never fewer.
+    pub fn days_given(&self, recorder: &RecorderSection) -> u32 {
+        self.retain_days.max(recorder.retain_days)
+    }
 }
 
 impl Default for RecorderSection {
@@ -523,6 +581,7 @@ pub struct ExtensionsSection {
 pub fn read_irori(text: &str) -> Result<IroriSettings, String> {
     let settings: IroriSettings = toml::from_str(text).map_err(|e| e.to_string())?;
     settings.recorder.check()?;
+    settings.audit.check()?;
     Ok(settings)
 }
 
@@ -835,6 +894,29 @@ mod tests {
         assert!(read_irori("[recorder]\nretain_days = \"week\"\n").is_err());
         assert!(read_irori("[recorder]\nretain_days = 30\nsummary_days = 0\n").is_err());
         assert!(read_irori("[recorder]\nretain_days = 30\nsummary_days = 7\n").is_err());
+    }
+
+    #[test]
+    fn the_activity_log_is_kept_ninety_days_and_a_hundred_thousand_rows_unless_told() {
+        let empty = read_irori("").expect("empty").audit;
+        assert_eq!((empty.retain_days, empty.max_rows), (90, 100_000));
+        let told = read_irori("[audit]\nretain_days = 365\nmax_rows = 5000\n")
+            .expect("valid")
+            .audit;
+        assert_eq!((told.retain_days, told.max_rows), (365, 5000));
+        assert!(read_irori("[audit]\nretain_days = 0\n").is_err());
+        assert!(read_irori("[audit]\nmax_rows = 999\n").is_err());
+        assert!(read_irori("[audit]\nkeep = 3\n").is_err());
+    }
+
+    /// History is read back to say who did what, so the log is never kept for less time.
+    #[test]
+    fn the_log_is_kept_at_least_as_long_as_history() {
+        let settings = read_irori("[recorder]\nretain_days = 120\n[audit]\nretain_days = 30\n")
+            .expect("valid");
+        assert_eq!(settings.audit.days_given(&settings.recorder), 120);
+        let longer = read_irori("[audit]\nretain_days = 365\n").expect("valid");
+        assert_eq!(longer.audit.days_given(&longer.recorder), 365);
     }
 
     #[test]

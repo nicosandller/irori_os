@@ -234,6 +234,10 @@ disabled = ["demo"]
 retain_days = 10          # detailed history, in days; at least 1
 # summary_days = 365      # hourly summaries; leave out to keep them
 
+[audit]
+retain_days = 90          # the activity log, in days; at least 1
+max_rows = 100000         # oldest rows go first; at least 1000
+
 [updates]
 check = true              # look for a newer Irori without being asked
 
@@ -263,6 +267,12 @@ in Settings writes it, and an edit of the file is picked up within a couple of s
   changes they came from are still there. The week, month, and year on a sensor's history are
   drawn from these hours. A measurement is the average for the hour. A counter is how much it
   changed. A `total_increasing` sensor treats a drop as a reset.
+
+`[audit]` is how long the activity log is kept and how large it may grow
+(`docs/specs/access.md` §3). It applies while Irori runs; the page does not write it. A row
+is kept `retain_days` days, but never fewer than `[recorder] retain_days`: history is read back
+to say who did what, so the log outlasts it. When the log is over `max_rows`, the oldest rows
+go first and a row says so, with the program that wrote most of what was kept.
 
 If `bind` is already in use when Irori starts, it listens on `bind_fallback` instead (or, if none
 is set, on the first free port just above `bind`, up to nine ports higher) and logs a warning with
