@@ -14,6 +14,7 @@ use super::auth::{
     Actor, Client, NEEDS_PASSWORD, check_current, edit_failed, fingerprint, password_hash,
     session_cookie, token_of,
 };
+use super::trail::Trail;
 use super::{AppState, refused};
 use crate::config::{People, Refused};
 
@@ -95,13 +96,39 @@ fn rooms_to_keep(state: &AppState, asked: Vec<AreaId>, role: Role) -> Result<Vec
     Ok(kept)
 }
 
+/// "owner" or "user", for the activity log.
+fn role_word(role: Role) -> &'static str {
+    if role.runs_the_home() {
+        "owner"
+    } else {
+        "user"
+    }
+}
+
+/// Which rooms, for the activity log: the ids, or the whole home.
+fn rooms_words(areas: Option<&[AreaId]>) -> String {
+    match areas {
+        None => "the whole home".to_owned(),
+        Some([]) => "no rooms".to_owned(),
+        Some(areas) => areas
+            .iter()
+            .map(AreaId::as_str)
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
+}
+
 /// What adding somebody to a home with no owner yet is told.
 const NEEDS_OWNER: &str = "set the home up first: it needs an owner with a password before \
      anybody else is let in";
 
 /// Adds a person, with a password of their own. The owner comes first, through the welcome
 /// (`auth::set_up`); this is for everybody after.
-pub async fn add_user(State(state): State<AppState>, Json(ask): Json<NewUser>) -> Response {
+pub async fn add_user(
+    State(state): State<AppState>,
+    Extension(trail): Extension<Trail>,
+    Json(ask): Json<NewUser>,
+) -> Response {
     let password = ask.password.filter(|password| !password.is_empty());
     let hash = match password_hash(password).await {
         Ok(hash) => hash,
@@ -165,6 +192,13 @@ pub async fn add_user(State(state): State<AppState>, Json(ask): Json<NewUser>) -
     match made {
         Ok(id) => {
             tracing::info!(user = %id, "somebody was added to the home");
+            trail.target(id.as_str());
+            trail.detail(format!(
+                "{} ({}), with {}",
+                ask.name.as_str(),
+                role_word(ask.role),
+                rooms_words(areas.as_deref())
+            ));
             (StatusCode::CREATED, Json(list(&state).await)).into_response()
         }
         Err(error) => edit_failed(error),
@@ -219,6 +253,7 @@ pub async fn edit_user(
     State(state): State<AppState>,
     Extension(who): Extension<Actor>,
     Extension(Client(from)): Extension<Client>,
+    Extension(trail): Extension<Trail>,
     Path(id): Path<UserId>,
     headers: HeaderMap,
     Json(ask): Json<UserEdit>,
@@ -287,6 +322,22 @@ pub async fn edit_user(
         Some(None) => Some(None),
         None => None,
     };
+    // What was changed, in words, for the activity log. A password is said to have changed and
+    // nothing more.
+    let mut changed = Vec::new();
+    if let Some(name) = &ask.name {
+        changed.push(format!("name to {}", name.as_str()));
+    }
+    if let Some(role) = ask.role {
+        changed.push(format!("role to {}", role_word(role)));
+    }
+    if let Some(rooms) = &rooms {
+        changed.push(format!("rooms to {}", rooms_words(rooms.as_deref())));
+    }
+    if changes_password {
+        changed.push("password".to_owned());
+    }
+    trail.detail(changed.join("; "));
     let edited = state
         .0
         .config
@@ -366,8 +417,16 @@ pub async fn edit_user(
 }
 
 /// Takes a person out of the home, and signs them out everywhere.
-pub async fn remove_user(State(state): State<AppState>, Path(id): Path<UserId>) -> Response {
+pub async fn remove_user(
+    State(state): State<AppState>,
+    Extension(trail): Extension<Trail>,
+    Path(id): Path<UserId>,
+) -> Response {
     let people = state.0.config.people().await;
+    // The name they had: the id can be given to somebody else later.
+    if let Some(user) = people.user(&id) {
+        trail.detail(user.name.as_str());
+    }
     // The same refusals the write would give, before any token is forgotten. Revoking
     // first and then being told the person has to stay would take their tokens anyway.
     if let Err(why) = can_leave(&people, &id) {

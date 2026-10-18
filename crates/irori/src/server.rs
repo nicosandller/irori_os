@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview, Reach};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
-    ExtensionId, Floor, FloorId, Floorplan, Name, Origin, Placement, Timestamp, UserId,
+    ExtensionId, Floor, FloorId, Floorplan, Name, Origin, Outcome, Placement, Timestamp, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -28,6 +28,7 @@ use crate::db::Database;
 use crate::history::History;
 use crate::syslog;
 
+mod activity;
 mod apps;
 #[cfg(feature = "assist")]
 mod assistant;
@@ -36,6 +37,7 @@ mod backups;
 mod live;
 mod people;
 mod tokens;
+mod trail;
 
 /// Who commands are attributed to in a home where nobody has been set up.
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -59,6 +61,8 @@ struct Inner {
     config: Config,
     host: ExtensionHost,
     history: History,
+    /// Who did what (`docs/specs/access.md` §3).
+    audit: crate::audit::Audit,
     /// What this process has said lately, kept by the log subscriber's writer (`syslog`) and
     /// served to the Settings page. Held here rather than reached for globally so a test can put
     /// lines in it without standing up a subscriber.
@@ -89,6 +93,7 @@ impl AppState {
         config: Config,
         host: ExtensionHost,
         history: History,
+        audit: crate::audit::Audit,
         log: Arc<syslog::Log>,
         restart: Arc<tokio::sync::Notify>,
         restarting: Arc<AtomicBool>,
@@ -104,6 +109,7 @@ impl AppState {
             config,
             host,
             history,
+            audit,
             log,
             restart,
             restarting,
@@ -147,6 +153,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/setup", post(auth::set_up))
         .route("/api/users", get(people::users).post(people::add_user))
+        // Who did what: an owner reads it, and no token does (`server/activity.rs`).
+        .route("/api/audit", get(activity::list))
         .route(
             "/api/users/{id}",
             patch(people::edit_user).delete(people::remove_user),
@@ -2372,11 +2380,18 @@ async fn command(
     State(state): State<AppState>,
     Extension(who): Extension<auth::Actor>,
     Extension(reach): Extension<Reach>,
+    Extension(trail): Extension<trail::Trail>,
     Json(request): Json<CommandRequest>,
 ) -> Response {
+    // Which command, never its data: a lock's code is data.
+    trail.target(request.entity_id.as_str());
+    trail.detail(request.command.as_str());
     // A thing outside a person's rooms is answered as one that was never there. That comes
-    // before anything else is said about it, or "only an owner may" would give it away.
+    // before anything else is said about it, or "only an owner may" would give it away. The
+    // activity log, which only an owner reads, says what it was.
     if !reach.sees_entity(&request.entity_id) {
+        trail.outcome(Outcome::Denied);
+        trail.detail(format!("{}: not in their rooms", request.command));
         let gone = CallError::UnknownEntity(request.entity_id.clone());
         return refused(status_for(&gone), gone.to_string());
     }
@@ -2405,6 +2420,7 @@ async fn command(
         },
     };
     let who = core.new_context(origin);
+    trail.context(who.id.clone());
     // Subscribed before the call: the protocol reports the new state and answers the call in
     // the same breath, and the report must not slip past while the call is still in flight.
     let changes = core.subscribe();
@@ -2615,6 +2631,9 @@ mod tests {
         core: Core,
         config: Config,
         history: History,
+        /// Who did what. One for the whole test, as the real one is for the whole process: each
+        /// request builds its own router, and the rows from all of them land in one place.
+        audit: crate::audit::Audit,
         // The log this instance is serving, so a test can put lines in it. The real one is filled
         // by the log subscriber's writer (`syslog::Tee`), which a test has no reason to stand up.
         log: Arc<syslog::Log>,
@@ -2647,11 +2666,13 @@ mod tests {
                 &dir.path().join("irori.db"),
                 irori_recorder::Retention::default(),
             )?;
+            let audit = crate::audit::Audit::open(&dir.path().join("irori.db"))?;
             Ok(Self {
                 dir,
                 core,
                 config,
                 history,
+                audit,
                 log: Arc::new(syslog::Log::default()),
                 restart: Arc::new(tokio::sync::Notify::new()),
                 restarting: Arc::new(AtomicBool::new(false)),
@@ -2671,6 +2692,7 @@ mod tests {
                 self.config.clone(),
                 host,
                 self.history.clone(),
+                self.audit.clone(),
                 Arc::clone(&self.log),
                 self.restart.clone(),
                 self.restarting.clone(),
@@ -9043,6 +9065,7 @@ mod tests {
         ("GET", "/api/session", Open),
         ("POST", "/api/setup", Open),
         ("GET", "/api/users", Filtered),
+        ("GET", "/api/audit", Run),
         ("PATCH", "/api/users/{id}", Own),
         ("GET", "/api/place", Whole),
         ("GET", "/api/home", Filtered),
@@ -9696,6 +9719,349 @@ mod tests {
         let mut feed = open_live(address, &[("cookie", leo.as_str())]).await?;
         let frames = drain(&mut feed).await?;
         assert!(frames[0].contains(&camera_device), "{}", frames[0]);
+        Ok(())
+    }
+    // ---- who did what (`audit.rs`, `server/trail.rs`) ---------------------------------------
+
+    /// The log as an owner reads it, once the writer has caught up with what `wanted` looks for.
+    async fn log_of(
+        app: &Router,
+        owner: &str,
+        wanted: impl Fn(&[serde_json::Value]) -> bool,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        for _ in 0..300 {
+            let (status, page, _) = ask(
+                app,
+                "GET",
+                "/api/audit?limit=1000",
+                None,
+                Some(owner),
+                false,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            let rows = page["entries"].as_array().cloned().unwrap_or_default();
+            if wanted(&rows) {
+                return Ok(rows);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("the activity log never held what was looked for")
+    }
+
+    /// The newest row with this action by this person (or token) name.
+    fn row_by<'a>(
+        rows: &'a [serde_json::Value],
+        action: &str,
+        who: &str,
+    ) -> Option<&'a serde_json::Value> {
+        rows.iter()
+            .find(|row| row["action"] == action && row["actor"]["name"] == who)
+    }
+
+    /// Everything a person does that changes the home leaves a row with who, what and whether it
+    /// was allowed; a refusal is a row too; only an owner reads them; and none of them holds a
+    /// password (`docs/specs/access.md` §3).
+    #[tokio::test]
+    async fn what_people_do_is_written_down_and_only_an_owner_reads_it() -> anyhow::Result<()> {
+        let House {
+            server: _server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            rooms,
+            lamp_entities,
+            ..
+        } = house_with_a_vault().await?;
+        let lamp = lamp_entities
+            .iter()
+            .find(|id| id.starts_with("light."))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("the lamp has a light"))?;
+
+        // Leo turns the lamp on, asks for the camera he has no room for, and tries to add a room.
+        let command = |entity: &str, name: &str| {
+            serde_json::json!({ "entity_id": entity, "command": name })
+        };
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/command",
+            Some(command(&lamp, "turn_on")),
+            Some(&leo),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/command",
+            Some(command(CAMERA, "toggle")),
+            Some(&leo),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "answered as if it was never there");
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/areas",
+            Some(serde_json::json!({ "name": "Attic" })),
+            Some(&leo),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Mia has the whole home and is not an owner: an update is the owner's.
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/command",
+            Some(command("update.irori", "install")),
+            Some(&mia),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Somebody who is nobody types a wrong password for Leo, and one for a name nobody has,
+        // which may well be a password typed in the wrong box.
+        for typed in ["Leo", "Zqhunter2"] {
+            let (status, _, _) = ask(
+                &app,
+                "POST",
+                "/api/session",
+                Some(serde_json::json!({ "user": typed, "password": "Zqwrong-password" })),
+                None,
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+
+        let rows = log_of(&app, &owner, |rows| {
+            rows.iter().any(|row| row["action"] == "sign_in" && row["outcome"] == "denied")
+                && rows.iter().filter(|row| row["action"] == "command").count() >= 3
+                && rows.iter().any(|row| row["action"] == "room_added" && row["outcome"] == "denied")
+        })
+        .await?;
+
+        let setup = row_by(&rows, "owner_set_up", "Nico").expect("the owner being set up");
+        assert_eq!(setup["outcome"], "ok");
+        let added = rows
+            .iter()
+            .find(|row| row["action"] == "person_added" && row["target"] == "leo")
+            .expect("Leo being added");
+        assert_eq!(added["actor"]["name"], "Nico");
+        assert!(
+            added["detail"].as_str().is_some_and(|d| d.contains("Leo") && d.contains(&rooms[0])),
+            "{added}"
+        );
+        // What Leo did: the lamp, with the context of the call so history can say who.
+        let on = rows
+            .iter()
+            .find(|row| row["action"] == "command" && row["actor"]["name"] == "Leo" && row["outcome"] == "ok")
+            .expect("Leo turning the lamp on");
+        assert_eq!(on["target"], lamp.as_str());
+        assert_eq!(on["detail"], "turn_on");
+        assert!(on["context_id"].as_str().is_some_and(|id| !id.is_empty()), "{on}");
+        // The camera: denied, with the reason only an owner is told.
+        let camera = rows
+            .iter()
+            .find(|row| row["action"] == "command" && row["target"] == CAMERA)
+            .expect("Leo asking for the camera");
+        assert_eq!(camera["outcome"], "denied");
+        assert_eq!(camera["actor"]["name"], "Leo");
+        assert!(
+            camera["detail"].as_str().is_some_and(|d| d.contains("not in their rooms")),
+            "{camera}"
+        );
+        // A change that was refused is a row.
+        let room = row_by(&rows, "room_added", "Leo").expect("Leo's refused room");
+        assert_eq!(room["outcome"], "denied");
+        assert!(
+            room["detail"].as_str().is_some_and(|d| d.contains("owner")),
+            "{room}"
+        );
+        let update = rows
+            .iter()
+            .find(|row| row["target"] == "update.irori" && row["actor"]["name"] == "Mia")
+            .expect("Mia's update");
+        assert_eq!(update["outcome"], "denied");
+        // Wrong passwords: nobody signed in, the person it was typed for only if they are one.
+        let wrong: Vec<_> = rows
+            .iter()
+            .filter(|row| row["action"] == "sign_in" && row["outcome"] == "denied")
+            .collect();
+        assert_eq!(wrong.len(), 2, "{wrong:?}");
+        assert!(wrong.iter().all(|row| row["actor"]["kind"] == "nobody"));
+        assert!(wrong.iter().any(|row| row["target"] == "leo" && row["detail"] == "wrong password"));
+        assert!(wrong.iter().any(|row| row["detail"] == "a name nobody has"));
+        // And no secret anywhere: not a password somebody set or typed, nor what a nobody typed.
+        let all = serde_json::Value::Array(rows.clone()).to_string();
+        for secret in ["let me in!", "correct horse", "Zqwrong-password", "Zqhunter2"] {
+            assert!(!all.contains(secret), "the log holds {secret:?}: {all}");
+        }
+
+        // Who reads it: an owner. Nobody else, whatever rooms they have.
+        for who in [&leo, &mia] {
+            let (status, _, _) = ask(&app, "GET", "/api/audit", None, Some(who), false).await?;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+        let (status, _, _) = ask(&app, "GET", "/api/audit", None, None, false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        Ok(())
+    }
+
+    /// A page reads the newest rows first, narrowed by what it asks, and goes on from where it
+    /// left off.
+    #[tokio::test]
+    async fn the_log_is_read_newest_first_by_who_and_what_and_a_page_at_a_time() -> anyhow::Result<()>
+    {
+        let House {
+            server: _server,
+            _host,
+            app,
+            owner,
+            leo,
+            lamp_entities,
+            ..
+        } = house_with_a_vault().await?;
+        let lamp = lamp_entities
+            .iter()
+            .find(|id| id.starts_with("light."))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("the lamp has a light"))?;
+        for name in ["turn_on", "turn_off", "turn_on"] {
+            let (status, why, _) = ask(
+                &app,
+                "POST",
+                "/api/command",
+                Some(serde_json::json!({ "entity_id": lamp, "command": name })),
+                Some(&leo),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{why}");
+        }
+        log_of(&app, &owner, |rows| {
+            rows.iter().filter(|row| row["action"] == "command").count() == 3
+        })
+        .await?;
+
+        let (status, page, _) = ask(
+            &app,
+            "GET",
+            "/api/audit?user=leo&action=command&limit=2",
+            None,
+            Some(&owner),
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let first = page["entries"].as_array().cloned().unwrap_or_default();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0]["detail"], "turn_on", "the newest first");
+        assert_eq!(first[1]["detail"], "turn_off");
+        let older = page["older"].as_u64().expect("there is one more");
+        let (_, page, _) = ask(
+            &app,
+            "GET",
+            &format!("/api/audit?user=leo&action=command&limit=2&before={older}"),
+            None,
+            Some(&owner),
+            false,
+        )
+        .await?;
+        let rest = page["entries"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rest.len(), 1, "{page}");
+        assert!(page.get("older").is_none(), "the last page says so");
+
+        // Anything it can't read as what it is meant to be is said, not ignored.
+        for query in ["outcome=maybe", "since=yesterday", "before=x", "limit=lots"] {
+            let (status, why, _) = ask(
+                &app,
+                "GET",
+                &format!("/api/audit?{query}"),
+                None,
+                Some(&owner),
+                false,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {why}");
+        }
+        Ok(())
+    }
+
+    /// A program is written down as the program, with the person it was made for, and as it was
+    /// called: the day it is revoked it is gone from its table, and the log still says who it was.
+    /// A program is not the person to ask who did what.
+    #[tokio::test]
+    async fn a_program_is_written_down_as_itself_and_does_not_read_the_log() -> anyhow::Result<()> {
+        let (core, _host) = demo().await?;
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["services:call", "states:read"] })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (_, entities, _) = ask(&app, "GET", "/api/entities", None, Some(&owner), false).await?;
+        let light = entities
+            .as_array()
+            .and_then(|all| {
+                all.iter()
+                    .filter_map(|entity| entity["id"].as_str())
+                    .find(|id| id.starts_with("light."))
+            })
+            .unwrap_or_default()
+            .to_owned();
+        let (status, why) = bearer(
+            &app,
+            "POST",
+            "/api/command",
+            Some(serde_json::json!({ "entity_id": light, "command": "turn_on" })),
+            &secret,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let (status, _) = bearer(&app, "GET", "/api/audit", None, &secret).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = ask(&app, "DELETE", "/api/tokens/tablet", None, Some(&owner), true).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let rows = log_of(&app, &owner, |rows| {
+            rows.iter().any(|row| row["action"] == "token_revoked")
+                && rows.iter().any(|row| row["action"] == "command")
+        })
+        .await?;
+        let command = rows
+            .iter()
+            .find(|row| row["action"] == "command")
+            .expect("the program's command");
+        assert_eq!(command["actor"]["kind"], "token");
+        assert_eq!(command["actor"]["name"], "Tablet");
+        assert_eq!(command["actor"]["person"]["name"], "Nico");
+        // The refused read of the log is the program's too.
+        let revoked = row_by(&rows, "token_revoked", "Nico").expect("the revoking");
+        assert_eq!(revoked["target"], "tablet");
+        assert!(
+            revoked["detail"].as_str().is_some_and(|d| d.contains("Tablet")),
+            "{revoked}"
+        );
+        let made = row_by(&rows, "token_made", "Nico").expect("the making");
+        assert!(
+            !made.to_string().contains(&secret),
+            "the secret is shown once and never written down"
+        );
         Ok(())
     }
 }

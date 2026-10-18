@@ -18,6 +18,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{self, Actor, Auth, TokenAccess, TokenGrant};
+use super::trail::Trail;
 use super::{AppState, refused};
 use crate::config::People;
 use crate::db::Database;
@@ -339,6 +340,7 @@ pub async fn list(State(state): State<AppState>) -> Json<Vec<TokenView>> {
 pub async fn create(
     State(state): State<AppState>,
     Extension(who): Extension<Actor>,
+    Extension(trail): Extension<Trail>,
     Json(ask): Json<NewToken>,
 ) -> Response {
     let name = match Name::try_from(ask.name) {
@@ -392,6 +394,23 @@ pub async fn create(
     {
         Ok(issued) => {
             tracing::info!(token = %issued.token.id, "an access token was created");
+            // What it can do, never the secret. Kept as the token was called: it is gone from
+            // its table the day it is revoked.
+            trail.target(issued.token.id.as_str());
+            trail.detail(match &issued.token.extension {
+                Some(extension) => format!("{}, to connect {extension}", issued.token.name),
+                None => format!(
+                    "{}, with {}",
+                    issued.token.name,
+                    issued
+                        .token
+                        .scopes
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            });
             (
                 StatusCode::CREATED,
                 Json(Created {
@@ -416,7 +435,15 @@ pub async fn create(
     }
 }
 
-pub async fn revoke(State(state): State<AppState>, Path(id): Path<TokenId>) -> Response {
+pub async fn revoke(
+    State(state): State<AppState>,
+    Extension(trail): Extension<Trail>,
+    Path(id): Path<TokenId>,
+) -> Response {
+    // What it was called and who it was for, taken before it is gone from its table.
+    if let Some(token) = state.0.auth.tokens.list().iter().find(|token| token.id == id) {
+        trail.detail(format!("{}, for {}", token.name, token.user));
+    }
     match state.0.auth.tokens.revoke(&id) {
         Ok(true) => {
             state.0.sockets.close_token(&id);
@@ -480,6 +507,7 @@ fn token_actor(people: &People, token: &AccessToken) -> Option<Actor> {
         owner: false,
         token: Some(TokenGrant {
             id: token.id.clone(),
+            name: token.name.clone(),
             extension: token.extension.clone(),
         }),
     })
@@ -518,6 +546,7 @@ pub(super) fn bearer_actor(
     headers: &HeaderMap,
     method: &Method,
     path: &str,
+    trail: &Trail,
 ) -> Result<Actor, Box<Response>> {
     let denied = || {
         Box::new(refused(
@@ -532,26 +561,25 @@ pub(super) fn bearer_actor(
     let Some(who) = token_actor(people, &token) else {
         return Err(denied());
     };
+    // From here the program is known, so a refusal is written down against it.
+    trail.actor(who.audit());
+    let no = |why: String| {
+        trail.detail(why.clone());
+        Box::new(refused(StatusCode::FORBIDDEN, why))
+    };
     if token.extension.is_some() {
-        return Err(Box::new(refused(
-            StatusCode::FORBIDDEN,
-            "this token is only for connecting its extension".to_owned(),
-        )));
+        return Err(no(
+            "this token is only for connecting its extension".to_owned()
+        ));
     }
     match auth::token_access(method, path) {
         TokenAccess::Scopes(need) => {
             if let Some(missing) = missing_scope(need, &token.scopes) {
-                return Err(Box::new(refused(
-                    StatusCode::FORBIDDEN,
-                    format!("this token doesn't include {missing}"),
-                )));
+                return Err(no(format!("this token doesn't include {missing}")));
             }
         }
         TokenAccess::Closed => {
-            return Err(Box::new(refused(
-                StatusCode::FORBIDDEN,
-                "a token can't change how the home is set up".to_owned(),
-            )));
+            return Err(no("a token can't change how the home is set up".to_owned()));
         }
         TokenAccess::Open => {}
     }
@@ -633,6 +661,8 @@ mod tests {
             (Method::POST, "/api/areas"),
             (Method::GET, "/api/system"),
             (Method::GET, "/api/extensions/demo/log"),
+            // Who did what is for the person it is about, not for a program.
+            (Method::GET, "/api/audit"),
         ] {
             assert_eq!(
                 token_access(&method, path),

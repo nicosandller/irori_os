@@ -2,6 +2,7 @@
 
 #[cfg(feature = "assist")]
 mod assistant;
+mod audit;
 mod backup;
 mod banner;
 mod build_info;
@@ -182,6 +183,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
     let db = db::open(&data)?;
     let recorder_settings = store.irori().recorder.clone();
+    let audit_keep = audit::Keep::from_settings(&store.irori().audit, &recorder_settings);
     let _ = self_update::LOOKS.set(store.irori().updates.check);
     // Before anything can replace it: an update moves this file, and the restart after it
     // must run what took its place.
@@ -271,6 +273,10 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                 history.clone(),
                 core.subscribe(),
             ));
+            // Who did what: a table of its own in the same file, written by a thread of its own,
+            // so a person's change never waits on the recorder or the other way round.
+            let audit = audit::Audit::open(&db.path).context("failed to open the activity log")?;
+            audit.keep(audit_keep);
             // Engines that ask for history (`history:read`) read the same shelf, and engines
             // whose permissions name the config directory are told where it is.
             core.use_history(Arc::new(history.clone()));
@@ -279,7 +285,9 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // the name and the room its owner gave it, rather than appearing under its old name
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
-            tokio::spawn(settings.clone().watch(core.clone(), history.clone()));
+            tokio::spawn(settings
+                    .clone()
+                    .watch(core.clone(), history.clone(), audit.clone()));
             tokio::spawn(settings.clone().forget_retired(core.clone()));
             // Reads backup.toml every time it wakes, so a change from the page applies at once.
             tokio::spawn(backup::schedule::run(config.clone(), data.clone()));
@@ -320,6 +328,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                 settings,
                 host.clone(),
                 history,
+                audit,
                 log,
                 restart.clone(),
                 restarting.clone(),

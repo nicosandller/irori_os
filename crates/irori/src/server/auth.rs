@@ -29,6 +29,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::trail::{self, Trail};
 use super::{AppState, UI_HEADER, refused};
 use crate::config::{EditError, People, Refused};
 use crate::db::Database;
@@ -79,6 +80,8 @@ pub struct Actor {
 #[derive(Debug, Clone)]
 pub struct TokenGrant {
     pub id: TokenId,
+    /// What it was called when it was made, for the activity log.
+    pub name: String,
     /// Set when the token exists only to connect this extension.
     pub extension: Option<ExtensionId>,
 }
@@ -97,6 +100,32 @@ impl Actor {
         match &self.user {
             Some(user) => core.reach_for(user.areas.as_deref()),
             None => irori_core::Reach::nothing(),
+        }
+    }
+
+    /// Who the activity log says did it (`docs/specs/access.md` §3). A token is the program,
+    /// with the person it was made for; a request with nobody behind it is nobody.
+    pub fn audit(&self) -> irori_types::AuditActor {
+        use irori_types::{AuditActor, Named};
+        if let Some(token) = &self.token {
+            return match &token.extension {
+                Some(id) => AuditActor::Extension { id: id.clone() },
+                None => AuditActor::Token {
+                    id: token.id.clone(),
+                    name: token.name.clone(),
+                    person: self.user.as_ref().map(|user| Named {
+                        id: user.id.clone(),
+                        name: user.name.as_str().to_owned(),
+                    }),
+                },
+            };
+        }
+        match &self.user {
+            Some(user) => AuditActor::Person {
+                id: user.id.clone(),
+                name: user.name.as_str().to_owned(),
+            },
+            None => AuditActor::Nobody,
         }
     }
 
@@ -630,12 +659,52 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
 
 /// Lets a request through, or says why not. Over every route.
 ///
+/// Every request also gets a [`Trail`], and a change leaves its row in the activity log when it
+/// is over, whoever answered it (`server/trail.rs`).
+pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let pattern = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str().to_owned());
+    let trail = Trail::default();
+    request.extensions_mut().insert(trail.clone());
+    let response = admit(&state, request, next, &trail).await;
+    if let Some(pattern) = pattern {
+        trail::record(
+            &state.0.audit,
+            &trail,
+            &method,
+            &pattern,
+            &path,
+            response.status(),
+        )
+        .await;
+    }
+    response
+}
+
+/// Says no, and keeps why for the activity log, which the owner reads and the person asking
+/// does not.
+fn turned_away(trail: &Trail, status: StatusCode, why: &str) -> Response {
+    trail.detail(why);
+    refused(status, why.to_owned())
+}
+
+/// The part of the guard that decides.
+///
 /// A bearer token is that token, even when a cookie came along too. Any other
 /// `Authorization` scheme is the page's cookie, so a proxy's `Basic` header doesn't
 /// lock the page out. An extension's socket takes only the token made for that extension.
-pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+async fn admit(state: &AppState, mut request: Request, next: Next, trail: &Trail) -> Response {
     let path = request.uri().path().to_owned();
     let people = state.0.config.people().await;
+    let from = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<crate::tls::ClientAddr>>()
+        .map(|info| info.0.0.ip());
+    trail.from(from);
     let who = if path == "/api/extension" {
         match super::tokens::extension_actor(&state.0.auth, &people, request.headers()) {
             Ok(who) => Some(who),
@@ -648,6 +717,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
             request.headers(),
             request.method(),
             &path,
+            trail,
         ) {
             Ok(who) => Some(who),
             Err(response) => return *response,
@@ -655,24 +725,29 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     } else {
         let who = actor(&state.0.auth, &people, request.headers());
         let needed = needs(request.method(), &path);
+        if let Some(who) = &who {
+            trail.actor(who.audit());
+        }
         if needed != Needs::Nothing {
             let Some(who) = &who else {
-                return refused(
+                return turned_away(
+                    trail,
                     StatusCode::UNAUTHORIZED,
-                    "sign in first: this home asks who is there".to_owned(),
+                    "sign in first: this home asks who is there",
                 );
             };
             if needed == Needs::Run && !who.owner {
-                return refused(
+                return turned_away(
+                    trail,
                     StatusCode::FORBIDDEN,
-                    "only an owner can change how the home is set up".to_owned(),
+                    "only an owner can change how the home is set up",
                 );
             }
             if needed == Needs::Whole && !who.reach(&state.0.core).is_whole() {
-                return refused(
+                return turned_away(
+                    trail,
                     StatusCode::FORBIDDEN,
-                    "this is for people who have the whole home, and you have some of its rooms"
-                        .to_owned(),
+                    "this is for people who have the whole home, and you have some of its rooms",
                 );
             }
             // A cookie is sent by the browser whoever wrote the page, so a change also has to
@@ -686,20 +761,18 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
                     .get(UI_HEADER)
                     .is_some_and(|value| value == "1")
             {
-                return refused(
+                return turned_away(
+                    trail,
                     StatusCode::FORBIDDEN,
-                    format!(
-                        "a change needs the `{UI_HEADER}: 1` header, which only the page sends"
-                    ),
+                    &format!("a change needs the `{UI_HEADER}: 1` header, which only the page sends"),
                 );
             }
         }
         who
     };
-    let from = request
-        .extensions()
-        .get::<axum::extract::ConnectInfo<crate::tls::ClientAddr>>()
-        .map(|info| info.0.0.ip());
+    if let Some(who) = who.as_ref().filter(|who| who.token.is_some()) {
+        trail.actor(who.audit());
+    }
     request.extensions_mut().insert(Client(from));
     // Open addresses get whoever it is too, or nobody: the session endpoints read it.
     let who = who.unwrap_or(Actor {
@@ -826,6 +899,7 @@ pub async fn check_current(
 pub async fn sign_in(
     State(state): State<AppState>,
     Extension(Client(from)): Extension<Client>,
+    Extension(trail): Extension<Trail>,
     Json(ask): Json<SignIn>,
 ) -> Response {
     let auth = &state.0.auth;
@@ -838,7 +912,18 @@ pub async fn sign_in(
         .find(|user| user.id.as_str() == typed || user.name.as_str().trim().to_lowercase() == typed)
         .cloned();
     let trier: Trier = (found.as_ref().map(|user| user.id.clone()), from);
+    // What was typed is written down only when it is somebody: a name that isn't anybody's may
+    // be a password typed into the wrong box.
+    let known = found.is_some();
+    match &found {
+        Some(user) => trail.target(user.id.as_str()),
+        None => trail.detail("a name nobody has"),
+    }
     if let Err(wait) = auth.try_now(&trier) {
+        trail.detail(format!(
+            "locked out after too many wrong passwords; waiting {} seconds",
+            wait.as_secs().max(1)
+        ));
         return too_many(wait);
     }
     let hash = found
@@ -850,6 +935,9 @@ pub async fn sign_in(
         auth.got_in(&trier);
     }
     let Some(user) = found.filter(|_| right) else {
+        if known {
+            trail.detail("wrong password");
+        }
         return refused(
             StatusCode::UNAUTHORIZED,
             "that name and password don't go together".to_owned(),
@@ -862,6 +950,7 @@ pub async fn sign_in(
         user: Some(user),
         token: None,
     };
+    trail.actor(who.audit());
     let mut response = Json(view(&state, &who).await).into_response();
     response
         .headers_mut()
@@ -906,7 +995,11 @@ impl std::fmt::Debug for FirstOwner {
 ///
 /// A home from before passwords were required may already have an owner without one. They
 /// are the one set up: they keep their id and take the name and password given.
-pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) -> Response {
+pub async fn set_up(
+    State(state): State<AppState>,
+    Extension(trail): Extension<Trail>,
+    Json(ask): Json<FirstOwner>,
+) -> Response {
     // Looked at before any hashing: this address is open to anyone, and a home that is
     // already locked mustn't be made to do slow work for whoever asks.
     const DONE: &str = "this home already has an owner; people are added in Settings";
@@ -986,6 +1079,7 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
         owner: true,
         token: None,
     };
+    trail.actor(who.audit());
     let mut response = (StatusCode::CREATED, Json(view(&state, &who).await)).into_response();
     response
         .headers_mut()
@@ -1055,6 +1149,8 @@ mod tests {
             ),
             // The logs hold everybody's sign-ins and what the owner did.
             (Method::GET, "/api/system/log", Run),
+            (Method::GET, "/api/audit", Run),
+            (Method::GET, "/api/audit?user=leo&outcome=denied", Run),
             (Method::GET, "/api/assistant/log", Run),
             (Method::GET, "/api/extensions/demo/log", Run),
             (Method::POST, "/api/command", Use),

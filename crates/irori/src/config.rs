@@ -494,7 +494,12 @@ impl Config {
         }
     }
 
-    pub async fn watch(self, core: Core, history: crate::history::History) {
+    pub async fn watch(
+        self,
+        core: Core,
+        history: crate::history::History,
+        audit: crate::audit::Audit,
+    ) {
         let irori = self.0.lock().await.irori();
         let started = Started {
             server: irori.server,
@@ -505,7 +510,7 @@ impl Config {
             tokio::time::sleep(POLL).await;
             // The recorder is told after the lock is dropped. Summarizing can take a moment,
             // and an edit of some other file should not wait on it.
-            let (recorder, server) = {
+            let (recorder, server, audit_section) = {
                 let mut store = self.0.lock().await;
                 let problems = store.reload();
                 report(&problems);
@@ -516,7 +521,7 @@ impl Config {
                 let irori = store.irori();
                 core.apply_disabled_extensions(irori.extensions.disabled.clone());
                 core.apply_home(store.home());
-                (irori.recorder.clone(), irori.server.clone())
+                (irori.recorder.clone(), irori.server.clone(), irori.audit.clone())
             };
             // Where Irori listens can't change under a running server. Say so, once per edit,
             // rather than leaving someone wondering why their change did nothing.
@@ -526,6 +531,8 @@ impl Config {
                 );
                 warned_server = Some(server);
             }
+            // Applying what is already applied does nothing, so this costs a comparison.
+            audit.keep(crate::audit::Keep::from_settings(&audit_section, &recorder));
             if recorder != applied {
                 // The file was parsed, so this is a retention the recorder can apply. Doing it
                 // here as well as from the Settings page means an edit of the file itself
