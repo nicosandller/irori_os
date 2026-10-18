@@ -35,13 +35,13 @@ jobs:
   # A release tag has to be a version: `irori-types/build.rs` reports it and `Core::new` parses
   # it with `expect`, so a stray tag like `vfoo` must fail here, not publish a binary that panics.
   validate:
-    name: validate the tag
+    name: Check the tag is a valid version
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           sparse-checkout: crates/irori-types/next-release
-      - name: Require a MAJOR.MINOR.PATCH tag
+      - name: Check the tag looks like 1.2.3
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
@@ -87,7 +87,7 @@ jobs:
   # The wasm UI is built once and shared by every target; without it the binaries embed the
   # placeholder page a UI-less `cargo build` leaves behind.
   ui:
-    name: web UI
+    name: Build the web page
     needs: validate
     runs-on: ubuntu-latest
     steps:
@@ -106,7 +106,7 @@ jobs:
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
         with:
           tool: trunk
-      - name: Build
+      - name: Build the web page
         run: cargo xtask ui
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -121,29 +121,33 @@ jobs:
           retention-days: 1
 
   build:
-    name: ${{ matrix.asset_os }}-${{ matrix.asset_arch }}
+    name: Build for ${{ matrix.label }}
     needs: ui
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
+          - label: Linux on Intel/AMD
+            target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             tool: zigbuild
             asset_os: linux
             asset_arch: x64
-          - target: aarch64-unknown-linux-musl
+          - label: Linux on ARM, such as a Raspberry Pi
+            target: aarch64-unknown-linux-musl
             os: ubuntu-latest
             tool: zigbuild
             asset_os: linux
             asset_arch: arm64
-          - target: x86_64-apple-darwin
+          - label: Mac with an Intel chip
+            target: x86_64-apple-darwin
             os: macos-15-intel
             tool: build
             asset_os: darwin
             asset_arch: x64
-          - target: aarch64-apple-darwin
+          - label: Mac with an Apple chip
+            target: aarch64-apple-darwin
             os: macos-latest
             tool: build
             asset_os: darwin
@@ -176,12 +180,12 @@ jobs:
           name: page-automations
           path: extensions/automations/app/dist
 
-      - name: Build the binary
+      - name: Build the program
         run: |
           set -euo pipefail
           cargo ${{ matrix.tool }} --locked --release --target ${{ matrix.target }} -p irori
 
-      - name: Package
+      - name: Pack the program into a download file
         env:
           TARGET: ${{ matrix.target }}
           ASSET_OS: ${{ matrix.asset_os }}
@@ -193,7 +197,7 @@ jobs:
           install -m755 "target/$TARGET/release/irori" "$stage/irori"
           tar -czf "$RUNNER_TEMP/irori-$ASSET_OS-$ASSET_ARCH.tar.gz" -C "$stage" irori
 
-      - name: Build the extensions
+      - name: Build the extensions and pack them
         env:
           TARGET: ${{ matrix.target }}
         run: |
@@ -215,7 +219,7 @@ jobs:
           retention-days: 1
 
   release:
-    name: GitHub Release
+    name: Publish the GitHub release
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -228,13 +232,13 @@ jobs:
         with:
           merge-multiple: true
           path: dist
-      - name: Checksums
+      - name: Write the checksums (so downloads can be verified)
         run: |
           set -euo pipefail
           cd dist
           sha256sum *.tar.gz >SHA256SUMS
           cat SHA256SUMS
-      - name: Publish
+      - name: Publish the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}

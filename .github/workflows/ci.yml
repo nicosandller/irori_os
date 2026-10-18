@@ -19,7 +19,7 @@ env:
 
 jobs:
   check:
-    name: fmt · clippy · test · dependency rules
+    name: Code quality and tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -31,29 +31,29 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
 
-      - name: rustfmt
+      - name: Check code formatting
         run: cargo fmt --all --check
-      - name: shell scripts parse
+      - name: Check the shell scripts have no syntax errors
         run: for f in install/install.sh dev/pi dev/smoke-test.sh; do bash -n "$f"; done
-      - name: clippy (all features)
+      - name: Check the code for common mistakes (full build)
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-      - name: clippy (barebones, no default features)
+      - name: Check the code for common mistakes (minimal build)
         run: cargo clippy --locked -p irori --no-default-features --all-targets -- -D warnings
-      - name: test (all features)
+      - name: Run the tests (full build)
         run: cargo test --locked --workspace --all-features
-      - name: test (barebones, no default features)
+      - name: Run the tests (minimal build)
         run: cargo test --locked -p irori --no-default-features
-      - name: dependency rules (ROADMAP §2.1)
+      - name: Check each part of the code only uses the parts it is allowed to
         run: cargo xtask check-deps
-      - name: JSON Schemas match irori-types
+      - name: Check the published data schemas are up to date
         run: cargo xtask schemas --check
-      - name: Docs match the build (default features)
+      - name: Check the docs match the default features
         run: cargo xtask check-docs
 
   # Builds the Leptos app to wasm. This is also the wasm32 check for `irori-types`: the UI
   # compiles it into the browser bundle, which is the point of keeping those types portable.
   ui:
-    name: web UI · wasm build and download budget
+    name: Web page builds and stays small to download
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -78,12 +78,12 @@ jobs:
 
       # The UI, the Automations page and the kit they share are outside the workspace, so the
       # check job's fmt and clippy don't reach them.
-      - name: rustfmt
+      - name: Check web page code formatting
         run: |
           cargo fmt --manifest-path crates/irori-ui/Cargo.toml --all --check
           cargo fmt --manifest-path crates/irori-ui-kit/Cargo.toml --all --check
           cargo fmt --manifest-path extensions/automations/app/Cargo.toml --all --check
-      - name: clippy
+      - name: Check the web page code for common mistakes
         run: |
           cargo clippy --locked --manifest-path crates/irori-ui/Cargo.toml \
             --target wasm32-unknown-unknown --all-targets -- -D warnings
@@ -91,12 +91,12 @@ jobs:
             --target wasm32-unknown-unknown --all-targets -- -D warnings
       # The page's own logic (what to show, and which of two states is newer) is plain Rust and
       # runs on the host; the browser is not needed to check it.
-      - name: test
+      - name: Run the web page tests
         run: cargo test --locked --manifest-path crates/irori-ui/Cargo.toml
-      - name: build
+      - name: Build the web page
         run: cargo xtask ui
 
-      - name: Download stays inside the budget (ROADMAP §4.3)
+      - name: Check the page download is under 5 MB
         run: |
           set -euo pipefail
           sudo apt-get update -qq && sudo apt-get install -y -qq brotli
@@ -123,20 +123,23 @@ jobs:
           retention-days: 7
 
   cross:
-    name: static build · ${{ matrix.target }}${{ matrix.features == '--no-default-features' && ' · barebones' || '' }}
+    name: Build for ${{ matrix.label }}
     runs-on: ubuntu-latest
     needs: ui
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: x86_64-unknown-linux-musl
+          - label: Linux on Intel/AMD (full build)
+            target: x86_64-unknown-linux-musl
             runner: ""
             features: ""
-          - target: aarch64-unknown-linux-musl
+          - label: Linux on ARM, such as a Raspberry Pi (full build)
+            target: aarch64-unknown-linux-musl
             runner: qemu-aarch64-static
             features: ""
-          - target: aarch64-unknown-linux-musl
+          - label: Linux on ARM, such as a Raspberry Pi (minimal build)
+            target: aarch64-unknown-linux-musl
             runner: qemu-aarch64-static
             features: --no-default-features
     steps:
@@ -161,16 +164,16 @@ jobs:
         with:
           name: ui
           path: crates/irori/ui
-      - name: Install QEMU user-mode emulation
+      - name: Install the ARM emulator (to run the ARM build on this machine)
         if: matrix.runner != ''
         run: sudo apt-get update && sudo apt-get install -y qemu-user-static
 
-      - name: Build
+      - name: Build the program
         run: |
           rustup target add ${{ matrix.target }}
           cargo zigbuild --locked --release -p irori --target ${{ matrix.target }} ${{ matrix.features }}
 
-      - name: Smoke test (version, serve, health, SIGTERM)
+      - name: Start it and check it works (version, health, clean shutdown)
         env:
           RUNNER: ${{ matrix.runner }}
           BIN: target/${{ matrix.target }}/release/irori
@@ -191,7 +194,7 @@ jobs:
           # files the spec describes (docs/specs/config.md).
           test -f "$config/areas.toml" && test -f "$config/devices.toml"
 
-      - name: Binary size summary
+      - name: Report the program's file size
         run: |
           size=$(stat -c %s target/${{ matrix.target }}/release/irori)
           echo "| ${{ matrix.target }} ${{ matrix.features }} | $(numfmt --to=iec-i --suffix=B $size) ($size bytes) |" >> "$GITHUB_STEP_SUMMARY"
