@@ -263,6 +263,9 @@ struct UsersFile {
 struct RawUser {
     name: Name,
     role: Role,
+    /// Absent: the whole home (`docs/specs/access.md` §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    areas: Option<Vec<AreaId>>,
 }
 
 /// The people in `users.toml`, ordered by id (`docs/specs/config.md` §3.10). A file with people
@@ -276,6 +279,7 @@ pub fn read_users(text: &str) -> Result<Vec<User>, String> {
             id,
             name: raw.name,
             role: raw.role,
+            areas: raw.areas,
         })
         .collect();
     irori_types::check_users(&users).map_err(|e| e.to_string())?;
@@ -293,14 +297,16 @@ pub fn write_users(users: &[User]) -> String {
                     RawUser {
                         name: user.name.clone(),
                         role: user.role,
+                        areas: user.areas.clone(),
                     },
                 )
             })
             .collect(),
     };
     format!(
-        "# The people allowed into your home. An owner runs it; a user sees everything and\n\
-         # controls devices. Passwords are not here: they are kept, hashed, in secrets.toml.\n\
+        "# The people allowed into your home. An owner runs it; a user sees and controls devices,\n\
+         # in the whole home or, with `areas = [\"hall\"]`, only in those rooms. Passwords are not\n\
+         # here: they are kept, hashed, in secrets.toml.\n\
          #\n\
          # Written by Irori, and yours to edit: changes are picked up within a couple of seconds.\n\
          # Comments and ordering don't survive a rewrite. See docs/specs/config.md.\n\n{}",
@@ -723,6 +729,52 @@ mod tests {
 
     fn area_id(s: &str) -> AreaId {
         s.parse().expect("a valid area id")
+    }
+
+    #[test]
+    fn a_users_rooms_are_read_and_written_and_absent_means_the_whole_home() {
+        let users = read_users(
+            "[users.nico]\nname = \"Nico\"\nrole = \"owner\"\n\n\
+             [users.leo]\nname = \"Leo\"\nrole = \"user\"\nareas = [\"leos_room\", \"hall\"]\n\n\
+             [users.guest]\nname = \"A guest\"\nrole = \"user\"\n\n\
+             [users.visitor]\nname = \"A visitor\"\nrole = \"user\"\nareas = []\n",
+        )
+        .expect("valid");
+        let rooms = |id: &str| {
+            users
+                .iter()
+                .find(|user| user.id.as_str() == id)
+                .and_then(|user| user.areas.clone())
+        };
+        assert_eq!(rooms("nico"), None);
+        assert_eq!(rooms("guest"), None, "absent is the whole home");
+        assert_eq!(rooms("visitor"), Some(vec![]), "empty is no rooms at all");
+        assert_eq!(
+            rooms("leo"),
+            Some(vec![area_id("leos_room"), area_id("hall")]),
+            "the order a person gave is the order kept"
+        );
+        // Written and read again: the same people, and no `areas` line for those without one.
+        let text = write_users(&users);
+        assert_eq!(read_users(&text).expect("round trip"), users);
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("areas = "))
+                .count(),
+            2,
+            "{text}"
+        );
+        // A file that gives an owner some rooms, or one room twice, is refused whole.
+        let why =
+            read_users("[users.nico]\nname = \"Nico\"\nrole = \"owner\"\nareas = [\"hall\"]\n")
+                .expect_err("an owner");
+        assert!(why.contains("take `areas` out"), "{why}");
+        let why = read_users(
+            "[users.nico]\nname = \"Nico\"\nrole = \"owner\"\n\n\
+             [users.leo]\nname = \"Leo\"\nrole = \"user\"\nareas = [\"hall\", \"hall\"]\n",
+        )
+        .expect_err("twice");
+        assert!(why.contains("`hall` twice"), "{why}");
     }
 
     #[test]

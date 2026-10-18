@@ -1,0 +1,9 @@
+{
+  "id": "leo",
+  "name": "Leo",
+  "role": "user",
+  "areas": [
+    "leos_room",
+    "hall"
+  ]
+}

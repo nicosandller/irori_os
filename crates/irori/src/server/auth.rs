@@ -910,6 +910,7 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
                         id: fresh.clone(),
                         name: name.clone(),
                         role: Role::Owner,
+                        areas: None,
                     };
                     people.users.push(user.clone());
                     people.users.sort_by(|a, b| a.id.cmp(&b.id));

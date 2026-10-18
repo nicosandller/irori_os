@@ -7,7 +7,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
-use irori_types::{HomeSettings, Location, Name, Role, TimeZoneName, User, UserId};
+use irori_types::{AreaId, HomeSettings, Location, Name, Role, TimeZoneName, User, UserId};
 use serde::{Deserialize, Serialize};
 
 use super::auth::{
@@ -49,6 +49,9 @@ pub struct NewUser {
     role: Role,
     #[serde(default)]
     password: Option<String>,
+    /// The rooms they have. Left out: the whole home (`docs/specs/access.md` §1).
+    #[serde(default)]
+    areas: Option<Vec<AreaId>>,
 }
 
 impl std::fmt::Debug for NewUser {
@@ -56,8 +59,29 @@ impl std::fmt::Debug for NewUser {
         f.debug_struct("NewUser")
             .field("name", &self.name)
             .field("role", &self.role)
+            .field("areas", &self.areas)
             .finish()
     }
+}
+
+/// A list of rooms as it would be kept: each once, in the order given. Refused when it names a
+/// room that isn't there (a typo shouldn't leave somebody with nothing and no word about it), or
+/// when it is given to somebody who has the whole home because they run it.
+fn rooms_to_keep(state: &AppState, asked: Vec<AreaId>, role: Role) -> Result<Vec<AreaId>, String> {
+    if role.runs_the_home() {
+        return Err("an owner has the whole home: rooms are for somebody who isn't one".to_owned());
+    }
+    let have = state.0.core.areas();
+    let mut kept: Vec<AreaId> = Vec::new();
+    for area in asked {
+        if !have.iter().any(|known| known.id == area) {
+            return Err(format!("there's no room `{area}`"));
+        }
+        if !kept.contains(&area) {
+            kept.push(area);
+        }
+    }
+    Ok(kept)
 }
 
 /// What adding somebody to a home with no owner yet is told.
@@ -77,6 +101,13 @@ pub async fn add_user(State(state): State<AppState>, Json(ask): Json<NewUser>) -
             StatusCode::UNPROCESSABLE_ENTITY,
             "that name has no letters or numbers to make an id from".to_owned(),
         );
+    };
+    let areas = match ask.areas.clone() {
+        Some(asked) => match rooms_to_keep(&state, asked, ask.role) {
+            Ok(kept) => Some(kept),
+            Err(why) => return refused(StatusCode::UNPROCESSABLE_ENTITY, why),
+        },
+        None => None,
     };
     let made = state
         .0
@@ -114,6 +145,7 @@ pub async fn add_user(State(state): State<AppState>, Json(ask): Json<NewUser>) -
                 id: id.clone(),
                 name: ask.name.clone(),
                 role,
+                areas: areas.clone(),
             });
             people.users.sort_by(|a, b| a.id.cmp(&b.id));
             Ok(id)
@@ -145,6 +177,19 @@ pub struct UserEdit {
     /// The password they have now. Needed to change or take away your own.
     #[serde(default)]
     current_password: Option<String>,
+    /// Their rooms: a list sets them, `null` gives back the whole home, and leaving it out
+    /// changes nothing.
+    #[serde(default, deserialize_with = "set_or_cleared")]
+    areas: Option<Option<Vec<AreaId>>>,
+}
+
+/// A field that can be left out (change nothing), `null` (clear it) or given (set it).
+fn set_or_cleared<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 impl std::fmt::Debug for UserEdit {
@@ -152,6 +197,7 @@ impl std::fmt::Debug for UserEdit {
         f.debug_struct("UserEdit")
             .field("name", &self.name)
             .field("role", &self.role)
+            .field("areas", &self.areas)
             .field("password", &self.password.as_ref().map(|_| "…"))
             .finish()
     }
@@ -167,7 +213,7 @@ pub async fn edit_user(
     Json(ask): Json<UserEdit>,
 ) -> Response {
     let own = who.user.as_ref().is_some_and(|user| user.id == id);
-    if !who.owner && (!own || ask.role.is_some()) {
+    if !who.owner && (!own || ask.role.is_some() || ask.areas.is_some()) {
         return refused(
             StatusCode::FORBIDDEN,
             "only an owner can change somebody else, or what anybody may do".to_owned(),
@@ -214,6 +260,22 @@ pub async fn edit_user(
         }
         state.0.sockets.close_user_tokens(&id);
     }
+    // The rooms to set, checked against the home: `Some(None)` is the whole home again.
+    let rooms = match ask.areas.clone() {
+        Some(Some(asked)) => {
+            // Whether they run the home once this edit is done.
+            let role = ask
+                .role
+                .or_else(|| people.user(&id).map(|user| user.role))
+                .unwrap_or_default();
+            match rooms_to_keep(&state, asked, role) {
+                Ok(kept) => Some(Some(kept)),
+                Err(why) => return refused(StatusCode::UNPROCESSABLE_ENTITY, why),
+            }
+        }
+        Some(None) => Some(None),
+        None => None,
+    };
     let edited = state
         .0
         .config
@@ -248,6 +310,13 @@ pub async fn edit_user(
                     }
                     if let Some(role) = ask.role {
                         user.role = role;
+                    }
+                    if let Some(rooms) = &rooms {
+                        user.areas = rooms.clone();
+                    }
+                    // An owner has the whole home, so being made one gives the rooms back.
+                    if user.role.runs_the_home() {
+                        user.areas = None;
                     }
                 }
             }

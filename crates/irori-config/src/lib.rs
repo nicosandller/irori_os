@@ -21,7 +21,7 @@ use std::time::SystemTime;
 
 use irori_types::{
     Area, AreaId, DeviceId, DeviceSettings, EntitySettings, ExtensionId, ExtensionSettings, Floor,
-    FloorId, Floorplan, HomeSettings, Settings, SettingsKey, User,
+    FloorId, Floorplan, HomeSettings, Settings, SettingsKey, User, UserId,
 };
 
 pub use files::{
@@ -87,6 +87,8 @@ pub struct Store {
     clashes: std::collections::BTreeSet<(ExtensionId, String)>,
     /// Rooms naming a floor that isn't there, as last reported: said once when they appear.
     missing_floors: std::collections::BTreeSet<(AreaId, FloorId)>,
+    /// Rooms a person in `users.toml` has that the home doesn't, so each is warned of once.
+    missing_rooms: std::collections::BTreeSet<(UserId, AreaId)>,
 }
 
 impl Store {
@@ -106,6 +108,7 @@ impl Store {
             extensions: BTreeMap::new(),
             clashes: std::collections::BTreeSet::new(),
             missing_floors: std::collections::BTreeSet::new(),
+            missing_rooms: std::collections::BTreeSet::new(),
         }
     }
 
@@ -370,6 +373,26 @@ impl Store {
             );
         }
         self.missing_floors = missing_floors;
+
+        // A person with a room that isn't there has one room fewer until it is made
+        // (`docs/specs/access.md` §1). Kept as written, and warned of once when it appears:
+        // a room deleted by hand has to be taken off people by hand too.
+        let rooms: std::collections::BTreeSet<_> =
+            self.areas.value.1.iter().map(|area| &area.id).collect();
+        let mut missing_rooms = std::collections::BTreeSet::new();
+        for user in &self.users.value {
+            for room in user.areas.iter().flatten().filter(|id| !rooms.contains(id)) {
+                missing_rooms.insert((user.id.clone(), room.clone()));
+            }
+        }
+        for (user, room) in missing_rooms.difference(&self.missing_rooms) {
+            tracing::warn!(
+                user = %user,
+                room = %room,
+                "users.toml gives a room that isn't there; they have one room fewer until it is made"
+            );
+        }
+        self.missing_rooms = missing_rooms;
 
         problems
     }

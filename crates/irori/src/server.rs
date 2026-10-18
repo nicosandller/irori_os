@@ -649,6 +649,27 @@ async fn edit_area(
 /// Removes a room. Devices that were in it are left unplaced, and what was said about them is
 /// kept: making the room again puts them back.
 async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> Response {
+    if !state.0.core.areas().iter().any(|area| area.id == id) {
+        return refused(StatusCode::BAD_REQUEST, format!("there's no room `{id}`"));
+    }
+    // Everybody who had the room loses it first. A room made again under the same name gets the
+    // same id, so a list left behind would give the old access back to whoever it names; and if
+    // the second write fails, somebody has one room fewer than they should, never one more.
+    let stripped = state
+        .0
+        .config
+        .edit_people(&state.0.core, |people| {
+            for user in &mut people.users {
+                if let Some(rooms) = &mut user.areas {
+                    rooms.retain(|room| room != &id);
+                }
+            }
+            Ok(())
+        })
+        .await;
+    if let Err(e) = stripped {
+        return edit_failed(e);
+    }
     let removed = state
         .0
         .config
@@ -7479,6 +7500,171 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{why}");
         let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}");
+        Ok(())
+    }
+
+    /// Rooms are set by the owner, are rooms the home has, belong to somebody who doesn't run
+    /// it, and go from a person's list when the room does (`docs/specs/access.md` §1).
+    #[tokio::test]
+    async fn a_person_has_rooms_the_owner_gave_and_loses_one_when_it_goes() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, owner) = locked_home(&server).await?;
+        for name in ["Hall", "Study"] {
+            let (status, why, _) = ask(
+                &app,
+                "POST",
+                "/api/areas",
+                Some(serde_json::json!({ "name": name })),
+                Some(&owner),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::CREATED, "{why}");
+        }
+        let add = |body: serde_json::Value| {
+            let (app, owner) = (app.clone(), owner.clone());
+            async move { ask(&app, "POST", "/api/users", Some(body), Some(&owner), true).await }
+        };
+        let (status, users, _) = add(serde_json::json!({
+            "name": "Leo", "password": "let me in!", "areas": ["hall", "study"],
+        }))
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{users}");
+        let rooms = |users: &serde_json::Value, id: &str| {
+            users
+                .as_array()
+                .and_then(|all| all.iter().find(|user| user["id"] == id))
+                .map(|user| user["areas"].clone())
+        };
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["hall", "study"]))
+        );
+        assert_eq!(
+            rooms(&users, "nico"),
+            Some(serde_json::Value::Null),
+            "an owner has no list"
+        );
+
+        // A room that isn't there, and rooms for an owner, are refused.
+        for (body, said) in [
+            (
+                serde_json::json!({
+                    "name": "Mia", "password": "let me in!", "areas": ["garage"],
+                }),
+                "no room `garage`",
+            ),
+            (
+                serde_json::json!({
+                    "name": "Mia", "password": "let me in!", "role": "owner", "areas": ["hall"],
+                }),
+                "owner has the whole home",
+            ),
+        ] {
+            let (status, why, _) = add(body).await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
+            assert!(
+                why["error"].as_str().is_some_and(|e| e.contains(said)),
+                "{why}"
+            );
+        }
+
+        let patch = |who: &str, body: serde_json::Value, cookie: String| {
+            let (app, who) = (app.clone(), who.to_owned());
+            async move {
+                ask(
+                    &app,
+                    "PATCH",
+                    &format!("/api/users/{who}"),
+                    Some(body),
+                    Some(&cookie),
+                    true,
+                )
+                .await
+            }
+        };
+        // `null` is the whole home again, a list sets them, and leaving it out changes nothing.
+        let (status, users, _) =
+            patch("leo", serde_json::json!({ "areas": null }), owner.clone()).await?;
+        assert_eq!(status, StatusCode::OK, "{users}");
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::Value::Null));
+        let (_, users, _) = patch(
+            "leo",
+            serde_json::json!({ "areas": ["study", "study", "hall"] }),
+            owner.clone(),
+        )
+        .await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["study", "hall"])),
+            "each once, in the order given"
+        );
+        let (_, users, _) =
+            patch("leo", serde_json::json!({ "name": "Leo B" }), owner.clone()).await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["study", "hall"]))
+        );
+
+        // Nobody gives themselves rooms, or takes them off.
+        let leo = {
+            let (status, why, cookie) = ask(
+                &app,
+                "POST",
+                "/api/session",
+                Some(serde_json::json!({ "user": "leo", "password": "let me in!" })),
+                None,
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{why}");
+            cookie.ok_or_else(|| anyhow::anyhow!("a cookie"))?
+        };
+        let (status, why, _) = patch("leo", serde_json::json!({ "areas": null }), leo).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{why}");
+
+        // Made an owner, they have the whole home.
+        let (_, users, _) =
+            patch("leo", serde_json::json!({ "role": "owner" }), owner.clone()).await?;
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::Value::Null));
+        let (_, users, _) = patch(
+            "leo",
+            serde_json::json!({ "role": "user", "areas": ["hall", "study"] }),
+            owner.clone(),
+        )
+        .await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["hall", "study"]))
+        );
+
+        // A room that goes is taken off everybody's list in the same breath. A room made again
+        // under the same name is a new room to them.
+        let (status, _, _) =
+            ask(&app, "DELETE", "/api/areas/hall", None, Some(&owner), true).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, users, _) = ask(&app, "GET", "/api/users", None, Some(&owner), false).await?;
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::json!(["study"])));
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/areas",
+            Some(serde_json::json!({ "name": "Hall" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let (_, users, _) = ask(&app, "GET", "/api/users", None, Some(&owner), false).await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["study"])),
+            "the new Hall is not the old one"
+        );
+        // A person left with no room has none, not the whole home.
+        let (_, _, _) = ask(&app, "DELETE", "/api/areas/study", None, Some(&owner), true).await?;
+        let (_, users, _) = ask(&app, "GET", "/api/users", None, Some(&owner), false).await?;
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::json!([])));
         Ok(())
     }
 

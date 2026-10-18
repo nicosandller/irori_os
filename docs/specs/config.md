@@ -667,6 +667,11 @@ role = "owner"        # "owner" or "user"
 [users.guest]
 name = "A guest"
 role = "user"
+
+[users.leo]
+name = "Leo"
+role = "user"
+areas = ["leos_room", "hall"]   # only these rooms; left out, the whole home
 ```
 
 Keyed by the person's id, which is made from their name when they are added and is what a
@@ -675,7 +680,16 @@ command they send is attributed to (`Origin::User`).
 | Role | May |
 |---|---|
 | `owner` | Everything, including who else is let in. |
-| `user` | See the home and control devices; ask the assistant; change their own name and password. Nothing that changes how the home is set up: no updates (`update` entities take no command from a user), no logs, no tokens, no backups. May be given only some rooms (`areas`, `docs/specs/access.md`). |
+| `user` | See the home (or only their `areas`, below) and control devices; ask the assistant; change their own name and password. Nothing that changes how the home is set up: no updates (`update` entities take no command from a user), no logs, no tokens, no backups. May be given only some rooms (`areas`, `docs/specs/access.md`). |
+
+**`areas`** is the list of room ids (`areas.toml`) a user has. Left out, they have the whole home;
+`[]` is a person with no rooms, who is let in and sees nothing; an owner has none, and a file that
+gives one is rejected whole. The page and the API refuse a room that isn't there; in a hand-edited
+file an unknown room is kept and warned of once, and means nothing until a room with that id exists.
+Removing a room from the page, the CLI or the API takes it off everybody's list in the same breath,
+so a room made again under the same name is a new room to them; **a room deleted by editing
+`areas.toml` has to be taken out of `users.toml` by hand too**. What having rooms means is
+`docs/specs/access.md`.
 
 **Passwords are not here.** This file is meant for git. Each person's password is kept as an
 argon2id hash in `secrets.toml`, under `[users.passwords]`, with everything that makes that file

@@ -1,0 +1,1 @@
+invalid type: string "hall", expected a sequence

@@ -2495,6 +2495,131 @@ mod tests {
         assert_eq!(home.devices[&id].area_id, None);
     }
 
+    // --- Rooms (`docs/specs/access.md` §1) --------------------------------------------------
+
+    fn rooms_of(home: &Home, wanted: &[&str]) -> crate::Rooms {
+        let wanted: Vec<AreaId> = wanted
+            .iter()
+            .map(|room| AreaId::try_from(*room).expect("valid"))
+            .collect();
+        crate::Rooms::of(home, &wanted)
+    }
+
+    fn sees(rooms: &crate::Rooms, id: &EntityId) -> bool {
+        crate::Reach::Rooms(std::sync::Arc::new(crate::Rooms::clone_of(rooms))).sees_entity(id)
+    }
+
+    /// A person's rooms hold what the owner put in them, and what is on a device in them.
+    #[test]
+    fn a_room_holds_the_devices_the_owner_put_in_it_and_their_entities() {
+        let mut home = home_with_lamp();
+        home.settle(Settings {
+            areas: vec![area("study", "Study"), area("hall", "Hall")],
+            devices: [(key("lamp"), in_room("study"))].into(),
+            ..Settings::default()
+        });
+        let rooms = rooms_of(&home, &["study"]);
+        assert!(sees(&rooms, &lamp_id()));
+        assert!(
+            crate::Reach::Rooms(std::sync::Arc::new(rooms))
+                .sees_device(&DeviceId::try_from("demo_lamp").expect("valid"))
+        );
+        // Another room's person has nothing of it.
+        let rooms = rooms_of(&home, &["hall"]);
+        assert!(!sees(&rooms, &lamp_id()));
+    }
+
+    /// A device that only says where it would like to be is placed by name for the owner, and
+    /// is not in anybody's rooms until the owner says so: it can't join a room by being
+    /// plugged in.
+    #[test]
+    fn a_device_asking_for_a_room_is_not_in_it_for_anybodys_rooms() {
+        let mut home = Home::default();
+        let mut described = device("lamp", "Desk lamp");
+        described.suggested_area = Some(name("Study"));
+        home.describe_device(&protocol(), described)
+            .expect("device");
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity("lamp-light", None, Some("lamp"), dimmable()),
+            &stamp(0),
+        )
+        .expect("entity");
+        home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            ..Settings::default()
+        });
+        let id = DeviceId::try_from("demo_lamp").expect("valid");
+        assert_eq!(
+            home.devices[&id].area_id,
+            Some(area("study", "Study").id),
+            "the owner's view still groups it there"
+        );
+        let rooms = rooms_of(&home, &["study"]);
+        assert!(!sees(&rooms, &lamp_id()), "but it is not in Study's rooms");
+
+        // Said by the owner, it is.
+        home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            devices: [(key("lamp"), in_room("study"))].into(),
+            ..Settings::default()
+        });
+        assert!(sees(&rooms_of(&home, &["study"]), &lamp_id()));
+    }
+
+    /// A helper has no device and no room; a room that isn't there holds nothing; and a person
+    /// with no rooms has nothing.
+    #[test]
+    fn what_is_in_no_room_is_in_nobodys() {
+        let mut home = home_with_lamp();
+        home.describe_entity(
+            &protocol(),
+            ALL,
+            entity("note", Some("A helper"), None, dimmable()),
+            &stamp(0),
+        )
+        .expect("entity");
+        home.settle(Settings {
+            areas: vec![area("study", "Study")],
+            devices: [(key("lamp"), in_room("study"))].into(),
+            ..Settings::default()
+        });
+        let helper = EntityId::try_from("light.a_helper").expect("valid");
+        assert!(home.entity(&helper).is_some(), "the helper is in the home");
+        assert!(!sees(&rooms_of(&home, &["study"]), &helper));
+        assert!(
+            !sees(&rooms_of(&home, &["garage"]), &lamp_id()),
+            "no such room"
+        );
+        assert!(!sees(&rooms_of(&home, &[]), &lamp_id()), "no rooms at all");
+    }
+
+    /// A floor is theirs to see when one of their rooms is on it, and not otherwise.
+    #[test]
+    fn a_floor_is_seen_for_the_rooms_on_it() {
+        let mut home = Home::default();
+        let upstairs = irori_types::Floor {
+            id: irori_types::FloorId::try_from("up").expect("valid"),
+            name: name("Upstairs"),
+            level: 1,
+        };
+        let mut study = area("study", "Study");
+        study.floor_id = Some(upstairs.id.clone());
+        home.settle(Settings {
+            floors: vec![upstairs.clone()],
+            areas: vec![study, area("hall", "Hall")],
+            ..Settings::default()
+        });
+        let reach =
+            |wanted: &[&str]| crate::Reach::Rooms(std::sync::Arc::new(rooms_of(&home, wanted)));
+        assert!(reach(&["study"]).sees_floor(&upstairs.id));
+        assert!(!reach(&["hall"]).sees_floor(&upstairs.id));
+        assert!(reach(&["hall"]).sees_area(&AreaId::try_from("hall").expect("valid")));
+        assert!(!reach(&["hall"]).sees_area(&AreaId::try_from("study").expect("valid")));
+        assert!(crate::Reach::Whole.sees_floor(&upstairs.id));
+    }
+
     /// Settings are read before any protocol starts, so the common case is a device arriving
     /// into a home that already has an opinion about it. It should never appear under its old
     /// name, not even for an instant.

@@ -33,11 +33,16 @@ areas = ["leos_room", "hall"]     # absent: the whole home
 - `areas` is a list of area ids. **Absent means the whole home**, as every `users.toml` written
   before this spec means. An empty list is a person with no rooms: they can sign in and see
   nothing. An owner has no `areas`; the key on an owner is rejected by the types and by the page.
-- An id that is not an area is a warning in the log and a person who has one fewer room, never a
+- The page, the CLI and the API refuse a room that isn't there. In a hand-edited file an id that
+  is not an area is a warning in the log, once, and a person with one fewer room, never a
   rejection: areas and users are two files (`config.md` §6).
-- **Deleting an area removes it from everyone's list in the same write**, and the log records
-  it. A room made again under the same name gets the same id (`entities.md` §4.2), so without this
-  the old access would silently come back.
+- **Removing an area from the page, the CLI or the API takes it off everyone's list first**, and
+  the log records it. A room made again under the same name gets the same id (`entities.md`
+  §4.2), so without this the old access would silently come back. If the second step fails,
+  somebody has one room fewer than they should, never one more. A room deleted by editing
+  `areas.toml` has to be taken out of `users.toml` by hand as well.
+- A person whose last room is removed has no rooms (`areas = []`), not the whole home.
+- An owner has none: making somebody an owner gives the whole home back, and the list is gone.
 - Renaming an area changes no id and no one's access.
 
 ### 1.1 What is in a room

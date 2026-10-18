@@ -4,6 +4,16 @@
   "description": "One person.",
   "type": "object",
   "properties": {
+    "areas": {
+      "description": "The rooms this person has (`docs/specs/access.md` §1): outside them, nothing in the home\nexists for them. Absent means the whole home, which is what every file written before\nrooms means. An empty list is a person with no rooms. An owner has none: the whole home\nis what being an owner is.",
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "$ref": "#/$defs/AreaId"
+      }
+    },
     "id": {
       "$ref": "#/$defs/UserId"
     },
@@ -21,6 +31,13 @@
     "role"
   ],
   "$defs": {
+    "AreaId": {
+      "description": "Format of a slug (area id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
     "Name": {
       "description": "A human-readable name. 1-100 characters, no leading or trailing whitespace.",
       "type": "string",
@@ -37,7 +54,7 @@
           "const": "owner"
         },
         {
-          "description": "Uses the home: sees everything and controls devices.",
+          "description": "Uses the home: sees and controls what is theirs. The whole home, unless they have been\ngiven some rooms (`User::areas`).",
           "type": "string",
           "const": "user"
         }
