@@ -501,8 +501,22 @@ pub fn ask(
 }
 
 /// Opens the chat about `scope` under itself when a model is ready, and Settings otherwise.
+///
+/// Not there at all for a person who has only some rooms: the assistant reads the home as a
+/// whole to answer, so it answers people who have all of it (`docs/specs/access.md` §2).
 #[component]
 pub fn Ask(scope: String, title: String) -> impl IntoView {
+    let crate::Session(session) = expect_context::<crate::Session>();
+    let limited = move || session.with(|s| s.as_ref().is_some_and(crate::api::Session::limited));
+    move || {
+        (!limited()).then(|| {
+            view! { <AskButton scope=scope.clone() title=title.clone() /> }
+        })
+    }
+}
+
+#[component]
+fn AskButton(scope: String, title: String) -> impl IntoView {
     let assistant = expect_context::<Assistant>();
     let asking = expect_context::<Asking>();
     let navigate = use_navigate();

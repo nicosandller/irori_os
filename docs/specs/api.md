@@ -13,7 +13,8 @@ program easy to write and leaves the rest out.
 
 - Commands are HTTP. The websocket only pushes changes. There is no second copy of every
   call on the socket.
-- A token carries scopes. It is not a copy of its owner.
+- A token carries scopes. It is not a copy of its owner, and it is not held to its owner's
+  rooms: only an owner makes one, and an owner has the whole home (`access.md` §5).
 - A token cannot mint tokens, add people, install extensions, or restart Irori. That stays
   on the page, with the owner's session. It does not send a command to an `update` entity
   either: that installs software (`access.md` §2.1).
@@ -25,7 +26,7 @@ program easy to write and leaves the rest out.
 
 | Caller | Credential | May |
 |---|---|---|
-| The page | Session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows (C14) |
+| The page | Session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows (C14), and of the home only the rooms they have (`access.md` §1). A person with only some rooms is answered as if the rest of the home were not there: it is missing from every list, `404` by its id, and the addresses that describe the home as a whole are `403` |
 | Irori's CLI, signed in | The same session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows. It is Irori's own program, so it sends the header the page sends |
 | A program | `Authorization: Bearer <secret>` | The scopes on its token |
 | An extension that dials in | A token made for that extension, on `/api/extension` | Speak the extension protocol (§6) |
@@ -196,6 +197,6 @@ There is no log message on this socket.
 
 | Topic | Where |
 |---|---|
-| Per-area permissions, an audit log | `docs/specs/access.md` (C28) |
+| Per-area permissions, an audit log | `docs/specs/access.md` (C28). Rooms on tokens are not built |
 | Signing extension packages | C26 |
 | CORS, refresh tokens, a command channel on the websocket | Left out on purpose (§1) |

@@ -45,6 +45,9 @@ pub fn Settings() -> impl IntoView {
     // Whether this browser may change how the home is set up. Yes until told otherwise, so
     // nothing blinks out and back while the first answer is on its way.
     let owner = move || session.with(|session| session.as_ref().is_none_or(|s| s.owner));
+    // Whether this browser has only some rooms of the home. Those rows that are about the home
+    // as a whole (the machine, the assistant, where it is, how history is kept) aren't theirs.
+    let limited = move || session.with(|s| s.as_ref().is_some_and(api::Session::limited));
     let trouble = RwSignal::new(None::<String>);
     // Which rows are open. Nothing remembers this: the page opens folded every time.
     let open = RwSignal::new(BTreeSet::<&'static str>::new());
@@ -237,14 +240,14 @@ pub fn Settings() -> impl IntoView {
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
         <div class="settings-table">
-            {row(
+            {move || (!limited()).then(|| row(
                 "system",
                 Icon::System,
                 "System",
                 (move || live.health.with(|health| crate::machine::state(health.as_ref())))
                     .into_any(),
                 view! { <crate::machine::Panel open=is_open("system") /> }.into_any(),
-            )}
+            ))}
             {row(
                 "appearance",
                 Icon::Appearance,
@@ -273,14 +276,14 @@ pub fn Settings() -> impl IntoView {
                 }
                 .into_any(),
             )}
-            {row(
+            {move || (!limited()).then(|| row(
                 "assistant",
                 Icon::Assistant,
                 "Assistant",
                 crate::assistant::state(),
                 view! { <crate::assistant::Section /> }.into_any(),
-            )}
-            {row(
+            ))}
+            {move || (!limited()).then(|| row(
                 "location",
                 Icon::Place,
                 "Location and time zone",
@@ -290,14 +293,14 @@ pub fn Settings() -> impl IntoView {
                 }))
                 .into_any(),
                 view! { <crate::place::Section /> }.into_any(),
-            )}
-            {row(
+            ))}
+            {move || (!limited()).then(|| row(
                 "floors-and-areas",
                 Icon::Places,
                 "Floors and areas",
                 (move || arrangement.get()).into_any(),
                 view! { <crate::places::Section /> }.into_any(),
-            )}
+            ))}
             {row(
                 "users",
                 Icon::Users,
@@ -312,7 +315,7 @@ pub fn Settings() -> impl IntoView {
                 (move || programs.with(|programs| crate::programs::summary(programs))).into_any(),
                 view! { <crate::programs::Section /> }.into_any(),
             ))}
-            {row(
+            {move || (!limited()).then(|| row(
                 "history",
                 Icon::History,
                 "History",
@@ -324,7 +327,7 @@ pub fn Settings() -> impl IntoView {
                     />
                 }
                 .into_any(),
-            )}
+            ))}
             {move || owner().then(|| row(
                 "backups",
                 Icon::Backup,

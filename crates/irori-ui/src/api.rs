@@ -2117,6 +2117,13 @@ pub struct Session {
 }
 
 impl Session {
+    /// Signed in as somebody who has only some rooms of the home (`docs/specs/access.md` §1):
+    /// what the home answers them is already only theirs, and the pages for the home as a whole
+    /// are not offered.
+    pub fn limited(&self) -> bool {
+        !self.owner && self.user.as_ref().is_some_and(|user| user.areas.is_some())
+    }
+
     /// Locked, and this browser is nobody yet: nothing it asks for will be answered.
     pub fn shut_out(&self) -> bool {
         self.locked && self.user.is_none()
@@ -2198,6 +2205,9 @@ pub struct UserRow {
     pub id: irori_types::UserId,
     pub name: Name,
     pub role: irori_types::Role,
+    /// The rooms they have. Absent: the whole home (`docs/specs/access.md` §1).
+    #[serde(default)]
+    pub areas: Option<Vec<irori_types::AreaId>>,
     pub has_password: bool,
 }
 
@@ -2209,9 +2219,14 @@ pub async fn add_user(
     name: &Name,
     role: irori_types::Role,
     password: &str,
+    areas: Option<&[irori_types::AreaId]>,
 ) -> Result<Vec<UserRow>, String> {
+    let mut body = serde_json::json!({ "name": name, "role": role, "password": password });
+    if let Some(areas) = areas {
+        body["areas"] = serde_json::json!(areas);
+    }
     let response = post(USERS_URL)
-        .json(&serde_json::json!({ "name": name, "role": role, "password": password }))
+        .json(&body)
         .map_err(|e| e.to_string())?
         .send()
         .await

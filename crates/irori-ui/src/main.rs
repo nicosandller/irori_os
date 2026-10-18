@@ -129,8 +129,11 @@ fn App() -> impl IntoView {
         }
         // Tokens are an owner's. The check above has already waited until the session answered.
         let ask_programs = session.with(|s| s.as_ref().is_some_and(|s| s.owner));
+        // Where the home is describes the home as a whole, not a room: not for a person who has
+        // only some rooms (`docs/specs/access.md` §2.3).
+        let limited = session.with(|s| s.as_ref().is_some_and(api::Session::limited));
         spawn_local(async move {
-            if let Ok(home) = api::fetch_place().await {
+            if !limited && let Ok(home) = api::fetch_place().await {
                 place.set(Some(home));
             }
             if let Ok(users) = api::fetch_users().await {
@@ -203,7 +206,11 @@ fn App() -> impl IntoView {
                 if let Ok(health) = api::fetch_health().await {
                     live.health.set(Some(health));
                 }
-                if let Ok(status) = api::fetch_assistant().await {
+                // The assistant reads the home as a whole, so it answers only people who have
+                // all of it (`docs/specs/access.md` §2).
+                let limited =
+                    session.with_untracked(|s| s.as_ref().is_some_and(api::Session::limited));
+                if !limited && let Ok(status) = api::fetch_assistant().await {
                     assistant.set(Some(status));
                 }
             }
@@ -266,15 +273,22 @@ fn App() -> impl IntoView {
                         </button>
                     </div>
                     <nav aria-label="Sections">
-                        {SECTIONS
-                            .iter()
-                            .map(|(href, label, icon)| view! {
-                                <A href=*href attr:title=*label>
-                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=*icon></svg>
-                                    <span class="label">{*label}</span>
-                                </A>
-                            })
-                            .collect_view()}
+                        {move || {
+                            // The Extensions page is about the home as a whole; a person who has
+                            // only some rooms is not offered it.
+                            let limited = session
+                                .with(|s| s.as_ref().is_some_and(api::Session::limited));
+                            SECTIONS
+                                .iter()
+                                .filter(|(href, ..)| !(limited && *href == "/extensions"))
+                                .map(|(href, label, icon)| view! {
+                                    <A href=*href attr:title=*label>
+                                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=*icon></svg>
+                                        <span class="label">{*label}</span>
+                                    </A>
+                                })
+                                .collect_view()
+                        }}
                         <AppLinks />
                     </nav>
                     <div class="sidebar-bottom">
@@ -319,6 +333,9 @@ fn App() -> impl IntoView {
 #[component]
 fn Page(live: Live) -> impl IntoView {
     let location = use_location();
+    let Session(session) = expect_context::<Session>();
+    // Pages about the home as a whole aren't there for a person who has only some rooms.
+    let whole_home = move || !session.with(|s| s.as_ref().is_some_and(api::Session::limited));
     transition::watch(location.pathname);
     view! {
         <main class:full=move || {
@@ -333,8 +350,26 @@ fn Page(live: Live) -> impl IntoView {
                 <Route path=path!("/floorplan") view=floorplan::Floorplan />
                 <Route path=path!("/devices") view=devices::Devices />
                 <Route path=path!("/devices/:id") view=device::DevicePage />
-                <Route path=path!("/extensions") view=extensions::Extensions />
-                <Route path=path!("/assistant") view=assistant::Page />
+                <Route
+                    path=path!("/extensions")
+                    view=move || view! {
+                        {move || if whole_home() {
+                            view! { <extensions::Extensions /> }.into_any()
+                        } else {
+                            view! { <NotFound /> }.into_any()
+                        }}
+                    }
+                />
+                <Route
+                    path=path!("/assistant")
+                    view=move || view! {
+                        {move || if whole_home() {
+                            view! { <assistant::Page /> }.into_any()
+                        } else {
+                            view! { <NotFound /> }.into_any()
+                        }}
+                    }
+                />
                 <Route path=path!("/settings") view=settings::Settings />
                 <Route path=path!("/apps/:id") view=app_frame::AppPage />
                 <Route path=path!("/apps/:id/*rest") view=app_frame::AppPage />
