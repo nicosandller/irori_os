@@ -230,7 +230,9 @@ pub fn read_header<R: Read>(input: &mut R) -> io::Result<(Header, Vec<u8>)> {
     let header: Header = serde_json::from_slice(&json).map_err(|_| bad("the header is damaged"))?;
     if header.format != 2 || header.cipher != "xchacha20poly1305-stream" || header.kdf != "argon2id"
     {
-        return Err(bad("this backup was encrypted in a way this Irori can't read"));
+        return Err(bad(
+            "this backup was encrypted in a way this Irori can't read",
+        ));
     }
     let mut aad = Vec::with_capacity(12 + len);
     aad.extend_from_slice(&magic);

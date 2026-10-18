@@ -66,7 +66,11 @@ pub fn run(args: BackupArgs) -> Result<(), String> {
                         "{:<46} {:>9}  {}  Irori {version}  {}",
                         e.name,
                         human_size(e.bytes),
-                        if e.encrypted { "encrypted" } else { "plain    " },
+                        if e.encrypted {
+                            "encrypted"
+                        } else {
+                            "plain    "
+                        },
                         e.modified
                     );
                 }
