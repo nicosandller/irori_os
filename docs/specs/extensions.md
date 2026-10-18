@@ -216,6 +216,12 @@ increase on update needs approval again (D23).
 **No permission is needed** for what every protocol extension does: creating and updating its own
 devices and entities, reporting their state, and handling service calls for them.
 
+**People.** `[[contributes.app]] users = true` is a permission of a different kind: it lets
+regular users open the page, and trusts the extension to limit what they can do there
+([access.md](access.md) §4.1). Until permissions are approved one by one (ROADMAP C26) it is
+honoured for the official extensions only, so there is nothing for an owner to approve yet; when
+approval lands, the prompt says it in plain words with the rest.
+
 **Full access.** `host_shell = true`, or any `host_fs` path outside `$CONFIG` and `$DATA`, means
 the extension can do anything on the machine. The UI and CLI must say that in those words, and
 only the owner can approve it. A terminal app is honest about what it is instead of hiding it.

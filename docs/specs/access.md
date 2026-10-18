@@ -153,7 +153,7 @@ on what, **whether it was allowed** (`ok`, `denied`, `failed`), and a few words 
 | An extension installed, updated, uninstalled, its secrets set | |
 | An update installed or skipped | |
 | A backup made, uploaded, deleted, fetched; the recovery key looked at or changed; a backup downloaded (the two reads that take something out of the house); a restore asked for, and, after the restart, applied | |
-| A flow saved, turned on or off, deleted, by a person; a flow turned off because of a change in rooms | |
+| A flow saved, turned on or off, deleted, brought back to an older version, or tested for real, by a person (a dry run only imagines, and is not written); a flow turned off because of a change in rooms; a removed person's flow handed over | |
 
 Every request that changes something is recorded at the one place all requests pass through
 (the guard), with who, the address and the answer; the part that knows more (the entity a command
@@ -220,7 +220,9 @@ A flow gets an optional `owner` (a user id; absent means the home's own, as ever
 It is not part of the flow's version (`flows.md` F6), so naming an owner forks nothing. A saved
 version records who saved it, and a test or dry run records who started it.
 
-- **A person sees and edits their own flows.** An owner sees all of them, with whose each is.
+- **A person sees and edits their own flows.** An owner sees all of them, with whose each is. Another person's flow, and the home's own, answer a regular user as a flow that is not there (to read, to change, to test, to delete); saving over another's id says the id is taken, which tells them a flow of that name exists and nothing else of it.
+- **Whose a flow is, is not the page's to say.** A flow a regular user saves for the first time is theirs. One that is there keeps its owner whoever saves it: an owner who edits a person's flow leaves it theirs, and the owner's own flows stay the home's own (so removing or demoting an owner does not turn off the household's automations). Whatever `owner` a draft, a suggestion or an old version says is replaced.
+- **What a flow reads is its owner's too.** A draft, a dry run, a backtest and the timeline are told the states and history of what its owner can see and nothing else, however the draft is written.
 - **What a flow may touch is the owner's rooms and the owner's commands.** The home checks of
   `flows.md` §4 (Layer 3) run against what the flow's owner can see, so an entity outside their
   rooms is "unknown", and against what they may send (§2.1), so a flow of theirs cannot install an
@@ -232,8 +234,11 @@ version records who saved it, and a test or dry run records who started it.
   `areas`, an owner is made a user. The engine already checks every flow whenever the registry
   changes; the core now sends that signal for any of these too, and the engine asks the core what
   each flow's owner can reach now (`get_reach`, engine API, `automations.md` §B2). A flow that
-  fails is **turned off and says why** ("the Kitchen light is not in your rooms any more"), and
-  the log records it. Nothing is deleted.
+  fails is **turned off and says why**, and the log records it once, when it stops (not on every
+  later check). The reason is the same one a flow that names an entity that does not exist gets,
+  worded for a person's rooms ("`light.kitchen` = no such entity in your rooms"): it does not
+  say that the thing exists, or what it is called, so that being out of their rooms and not being
+  there stay one thing. Nothing is deleted.
 - **A person who is removed** leaves their flows behind, turned off, and the owner has them.
 - **The engine never checks a call.** A running flow calls services as the engine, with the
   scopes it was given (`automations.md` §B2), exactly as before. This amends `rules.md` §19 and
@@ -247,8 +252,10 @@ An extension page is the owner's unless its manifest says `users = true`, which 
 may open this page and I limit what they can do". That is trust handed to the extension, so it is
 shown in the install prompt like any permission (`extensions.md` §7). Until permissions are
 approved one by one (ROADMAP C26), the flag is honoured for official packages (`official.toml`)
-only. The shell tells the extension who is asking with each request (`caller`), and the page cannot
-set it. Only an extension that has the flag may call `get_reach`.
+only, so there is nothing yet for an owner to approve. The shell tells the extension who is asking with each request
+(`caller`), and the page cannot set it. A regular user's question goes only to an extension that has
+the flag and is trusted with it; to any other the page answers as if it had none. Only such an
+extension may call `get_reach` or ask the core to write a remark in the log (`note`).
 
 ## 5. Tokens
 

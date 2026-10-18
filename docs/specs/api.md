@@ -123,6 +123,12 @@ that person did and what programs made for them did), `action` (`command`, `sign
 `actor` (`{kind: person|token|extension|irori|nobody, …}` with the name as it was), `action`,
 `target?`, `outcome`, `detail?`, `context_id?`, `client?`. A query it can't read is `422`.
 
+`GET /api/apps` lists the extensions' pages: all of them for an owner, and for a regular user only
+the pages that limit what they can do (`automations.md` §B1, `access.md` §4.1).
+`POST /api/apps/<extension>/rpc` is a page's question to its engine (`automations.md` §B3). It is for
+the page, not for a token. A regular user's question is answered only by such an extension,
+as the person who asked, and is `404` for any other.
+
 ## 4. The websocket
 
 `GET /api/ws` upgrades. The cookie or the bearer token is checked on the upgrade, the same

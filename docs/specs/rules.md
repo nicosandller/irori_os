@@ -63,7 +63,7 @@ It has to be:
 | K12 | **Helpers are ordinary switch entities.** `switch.guests_over` is the first real condition. No special helper node. | D40. The helpers extension is already the proof that the protocol contract is enough. |
 | K13 | **Two gates.** `time` triggers, time-window conditions, `hour()`, `minute()`: unarmed until `home.toml` has an IANA timezone. `sun` triggers/conditions: unarmed until it has timezone **and** lat/lon. | Civil `07:00` needs a zone. Sunrise needs coordinates. Both live in `home.toml` ([config.md](config.md) §3.9), set from Settings → Location and time zone; this spec must not arm sun on timezone alone. |
 | K14 | **No protocol in the rule schema.** An event trigger names an event (`mqtt.message`); it does not name an MQTT topic as a core field. The MQTT extension (when it emits events) owns topics. | D15. The protocol contract today has no "emit event" operation; this spec defines the rule side and a core `Event::Bus` shape. Wiring extensions onto it is a small addendum to protocols.md when MQTT needs it. |
-| K15 | **No auth model for rules.** A rule calling `light.turn_off` is the same as the owner doing it in the UI. | D12 is not built. Rules are owner-authored config on disk. |
+| K15 | **No auth model for rules, and no check on a call.** A rule calling `light.turn_off` is the same as the owner doing it in the UI. A regular user's flow ([access.md](access.md) §4) is *checked* against the rooms they have and what they may send when it is saved and whenever the home or the people change, never when it calls. | The check is validation, which the engine already does (it unarms a flow whose entities are gone). A flow's entities are literals (§10.1), so what the check did not see, the flow cannot name: there is no path at run time to anything else. |
 | K16 | **`irori-rules` is this engine, not the OS.** It depends only on workspace crate `irori-types` among workspace crates. It is **not** a dependency of `irori` / `irori-core`. Traits `Clock`, `StateView`, `ServiceCaller` live here; a future extension host provides the adapter. `cel` 0.14.5 with **`default-features = false`**. | `xtask/src/deps.rs`. |
 
 ---
@@ -1467,8 +1467,10 @@ them without `irori-rules` depending on SQLite.
 - Rules are owner-authored files in the config directory. Until D12, anything that can reach
   the process can already call services through `/api/command`; rules do not widen that.
 - Do not invent per-rule permissions, sandboxes, or "this automation may only touch lights".
-  When multi-user lands (Phase 3), enforcement is in the API layer that *writes* the files, not
-  in the engine that *runs* them.
+  Enforcement is where the files are written, not in the engine that *runs* them. A person's
+  rooms can change with no file written (a device is moved out, a room is deleted), so the same
+  *validation* also runs when the home or the people change ([access.md](access.md) §4). It is
+  still not a permission check on a call: the engine does not ask who a call is for.
 - Expressions are non-Turing-complete and cannot I/O. `attr()` returns a JSON scalar from
   state, not files. CEL runs with a closed function table and a compile-time AST allow-list;
   no host bindings other than §10.1; no CEL timestamp types (`cel` default features off, so
