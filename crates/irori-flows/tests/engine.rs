@@ -1794,3 +1794,69 @@ fn a_backtest_over_days_still_finds_every_morning() {
         ]
     );
 }
+
+/// A regular user's flow may not do what only an owner may do, however it is written: install an
+/// update, or wait for an event (which is not about any one room). The owner's may, and the
+/// checks are the same ones (`docs/specs/access.md` §4).
+#[test]
+fn a_regular_users_flow_may_not_install_an_update_or_wait_for_an_event() {
+    let mut home = registry();
+    let update = entity(
+        "update.irori",
+        Capabilities::Update(irori_types::UpdateCapabilities {
+            device_class: None,
+            install: true,
+            check: false,
+        }),
+    );
+    home.entities.insert(update.id.clone(), update);
+    let installs = flow(serde_json::json!({
+        "id": "updater", "name": "Updater",
+        "nodes": {
+            "motion": { "type": "trigger", "trigger": { "type": "state", "entity": MOTION, "to": true } },
+            "install": { "type": "call", "service": "update.install", "entity": "update.irori" }
+        },
+        "wires": [["motion", "install"]]
+    }));
+    assert!(
+        validate::check_for(&installs, &home, true).is_empty(),
+        "an owner's flow may"
+    );
+    let problems = validate::check_for(&installs, &home, false);
+    assert!(
+        problems.iter().any(|problem| problem.is_error()
+            && problem
+                .node
+                .as_ref()
+                .is_some_and(|node| node.as_str() == "install")
+            && problem.message.contains("only an owner")),
+        "{problems:#?}"
+    );
+    // The plain check is the owner's.
+    assert_eq!(
+        validate::check(&installs, &home),
+        validate::check_for(&installs, &home, true)
+    );
+
+    let waits = flow(serde_json::json!({
+        "id": "waits", "name": "Waits",
+        "nodes": {
+            "event": { "type": "trigger", "trigger": { "type": "event", "event": "mqtt.message" } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["event", "on"]]
+    }));
+    let problems = validate::check_for(&waits, &home, false);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.is_error() && problem.message.contains("wait for an event")),
+        "{problems:#?}"
+    );
+    assert!(
+        validate::check_for(&waits, &home, true)
+            .iter()
+            .all(|problem| !problem.is_error()),
+        "an owner's may"
+    );
+}

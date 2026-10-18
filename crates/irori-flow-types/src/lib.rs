@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
-use irori_types::{Description, EntityId, InvariantError, Name, ObjectId, RuleId};
+use irori_types::{Description, EntityId, InvariantError, Name, ObjectId, RuleId, UserId};
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -39,6 +39,10 @@ pub struct Flow {
     pub name: Name,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<Description>,
+    /// Whose it is: a regular user's flow is checked against their rooms and what they may send
+    /// (`docs/specs/access.md` §4). Absent means the home's own. Not part of the version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<UserId>,
     /// Off keeps the file and its history, but nothing runs. Not part of the version.
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub enabled: bool,
@@ -82,6 +86,8 @@ struct RawFlow {
     name: Name,
     #[serde(default)]
     description: Option<Description>,
+    #[serde(default)]
+    owner: Option<UserId>,
     #[serde(default = "yes")]
     enabled: bool,
     #[serde(default)]
@@ -102,6 +108,7 @@ impl<'de> Deserialize<'de> for Flow {
             id: raw.id,
             name: raw.name,
             description: raw.description,
+            owner: raw.owner,
             enabled: raw.enabled,
             mode: raw.mode,
             nodes: raw.nodes,
@@ -146,11 +153,12 @@ impl Flow {
         Ok(())
     }
 
-    /// The canonical JSON the version is the hash of: no `enabled`, `layout` or `groups`, keys sorted,
+    /// The canonical JSON the version is the hash of: no `owner`, `enabled`, `layout` or `groups`, keys sorted,
     /// wires sorted, no whitespace (`docs/specs/flows.md` §5).
     pub fn canonical_json(&self) -> String {
         let mut value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
         if let serde_json::Value::Object(map) = &mut value {
+            map.remove("owner");
             map.remove("enabled");
             map.remove("layout");
             map.remove("groups");
@@ -698,12 +706,29 @@ mod tests {
             Name::try_from("Hallway").unwrap(),
         );
         moved.wires.reverse();
+        // Whose it is makes no new version: handing a flow over, or a person being removed,
+        // forks nothing (`docs/specs/access.md` §4).
+        moved.owner = Some("leo".parse().unwrap());
         assert_eq!(flow.version(), moved.version());
         assert_eq!(flow.version().len(), 64);
 
         let mut changed = flow.clone();
         changed.name = Name::try_from("Hall light").unwrap();
         assert_ne!(flow.version(), changed.version());
+    }
+
+    #[test]
+    fn an_owner_is_kept_in_the_file_and_nowhere_else() {
+        let mut flow: Flow = serde_json::from_str(HALLWAY).unwrap();
+        // The home's own flow says nothing of an owner: every file written before is one.
+        assert!(flow.owner.is_none());
+        assert!(!serde_json::to_string(&flow).unwrap().contains("owner"));
+        flow.owner = Some("leo".parse().unwrap());
+        let text = serde_json::to_string(&flow).unwrap();
+        assert!(text.contains(r#""owner":"leo""#));
+        let back: Flow = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, flow);
+        assert!(!flow.canonical_json().contains("owner"));
     }
 
     #[test]

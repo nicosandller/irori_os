@@ -20,7 +20,7 @@ use irori_flow_types::{
 use irori_rules::clock::{self, Place};
 use irori_rules::cron::CronSpec;
 use irori_rules::eval::{self, Evaluator, Snapshot};
-use irori_types::{Availability, ContextId, EntityId, EntityState, RuleId, Timestamp};
+use irori_types::{Availability, ContextId, EntityId, EntityState, RuleId, Timestamp, UserId};
 
 /// The most steps one run may take: fan-out can't loop, but it can multiply.
 pub const MAX_STEPS: u32 = 256;
@@ -182,6 +182,8 @@ pub struct Engine {
     flows: BTreeMap<RuleId, Loaded>,
     states: Arc<BTreeMap<EntityId, EntityState>>,
     runs: BTreeMap<ContextId, Run>,
+    /// Who a test started by hand is for, while it is being started.
+    by_hand: Option<UserId>,
     timers: BTreeSet<(Timestamp, u64, Timer)>,
     ready: VecDeque<(ContextId, u32)>,
     effects: Vec<Effect>,
@@ -209,6 +211,7 @@ impl Engine {
             flows: BTreeMap::new(),
             states: Arc::default(),
             runs: BTreeMap::new(),
+            by_hand: None,
             timers: BTreeSet::new(),
             ready: VecDeque::new(),
             effects: Vec::new(),
@@ -426,6 +429,21 @@ impl Engine {
             );
         }
         self.drive(now);
+    }
+
+    /// As [`Engine::fire`], for a test a regular user started: the run's record says who.
+    pub fn fire_by(
+        &mut self,
+        flow: &RuleId,
+        trigger: &NodeId,
+        test: Option<TestKind>,
+        by: Option<UserId>,
+        now: Timestamp,
+    ) -> Result<Option<ContextId>, String> {
+        self.by_hand = by;
+        let started = self.fire(flow, trigger, test, now);
+        self.by_hand = None;
+        started
     }
 
     /// Fires `trigger` by hand, as if it just happened. Answers the run's id, or why it can't.
@@ -937,6 +955,7 @@ impl Engine {
             version: loaded.version.clone(),
             trigger: firing.trigger.clone(),
             cause: firing.cause,
+            started_by: firing.test.and(self.by_hand.clone()),
             test: firing.test,
             started_at: now,
             finished_at: None,
