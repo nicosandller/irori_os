@@ -30,3 +30,5 @@ opencode.json
 /extensions/automations/app/target
 /extensions/automations/app/dist
 /crates/irori-ui-kit/target
+# State of `dev/native` (its own data and config, kept apart from ./data and ./config).
+/dev/.native
