@@ -74,15 +74,23 @@ CLI, the assistant and the app bridge all ask it.
 
 | | |
 |---|---|
-| The home, entities, devices, states, areas, floors, floor plan | Only what is in their rooms. A floor with none of their rooms is gone. |
-| The live feed (`/api/ws`) | A snapshot and changes for those only. Changing a person's rooms ends their open feeds; the page reconnects to the new view. |
+| The home, entities, devices, states, areas, floors, floor plan | Only what is in their rooms. A floor with none of their rooms is gone. On the plan, the shapes of their rooms and their devices stay, and so do the walls of a floor they are on: a wall is structure, not a thing in the home. |
+| A device they can see | Without the hub it is reached through, when that is not theirs, and without the room it asked for by name (`suggested_area`). |
+| The live feed (`/api/ws`) | A snapshot and changes for those only. A change to the home's shape is a nudge to read it again, which gives them only theirs. Changing a person's rooms or role ends their open feeds; the page reconnects to the new view. A hand edit of `users.toml` does the same within a few seconds. |
 | History, a camera picture | Of an entity in their rooms; anything else is 404. |
 | A command | Only to an entity in their rooms (§2.1). |
-| The assistant | Reads and proposes within their rooms. A chat belongs to the person who started it. |
-| Settings: the logs, other people | The logs are the owner's. A person is told about themselves only. |
+| Extensions, devices waiting to be added, updates waiting to install, extension pages | None. What the extensions are doing and what they have found is the owner's. |
+| Other people | A person is told about themselves only. |
+| The assistant | **Not until it is scoped.** It reads the home as a whole to answer, so for now it answers people who have the whole home only (403 for the rest). Its chats are shared among them as they are today. |
+| Where the home is, what can be installed, the machine, how history is kept | 403: these describe the home as a whole, not a thing in a room (§2.3). |
+| Setup: the logs, tokens, backups, anything that writes | The owner's, as before (§2.2). |
 
 A thing the person cannot see answers **404**, not 403, so an id cannot be tried to find out
-whether it exists. 403 stays for things that exist for them and are not theirs to change (setup).
+whether it exists, and with the very words a thing that was never there gets: the answer for a
+camera they have no room for is the one for a camera with that name that does not exist. This holds
+for a command too, and **before** anything is said about who may send it, or "only an owner may
+install an update" would confirm that the update exists. 403 stays for things that exist for them
+and are not theirs to change (setup), and for the addresses of §2.3, which are not secret.
 
 An open home (nobody has a password yet, `config.md` §3.10) has no one to limit; everybody is the
 owner there, as before.
@@ -105,6 +113,23 @@ Nothing in this spec lets a regular user change how the home is set up. Reading 
 each extension, the assistant's model), tokens and backups is closed to them too: the logs hold
 sign-in lines and the names of everyone. Irori's own machine is a device in the home like any
 other (C34); a person sees it when they see the rest (§1.1).
+
+### 2.3 Addresses that are for the whole home
+
+`GET /api/place`, `/api/catalog`, `/api/system`, `/api/system/usage`, `/api/serial-ports`,
+`/api/recorder` and the assistant's addresses answer **403** to a person who has only some rooms
+and as before to everybody else. They are addresses, not things: nothing in them can be asked
+about by id. One function in `server/auth.rs` (`whole_home_only`) lists them, and the table that
+says who may ask for what has a case for each.
+
+### 2.4 Nothing is let through by being forgotten
+
+Every address under `/api/` is listed, with what a person who has only some rooms gets from it, in
+a table in the server's tests. The test reads the router's source for its addresses, so one added
+without a row fails the build. It then asks each address as such a person, with the ids and
+the words of everything outside their rooms known, and fails if any of them comes back. The
+list the page is built from is taken apart field by field in the code, so a field added to it
+does not compile until someone has said what a person with rooms is shown of it.
 
 ## 3. The activity log
 
