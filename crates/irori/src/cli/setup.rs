@@ -205,10 +205,11 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             output::show(link.json, &users, || {
                 for user in &users {
                     println!(
-                        "{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}",
                         user.user.id,
                         user.user.name.as_str(),
-                        user.user.role.label()
+                        user.user.role.label(),
+                        rooms_of(&user.user)
                     );
                 }
             })
@@ -216,11 +217,18 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
         UsersCmd::Add {
             name,
             role,
+            areas,
+            no_rooms,
             password_stdin,
         } => {
             let role = parse_role(&role)?;
             let password = prompt::password("Password: ", password_stdin)?;
-            let body = json!({ "name": name, "role": role, "password": password });
+            let mut body = json!({ "name": name, "role": role, "password": password });
+            if no_rooms {
+                body["areas"] = json!([]);
+            } else if !areas.is_empty() {
+                body["areas"] = json!(areas);
+            }
             let users = link
                 .client
                 .post::<Vec<irori_client::UserRow>>("/api/users", &body)
@@ -232,6 +240,9 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             id,
             name,
             role,
+            areas,
+            no_rooms,
+            whole_home,
             password_stdin,
             current_password_stdin,
         } => {
@@ -242,6 +253,13 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             if let Some(role) = role {
                 body["role"] = json!(parse_role(&role)?);
             }
+            if whole_home {
+                body["areas"] = serde_json::Value::Null;
+            } else if no_rooms {
+                body["areas"] = json!([]);
+            } else if !areas.is_empty() {
+                body["areas"] = json!(areas);
+            }
             if password_stdin {
                 body["password"] = json!(prompt::password("New password: ", true)?);
             }
@@ -249,7 +267,10 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
                 body["current_password"] = json!(prompt::password("Current password: ", true)?);
             }
             if body.as_object().is_some_and(|object| object.is_empty()) {
-                return Err("pass --name, --role, or --password-stdin".to_owned());
+                return Err(
+                    "pass --name, --role, --areas, --no-rooms, --whole-home or --password-stdin"
+                        .to_owned(),
+                );
             }
             let users = link
                 .client
@@ -276,6 +297,19 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
                 .map_err(err)?;
             output::done(link.json, &format!("removed {id}"))
         }
+    }
+}
+
+/// A person's rooms, as one cell of the list: the whole home, none, or the ids.
+fn rooms_of(user: &irori_types::User) -> String {
+    match &user.areas {
+        None => "whole home".to_owned(),
+        Some(rooms) if rooms.is_empty() => "no rooms".to_owned(),
+        Some(rooms) => rooms
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
     }
 }
 

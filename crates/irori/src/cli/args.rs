@@ -691,6 +691,12 @@ pub enum UsersCmd {
         /// `owner` or `user`.
         #[arg(long, default_value = "user")]
         role: String,
+        /// The rooms they have, by id, separated by commas. Left out, they have the whole home.
+        #[arg(long, value_delimiter = ',', conflicts_with = "no_rooms")]
+        areas: Vec<String>,
+        /// A person with no rooms: they can sign in and see nothing.
+        #[arg(long)]
+        no_rooms: bool,
         #[arg(long)]
         password_stdin: bool,
     },
@@ -700,6 +706,19 @@ pub enum UsersCmd {
         name: Option<String>,
         #[arg(long)]
         role: Option<String>,
+        /// The rooms they have, by id, separated by commas. Replaces the list.
+        #[arg(
+            long,
+            value_delimiter = ',',
+            conflicts_with_all = ["no_rooms", "whole_home"]
+        )]
+        areas: Vec<String>,
+        /// No rooms at all: they can sign in and see nothing.
+        #[arg(long, conflicts_with = "whole_home")]
+        no_rooms: bool,
+        /// Give them the whole home again.
+        #[arg(long)]
+        whole_home: bool,
         /// Read a new password from stdin.
         #[arg(long)]
         password_stdin: bool,
@@ -857,4 +876,48 @@ pub enum AssistantCmd {
         message: String,
     },
     Log,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn users(args: &[&str]) -> Result<UsersCmd, clap::Error> {
+        let mut line = vec!["irori", "users"];
+        line.extend_from_slice(args);
+        match Cli::try_parse_from(line)?.command {
+            Command::Users(users) => Ok(users.cmd),
+            other => panic!("not the users command: {other:?}"),
+        }
+    }
+
+    /// A person's rooms are a comma-separated list, no rooms is its own flag, the whole home
+    /// is its own flag, and none of them can be asked for together.
+    #[test]
+    fn a_persons_rooms_are_said_one_way_each() {
+        let Ok(UsersCmd::Add {
+            areas, no_rooms, ..
+        }) = users(&["add", "Leo", "--areas", "hall,study"])
+        else {
+            panic!("add parses");
+        };
+        assert_eq!(areas, ["hall", "study"]);
+        assert!(!no_rooms);
+
+        let Ok(UsersCmd::Edit { whole_home, .. }) = users(&["edit", "leo", "--whole-home"]) else {
+            panic!("edit parses");
+        };
+        assert!(whole_home);
+        let Ok(UsersCmd::Edit {
+            no_rooms, areas, ..
+        }) = users(&["edit", "leo", "--no-rooms"])
+        else {
+            panic!("edit parses");
+        };
+        assert!(no_rooms && areas.is_empty());
+
+        assert!(users(&["edit", "leo", "--areas", "hall", "--whole-home"]).is_err());
+        assert!(users(&["edit", "leo", "--no-rooms", "--whole-home"]).is_err());
+        assert!(users(&["add", "Leo", "--areas", "hall", "--no-rooms"]).is_err());
+    }
 }
