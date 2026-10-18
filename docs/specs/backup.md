@@ -15,7 +15,7 @@ unencrypted; a reading on Irori's own device that says when backups have stopped
 
 ## 1. The file
 
-`irori-backup-<UTC yyyymmdd-hhmmss>.tar.gz`, or `….tar.gz.enc` when sealed. Mode `0600`, in a
+`irori-backup-<UTC yyyymmdd-hhmmss>.tar.gz`, or `….tar.gz.enc` when encrypted. Mode `0600`, in a
 directory of mode `0700`. Three roots, and no absolute paths, so a backup restores into any
 `--config` and `--data`:
 
@@ -40,9 +40,9 @@ Backups made by hand or on the schedule are `irori-backup-…`; the one made bef
 `pre-restore-…` (the last three are kept); the one made before an update is `pre-update-…` (the last
 three are kept). Two in the same second get `-2`.
 
-## 2. Sealed
+## 2. Encrypted
 
-Unless turned off, a backup is sealed with a **recovery key**: 25 characters of Crockford base32
+Unless turned off, a backup is encrypted with a **recovery key**: 25 characters of Crockford base32
 in groups of five (125 bits), made once and kept in `secrets.toml` under `[backup]`. Anything
 else of at least 12 characters can be set as the key instead. A key is read without its dashes or
 its case.
@@ -53,7 +53,7 @@ its case.
 
 The header is public: the format, the key derivation (argon2id, its parameters and a random
 salt), the stream's nonce, and what a listing shows (version, time, extensions), so backups can
-be listed without the key. The body is the gzipped tar in 64 KiB chunks sealed with
+be listed without the key. The body is the gzipped tar in 64 KiB chunks encrypted with
 XChaCha20-Poly1305 in the STREAM construction: a chunk can't be moved, dropped or repeated, the
 last one is marked so a file cut short is refused, and the whole header is the associated data
 of every chunk so it can't be edited. A wrong key and a damaged file look the same to the
@@ -61,7 +61,7 @@ cipher, and are said that way.
 
 The key is also in the backups' own `secrets.toml`, which is no help on a new machine: **the
 page shows it once with a way to save it, and says to keep a copy elsewhere.** A new key is
-used for new backups; old ones keep the key they were sealed with.
+used for new backups; old ones keep the key they were encrypted with.
 
 ## 3. Reading one
 
@@ -117,11 +117,11 @@ with no backup since? That is what makes a machine that was off at 03:00 back up
 comes on, a changed schedule apply at once, and a failure try again (but not more than every
 fifteen minutes). How it went is in `<data>/backup-status.json`.
 
-## 5. Other places
+## 5. Backup locations
 
 After a backup is made it is copied to every destination, then each is kept to `keep` and
-`keep_days` by the time in the file's name. **Only sealed backups are copied**, and settings
-that would send an unsealed one off the machine are refused. Retention at a place deletes only
+`keep_days` by the time in the file's name. **Only encrypted backups are copied**, and settings
+that would send an unencrypted one off the machine are refused. Retention at a place deletes only
 names this module writes (`is_backup_name`): a folder with other things in it loses none of
 them. A place that can't be reached is said in the status and tried again with the next backup;
 it doesn't undo the one made here. WebDAV is PUT, MOVE, PROPFIND, DELETE and GET (the folder is made
@@ -136,7 +136,7 @@ minute; a transfer is given time for a link of 256 KiB/s.
 A restore is **staged**, then **applied the next start, before the config or the database is
 opened**: nothing replaces files a running server has open.
 
-1. The backup is opened (sealed ones with the key typed, or, if none is typed, the one this
+1. The backup is opened (encrypted ones with the key typed, or, if none is typed, the one this
    Irori has on file) into `<data>/restore-pending/`, checked (§3; format and version; the
    database passes `PRAGMA integrity_check`) and a plan is written.
 2. The page asks Irori to restart (`irori backup restore` just goes on).
@@ -173,9 +173,8 @@ refuses when a server answers at `<data>/cli.url`.
 
 ## 7. Surfaces
 
-- Page: Settings → Backups (an owner's): the list with Download, Restore… (parts, key, Check
-  it) and Delete; Back up now; send a file here; the schedule; the key (shown on request, with
-  a file to save); other places (add, Test, Browse and bring a backup here, Remove); what the
+- Page: Settings → Backups (an owner's): the list with Download, Restore… (parts, key, Verify) and Delete; Create backup; upload a file; the schedule; the key (shown on request, with
+  a file to save); backup locations (add, Test, Browse and copy a backup to this machine, Remove); what the
   last restore did. The welcome offers to restore.
 - CLI (`docs/specs/cli.md`): `irori backup create|list|verify|restore|key`. They work on files.
 - API: `GET/POST /api/backups`, `GET/DELETE /api/backups/{name}`, `POST …/{name}/verify`,

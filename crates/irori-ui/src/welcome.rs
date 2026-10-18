@@ -135,7 +135,7 @@ pub fn Welcome() -> impl IntoView {
                     // A home that is being moved or rebuilt brings its past with it.
                     {move || (!has_owner()).then(|| view! {
                         <button type="button" class="welcome-later" on:click=move |_| go(4)>
-                            "Restore from a backup instead"
+                            "Restore from a backup"
                         </button>
                     })}
                 </div>
@@ -366,7 +366,7 @@ pub fn SignIn() -> impl IntoView {
     }
 }
 
-/// Instead of setting up: send a backup here and put it back. The home has no owner yet, so
+/// Instead of setting up: upload a backup and restore it. The home has no owner yet, so
 /// this is open the way setting up is; once restored, the people in the backup are the ones
 /// who sign in.
 #[component]
@@ -456,20 +456,20 @@ fn RestoreFirst(back: Callback<()>) -> impl IntoView {
         <div class="welcome-step add-step">
             <h1>"Restore a backup"</h1>
             <p class="welcome-lede">
-                "Send the backup file from your old home. IroriOS checks it, puts the home back as \
-                 it was, and restarts. You'll sign in with the people and passwords that were in it."
+                "Upload the backup file from your old home. IroriOS verifies it, restores the home as \
+                 it was, and restarts. You'll sign in with the users and passwords that were in the backup."
             </p>
             <label class="press backup-upload" class:disabled=move || busy.get() || restarting.get()>
                 {move || match name.get() {
-                    Some(sent) => format!("Sent: {sent}. Choose a different one…"),
-                    None => "Choose the backup file…".to_owned(),
+                    Some(sent) => format!("Uploaded: {sent}. Choose a different file…"),
+                    None => "Choose backup file…".to_owned(),
                 }}
                 <input type="file" hidden accept=".gz,.enc,application/gzip"
                     disabled=move || busy.get() || restarting.get() on:change=picked />
             </label>
             {move || name.get().map(|_| view! {
                 <label class="settings-field">
-                    "Recovery key, if the backup is sealed"
+                    "Recovery key (if the backup is encrypted)"
                     <input type="text" autocomplete="off" spellcheck="false"
                         placeholder="XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"
                         prop:value=move || key.get()
@@ -479,7 +479,7 @@ fn RestoreFirst(back: Callback<()>) -> impl IntoView {
             {move || checked.get().map(|v| view! {
                 <div class="backup-checked" role="status">
                     <p>
-                        "It opens: made by Irori "{v.manifest.irori_version.clone()}" on "
+                        "Backup is valid. Made by Irori "{v.manifest.irori_version.clone()}" on "
                         {crate::backups::when(&v.manifest.created_at)}", "{v.files}" files."
                     </p>
                     {v.warnings.iter().map(|w| view! { <p class="muted small">"Note: "{w.clone()}</p> }).collect_view()}
@@ -491,7 +491,7 @@ fn RestoreFirst(back: Callback<()>) -> impl IntoView {
                     on:click=move |_| back.run(())>"Back"</button>
                 <button type="button" class="welcome-later"
                     disabled=move || busy.get() || name.get().is_none() on:click=check>
-                    "Check it"
+                    "Verify"
                 </button>
                 <button type="button" class="welcome-next"
                     disabled=move || busy.get() || name.get().is_none() on:click=restore>

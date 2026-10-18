@@ -37,7 +37,7 @@ pub fn summary(overview: Option<&BackupOverview>) -> String {
     if let Some(done) = &overview.last_restore
         && !done.ok
     {
-        return "the last restore didn't happen".to_owned();
+        return "the last restore failed".to_owned();
     }
     let newest = overview
         .backups
@@ -57,7 +57,7 @@ pub fn summary(overview: Option<&BackupOverview>) -> String {
         said.push_str(" · not scheduled");
     }
     if !newest.encrypted {
-        said.push_str(" · not encrypted");
+        said.push_str(" · unencrypted");
     }
     said
 }
@@ -188,10 +188,10 @@ pub fn Section() -> impl IntoView {
         {move || owner().then(|| view! {
             <div class="backup-now">
                 <button type="button" class="press" disabled=move || busy.get() on:click=make>
-                    {move || if busy.get() { "Backing up…" } else { "Back up now" }}
+                    {move || if busy.get() { "Creating backup…" } else { "Create backup" }}
                 </button>
                 <label class="press backup-upload" class:disabled=move || sending.get()>
-                    {move || if sending.get() { "Sending…" } else { "Send a backup here…" }}
+                    {move || if sending.get() { "Uploading…" } else { "Upload backup…" }}
                     <input type="file" hidden accept=".gz,.enc,application/gzip"
                         disabled=move || sending.get() on:change=picked_file />
                 </label>
@@ -219,7 +219,7 @@ fn state_line(overview: &BackupOverview) -> String {
         parts.push(format!("Last backup {}.", ago(at)));
     }
     if let Some(free) = overview.free_bytes {
-        parts.push(format!("{} free here.", size(free)));
+        parts.push(format!("{} free on this machine.", size(free)));
     }
     parts.join(" ")
 }
@@ -240,30 +240,30 @@ fn Restored(done: api::BackupRestored) -> impl IntoView {
                 {if ok {
                     format!("Restored from {} {}.", done.archive, ago(&done.at))
                 } else {
-                    format!("The restore from {} did not happen.", done.archive)
+                    format!("The restore from {} failed.", done.archive)
                 }}
             </p>
             {done.error.clone().map(|why| view! { <p class="why">{why}</p> })}
             {(ok && done.safety_copy.is_some()).then(|| view! {
                 <p class="muted small">
-                    "The home as it was is kept as "<code>{done.safety_copy.clone()}</code>
+                    "Your previous setup was saved as "<code>{done.safety_copy.clone()}</code>
                     " in the list below."
                 </p>
             })}
             {(!done.reinstalled.is_empty()).then(|| view! {
-                <p class="muted small">"Extensions fetched again: "{done.reinstalled.join(", ")}"."</p>
+                <p class="muted small">"Extensions reinstalled: "{done.reinstalled.join(", ")}"."</p>
             })}
             {(!done.awaiting_approval.is_empty()).then(|| view! {
                 <p class="muted small">
-                    "These need full access to this machine, so they wait for you to install \
-                     them from the Extensions page: "{done.awaiting_approval.join(", ")}"."
+                    "These extensions need full access to this machine, so they are not reinstalled automatically. \
+                     Install them from the Extensions page: "{done.awaiting_approval.join(", ")}"."
                 </p>
             })}
             {(!done.reinstall_failed.is_empty()).then(|| view! {
-                <p class="why">"Couldn't fetch: "{done.reinstall_failed.join("; ")}</p>
+                <p class="why">"Couldn't reinstall: "{done.reinstall_failed.join("; ")}</p>
             })}
             {done.warnings.iter().map(|w| view! { <p class="muted small">"Note: "{w.clone()}</p> }).collect_view()}
-            <button type="button" class="press" on:click=dismiss>"Got it"</button>
+            <button type="button" class="press" on:click=dismiss>"Dismiss"</button>
         </div>
     }
 }
@@ -282,12 +282,12 @@ fn List(owner: Signal<bool>) -> impl IntoView {
         <ul class="tokens backups">
             {move || {
                 let Some(o) = overview.get() else {
-                    return view! { <li class="tokens-none muted">"Looking…"</li> }.into_any();
+                    return view! { <li class="tokens-none muted">"Loading…"</li> }.into_any();
                 };
                 if o.backups.is_empty() {
                     return view! {
                         <li class="tokens-none muted">
-                            "No backups yet. Back one up now, or turn on the schedule below."
+                            "No backups yet. Create one now, or turn on automatic backups below."
                         </li>
                     }
                     .into_any();
@@ -329,7 +329,7 @@ fn Item(
     let name = entry.name.clone();
     let safety = name.starts_with("pre-restore-");
     let title = if safety {
-        format!("Before a restore · {}", when(&entry.modified))
+        format!("Before restore · {}", when(&entry.modified))
     } else {
         when(&entry.modified)
     };
@@ -371,7 +371,7 @@ fn Item(
                 <span class="token-name">{title}</span>
                 <span class="token-may">
                     <span class="scope-chip">{size(entry.bytes)}</span>
-                    <span class="scope-chip">{if entry.encrypted { "sealed" } else { "not encrypted" }}</span>
+                    <span class="scope-chip">{if entry.encrypted { "encrypted" } else { "not encrypted" }}</span>
                     {version.map(|v| view! { <span class="scope-chip">"Irori "{v}</span> })}
                     {(!has_history).then(|| view! { <span class="scope-chip">"no history"</span> })}
                     {entry.copies.iter().map(|c| view! { <span class="scope-chip">"copy at "{c.clone()}</span> }).collect_view()}
@@ -385,14 +385,14 @@ fn Item(
                 if asking() {
                     view! {
                         <span class="token-sure">
-                            <span class="muted small">"It can't be got back."</span>
+                            <span class="muted small">"This can't be undone."</span>
                             <button type="button" class="press danger" on:click=delete>"Delete"</button>
                             <button type="button" class="press"
                                 on:click=move |_| {
                                     if deleting.get_untracked().as_deref() == Some(keep_name.as_str()) {
                                         deleting.set(None);
                                     }
-                                }>"Keep"</button>
+                                }>"Cancel"</button>
                         </span>
                     }.into_any()
                 } else {
@@ -540,21 +540,20 @@ fn RestoreForm(entry: BackupEntry) -> impl IntoView {
                         prop:value=move || key.get()
                         on:input=move |e| { key.set(event_target_value(&e)); checked.set(None); } />
                     <span class="muted small">
-                        "This backup is sealed. Leave this empty to use the key this Irori has on \
-                         file, which opens anything it made; type the key if it came from elsewhere."
+                        "This backup is encrypted. Leave this empty to use the key saved on this Irori, or enter the key if the backup came from elsewhere."
                     </span>
                 </label>
             })}
             <div class="scope-picks" role="group" aria-label="What to put back">
                 {pick("Settings", "Rooms, names, automations, people and their passwords, the https certificate.",
                     |p| p.settings, |p| &mut p.settings, true)}
-                {pick("What extensions remember", "Pairings and keys, like the Zigbee network.",
+                {pick("Extension data", "What extensions store, such as Zigbee pairings and keys.",
                     |p| p.extensions, |p| &mut p.extensions, true)}
-                {pick("Sign-ins and chats", "Who is signed in, access tokens, the assistant's chats, what extensions keep.",
+                {pick("Sessions and chats", "Signed-in sessions, access tokens, the assistant's chats.",
                     |p| p.state, |p| &mut p.state, true)}
                 {pick(
                     "History",
-                    if has_history { "Readings and changes. Leave this off to keep the history Irori has now." }
+                    if has_history { "Sensor readings and state changes. Turn off to keep the history Irori has now." }
                     else { "This backup was made without history." },
                     |p| p.history, |p| &mut p.history, has_history,
                 )}
@@ -562,7 +561,7 @@ fn RestoreForm(entry: BackupEntry) -> impl IntoView {
             {move || checked.get().map(|v| view! {
                 <div class="backup-checked" role="status">
                     <p>
-                        "It opens: made by Irori "{v.manifest.irori_version.clone()}" on "
+                        "Backup is valid. Made by Irori "{v.manifest.irori_version.clone()}" on "
                         {when(&v.manifest.created_at)}", "{v.files}" files."
                     </p>
                     {v.warnings.iter().map(|w| view! { <p class="muted small">"Note: "{w.clone()}</p> }).collect_view()}
@@ -570,11 +569,11 @@ fn RestoreForm(entry: BackupEntry) -> impl IntoView {
             })}
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
             <p class="muted small">
-                "Irori keeps the home as it is now (you'll find it in this list), restarts, and puts \
-                 this back. If the backup has different people or passwords, you sign in again with those."
+                "Irori will save your current setup (it appears in this list), restart, and apply this backup. \
+                 If the backup has different users or passwords, sign in with those afterwards."
             </p>
             <div class="settings-form-actions">
-                <button type="button" disabled=move || busy.get() on:click=check>"Check it"</button>
+                <button type="button" disabled=move || busy.get() on:click=check>"Verify"</button>
                 <button type="button" class="add" disabled=move || busy.get() on:click=restore>
                     {move || if restarting.get() { "Restarting…" } else { "Restore and restart" }}
                 </button>
@@ -657,21 +656,21 @@ fn Plan() -> impl IntoView {
                             <path d="M7.5 12.5l3 3 6-6.5" pathLength="1" />
                         </svg>
                         <span class="scope-words">
-                            <span>"Back up on a schedule"</span>
+                            <span>"Back up automatically"</span>
                             <span class="muted small">
-                                "The oldest are deleted as new ones are made. A machine that was off at the \
-                                 time makes one when it comes back."
+                                "The oldest backups are deleted as new ones are made. If this machine is off at the \
+                                 scheduled time, the backup runs when it starts again."
                             </span>
                         </span>
                     </button>
                     <div class="backup-schedule" class:muted=!enabled>
                         <label class="settings-field backup-time">
-                            "At"
+                            "Time"
                             <input type="time" prop:value=d.at.clone()
                                 on:input=move |e| { let v = event_target_value(&e); edit(Box::new(move |d| d.at = v)); } />
                         </label>
                         <div class="settings-field">
-                            <span>"On"</span>
+                            <span>"Days"</span>
                             <div class="backup-days" role="group" aria-label="Days">
                                 {WEEKDAYS.into_iter().map(|(id, label)| {
                                     let on = d.days.is_empty() || d.days.iter().any(|x| x == id);
@@ -685,7 +684,7 @@ fn Plan() -> impl IntoView {
                             </div>
                         </div>
                         <label class="settings-field backup-keep">
-                            "Keep the newest"
+                            "Backups to keep"
                             <input type="number" min="1" inputmode="numeric" prop:value=d.keep.to_string()
                                 on:input=move |e| {
                                     if let Ok(n) = event_target_value(&e).parse::<u32>() {
@@ -694,7 +693,7 @@ fn Plan() -> impl IntoView {
                                 } />
                         </label>
                         <label class="settings-field backup-keep">
-                            "And none older than (days, optional)"
+                            "Maximum age in days (optional)"
                             <input type="number" min="1" inputmode="numeric" placeholder="no limit"
                                 prop:value=d.keep_days.map(|n| n.to_string()).unwrap_or_default()
                                 on:input=move |e| {
@@ -713,8 +712,8 @@ fn Plan() -> impl IntoView {
                         <span class="scope-words">
                             <span>"Include history"</span>
                             <span class="muted small">
-                                "Every reading and change Irori has kept. Without it a backup is much \
-                                 smaller, and a restore starts the history again."
+                                "All sensor readings and state changes. Without it backups are much \
+                                 smaller, and a restore starts the history over."
                             </span>
                         </span>
                     </button>
@@ -726,10 +725,10 @@ fn Plan() -> impl IntoView {
                             <path d="M7.5 12.5l3 3 6-6.5" pathLength="1" />
                         </svg>
                         <span class="scope-words">
-                            <span>"Back up before an update"</span>
+                            <span>"Back up before updates"</span>
                             <span class="muted small">
-                                "Before Irori or an extension is updated. An update that can't be \
-                                 backed up first doesn't start. The last three are kept."
+                                "Before Irori or an extension is updated. If the backup fails, the update \
+                                 doesn't start. The last three are kept."
                             </span>
                         </span>
                     </button>
@@ -739,7 +738,7 @@ fn Plan() -> impl IntoView {
             <div class="place-actions">
                 <span class="muted small" class:history-saved=move || done.get()
                     class:history-unsaved=move || !done.get() && changed()>
-                    {move || if done.get() { "Saved." } else if changed() { "Not saved yet." } else { "" }}
+                    {move || if done.get() { "Saved." } else if changed() { "Unsaved changes." } else { "" }}
                 </span>
                 <button type="button" class="add-one" class:busy=move || saving.get()
                     disabled=move || saving.get() || !changed() on:click=save>
@@ -861,17 +860,17 @@ fn Seal() -> impl IntoView {
                     <path d="M7.5 12.5l3 3 6-6.5" pathLength="1" />
                 </svg>
                 <span class="scope-words">
-                    <span>"Seal backups with a recovery key"</span>
+                    <span>"Encrypt backups"</span>
                     <span class="muted small">
-                        "A backup holds your people's password hashes and every secret in the home. \
-                         Sealed, the file is unreadable without the key."
+                        "A backup contains password hashes and every secret in the home. Encrypted, \
+                         the file can't be read without the recovery key."
                     </span>
                 </span>
             </button>
             {move || (!encrypt()).then(|| view! {
                 <p class="why">
-                    "Backups are readable by anyone who gets the file. They can't be copied to \
-                     another place like this."
+                    "Anyone who gets a backup file can read it. Backups can't be copied to \
+                     other locations while encryption is off."
                 </p>
             })}
             {move || encrypt().then(|| view! {
@@ -880,21 +879,21 @@ fn Seal() -> impl IntoView {
                     {move || if renewing.get() {
                         view! {
                             <span class="token-sure">
-                                <span class="muted small">"Backups already made keep the key they were sealed with."</span>
-                                <button type="button" class="press danger" on:click=renew>"Make a new key"</button>
-                                <button type="button" class="press" on:click=move |_| renewing.set(false)>"Keep this one"</button>
+                                <span class="muted small">"Existing backups still need the key they were made with."</span>
+                                <button type="button" class="press danger" on:click=renew>"Generate new key"</button>
+                                <button type="button" class="press" on:click=move |_| renewing.set(false)>"Cancel"</button>
                             </span>
                         }.into_any()
                     } else {
                         view! {
-                            <button type="button" class="press" on:click=move |_| renewing.set(true)>"New key…"</button>
+                            <button type="button" class="press" on:click=move |_| renewing.set(true)>"Generate new key…"</button>
                         }.into_any()
                     }}
                 </div>
             })}
             {move || shown.get().map(|key| {
                 let file = format!(
-                    "data:text/plain;charset=utf-8,Irori backup recovery key%0A%0A{key}%0A%0AKeep this somewhere that isn't the machine Irori runs on. Without it, a sealed backup can't be opened.%0A"
+                    "data:text/plain;charset=utf-8,Irori backup recovery key%0A%0A{key}%0A%0AKeep this somewhere that isn't the machine Irori runs on. Without it, an encrypted backup can't be opened.%0A"
                 );
                 view! {
                     <div class="token-secret" role="status">
@@ -905,7 +904,7 @@ fn Seal() -> impl IntoView {
                             </svg>
                             <span>
                                 "This is the recovery key. If this machine is lost, it is the only way \
-                                 into your backups: keep a copy that isn't on it."
+                                 to open your backups. Keep a copy somewhere else."
                             </span>
                         </p>
                         <div class="token-secret-row">
@@ -916,7 +915,7 @@ fn Seal() -> impl IntoView {
                             </button>
                         </div>
                         <div class="token-secret-foot">
-                            <a class="press" href=file download="irori-recovery-key.txt">"Save as a file"</a>
+                            <a class="press" href=file download="irori-recovery-key.txt">"Download key"</a>
                             <button type="button" class="press" on:click=move |_| shown.set(None)>"Hide"</button>
                         </div>
                     </div>
@@ -1119,16 +1118,16 @@ fn Places() -> impl IntoView {
 
     view! {
         <div class="backup-block">
-            <h4 class="backup-heading">"Other places"</h4>
+            <h4 class="backup-heading">"Backup locations"</h4>
             <p class="muted small">
-                "A copy of each backup goes to every place below, sealed. A folder is also how a \
-                 network share or a USB disk is reached: mount it, then name it here."
+                "Every backup is also copied, encrypted, to each location below. To use a network \
+                 share or USB disk, mount it on this machine and add it as a folder."
             </p>
             <ul class="tokens backups">
                 {move || {
                     let Some(o) = overview.get() else { return ().into_any() };
                     if o.settings.destination.is_empty() {
-                        return view! { <li class="tokens-none muted">"Only on this machine."</li> }.into_any();
+                        return view! { <li class="tokens-none muted">"Backups are only stored on this machine."</li> }.into_any();
                     }
                     o.settings
                         .destination
@@ -1155,7 +1154,7 @@ fn Places() -> impl IntoView {
                                         </span>
                                         {state.last_error.clone().map(|why| view! { <span class="why">{why}</span> })}
                                         {move || tested.with(|t| t.get(&t_place).cloned()).map(|said| match said {
-                                            Ok(()) => view! { <span class="muted small">"Reached it, and it can be written to."</span> }.into_any(),
+                                            Ok(()) => view! { <span class="muted small">"Connection works and the location is writable."</span> }.into_any(),
                                             Err(why) => view! { <span class="why">{why}</span> }.into_any(),
                                         })}
                                     </span>
@@ -1163,7 +1162,7 @@ fn Places() -> impl IntoView {
                                         let (go, keep) = (r_place.clone(), a_place.clone());
                                         view! {
                                             <span class="token-sure">
-                                                <span class="muted small">"Copies already there stay there."</span>
+                                                <span class="muted small">"Backups already copied there are kept."</span>
                                                 <button type="button" class="press danger" on:click=move |_| remove(go.clone())>"Remove"</button>
                                                 <button type="button" class="press" on:click=move |_| { let _ = &keep; removing.set(None); }>"Keep"</button>
                                             </span>
@@ -1187,9 +1186,9 @@ fn Places() -> impl IntoView {
             </ul>
             {move || browsing.get().map(|(place, list)| view! {
                 <div class="backup-checked">
-                    <p>"Backups at "<b>{place.clone()}</b>":"</p>
+                    <p>"Backups at "<b>{place.clone()}</b></p>
                     {if list.is_empty() {
-                        view! { <p class="muted small">"None yet."</p> }.into_any()
+                        view! { <p class="muted small">"No backups there yet."</p> }.into_any()
                     } else {
                         list.into_iter().map(|there| {
                             let (p, n) = (place.clone(), there.name.clone());
@@ -1197,11 +1196,11 @@ fn Places() -> impl IntoView {
                                 <p class="backup-there">
                                     <code>{there.name.clone()}</code>
                                     {if there.here {
-                                        view! { <span class="muted small">"already in the list above"</span> }.into_any()
+                                        view! { <span class="muted small">"already on this machine"</span> }.into_any()
                                     } else {
                                         view! {
                                             <button type="button" class="press" on:click=move |_| bring(p.clone(), n.clone())>
-                                                "Bring it here"
+                                                "Copy to this machine"
                                             </button>
                                         }.into_any()
                                     }}
@@ -1214,17 +1213,17 @@ fn Places() -> impl IntoView {
             })}
             {move || (!adding.get()).then(|| view! {
                 <button type="button" class="press token-add" on:click=move |_| { trouble.set(None); adding.set(true); }>
-                    <span aria-hidden="true">"+"</span>" Add a place"
+                    <span aria-hidden="true">"+"</span>" Add location"
                 </button>
             })}
             <div class="drawer" class:open=move || adding.get() inert=move || (!adding.get()).then_some("")>
                 <form class="drawer-inner token-form" on:submit=add>
                     {field("Name", "nas", name, false)}
                     <div class="settings-field">
-                        <span id="place-kind">"It is"</span>
+                        <span id="place-kind">"Type"</span>
                         <div class="switcher" role="group" aria-labelledby="place-kind" node_ref=kinds>
                             <span class="glide" aria-hidden="true"></span>
-                            {[(Kind::Folder, "A folder"), (Kind::Webdav, "WebDAV"), (Kind::S3, "S3 storage")].into_iter().map(|(k, label)| view! {
+                            {[(Kind::Folder, "Folder"), (Kind::Webdav, "WebDAV"), (Kind::S3, "S3")].into_iter().map(|(k, label)| view! {
                                 <button type="button" class:chosen=move || kind.get() == k
                                     aria-pressed=move || (kind.get() == k).to_string()
                                     on:click=move |_| kind.set(k)>{label}</button>
@@ -1234,15 +1233,15 @@ fn Places() -> impl IntoView {
                     {move || match kind.get() {
                         Kind::Folder => view! {
                             <div class="token-kind-body">
-                                {field("Folder", "/mnt/nas/irori", path, false)}
-                                <span class="muted small">"The full path on this machine. It has to be there, and Irori has to be able to write to it."</span>
+                                {field("Folder path", "/mnt/nas/irori", path, false)}
+                                <span class="muted small">"The full path on this machine. The folder must exist and Irori must be able to write to it."</span>
                             </div>
                         }.into_any(),
                         Kind::Webdav => view! {
                             <div class="token-kind-body">
-                                {field("Address", "https://cloud.example.com/remote.php/dav/files/me/irori", url, false)}
-                                {field("User name", "me", user, false)}
-                                {field("Password", "an app password is best", password, true)}
+                                {field("WebDAV URL", "https://cloud.example.com/remote.php/dav/files/me/irori", url, false)}
+                                {field("Username", "me", user, false)}
+                                {field("Password", "an app password is recommended", password, true)}
                             </div>
                         }.into_any(),
                         Kind::S3 => view! {
@@ -1250,9 +1249,9 @@ fn Places() -> impl IntoView {
                                 {field("Endpoint", "https://s3.us-west-000.backblazeb2.com", endpoint, false)}
                                 {field("Bucket", "my-irori-backups", bucket, false)}
                                 {field("Region", "us-east-1", region, false)}
-                                {field("Folder in the bucket (optional)", "home", prefix, false)}
-                                {field("Access key", "", access, false)}
-                                {field("Secret key", "", secret, true)}
+                                {field("Path prefix (optional)", "home", prefix, false)}
+                                {field("Access key ID", "", access, false)}
+                                {field("Secret access key", "", secret, true)}
                             </div>
                         }.into_any(),
                     }}

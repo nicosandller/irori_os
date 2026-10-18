@@ -90,7 +90,7 @@ refuses unless `--yes` is set. `--yes` does not skip the full-access sentence.
 | `users` | List, add, edit, remove. |
 | `place` | Show, or set coordinates, an optional label, and a time zone. No map search. |
 | `recorder` | How long history is kept. |
-| `backup` | `create`, `list`, `verify`, `restore`, `key`. Works on the files of a home (`--config`, `--data`), not the API, so it runs with no server; `restore` needs it stopped (`--keep-history`, or `--only settings,extensions,state,history`). A sealed backup asks for its key (`--key`, `IRORI_BACKUP_KEY`). See `docs/specs/backup.md`. |
+| `backup` | `create`, `list`, `verify`, `restore`, `key`. Works on the files of a home (`--config`, `--data`), not the API, so it runs with no server; `restore` needs it stopped (`--keep-history`, or `--only settings,extensions,state,history`). A encrypted backup asks for its key (`--key`, `IRORI_BACKUP_KEY`). See `docs/specs/backup.md`. |
 | `logs` | What this Irori has said since it started. |
 | `restart` | Start this Irori again. It stays where it runs. |
 | `automations` | Flows. Also `rules`. The extension has to be installed. |

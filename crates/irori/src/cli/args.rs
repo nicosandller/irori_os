@@ -194,7 +194,7 @@ pub struct BackupArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum BackupCmd {
-    /// Write a backup now, the way `backup.toml` says (sealed unless turned off). Safe while
+    /// Write a backup now, the way `backup.toml` says (encrypted unless turned off). Safe while
     /// Irori is running.
     Create {
         /// Write it into this directory instead of `<data>/backups`.
@@ -211,7 +211,7 @@ pub enum BackupCmd {
     Verify {
         /// A backup file, or the name of one in `<data>/backups`.
         archive: PathBuf,
-        /// The recovery key of a sealed backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
+        /// The recovery key of an encrypted backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
         #[arg(long, env = "IRORI_BACKUP_KEY", hide_env_values = true)]
         key: Option<String>,
     },
@@ -220,7 +220,7 @@ pub enum BackupCmd {
     Restore {
         /// A backup file, or the name of one in `<data>/backups`.
         archive: PathBuf,
-        /// The recovery key of a sealed backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
+        /// The recovery key of an encrypted backup. Also `IRORI_BACKUP_KEY`; asked for on a terminal.
         #[arg(long, env = "IRORI_BACKUP_KEY", hide_env_values = true)]
         key: Option<String>,
         /// Put back everything except entity history, which stays as it is now.
@@ -233,7 +233,7 @@ pub enum BackupCmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Print the recovery key that seals backups on this machine. It is the only way into them
+    /// Print the recovery key that encrypts backups on this machine. It is the only way into them
     /// from somewhere else: keep a copy that isn't on this machine.
     Key {
         /// Make a new key. Backups already made keep the key they were made with.

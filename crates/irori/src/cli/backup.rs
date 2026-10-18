@@ -44,7 +44,7 @@ pub fn run(args: BackupArgs) -> Result<(), String> {
                     }
                     if let (true, Some(key)) = (key_made, &key) {
                         println!(
-                            "\nThese backups are sealed with a new recovery key:\n\n    {key}\n\nWrite it down somewhere that isn't this machine. Without it a backup can't be opened."
+                            "\nThese backups are encrypted with a new recovery key:\n\n    {key}\n\nWrite it down somewhere that isn't this machine. Without it a backup can't be opened."
                         );
                     }
                 },
@@ -66,7 +66,7 @@ pub fn run(args: BackupArgs) -> Result<(), String> {
                         "{:<46} {:>9}  {}  Irori {version}  {}",
                         e.name,
                         human_size(e.bytes),
-                        if e.encrypted { "sealed" } else { "plain " },
+                        if e.encrypted { "encrypted" } else { "plain    " },
                         e.modified
                     );
                 }
@@ -177,7 +177,7 @@ fn resolve(archive: &Path, kept: &Path) -> PathBuf {
     }
 }
 
-/// The key to open `file` with: the one given, else (for a sealed file) the one in this
+/// The key to open `file` with: the one given, else (for an encrypted file) the one in this
 /// machine's `secrets.toml`, else one typed.
 fn key_for(
     file: &Path,
