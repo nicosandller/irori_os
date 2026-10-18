@@ -112,11 +112,12 @@ pub async fn feed(
     if let Err(response) = same_server(&headers) {
         return *response;
     }
-    let closed = state
-        .0
-        .sockets
-        .open(seat_kind(&state, &who, &headers).await);
-    ws.on_upgrade(move |socket| push(socket, state, closed))
+    let seat = seat_kind(&state, &who, &headers).await;
+    // A sign-in is only as good as the person it was for: whoever they are can be given other
+    // rooms, or stepped down, while the page is open.
+    let signed_in = matches!(seat, SeatKind::Session { .. });
+    let closed = state.0.sockets.open(seat);
+    ws.on_upgrade(move |socket| push(socket, state, closed, who, signed_in))
 }
 
 async fn seat_kind(state: &AppState, who: &Actor, headers: &HeaderMap) -> SeatKind {
@@ -138,13 +139,30 @@ async fn seat_kind(state: &AppState, who: &Actor, headers: &HeaderMap) -> SeatKi
     SeatKind::Open
 }
 
-async fn push(mut socket: WebSocket, state: AppState, mut closed: watch::Receiver<bool>) {
+/// How often a signed-in person's socket looks at whether they are still who it was opened
+/// for. Rooms and roles can be changed by editing `users.toml` as well as from the page, and a
+/// file has no event.
+const PEOPLE_EVERY: Duration = Duration::from_secs(3);
+
+async fn push(
+    mut socket: WebSocket,
+    state: AppState,
+    mut closed: watch::Receiver<bool>,
+    who: Actor,
+    signed_in: bool,
+) {
     // Before the snapshot. A change while that frame is on its way is then in this
     // queue. One that is in both is applied twice; the page keeps the newer one.
     let mut events = state.0.core.subscribe();
-    if send_snapshot(&mut socket, &state).await.is_err() {
+    // What this person has of the home. Asked again whenever the home changes shape, so a
+    // device moved into their room is theirs as soon as the page is told, and one moved out
+    // is not sent another word.
+    let mut reach = who.reach(&state.0.core);
+    if send_snapshot(&mut socket, &state, &reach).await.is_err() {
         return;
     }
+    let mut people = tokio::time::interval(PEOPLE_EVERY);
+    people.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         tokio::select! {
             biased;
@@ -153,19 +171,31 @@ async fn push(mut socket: WebSocket, state: AppState, mut closed: watch::Receive
                     break;
                 }
             }
+            _ = people.tick(), if signed_in => {
+                if !still_the_same_person(&state, &who).await {
+                    break;
+                }
+            }
             incoming = events.recv() => {
-                let message = match incoming {
-                    Ok(event) => frame(event),
+                let event = match incoming {
+                    Ok(event) => event,
                     // This client fell behind. A fresh picture, then a subscription that
                     // starts after it, so the gap is the snapshot rather than a skipped event.
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         events = events.resubscribe();
-                        if send_snapshot(&mut socket, &state).await.is_err() {
+                        reach = who.reach(&state.0.core);
+                        if send_snapshot(&mut socket, &state, &reach).await.is_err() {
                             break;
                         }
                         continue;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                };
+                if changes_the_home(&event) && !reach.is_whole() {
+                    reach = who.reach(&state.0.core);
+                }
+                let Some(message) = frame(event, &reach) else {
+                    continue;
                 };
                 if send(&mut socket, &message).await.is_err() {
                     break;
@@ -175,33 +205,71 @@ async fn push(mut socket: WebSocket, state: AppState, mut closed: watch::Receive
     }
 }
 
-fn frame(event: Event) -> LiveMessage {
+/// Whether the person this socket was opened for still has the same role and the same rooms.
+/// A person who has gone, or changed, is not who the socket was shown the home for.
+async fn still_the_same_person(state: &AppState, who: &Actor) -> bool {
+    let Some(me) = &who.user else {
+        return true;
+    };
+    let people = state.0.config.people().await;
+    people
+        .user(&me.id)
+        .is_some_and(|now| now.role == me.role && now.areas == me.areas)
+}
+
+/// Whether what a person has of the home could be different after this.
+fn changes_the_home(event: &Event) -> bool {
+    matches!(
+        event,
+        Event::DeviceAdded { .. }
+            | Event::DeviceUpdated { .. }
+            | Event::DeviceRemoved { .. }
+            | Event::EntityAdded { .. }
+            | Event::EntityUpdated { .. }
+            | Event::EntityRemoved { .. }
+            | Event::SettingsChanged
+    )
+}
+
+/// What a socket is told of an event, if anything. Written with no arm for "the rest", so an
+/// event added to the core will not compile until somebody has said who is told of it.
+///
+/// A person with only some rooms is told when a thing in them changes and that the home has
+/// changed shape (the page reads it again, and reads only what is theirs). They are not told
+/// what the extensions are doing, or what they have found, or what is waiting to install.
+fn frame(event: Event, reach: &irori_core::Reach) -> Option<LiveMessage> {
     match event {
         Event::StateChanged {
             entity_id,
             new_state,
             ..
-        } => LiveMessage::State {
+        } => reach.sees_entity(&entity_id).then_some(LiveMessage::State {
             entity_id,
             state: new_state,
-        },
+        }),
+        Event::ServiceCalled { entity_id, .. } => reach
+            .sees_entity(&entity_id)
+            .then_some(LiveMessage::Changed),
         Event::DeviceAdded { .. }
         | Event::DeviceUpdated { .. }
         | Event::DeviceRemoved { .. }
         | Event::EntityAdded { .. }
         | Event::EntityUpdated { .. }
         | Event::EntityRemoved { .. }
-        | Event::ExtensionStatusChanged { .. }
+        | Event::SettingsChanged => Some(LiveMessage::Changed),
+        Event::ExtensionStatusChanged { .. }
         | Event::PlaceChanged { .. }
-        | Event::SettingsChanged
         | Event::FoundChanged
-        | Event::InstallsChanged
-        | Event::ServiceCalled { .. } => LiveMessage::Changed,
+        | Event::InstallsChanged => reach.is_whole().then_some(LiveMessage::Changed),
     }
 }
 
-async fn send_snapshot(socket: &mut WebSocket, state: &AppState) -> Result<(), ()> {
-    let home = serde_json::to_value(super::snapshot(state)).map_err(|error| {
+async fn send_snapshot(
+    socket: &mut WebSocket,
+    state: &AppState,
+    reach: &irori_core::Reach,
+) -> Result<(), ()> {
+    let home = serde_json::to_value(super::snapshot(state, reach)).map_err(|error| {
         tracing::error!(%error, "couldn't write the home as JSON");
     })?;
     send(socket, &LiveMessage::Snapshot { home }).await
@@ -461,19 +529,67 @@ mod tests {
 
     #[test]
     fn a_state_change_names_the_entity_and_anything_else_is_a_nudge() {
+        let whole = irori_core::Reach::Whole;
         let entity_id = EntityId::try_from("light.hall").expect("valid");
-        let state_frame = frame(Event::StateChanged {
-            entity_id: entity_id.clone(),
-            old_state: None,
-            new_state: Box::new(state()),
-        });
+        let state_frame = frame(
+            Event::StateChanged {
+                entity_id: entity_id.clone(),
+                old_state: None,
+                new_state: Box::new(state()),
+            },
+            &whole,
+        );
         assert!(matches!(
             state_frame,
-            LiveMessage::State { entity_id: id, state }
+            Some(LiveMessage::State { entity_id: id, state })
                 if id == entity_id && state.availability == Availability::Available
         ));
-        assert_eq!(frame(Event::SettingsChanged), LiveMessage::Changed);
-        assert_eq!(frame(Event::FoundChanged), LiveMessage::Changed);
+        assert_eq!(
+            frame(Event::SettingsChanged, &whole),
+            Some(LiveMessage::Changed)
+        );
+        assert_eq!(
+            frame(Event::FoundChanged, &whole),
+            Some(LiveMessage::Changed)
+        );
+    }
+
+    /// A person with only some rooms is told of what is in them and that the home changed
+    /// shape, and of nothing the owner's extensions are doing.
+    #[test]
+    fn a_person_with_rooms_is_told_only_of_theirs() {
+        let nobody = irori_core::Reach::nothing();
+        let entity_id = EntityId::try_from("light.hall").expect("valid");
+        assert_eq!(
+            frame(
+                Event::StateChanged {
+                    entity_id: entity_id.clone(),
+                    old_state: None,
+                    new_state: Box::new(state()),
+                },
+                &nobody,
+            ),
+            None,
+            "a change to a thing that isn't theirs is not sent"
+        );
+        assert_eq!(
+            frame(
+                Event::ServiceCalled {
+                    entity_id,
+                    service: irori_types::ServiceName::LightTurnOn,
+                    context: state().context,
+                },
+                &nobody,
+            ),
+            None
+        );
+        assert_eq!(
+            frame(Event::SettingsChanged, &nobody),
+            Some(LiveMessage::Changed),
+            "the page reads the home again, and reads only what is theirs"
+        );
+        assert_eq!(frame(Event::FoundChanged, &nobody), None);
+        assert_eq!(frame(Event::InstallsChanged, &nobody), None);
     }
 
     fn headers(pairs: &[(&str, &str)]) -> HeaderMap {

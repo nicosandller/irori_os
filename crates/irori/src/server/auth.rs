@@ -84,6 +84,22 @@ pub struct TokenGrant {
 }
 
 impl Actor {
+    /// How much of the home this request may see and use (`docs/specs/access.md` §1).
+    ///
+    /// An owner has all of it, so does a token (it is limited by its scopes, not its person's
+    /// rooms: `docs/specs/access.md` §5), and so does anybody in an open home. A person signed in
+    /// gets what their rooms hold. Nobody gets nothing, so a request without anyone behind it
+    /// can't turn into the whole home by a mistake somewhere else.
+    pub fn reach(&self, core: &irori_core::Core) -> irori_core::Reach {
+        if self.owner || self.token.is_some() {
+            return irori_core::Reach::Whole;
+        }
+        match &self.user {
+            Some(user) => core.reach_for(user.areas.as_deref()),
+            None => irori_core::Reach::nothing(),
+        }
+    }
+
     /// Who a command is attributed to.
     pub fn user_id(&self) -> UserId {
         self.user
@@ -97,8 +113,12 @@ impl Actor {
 pub enum Needs {
     /// Open to anyone who can reach Irori: the page itself, and what it takes to sign in.
     Nothing,
-    /// Using the home: seeing it, and controlling devices.
+    /// Using the home: seeing it, and controlling devices. What it answers is only what the
+    /// person has of the home (`docs/specs/access.md` §2).
     Use,
+    /// Using the home, but only the whole of it: what describes the home as a whole or the
+    /// machine it runs on. A person who has some rooms is told it is not for them.
+    Whole,
     /// Running the home: changing how it is set up.
     Run,
 }
@@ -141,19 +161,34 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
             return Needs::Nothing;
         }
         // A path nobody has named is closed. A new read has to be added to `named_read`.
-        return if named_read(rest) {
-            Needs::Use
-        } else {
+        return if !named_read(rest) {
             Needs::Run
+        } else if whole_home_only(rest) {
+            Needs::Whole
+        } else {
+            Needs::Use
         };
     }
+    // Asking the assistant, and stopping an answer. Setting it up is running the home.
+    let asking = rest == "assistant/turns"
+        || (rest.starts_with("assistant/turns/") && rest.ends_with("/stop"));
+    if asking {
+        return Needs::Whole;
+    }
     let using = rest == "command"
-        // Asking the assistant, and stopping an answer. Setting it up is running the home.
-        || rest == "assistant/turns"
-        || (rest.starts_with("assistant/turns/") && rest.ends_with("/stop"))
         // A person's own name and password; the handler refuses anybody else's.
         || (method == Method::PATCH && rest.starts_with("users/"));
     if using { Needs::Use } else { Needs::Run }
+}
+
+/// The reads that describe the whole home or the machine rather than a thing in a room: where
+/// the home is, what can be installed, how the machine is doing, how history is kept, and the
+/// assistant, which reads the home as a whole to answer (`docs/specs/access.md` §2).
+fn whole_home_only(rest: &str) -> bool {
+    matches!(
+        rest,
+        "place" | "catalog" | "system" | "system/usage" | "serial-ports" | "recorder" | "assistant"
+    ) || rest.starts_with("assistant/")
 }
 
 /// A GET that reads the home, as opposed to one that runs it.
@@ -633,6 +668,13 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
                     "only an owner can change how the home is set up".to_owned(),
                 );
             }
+            if needed == Needs::Whole && !who.reach(&state.0.core).is_whole() {
+                return refused(
+                    StatusCode::FORBIDDEN,
+                    "this is for people who have the whole home, and you have some of its rooms"
+                        .to_owned(),
+                );
+            }
             // A cookie is sent by the browser whoever wrote the page, so a change also has to
             // carry the header only Irori's own page sends (see `UI_HEADER`). A bearer token
             // is a secret the program was given, so it doesn't.
@@ -660,11 +702,15 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
         .map(|info| info.0.0.ip());
     request.extensions_mut().insert(Client(from));
     // Open addresses get whoever it is too, or nobody: the session endpoints read it.
-    request.extensions_mut().insert(who.unwrap_or(Actor {
+    let who = who.unwrap_or(Actor {
         user: None,
         owner: false,
         token: None,
-    }));
+    });
+    // Worked out once, here, and handed to whatever answers: no address decides for itself how
+    // much of the home a person has (`docs/specs/access.md` §1.2).
+    request.extensions_mut().insert(who.reach(&state.0.core));
+    request.extensions_mut().insert(who);
     next.run(request).await
 }
 
@@ -979,7 +1025,7 @@ mod tests {
 
     #[test]
     fn the_table_says_who_may_ask_for_what() {
-        use Needs::{Nothing, Run, Use};
+        use Needs::{Nothing, Run, Use, Whole};
         let cases = [
             (Method::GET, "/", Nothing),
             (Method::GET, "/settings", Nothing),
@@ -990,10 +1036,17 @@ mod tests {
             (Method::GET, "/api/extensions/demo/icon.svg", Nothing),
             (Method::GET, "/api/home", Use),
             (Method::GET, "/api/users", Use),
-            (Method::GET, "/api/system", Use),
+            (Method::GET, "/api/system", Whole),
+            (Method::GET, "/api/system/usage", Whole),
+            (Method::GET, "/api/place", Whole),
+            (Method::GET, "/api/catalog", Whole),
+            (Method::GET, "/api/serial-ports", Whole),
+            (Method::GET, "/api/assistant", Whole),
+            (Method::GET, "/api/assistant/transcript/general", Whole),
+            (Method::GET, "/api/assistant/turns/general", Whole),
             (Method::GET, "/api/history/light.hall", Use),
             (Method::GET, "/api/history/sensor.temp/summary", Use),
-            (Method::GET, "/api/recorder", Use),
+            (Method::GET, "/api/recorder", Whole),
             (Method::PUT, "/api/recorder", Run),
             (
                 Method::GET,
@@ -1005,8 +1058,8 @@ mod tests {
             (Method::GET, "/api/assistant/log", Run),
             (Method::GET, "/api/extensions/demo/log", Run),
             (Method::POST, "/api/command", Use),
-            (Method::POST, "/api/assistant/turns", Use),
-            (Method::POST, "/api/assistant/turns/general/stop", Use),
+            (Method::POST, "/api/assistant/turns", Whole),
+            (Method::POST, "/api/assistant/turns/general/stop", Whole),
             (Method::PATCH, "/api/users/nico", Use),
             (Method::POST, "/api/users", Run),
             (Method::DELETE, "/api/users/nico", Run),

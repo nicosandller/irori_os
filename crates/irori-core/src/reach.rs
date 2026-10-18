@@ -12,7 +12,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use irori_types::{AreaId, DeviceId, EntityId, FloorId};
+use irori_types::{
+    Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, Floor, FloorId, Floorplan,
+};
 
 use crate::home::Home;
 
@@ -91,6 +93,12 @@ pub enum Reach {
 }
 
 impl Reach {
+    /// Nothing at all: somebody who isn't anybody. Where a request has no one behind it, this is
+    /// what it gets, so a missing answer can't turn into the whole home.
+    pub fn nothing() -> Self {
+        Self::Rooms(Arc::new(Rooms::default()))
+    }
+
     pub fn is_whole(&self) -> bool {
         matches!(self, Self::Whole)
     }
@@ -122,5 +130,79 @@ impl Reach {
             Self::Whole => true,
             Self::Rooms(rooms) => rooms.floors.contains(id),
         }
+    }
+}
+
+/// What is shown of a list. Each takes the whole list and gives back what the person has; for
+/// [`Reach::Whole`] that is the list itself, untouched, so the owner pays for nothing.
+impl Reach {
+    pub fn devices(&self, mut devices: Vec<Device>) -> Vec<Device> {
+        if self.is_whole() {
+            return devices;
+        }
+        devices.retain(|device| self.sees_device(&device.id));
+        for device in &mut devices {
+            // What it says about a hub or a room it isn't in would name a thing the person has
+            // no room for. They see the device; the rest of the wiring is the owner's.
+            if device
+                .via_device_id
+                .as_ref()
+                .is_some_and(|via| !self.sees_device(via))
+            {
+                device.via_device_id = None;
+            }
+            device.suggested_area = None;
+        }
+        devices
+    }
+
+    pub fn entities(&self, mut entities: Vec<Entity>) -> Vec<Entity> {
+        if !self.is_whole() {
+            entities.retain(|entity| self.sees_entity(&entity.id));
+        }
+        entities
+    }
+
+    pub fn states(&self, mut states: Vec<EntityState>) -> Vec<EntityState> {
+        if !self.is_whole() {
+            states.retain(|state| self.sees_entity(&state.entity_id));
+        }
+        states
+    }
+
+    pub fn areas(&self, mut areas: Vec<Area>) -> Vec<Area> {
+        if !self.is_whole() {
+            areas.retain(|area| self.sees_area(&area.id));
+        }
+        areas
+    }
+
+    pub fn floors(&self, mut floors: Vec<Floor>) -> Vec<Floor> {
+        if !self.is_whole() {
+            floors.retain(|floor| self.sees_floor(&floor.id));
+        }
+        floors
+    }
+
+    /// The plan with only their floors, their rooms' shapes, and their things on it. The walls of
+    /// a floor they have a room on stay: a wall is structure, not a thing in the home, and a room
+    /// drawn with no walls round it would be a label floating on a page.
+    pub fn floorplan(&self, plan: Floorplan) -> Floorplan {
+        if self.is_whole() {
+            return plan;
+        }
+        let mut floors = plan.floors;
+        floors.retain(|id, _| self.sees_floor(id));
+        for level in floors.values_mut() {
+            level.areas.retain(|placed| self.sees_area(&placed.area));
+            level
+                .devices
+                .retain(|placed| match (&placed.device, &placed.entity) {
+                    (Some(device), _) => self.sees_device(device),
+                    (None, Some(entity)) => self.sees_entity(entity),
+                    (None, None) => false,
+                });
+        }
+        Floorplan { floors }
     }
 }

@@ -37,8 +37,19 @@ async fn list(state: &AppState) -> Vec<UserView> {
         .collect()
 }
 
-pub async fn users(State(state): State<AppState>) -> Response {
-    Json(list(&state).await).into_response()
+/// Everybody there is, or, for a person who has only some rooms, themselves: who else lives in
+/// the home is part of the home they have no room for (`docs/specs/access.md` §2).
+pub async fn users(
+    State(state): State<AppState>,
+    Extension(who): Extension<Actor>,
+    Extension(reach): Extension<irori_core::Reach>,
+) -> Response {
+    let mut everybody = list(&state).await;
+    if !reach.is_whole() {
+        let me = who.user.as_ref().map(|user| &user.id);
+        everybody.retain(|view| Some(&view.user.id) == me);
+    }
+    Json(everybody).into_response()
 }
 
 #[derive(Deserialize)]
@@ -326,6 +337,11 @@ pub async fn edit_user(
         .await;
     match edited {
         Ok(()) => {
+            // A page open as them was shown the home as it was for their old rooms or role.
+            // Closed once the change is written, so the page that reconnects is served the new.
+            if ask.areas.is_some() || ask.role.is_some() {
+                state.0.sockets.close_user_sessions(&id, None);
+            }
             if changes_password {
                 // Every other screen signed in as them is signed out; this one stays.
                 // Its socket stays too. Tokens are not sessions: a password doesn't end them.

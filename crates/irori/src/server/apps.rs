@@ -34,7 +34,15 @@ pub(super) struct AppEntry {
 }
 
 /// Running extensions that have a page, by name.
-pub(super) async fn list(State(state): State<AppState>) -> Json<Vec<AppEntry>> {
+pub(super) async fn list(
+    State(state): State<AppState>,
+    axum::Extension(reach): axum::Extension<irori_core::Reach>,
+) -> Json<Vec<AppEntry>> {
+    // An extension's page is the owner's until it says it limits what a person with some rooms
+    // can do (`docs/specs/access.md` §4.1), which nothing does yet.
+    if !reach.is_whole() {
+        return Json(Vec::new());
+    }
     let packages = state.0.host.packages_dir().to_path_buf();
     let mut entries: Vec<AppEntry> = state
         .0
