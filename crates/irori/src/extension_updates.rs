@@ -62,6 +62,7 @@ pub fn offered_now() -> Vec<Offered> {
 /// Replaces an installed official extension with the catalog's version and starts it again, as
 /// the Extensions page's Update does. Its devices, settings and data stay.
 pub async fn update(id: &ExtensionId) -> Result<(), String> {
+    crate::backup::schedule::before_update().await?;
     let (_, host) = RUNNING
         .get()
         .ok_or("Irori is still starting; try again in a moment")?;

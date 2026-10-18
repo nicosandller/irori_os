@@ -32,7 +32,7 @@ irori-assist = { workspace = true, optional = true }
 # barebones build still pushes home changes (`docs/specs/api.md` §4).
 futures-util = { version = "0.3.32", default-features = false, features = ["std", "sink"] }
 # The CLI talks to a running Irori. Linked in every build, including barebones.
-reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "stream", "rustls-tls", "blocking"] }
 tokio-stream = { version = "0.1.17", features = ["sync"], optional = true }
 # The checksum of the Ollama release Irori downloads on request (ollama.rs).
 
@@ -68,6 +68,14 @@ toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 sysinfo.workspace = true
+# Staging a backup or a restore next to where it ends up.
+tempfile.workspace = true
+tar.workspace = true
+# Sending a backup file to the page without holding it in memory.
+tokio-util = { version = "0.7.19", default-features = false, features = ["io"] }
+flate2.workspace = true
+chacha20poly1305.workspace = true
+base64.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 # Filesystem ids via `statvfs`, for picking the volume the data directory is on (host_info.rs).

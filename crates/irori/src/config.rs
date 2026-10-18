@@ -418,7 +418,6 @@ impl Config {
     }
 
     /// The config directory, for files this type doesn't own (`assistant.toml`).
-    #[cfg(feature = "assist")]
     pub async fn dir(&self) -> std::path::PathBuf {
         self.0.lock().await.dir().to_path_buf()
     }
