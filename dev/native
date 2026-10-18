@@ -23,9 +23,10 @@ usage: dev/native <command> [args]
                      build (debug, incremental) and run irori at http://127.0.0.1:$port
                      --ui         rebuild the wasm pages first (needs trunk; see below)
                      --barebones  no UI, no assistant: the --no-default-features build
-  check              fmt, clippy and tests for this OS (CI's check job, minus the Linux parts)
-  smoke              smoke-test the running server
-  reset              delete the dev data and config (dev/.native)
+  check              the same checks as CI's check job, run on this OS
+  smoke              smoke-test the running server (an open home gets a room made and removed,
+                     so keep IRORI_PORT pointed at the dev server)
+  reset              delete the dev data and config (the data/ and config/ folders in dev/.native)
   cargo <args>       any cargo command, e.g. dev/native cargo test -p irori
 
 Without --ui the binary embeds whatever pages were built last, or the placeholder page.
@@ -78,7 +79,12 @@ case "$cmd" in
   up) up "$@" ;;
   check) check ;;
   smoke) exec dev/smoke-test.sh "http://127.0.0.1:$port" ;;
-  reset) rm -rf "$state" && echo "Deleted $state" ;;
+  reset)
+    # Only the two folders `up` makes, so a custom IRORI_NATIVE_HOME holding anything else is safe.
+    rm -rf "${state:?}/data" "${state:?}/config"
+    rmdir "$state" 2>/dev/null || true
+    echo "Deleted the data and config in $state"
+    ;;
   cargo) exec cargo "$@" ;;
   "" | -h | --help | help) usage ;;
   *)
