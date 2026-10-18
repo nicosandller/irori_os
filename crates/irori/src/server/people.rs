@@ -194,6 +194,26 @@ pub async fn edit_user(
     let changes_password = clears || hash.is_some();
     // Whether this is the password that makes the home start asking who is there.
     let locks = hash.is_some() && !state.0.config.people().await.locked();
+    // Only an owner makes tokens (`docs/specs/api.md` §2), so an owner made a regular user takes
+    // theirs with them. The same refusals the write would give come first, as when removing
+    // somebody: a last owner told to step down mustn't lose their tokens and then stay.
+    let people = state.0.config.people().await;
+    let demotes = ask.role == Some(Role::User)
+        && people
+            .user(&id)
+            .is_some_and(|user| user.role.runs_the_home());
+    if demotes {
+        if let Err(why) = can_demote(&people, &id) {
+            return refused(StatusCode::UNPROCESSABLE_ENTITY, why);
+        }
+        if let Err(why) = state.0.auth.tokens.revoke_user(&id) {
+            return refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("couldn't write it down: {why}"),
+            );
+        }
+        state.0.sockets.close_user_tokens(&id);
+    }
     let edited = state
         .0
         .config
@@ -306,6 +326,22 @@ fn can_leave(people: &People, id: &UserId) -> Result<(), String> {
     let mut left = people.clone();
     left.users.retain(|user| &user.id != id);
     left.hashes.remove(id);
+    still_run(&left)
+}
+
+/// Whether `id` can stop being an owner, in the same words the write would use.
+fn can_demote(people: &People, id: &UserId) -> Result<(), String> {
+    let mut left = people.clone();
+    for user in &mut left.users {
+        if &user.id == id {
+            user.role = Role::User;
+        }
+    }
+    still_run(&left)
+}
+
+/// Whether a home as it would be left still has somebody who can run it.
+fn still_run(left: &People) -> Result<(), String> {
     irori_types::check_users(&left.users).map_err(|error| error.to_string())?;
     let has = |user: &User| left.hashes.contains_key(&user.id);
     let owner_can_sign_in = left

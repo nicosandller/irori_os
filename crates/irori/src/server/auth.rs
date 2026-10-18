@@ -178,13 +178,12 @@ fn named_read(rest: &str) -> bool {
             | "apps"
             | "system"
             | "system/usage"
-            | "system/log"
             | "serial-ports"
             | "assistant"
-            | "assistant/log"
             | "recorder"
     ) || rest.starts_with("history/")
-        || (rest.starts_with("extensions/") && rest.ends_with("/log"))
+        // A picture is the camera's face on the page: an `<img>` that carries the cookie.
+        || (rest.starts_with("entities/") && rest.ends_with("/picture"))
         || rest.starts_with("assistant/turns/")
         || rest.starts_with("assistant/transcript/")
 }
@@ -995,7 +994,15 @@ mod tests {
             (Method::GET, "/api/history/sensor.temp/summary", Use),
             (Method::GET, "/api/recorder", Use),
             (Method::PUT, "/api/recorder", Run),
-            (Method::GET, "/api/extensions/demo/log", Use),
+            (
+                Method::GET,
+                "/api/entities/camera.garden_camera_1/picture",
+                Use,
+            ),
+            // The logs hold everybody's sign-ins and what the owner did.
+            (Method::GET, "/api/system/log", Run),
+            (Method::GET, "/api/assistant/log", Run),
+            (Method::GET, "/api/extensions/demo/log", Run),
             (Method::POST, "/api/command", Use),
             (Method::POST, "/api/assistant/turns", Use),
             (Method::POST, "/api/assistant/turns/general/stop", Use),

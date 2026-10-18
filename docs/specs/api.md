@@ -15,7 +15,8 @@ program easy to write and leaves the rest out.
   call on the socket.
 - A token carries scopes. It is not a copy of its owner.
 - A token cannot mint tokens, add people, install extensions, or restart Irori. That stays
-  on the page, with the owner's session.
+  on the page, with the owner's session. It does not send a command to an `update` entity
+  either: that installs software (`access.md` §2.1).
 - There is one token, shown once. There is no refresh-token exchange.
 
 ---
@@ -195,6 +196,6 @@ There is no log message on this socket.
 
 | Topic | Where |
 |---|---|
-| Per-area permissions, an audit log | C28 |
+| Per-area permissions, an audit log | `docs/specs/access.md` (C28) |
 | Signing extension packages | C26 |
 | CORS, refresh tokens, a command channel on the websocket | Left out on purpose (§1) |

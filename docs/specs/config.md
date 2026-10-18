@@ -675,7 +675,7 @@ command they send is attributed to (`Origin::User`).
 | Role | May |
 |---|---|
 | `owner` | Everything, including who else is let in. |
-| `user` | See everything and control devices; ask the assistant; change their own name and password. Nothing that changes how the home is set up. |
+| `user` | See the home and control devices; ask the assistant; change their own name and password. Nothing that changes how the home is set up: no updates (`update` entities take no command from a user), no logs, no tokens, no backups. May be given only some rooms (`areas`, `docs/specs/access.md`). |
 
 **Passwords are not here.** This file is meant for git. Each person's password is kept as an
 argon2id hash in `secrets.toml`, under `[users.passwords]`, with everything that makes that file
@@ -792,8 +792,9 @@ flat and boring.
 
 Named here so the layout has room for them, specified when they are built:
 
-- **More about people** — per-area permissions and an audit log (ROADMAP C28). Tokens for
-  programs that aren't the page are `docs/specs/api.md`.
+- **More about people** — rooms for a person, an activity log and a user's own automations are
+  `docs/specs/access.md` (ROADMAP C28). Tokens for programs that aren't the page are
+  `docs/specs/api.md`.
 - **Approved permissions** in `extensions/<id>.toml`, and validating it against the extension's
   `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
   type checks it, and an extension with invalid settings waits for valid ones.

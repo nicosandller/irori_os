@@ -162,11 +162,14 @@ pub fn Settings() -> impl IntoView {
             });
         }
     });
-    spawn_local(async move {
-        if let Ok(lines) = api::fetch_system_log().await {
-            said.set(Some(crate::log_window::tally(&lines)));
-        }
-    });
+    // The log holds everybody's sign-ins and what the owner did: an owner's to read.
+    if owner() {
+        spawn_local(async move {
+            if let Ok(lines) = api::fetch_system_log().await {
+                said.set(Some(crate::log_window::tally(&lines)));
+            }
+        });
+    }
 
     // The home's arrangement in three numbers, and nothing that changes with a reading.
     let arrangement = Memo::new(move |_| {
@@ -329,7 +332,7 @@ pub fn Settings() -> impl IntoView {
                 (move || backups.with(|o| crate::backups::summary(o.as_ref()))).into_any(),
                 view! { <crate::backups::Section /> }.into_any(),
             ))}
-            {row(
+            {move || owner().then(|| row(
                 "logs",
                 Icon::Logs,
                 "Logs",
@@ -351,7 +354,7 @@ pub fn Settings() -> impl IntoView {
                     />
                 }
                 .into_any(),
-            )}
+            ))}
         </div>
 
         // The welcome's two questions are the two rows above; this is the way back to being

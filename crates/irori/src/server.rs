@@ -2263,6 +2263,17 @@ async fn command(
     axum::Extension(who): axum::Extension<auth::Actor>,
     Json(request): Json<CommandRequest>,
 ) -> Response {
+    // An update changes what the home runs on, which is setup. A token is never an owner, so
+    // it doesn't install one either (`docs/specs/api.md` §2).
+    if request.entity_id.kind().commands_need_owner() && !who.owner {
+        return refused(
+            StatusCode::FORBIDDEN,
+            format!(
+                "only an owner can send a command to `{}`: it changes what the home runs on",
+                request.entity_id
+            ),
+        );
+    }
     let command = Command {
         action: request.command,
         data: request.data.unwrap_or_default(),
@@ -7311,6 +7322,163 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    /// A person the owner adds and who signs in: their cookie.
+    async fn person(app: &Router, owner: &str, name: &str, role: &str) -> anyhow::Result<String> {
+        let (status, why, _) = ask(
+            app,
+            "POST",
+            "/api/users",
+            Some(serde_json::json!({ "name": name, "role": role, "password": "let me in!" })),
+            Some(owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{why}");
+        let (status, why, cookie) = ask(
+            app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": name, "password": "let me in!" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        cookie.ok_or_else(|| anyhow::anyhow!("signing in sets a cookie"))
+    }
+
+    /// An update changes the software and firmware the home runs on, which is setup: a regular
+    /// user never sends one a command, whatever the command (`docs/specs/access.md` §2.1).
+    #[tokio::test]
+    async fn a_user_sends_no_command_to_an_update() -> anyhow::Result<()> {
+        let core = core();
+        let _host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<crate::system_device::IroriDevice>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if core
+                .entities()
+                .iter()
+                .any(|entity| entity.id.to_string() == "update.irori")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let guest = person(&app, &owner, "Guest", "user").await?;
+
+        for command in ["install", "check", "skip", "clear_skipped"] {
+            let body = serde_json::json!({ "entity_id": "update.irori", "command": command });
+            let (status, why, _) = ask(
+                &app,
+                "POST",
+                "/api/command",
+                Some(body.clone()),
+                Some(&guest),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{command}: {why}");
+            assert!(
+                why["error"].as_str().is_some_and(|e| e.contains("owner")),
+                "{command}: {why}"
+            );
+            // The owner is not told that. What the update then does is its own business.
+            let (status, why, _) =
+                ask(&app, "POST", "/api/command", Some(body), Some(&owner), true).await?;
+            assert_ne!(status, StatusCode::FORBIDDEN, "{command}: {why}");
+        }
+        Ok(())
+    }
+
+    /// The page shows a camera with an `<img>` that carries the session's cookie, so what a
+    /// regular user sees of the home includes its pictures.
+    #[tokio::test]
+    async fn a_user_sees_a_camera_picture() -> anyhow::Result<()> {
+        let (core, _host) = demo().await?;
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let guest = person(&app, &owner, "Guest", "user").await?;
+        for cookie in [&owner, &guest] {
+            let (status, _, _) = ask(
+                &app,
+                "GET",
+                "/api/entities/camera.garden_camera_1/picture",
+                None,
+                Some(cookie),
+                false,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK);
+        }
+        Ok(())
+    }
+
+    /// The logs hold the names of everybody who signs in and what the owner did, and are read
+    /// to run the home: they are the owner's (`docs/specs/access.md` §2.2).
+    #[tokio::test]
+    async fn the_logs_are_the_owners() -> anyhow::Result<()> {
+        let (core, _host) = demo().await?;
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let guest = person(&app, &owner, "Guest", "user").await?;
+        for path in [
+            "/api/system/log",
+            "/api/assistant/log",
+            "/api/extensions/demo/log",
+        ] {
+            let (status, why, _) = ask(&app, "GET", path, None, Some(&guest), false).await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {why}");
+            let (status, why, _) = ask(&app, "GET", path, None, Some(&owner), false).await?;
+            assert_ne!(status, StatusCode::FORBIDDEN, "{path}: {why}");
+        }
+        Ok(())
+    }
+
+    /// Only an owner makes tokens, so an owner who is made a regular user loses theirs: they
+    /// stay valid for as long as the person does otherwise (`docs/specs/access.md` §5).
+    #[tokio::test]
+    async fn an_owner_made_a_user_loses_their_tokens() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, nico) = locked_home(&server).await?;
+        let ana = person(&app, &nico, "Ana", "owner").await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            Some(&ana),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            "/api/users/ana",
+            Some(serde_json::json!({ "role": "user" })),
+            Some(&nico),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}");
         Ok(())
     }
 
