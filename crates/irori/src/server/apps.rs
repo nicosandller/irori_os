@@ -96,8 +96,12 @@ pub(super) fn change_of(
     method: &str,
     params: &serde_json::Value,
 ) -> Option<(&'static str, Option<String>)> {
+    // A flow's id, if what the page sent is one. Anything else is not a name worth writing down.
     let named = |value: Option<&serde_json::Value>| {
-        value.and_then(serde_json::Value::as_str).map(str::to_owned)
+        value
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| irori_types::RuleId::try_from(*id).is_ok())
+            .map(str::to_owned)
     };
     match method {
         "flows.save" => Some(("flow_saved", named(params.pointer("/flow/id")))),
@@ -362,6 +366,23 @@ mod tests {
             None,
         ] {
             assert!(!asked_as(inside), "{inside:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_real_flow_id_is_written_down_as_what_was_changed() {
+        let big = "x".repeat(5_000);
+        for not_an_id in [
+            serde_json::json!(big),
+            serde_json::json!("Has Spaces"),
+            serde_json::json!(""),
+            serde_json::json!(7),
+        ] {
+            assert_eq!(
+                change_of("flows.delete", &serde_json::json!({ "id": not_an_id })),
+                Some(("flow_deleted", None)),
+                "{not_an_id}"
+            );
         }
     }
 

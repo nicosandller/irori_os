@@ -377,7 +377,22 @@ impl Audit {
     }
 }
 
-fn stamp(row: Row) -> Stamped {
+/// The most a row's target and its detail may hold. A row is a few words about who did what to
+/// what; some of what it says comes from a person's request (a flow's id on a request that was
+/// refused), and a log that kept it whole would be a way to fill the disk by asking.
+const TARGET_AT_MOST: usize = 200;
+const DETAIL_AT_MOST: usize = 500;
+
+fn clip(text: Option<String>, at_most: usize) -> Option<String> {
+    text.map(|text| match text.char_indices().nth(at_most) {
+        Some((end, _)) => format!("{}…", &text[..end]),
+        None => text,
+    })
+}
+
+fn stamp(mut row: Row) -> Stamped {
+    row.target = clip(row.target.take(), TARGET_AT_MOST);
+    row.detail = clip(row.detail.take(), DETAIL_AT_MOST);
     Stamped {
         at: Timestamp::from_jiff(jiff::Timestamp::now()),
         row,
@@ -924,6 +939,27 @@ mod tests {
             "{:?}",
             said.entries[0].detail
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_row_is_a_few_words_however_long_the_request_was() -> anyhow::Result<()> {
+        let (_dir, audit) = open()?;
+        let mut row = Row::new(AuditActor::Irori, "flow_saved", Outcome::Failed);
+        row.target = Some("x".repeat(10_000));
+        row.detail = Some("é".repeat(10_000));
+        audit.record_and_wait(row).await;
+        let page = audit.list(&Query::default()).map_err(anyhow::Error::msg)?;
+        let said = &page.entries[0];
+        assert_eq!(
+            said.target.as_deref().map(|t| t.chars().count()),
+            Some(TARGET_AT_MOST + 1)
+        );
+        assert_eq!(
+            said.detail.as_deref().map(|t| t.chars().count()),
+            Some(DETAIL_AT_MOST + 1)
+        );
+        assert!(said.detail.as_deref().is_some_and(|d| d.ends_with('…')));
         Ok(())
     }
 
