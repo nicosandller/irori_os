@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Run and test Irori directly on this machine, with no container. See dev/README.md.
+#
+# Much faster than `dev/pi`: an incremental debug build in the normal `target/`, no Docker VM,
+# no static musl link. It is not a Pi: this is your OS, your CPU and your network. Use `dev/pi`
+# for Linux-only paths, the unprivileged user, the lab devices and resource limits.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# Kept apart from ./data and ./config so a dev run never touches a home you care about.
+state="${IRORI_NATIVE_HOME:-$repo_root/dev/.native}"
+# Not 8480: that is what dev/pi publishes, and often an ssh tunnel to a real Pi.
+port="${IRORI_PORT:-8490}"
+bind_fallback="127.0.0.1:$port"
+
+usage() {
+  cat <<USAGE
+usage: dev/native <command> [args]
+
+  up [--ui] [--barebones]
+                     build (debug, incremental) and run irori at http://127.0.0.1:$port
+                     --ui         rebuild the wasm pages first (needs trunk; see below)
+                     --barebones  no UI, no assistant: the --no-default-features build
+  check              the same checks as CI's check job, run on this OS
+  smoke              smoke-test the running server (an open home gets a room made and removed,
+                     so keep IRORI_PORT pointed at the dev server)
+  reset              delete the dev data and config (the data/ and config/ folders in dev/.native)
+  cargo <args>       any cargo command, e.g. dev/native cargo test -p irori
+
+Without --ui the binary embeds whatever pages were built last, or the placeholder page.
+--ui needs: cargo install trunk --locked && rustup target add wasm32-unknown-unknown
+Data lives in $state (IRORI_NATIVE_HOME). Extensions you install are built from this checkout.
+USAGE
+}
+
+up() {
+  local ui=0 flags=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ui) ui=1 ;;
+      --barebones) flags=(--no-default-features) ;;
+      *)
+        echo "error: unknown argument: $1" >&2
+        exit 1
+        ;;
+    esac
+    shift
+  done
+  if [[ "$ui" -eq 1 && ${#flags[@]} -gt 0 ]]; then
+    echo "error: --ui and --barebones cannot be used together" >&2
+    exit 1
+  fi
+  if [[ "$ui" -eq 1 ]]; then
+    # Dev wasm (no wasm-opt, no LTO), the same switch the container uses.
+    IRORI_TRUNK_RELEASE=0 cargo xtask ui
+  fi
+  mkdir -p "$state/data" "$state/config"
+  echo "irori: http://127.0.0.1:$port  (data in $state)"
+  exec cargo run --locked -p irori ${flags[@]+"${flags[@]}"} -- run \
+    --bind "127.0.0.1:$port" --bind-fallback "$bind_fallback" --data "$state/data" --config "$state/config"
+}
+
+check() {
+  cargo fmt --all --check
+  cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+  cargo clippy --locked -p irori --no-default-features --all-targets -- -D warnings
+  cargo test --locked --workspace --all-features
+  cargo test --locked -p irori --no-default-features
+  cargo xtask check-deps
+  cargo xtask check-docs
+  cargo xtask schemas --check
+}
+
+cmd="${1:-}"
+[[ $# -eq 0 ]] || shift
+case "$cmd" in
+  up) up "$@" ;;
+  check) check ;;
+  smoke) exec dev/smoke-test.sh "http://127.0.0.1:$port" ;;
+  reset)
+    # Only the two folders `up` makes, so a custom IRORI_NATIVE_HOME holding anything else is safe.
+    rm -rf "${state:?}/data" "${state:?}/config"
+    rmdir "$state" 2>/dev/null || true
+    echo "Deleted the data and config in $state"
+    ;;
+  cargo) exec cargo "$@" ;;
+  "" | -h | --help | help) usage ;;
+  *)
+    echo "error: unknown command: $cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac

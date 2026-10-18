@@ -30,6 +30,27 @@ approving it.
 
 Everything runs through one script from the repository root: `dev/pi`.
 
+## Faster loop: run natively (`dev/native`)
+
+The container is the right place to check Linux behavior, but it rebuilds a static musl binary
+inside a VM. For everyday changes, run Irori directly on your Mac or a Linux machine with Rust
+(tested on macOS; Windows needs WSL2, because Irori itself is Unix-only):
+
+```sh
+dev/native up              # incremental debug build, then http://127.0.0.1:8490
+dev/native up --ui         # also rebuild the wasm pages (needs trunk), after a UI change
+dev/native up --barebones  # the --no-default-features build
+dev/native smoke           # the same smoke test, against the native server
+dev/native check           # fmt, clippy, tests, dependency rules, schemas on this OS
+dev/native reset           # delete its data and config
+```
+
+It uses the normal `target/` directory, so a one-line change is a debug relink, and it keeps
+its data in `dev/.native/` (set `IRORI_NATIVE_HOME` to move it), never in `./data`. The port is
+8490 by default, so it never collides with `dev/pi` on 8480. Extensions you install from the
+Extensions page are built from this checkout. It is not a Pi: use `dev/pi` for Linux-only code,
+the unprivileged user, lab devices and resource limits, and before approving a pull request.
+
 ## Run Irori like a Pi
 
 ```sh
@@ -221,6 +242,7 @@ of a device path, for exactly this: a network-attached coordinator. `dev/pi usb-
 | File | Purpose |
 |---|---|
 | `pi` | The helper script described above |
+| `native` | Runs and checks Irori directly on this machine, no container |
 | `Dockerfile` | `toolchain` (Rust on Alpine/musl), `ui` (wasm pages), `build` (static binary), `pi` (Debian slim runtime) |
 | `compose.yaml` | The `pi` service and the on-demand `toolchain` service |
 | `smoke-test.sh` | Smoke test shared with CI: health, WAL mode, UI present or absent per build, and the demo extension's devices when it's compiled in |
