@@ -66,6 +66,10 @@
         "placement": {
           "description": "Where it appears. Only the sidebar in this version.",
           "$ref": "#/$defs/AppPlacement"
+        },
+        "users": {
+          "description": "Lets regular users open this page. That is trust handed to the extension, which says\n\"I limit what a person can do with this\": the shell tells it who is asking, and what a\nperson's own rooms hold is the extension's to enforce (`docs/specs/access.md` §4.1).\nUntil permissions are approved one by one (ROADMAP C26), only official extensions are\ngiven it.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,

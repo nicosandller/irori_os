@@ -9,6 +9,7 @@ mod home;
 mod home_access;
 mod host;
 mod installs;
+mod people;
 mod reach;
 mod services;
 
@@ -33,6 +34,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
 pub use host::{ExtensionHost, InboundLink, Timing};
+pub use people::{NOTE_ACTIONS, Notes, Person};
 pub use reach::{Reach, Rooms};
 pub use services::{CallError, Command};
 
@@ -82,6 +84,8 @@ pub trait HistorySource: Send + Sync + fmt::Debug {
 pub struct AppCall {
     pub method: String,
     pub params: serde_json::Value,
+    /// Who asked. Only sent on to an engine that limits what a regular user can do.
+    pub caller: Option<irori_protocol::engine::Caller>,
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
 }
 
@@ -192,6 +196,9 @@ pub struct AppInfo {
     pub api: Vec<ApiScope>,
     /// The entity format its page reads, as its manifest says (`irori_types::format`).
     pub entity_format: u32,
+    /// Whether its manifest asks for regular users to open it (`docs/specs/access.md` §4.1).
+    /// The home honours that only for the extensions it trusts with it: [`Core::limits_people`].
+    pub users: bool,
 }
 
 fn is_present<S: serde::Serializer>(
@@ -393,6 +400,12 @@ struct Shared {
     registry_revision: AtomicU64,
     /// What each list of rooms holds, as of the revision it was worked out at.
     reaches: Mutex<ReachCache>,
+    /// Who is in the home and what each can reach, as the one who reads `users.toml` said.
+    people: RwLock<Vec<Person>>,
+    /// Extensions the home trusts to limit what a regular user can do with their page.
+    trusted_with_people: RwLock<BTreeSet<ExtensionId>>,
+    /// Where an engine's remarks go, for the activity log.
+    notes: RwLock<Option<Arc<dyn Notes>>>,
 }
 
 /// How many lines of an extension's own output are kept. Enough for a stack trace or a
@@ -467,6 +480,9 @@ impl Core {
             logs: RwLock::new(BTreeMap::new()),
             registry_revision: AtomicU64::new(0),
             reaches: Mutex::default(),
+            people: RwLock::default(),
+            trusted_with_people: RwLock::default(),
+            notes: RwLock::default(),
         }))
     }
 
@@ -1090,7 +1106,15 @@ impl Core {
         extension: &ExtensionId,
         method: String,
         params: serde_json::Value,
+        caller: irori_protocol::engine::Caller,
     ) -> Result<serde_json::Value, AppRequestError> {
+        // An engine that doesn't limit what a regular user can do is never told there is one
+        // asking: one that ignored the field would take them for the home.
+        if !caller.owner && !self.limits_people(extension) {
+            return Err(AppRequestError::Failed(format!(
+                "`{extension}` is not for regular users"
+            )));
+        }
         let sender = read(&self.0.app_links)
             .get(extension)
             .cloned()
@@ -1100,6 +1124,7 @@ impl Core {
         let call = AppCall {
             method,
             params,
+            caller: (!caller.owner).then_some(caller),
             reply,
         };
         let sent = tokio::time::timeout_at(deadline, sender.send(call)).await;

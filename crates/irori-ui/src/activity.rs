@@ -74,6 +74,16 @@ pub fn what(entry: &AuditEntry) -> String {
         "backup_downloaded" => named("downloaded the backup"),
         "backup_fetched" => "fetched a backup".to_owned(),
         "backup_removed" => named("removed the backup"),
+        "flow_saved" => named("saved the automation"),
+        "flow_turned_on" => named("turned on the automation"),
+        // Said by a person it is just that; said by Irori, because the home changed under the
+        // flow, it comes with the reason.
+        "flow_turned_off" if detail.is_empty() => named("turned off the automation"),
+        "flow_turned_off" => format!("{}: {detail}", named("turned off the automation")),
+        "flow_deleted" => named("deleted the automation"),
+        "flow_restored" => named("brought back an older version of the automation"),
+        "flow_test_run" => named("ran a test of the automation"),
+        "flow_handed_over" => format!("{}: {detail}", named("handed over the automation")),
         "restore_cancelled" => "cancelled a restore".to_owned(),
         "restore_asked" => named("asked for a restore from"),
         "restore_applied" => named("applied the restore of"),
@@ -261,16 +271,16 @@ mod tests {
         row.outcome = Outcome::Denied;
         row.detail = Some("turn_on: not in their rooms".to_owned());
         assert_eq!(chip(row.outcome), Some("Refused"));
-        assert_eq!(
-            why(&row).as_deref(),
-            Some("turn_on: not in their rooms")
-        );
+        assert_eq!(why(&row).as_deref(), Some("turn_on: not in their rooms"));
     }
 
     #[test]
     fn nobody_who_got_the_password_wrong_is_someone() {
         let mut row = entry(AuditActor::Nobody, "sign_in", Outcome::Denied);
-        assert_eq!(sentence(&row), "Someone tried to sign in with a name nobody has");
+        assert_eq!(
+            sentence(&row),
+            "Someone tried to sign in with a name nobody has"
+        );
         row.target = Some("leo".to_owned());
         assert_eq!(sentence(&row), "Someone tried to sign in as leo");
     }
@@ -286,6 +296,21 @@ mod tests {
         row.target = Some("light.hall".to_owned());
         row.detail = Some("toggle".to_owned());
         assert_eq!(sentence(&row), "token “Tablet” sent toggle to light.hall");
+    }
+
+    #[test]
+    fn a_flow_turned_off_by_irori_says_why() {
+        let mut row = entry(AuditActor::Irori, "flow_turned_off", Outcome::Ok);
+        row.target = Some("hall_light".to_owned());
+        row.detail = Some("`binary_sensor.hall` = no such entity in your rooms".to_owned());
+        assert_eq!(
+            sentence(&row),
+            "Irori turned off the automation hall_light: `binary_sensor.hall` = no such entity in your rooms"
+        );
+        // A person who did it needs no reason.
+        let mut row = entry(leo(), "flow_turned_off", Outcome::Ok);
+        row.target = Some("hall_light".to_owned());
+        assert_eq!(sentence(&row), "Leo turned off the automation hall_light");
     }
 
     #[test]

@@ -1938,6 +1938,8 @@ async fn apply_from_ext(
         FromExt::GetRegistry { .. }
         | FromExt::GetStates { .. }
         | FromExt::GetHistory { .. }
+        | FromExt::GetReach { .. }
+        | FromExt::Note { .. }
         | FromExt::Subscribe { .. }
         | FromExt::CallService { .. }
         | FromExt::AppAnswer { .. } => Ok(None),

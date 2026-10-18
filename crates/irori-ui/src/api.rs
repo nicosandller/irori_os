@@ -182,11 +182,23 @@ fn first_format() -> u32 {
     1
 }
 
-/// One entry of `/api/apps`: a running extension's page and whether its files are there.
+/// One entry of `/api/apps`: a running extension's page and whether its files are there. A
+/// regular user's sidebar and frame are made from these, since the home they are shown says
+/// nothing of extensions.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AppEntry {
     pub extension: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub has_icon: bool,
+    #[serde(default)]
+    pub api: Vec<String>,
+    #[serde(default)]
+    pub has_engine: bool,
     pub built: bool,
+    #[serde(default = "first_format")]
+    pub entity_format: u32,
 }
 
 pub async fn fetch_apps() -> Result<Vec<AppEntry>, String> {

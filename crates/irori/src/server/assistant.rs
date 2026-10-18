@@ -83,6 +83,7 @@ pub async fn turns(
                 assistant::take_turn(
                     Turn {
                         owner: who.owner,
+                        user: who.user.as_ref().map(|user| user.id.clone()),
                         ..turn(&state)
                     },
                     scope.clone(),
@@ -245,6 +246,7 @@ fn turn(state: &AppState) -> Turn<'_> {
         db: &state.0.db.path,
         log: &state.0.log,
         owner: false,
+        user: None,
     }
 }
 

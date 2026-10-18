@@ -253,6 +253,22 @@ struct Env<'a> {
     log: &'a syslog::Log,
     /// Whether whoever is asking may change how the home is set up.
     owner: bool,
+    /// Who is asking, when somebody signed in is.
+    user: Option<irori_types::UserId>,
+}
+
+impl Env<'_> {
+    /// Who the Automations extension is told is asking: the flows it shows are the asker's.
+    fn caller(&self) -> irori_protocol::engine::Caller {
+        if self.owner {
+            irori_protocol::engine::Caller::owner()
+        } else {
+            irori_protocol::engine::Caller {
+                user: self.user.clone(),
+                owner: false,
+            }
+        }
+    }
 }
 
 async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
@@ -2401,7 +2417,12 @@ fn automation_of(scope: &str) -> Option<&str> {
 /// Asks the Automations engine. The core does not read a flow file.
 async fn automations_call(env: &Env<'_>, method: &str, params: Value) -> Result<Value, String> {
     env.core
-        .app_request(&automations_extension(), method.to_owned(), params)
+        .app_request(
+            &automations_extension(),
+            method.to_owned(),
+            params,
+            env.caller(),
+        )
         .await
         .map_err(|error| match error {
             irori_core::AppRequestError::NotRunning(_) => {
@@ -2419,6 +2440,7 @@ async fn automation_brief(env: &Env<'_>, id: &str, budget: usize) -> String {
             &automations_extension(),
             "flow.brief".to_owned(),
             json!({ "id": id, "budget": budget }),
+            env.caller(),
         )
         .await
     {
@@ -2432,7 +2454,12 @@ async fn automation_brief(env: &Env<'_>, id: &str, budget: usize) -> String {
 async fn automations(env: &Env<'_>) -> Result<Vec<AutomationLine>, String> {
     let listed = env
         .core
-        .app_request(&automations_extension(), "flows.list".to_owned(), json!({}))
+        .app_request(
+            &automations_extension(),
+            "flows.list".to_owned(),
+            json!({}),
+            env.caller(),
+        )
         .await
         .map_err(|error| match error {
             irori_core::AppRequestError::NotRunning(_) => {
@@ -3503,6 +3530,9 @@ pub struct Turn<'a> {
     /// Whether whoever is asking may change how the home is set up: what adding a floor or a
     /// room from the Floorplan's chat is held to, the same as adding one in Settings.
     pub owner: bool,
+    /// Who is asking, when somebody signed in is: the flows the assistant reads and suggests
+    /// are theirs (`docs/specs/access.md` §4).
+    pub user: Option<irori_types::UserId>,
 }
 
 impl<'a> Turn<'a> {
@@ -3514,6 +3544,7 @@ impl<'a> Turn<'a> {
             db: self.db,
             log: self.log,
             owner: self.owner,
+            user: self.user.clone(),
         }
     }
 }

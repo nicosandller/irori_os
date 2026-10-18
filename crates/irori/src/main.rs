@@ -283,6 +283,10 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             // Engines that ask for history (`history:read`) read the same shelf, and engines
             // whose permissions name the config directory are told where it is.
             core.use_history(Arc::new(history.clone()));
+            core.use_notes(Arc::new(audit::EngineNotes(audit.clone())));
+            // Until permissions are approved one by one (ROADMAP C26), only the official
+            // extensions are trusted to limit what a regular user can do with their page.
+            core.trust_with_people(packages::official().into_iter().map(|item| item.id));
             core.use_config_dir(config.clone());
             // Before the extensions, so a device that arrives in the first second already has
             // the name and the room its owner gave it, rather than appearing under its old name

@@ -6799,6 +6799,7 @@ mod tests {
                             db: &db.path,
                             log: &server.log,
                             owner: false,
+                            user: None,
                         },
                         "general".into(),
                         "hello".into(),
@@ -7448,7 +7449,6 @@ mod tests {
                 "/api/extensions/demo/install",
                 serde_json::json!({}),
             ),
-            ("POST", "/api/apps/automations/rpc", serde_json::json!({})),
             (
                 "PATCH",
                 "/api/users/nico",
@@ -7468,6 +7468,18 @@ mod tests {
                 "{why}"
             );
         }
+        // A question for an extension's engine is for one that limits what a regular user can do
+        // with it (`docs/specs/access.md` §4.1). Any other answers as if it had no page.
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/apps/automations/rpc",
+            Some(serde_json::json!({ "method": "flows.list" })),
+            Some(&guest),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{why}");
         // Their own password is theirs to change, with the one they have.
         for (current, expected) in [
             (serde_json::Value::Null, StatusCode::FORBIDDEN),
@@ -9146,7 +9158,7 @@ mod tests {
         ("GET", "/api/extensions/{id}/icon.svg", Open),
         ("GET", "/api/extensions/{id}/log", Run),
         ("GET", "/api/apps", Filtered),
-        ("POST", "/api/apps/{id}/rpc", Run),
+        ("POST", "/api/apps/{id}/rpc", Hidden),
         ("GET", "/api/assistant", Whole),
         ("POST", "/api/assistant/turns", Whole),
         ("GET", "/api/assistant/turns/{scope}", Whole),

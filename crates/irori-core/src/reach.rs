@@ -103,6 +103,14 @@ impl Reach {
         matches!(self, Self::Whole)
     }
 
+    /// The entities they have, or `None` for the whole home.
+    pub fn entity_ids(&self) -> Option<Vec<EntityId>> {
+        match self {
+            Self::Whole => None,
+            Self::Rooms(rooms) => Some(rooms.entities.iter().cloned().collect()),
+        }
+    }
+
     pub fn sees_entity(&self, id: &EntityId) -> bool {
         match self {
             Self::Whole => true,

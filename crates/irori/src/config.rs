@@ -78,6 +78,7 @@ impl Config {
         );
         core.apply_settings(store.settings());
         core.apply_extension_settings(store.extension_settings());
+        core.apply_people(people_of(&store.users()));
         let disabled = store.irori().extensions.disabled;
         if !disabled.is_empty() {
             tracing::info!(extensions = ?disabled, "turned off in irori.toml");
@@ -414,6 +415,8 @@ impl Config {
             tracing::info!(files = "users.toml, secrets.toml", "config written");
         }
         core.apply_extension_settings(store.extension_settings());
+        // Whoever keeps flows for a person has to hear that their rooms or role changed.
+        core.apply_people(people_of(&people.users));
         Ok(made)
     }
 
@@ -518,6 +521,7 @@ impl Config {
                 // overwhelming majority of ticks.
                 core.apply_settings(store.settings());
                 core.apply_extension_settings(store.extension_settings());
+                core.apply_people(people_of(&store.users()));
                 let irori = store.irori();
                 core.apply_disabled_extensions(irori.extensions.disabled.clone());
                 core.apply_home(store.home());
@@ -555,6 +559,20 @@ impl Config {
             }
         }
     }
+}
+
+/// The people, as the core is told of them (`docs/specs/access.md` §4): who they are, whether
+/// they run the home, and their rooms.
+fn people_of(users: &[User]) -> Vec<irori_core::Person> {
+    users
+        .iter()
+        .map(|user| irori_core::Person {
+            id: user.id.clone(),
+            name: user.name.as_str().to_owned(),
+            owner: user.role.runs_the_home(),
+            rooms: user.areas.clone(),
+        })
+        .collect()
 }
 
 /// The table of `secrets.toml` that people's password hashes are kept in.

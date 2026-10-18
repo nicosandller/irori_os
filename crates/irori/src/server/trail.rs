@@ -28,6 +28,8 @@ struct Notes {
     outcome: Option<Outcome>,
     context_id: Option<ContextId>,
     client: Option<std::net::IpAddr>,
+    /// What the row is called when the handler knows better than the table.
+    action: Option<&'static str>,
 }
 
 impl Trail {
@@ -54,6 +56,12 @@ impl Trail {
     /// was only out of someone's rooms was denied, not lost.
     pub fn outcome(&self, outcome: Outcome) {
         self.notes().outcome = Some(outcome);
+    }
+
+    /// Names the row, for an address whose table entry is [`Log::Quiet`] because most of what is
+    /// asked there is not a change, and this one was (`docs/specs/access.md` §3).
+    pub fn said(&self, action: &'static str) {
+        self.notes().action = Some(action);
     }
 
     /// The context of the call a command made, so what it changes can be traced back.
@@ -190,8 +198,12 @@ pub async fn record(
     path: &str,
     status: StatusCode,
 ) {
+    let said = trail.notes().action;
     let log = match find(method, pattern) {
-        Some(Log::Quiet) => return,
+        Some(Log::Quiet) => match said {
+            Some(action) => Log::Row(action),
+            None => return,
+        },
         Some(log) => log,
         // Anything that changes and isn't in the table is still written down, under a name
         // that says so; the test over the table is what keeps this from being the way.
@@ -210,6 +222,7 @@ pub async fn record(
             outcome: notes.outcome.take(),
             context_id: notes.context_id.take(),
             client: notes.client.take(),
+            action: notes.action.take(),
         }
     };
     let actor = notes.actor.unwrap_or(AuditActor::Nobody);

@@ -45,9 +45,32 @@ fn Frame(id: String) -> impl IntoView {
     let navigate = use_navigate();
     let location = use_location();
 
+    let crate::Apps(theirs) = expect_context::<crate::Apps>();
+    let crate::Session(session) = expect_context::<crate::Session>();
     let app = {
         let id = id.clone();
         Memo::new(move |_| {
+            // A regular user's home says nothing of extensions: the page they may open comes
+            // from the list the server gives them.
+            if session.with(|s| s.as_ref().is_some_and(|s| !s.owner)) {
+                return theirs.with(|entries| {
+                    entries
+                        .iter()
+                        .flatten()
+                        .find(|entry| entry.extension == id)
+                        .map(|entry| {
+                            (
+                                api::AppInfo {
+                                    label: entry.label.clone(),
+                                    api: entry.api.clone(),
+                                    entity_format: entry.entity_format,
+                                },
+                                "running".to_owned(),
+                                entry.has_engine,
+                            )
+                        })
+                });
+            }
             live.home.with(|home| {
                 home.extensions
                     .iter()

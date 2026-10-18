@@ -189,7 +189,12 @@ async fn an_engine_acts_as_its_own_runs_within_its_scopes_and_answers_its_page()
 
     // Its page's question reaches it and the answer comes back.
     let answer = core
-        .app_request(&engine, "flows.list".into(), serde_json::json!({}))
+        .app_request(
+            &engine,
+            "flows.list".into(),
+            serde_json::json!({}),
+            irori_protocol::engine::Caller::owner(),
+        )
         .await
         .expect("answered");
     assert_eq!(answer, serde_json::json!({"flows": 3}));
@@ -378,6 +383,222 @@ async fn an_engine_built_before_entity_formats_is_sent_what_it_can_read() {
     assert!(old.contains("light.lamp_lamp"), "{old}");
     assert!(!old.contains("entity_category"), "{old}");
     assert!(new.contains(r#""entity_category":"diagnostic""#), "{new}");
+
+    host.shutdown().await;
+}
+
+/// An engine that limits what people can do: it asks where two people stand, and about one that
+/// isn't in the home, then says two things to write down, one of them not its to say, and waits
+/// for its page to ask.
+const PEOPLE_ENGINE: &str = r#"#!/bin/sh
+read hello
+sleep 1
+echo '{"type":"get_reach","id":1,"user":"leo"}'
+read answer; echo "leo: $answer" >&2
+echo '{"type":"get_reach","id":2,"user":"mia"}'
+read answer; echo "mia: $answer" >&2
+echo '{"type":"get_reach","id":3,"user":"gone"}'
+read answer; echo "gone: $answer" >&2
+echo '{"type":"note","action":"flow_turned_off","target":"hall_light","detail":"the hall sensor is not in your rooms any more"}'
+echo '{"type":"note","action":"person_removed","target":"nico","detail":"forged"}'
+n=0
+while read line; do echo "page: $line" >&2; echo "{\"type\":\"app_answer\",\"id\":$n,\"value\":{}}"; n=$((n+1)); done
+"#;
+
+#[derive(Debug, Default)]
+struct Written(std::sync::Mutex<Vec<(String, String, String)>>);
+
+impl irori_core::Notes for Written {
+    fn note(&self, _: &ExtensionId, action: &str, target: &str, detail: &str) {
+        self.0
+            .lock()
+            .expect("notes")
+            .push((action.into(), target.into(), detail.into()));
+    }
+}
+
+fn people_package(dir: &std::path::Path, id: &str, users: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let package = dir.join(id);
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        format!(
+            r#"
+            [extension]
+            id = "{id}"
+            name = "People"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.automation]]
+            run = {{ command = "bin/engine" }}
+
+            [[contributes.app]]
+            label = "People"
+            entry = "app/index.html"
+            {users}
+
+            [permissions]
+            api = ["states:read"]
+        "#,
+            users = if users { "users = true" } else { "" }
+        ),
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/engine");
+    std::fs::write(&program, PEOPLE_ENGINE).expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+}
+
+/// A regular user's page is for an extension that says it limits what they can do, and the home
+/// trusts it to; only that one is told who asked, or where a person stands, or may say what to
+/// write down (`docs/specs/access.md` §4.1).
+#[tokio::test]
+async fn an_engine_that_limits_people_is_told_who_asks_and_the_others_are_not() {
+    use irori_protocol::engine::Caller;
+    use irori_types::UserId;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let notes = Arc::new(Written::default());
+    core.use_notes(notes.clone());
+    let person =
+        |id: &str, name: &str, rooms: Option<Vec<irori_types::AreaId>>| irori_core::Person {
+            id: UserId::try_from(id).expect("valid"),
+            name: name.into(),
+            owner: false,
+            rooms,
+        };
+    core.apply_people(vec![
+        person("leo", "Leo", Some(Vec::new())),
+        person("mia", "Mia", None),
+    ]);
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    people_package(packages_dir.path(), "people", true);
+    people_package(packages_dir.path(), "stranger", true);
+    let people = ExtensionId::try_from("people").expect("valid");
+    let stranger = ExtensionId::try_from("stranger").expect("valid");
+    // Both say `users = true`; the home trusts one of them.
+    core.trust_with_people([people.clone()]);
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        Vec::new(),
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    let said = |who: &ExtensionId, what: &str| core.log(who).iter().any(|line| line.contains(what));
+
+    eventually("the trusted engine heard about the three", || {
+        said(&people, "gone: ")
+    })
+    .await;
+    let log = core.log(&people);
+    let line = |start: &str| {
+        log.iter()
+            .find(|line| line.starts_with(start))
+            .cloned()
+            .unwrap_or_default()
+    };
+    // Leo has no rooms, so no entities. Mia has the whole home: no list. The third is gone.
+    let value = |start: &str| -> serde_json::Value {
+        let text = line(start);
+        let answer: serde_json::Value =
+            serde_json::from_str(text.split_once(": ").map_or("", |(_, rest)| rest)).expect("json");
+        answer["value"].clone()
+    };
+    assert_eq!(
+        value("leo: "),
+        serde_json::json!({ "here": true, "name": "Leo", "owner": false, "entities": [] })
+    );
+    assert_eq!(
+        value("mia: "),
+        serde_json::json!({ "here": true, "name": "Mia", "owner": false })
+    );
+    assert_eq!(value("gone: ")["here"], false);
+    // Of what it said to write down, the log took what is an engine's to say.
+    eventually("the note is written", || {
+        !notes.0.lock().expect("notes").is_empty()
+    })
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let written = notes.0.lock().expect("notes").clone();
+    assert_eq!(written.len(), 1, "{written:?}");
+    assert_eq!(written[0].0, "flow_turned_off");
+
+    // The stranger isn't trusted: it is told it isn't one that limits people, and writes nothing.
+    eventually("the stranger asked", || said(&stranger, "gone: ")).await;
+    assert!(
+        said(&stranger, "isn't one that limits what people can do"),
+        "{:?}",
+        core.log(&stranger)
+    );
+
+    // A regular user's question reaches the trusted engine with who asked on it; the owner's
+    // carries no one. The stranger is never sent a regular user's question.
+    let leo = Caller {
+        user: Some(UserId::try_from("leo").expect("valid")),
+        owner: false,
+    };
+    core.app_request(
+        &people,
+        "flows.list".into(),
+        serde_json::json!({}),
+        leo.clone(),
+    )
+    .await
+    .expect("answered");
+    assert!(
+        said(&people, r#""caller":{"user":"leo","owner":false}"#),
+        "{:?}",
+        core.log(&people)
+    );
+    core.app_request(
+        &people,
+        "flows.list".into(),
+        serde_json::json!({}),
+        Caller::owner(),
+    )
+    .await
+    .expect("answered");
+    let asked = core
+        .log(&people)
+        .iter()
+        .filter(|line| line.starts_with("page: "))
+        .count();
+    assert_eq!(asked, 2);
+    assert!(
+        core.log(&people)
+            .iter()
+            .filter(|line| line.starts_with("page: "))
+            .any(|line| !line.contains("caller")),
+        "the owner's question says nobody"
+    );
+    let refused = core
+        .app_request(&stranger, "flows.list".into(), serde_json::json!({}), leo)
+        .await
+        .expect_err("not for regular users");
+    assert!(
+        refused.to_string().contains("not for regular users"),
+        "{refused}"
+    );
+    assert!(!said(&stranger, "page: "), "{:?}", core.log(&stranger));
+
+    // Changing who is in the home tells engines, as any change to the home does.
+    let mut events = core.subscribe();
+    core.apply_people(vec![person("mia", "Mia", None)]);
+    assert!(matches!(
+        events.try_recv(),
+        Ok(irori_core::Event::SettingsChanged)
+    ));
+    core.apply_people(vec![person("mia", "Mia", None)]);
+    assert!(events.try_recv().is_err(), "nothing changed");
+    assert!(
+        !core
+            .person_reach(&UserId::try_from("leo").expect("valid"))
+            .here
+    );
 
     host.shutdown().await;
 }

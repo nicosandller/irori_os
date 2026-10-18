@@ -206,7 +206,10 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
     }
     let using = rest == "command"
         // A person's own name and password; the handler refuses anybody else's.
-        || (method == Method::PATCH && rest.starts_with("users/"));
+        || (method == Method::PATCH && rest.starts_with("users/"))
+        // A question to an extension's engine. A regular user asks only one that limits what
+        // they can do with it, and the handler says which (`docs/specs/access.md` §4.1).
+        || (method == Method::POST && rest.starts_with("apps/") && rest.ends_with("/rpc"));
     if using { Needs::Use } else { Needs::Run }
 }
 
@@ -1179,7 +1182,7 @@ mod tests {
             (Method::POST, "/api/setup/backup/upload", Nothing),
             (Method::POST, "/api/setup/backup/restore", Nothing),
             (Method::PUT, "/api/assistant", Run),
-            (Method::POST, "/api/apps/automations/rpc", Run),
+            (Method::POST, "/api/apps/automations/rpc", Use),
             (Method::PUT, "/api/extensions/mqtt/secrets", Run),
             (Method::GET, "/api/ws", Use),
             // HEAD is not a read. A token still needs the home's scopes for this path.

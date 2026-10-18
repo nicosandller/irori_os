@@ -77,6 +77,12 @@ pub struct Live {
 #[derive(Debug, Clone, Copy)]
 pub struct Assistant(pub RwSignal<Option<api::AssistantStatus>>);
 
+/// The pages of extensions a regular user may open (`docs/specs/access.md` §4.1), from
+/// `/api/apps`. The home they are shown says nothing of extensions, so their sidebar and the frame
+/// are made from this; an owner's come from the home. `None` until asked.
+#[derive(Debug, Clone, Copy)]
+pub struct Apps(pub RwSignal<Option<Vec<api::AppEntry>>>);
+
 /// Who this browser is, and how far the home has been set up. `None` until the first answer.
 #[derive(Debug, Clone, Copy)]
 pub struct Session(pub RwSignal<Option<api::Session>>);
@@ -104,6 +110,7 @@ fn App() -> impl IntoView {
     // nothing behind it, and a home nobody has set up gets the welcome.
     let session = RwSignal::new(None::<api::Session>);
     provide_context(Session(session));
+    provide_context(Apps(RwSignal::new(None)));
     let place = RwSignal::new(None);
     provide_context(place::Place(place));
     let people = RwSignal::new(Vec::new());
@@ -496,10 +503,30 @@ const SECTIONS: [(&str, &str, &str); 3] = [
 fn AppLinks() -> impl IntoView {
     let live = expect_context::<Live>();
     let Session(session) = expect_context::<Session>();
+    let Apps(theirs) = expect_context::<Apps>();
+    let owner = move || session.with(|s| s.as_ref().is_none_or(|s| s.owner));
+    // A regular user is offered the pages that limit what they can do, as the server lists them.
+    // Asked when they are known to be one, and again whenever the home is read again, since a
+    // page can start or stop.
+    Effect::new(move |_| {
+        let _ = live.home.track();
+        if session.with(|s| s.as_ref().is_some_and(|s| !s.owner)) {
+            spawn_local(async move {
+                if let Ok(entries) = api::fetch_apps().await {
+                    theirs.set(Some(entries));
+                }
+            });
+        }
+    });
     let apps = Memo::new(move |_| {
-        // An extension's page talks to its engine, which is running the home: an owner's.
-        if !session.with(|s| s.as_ref().is_none_or(|s| s.owner)) {
-            return Vec::new();
+        if !owner() {
+            return theirs.with(|entries| {
+                entries
+                    .iter()
+                    .flatten()
+                    .map(|entry| (entry.extension.clone(), entry.label.clone(), entry.has_icon))
+                    .collect::<Vec<_>>()
+            });
         }
         live.home.with(|home| {
             home.extensions

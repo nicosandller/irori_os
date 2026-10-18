@@ -105,6 +105,27 @@ impl Row {
     }
 }
 
+/// Where an engine's remarks about the home are written: Irori itself did it, because the home
+/// changed under a flow (`docs/specs/access.md` §4).
+#[derive(Debug, Clone)]
+pub struct EngineNotes(pub Audit);
+
+impl irori_core::Notes for EngineNotes {
+    fn note(
+        &self,
+        _extension: &irori_types::ExtensionId,
+        action: &str,
+        target: &str,
+        detail: &str,
+    ) {
+        self.0.record(
+            Row::new(AuditActor::Irori, action, Outcome::Ok)
+                .target(target)
+                .detail(detail),
+        );
+    }
+}
+
 /// How long and how much is kept.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Keep {
@@ -926,14 +947,15 @@ mod tests {
         audit
             .record_and_wait(Row::new(AuditActor::Irori, "new", Outcome::Ok))
             .await;
+        // A row is answered before the cut that follows its batch; the next one is answered
+        // after it.
+        audit
+            .record_and_wait(Row::new(AuditActor::Irori, "newer", Outcome::Ok))
+            .await;
         let page = audit.list(&Query::default()).map_err(anyhow::Error::msg)?;
-        assert_eq!(
-            page.entries
-                .iter()
-                .map(|e| e.action.as_str())
-                .collect::<Vec<_>>(),
-            ["new"]
-        );
+        let mut kept: Vec<_> = page.entries.iter().map(|e| e.action.as_str()).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, ["new", "newer"]);
         Ok(())
     }
 }

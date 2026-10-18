@@ -117,6 +117,20 @@ pub enum FromExt {
         entities: Vec<EntityId>,
         since: Timestamp,
     },
+    /// What a person can see and may do now, for checking a flow of theirs. Only an extension
+    /// whose manifest says `users = true` is answered (`docs/specs/access.md` §4.1).
+    GetReach {
+        id: u64,
+        user: irori_types::UserId,
+    },
+    /// Something the engine did to the home, for the activity log. No answer. The core takes
+    /// only `flow_turned_off` and `flow_handed_over`, and only from an extension that limits
+    /// what people can do.
+    Note {
+        action: String,
+        target: String,
+        detail: String,
+    },
     /// Start receiving `state_changed` and/or `registry_changed`. `events:read`.
     Subscribe {
         id: u64,
@@ -223,6 +237,9 @@ pub enum ToExt {
         method: String,
         #[serde(default)]
         params: serde_json::Value,
+        /// Who asked, put there by the core. Left out for the home's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<crate::engine::Caller>,
     },
 }
 
