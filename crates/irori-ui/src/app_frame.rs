@@ -291,6 +291,18 @@ fn Frame(id: String) -> impl IntoView {
                 // The sandboxed editor can't draw outside its frame, so it says where its
                 // Ask button is and the shell opens the chat under it.
                 "assistant" => {
+                    // Setting the assistant up is the owner's, and a person with only some rooms
+                    // has none (`docs/specs/access.md` §2): where it isn't there, the button
+                    // does nothing rather than leading to a page they can't use.
+                    let ready = assistant
+                        .0
+                        .get_untracked()
+                        .is_some_and(|status| status.ready);
+                    let owner = session.with_untracked(|s| s.as_ref().is_none_or(|s| s.owner));
+                    if !(ready || owner) {
+                        post(&Reply::answer(request.id, Ok(serde_json::Value::Null)));
+                        return;
+                    }
                     let flow = request.args["id"].as_str().unwrap_or_default().trim();
                     // A flow that is not saved yet has no id; it is asked about as a new one.
                     let scope = if request.args["new"].as_bool() == Some(true) {

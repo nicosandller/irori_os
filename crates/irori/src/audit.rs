@@ -21,7 +21,7 @@ use irori_types::{
     AuditActor, AuditEntry, AuditPage, ContextId, ExtensionId, MOST_AUDIT_ROWS, Named, Outcome,
     Timestamp, TokenId, UserId,
 };
-use rusqlite::{Connection, OptionalExtension as _, params};
+use rusqlite::{Connection, params};
 
 /// The tables the activity log lives in, for whoever needs to tell it from the rest of
 /// `irori.db`: a backup that sets it apart, or a restore that leaves it as it is.
@@ -346,21 +346,28 @@ impl Audit {
         let Ok(conn) = connect(&self.shared.db) else {
             return found;
         };
-        let Ok(mut statement) = conn.prepare(
-            "SELECT id, at_ns, actor_kind, actor_id, actor_name, actor_person_id, \
-             actor_person_name, action, target, outcome, detail, context_id, client \
-             FROM audit WHERE context_id = ?1 AND action = 'command' AND outcome = 'ok'",
-        ) else {
-            return found;
-        };
-        for context in contexts {
-            let entry = statement
-                .query_row([context.as_str()], read_row)
-                .optional()
-                .ok()
-                .flatten();
-            if let Some(entry) = entry {
-                found.insert(context.clone(), entry.actor);
+        // A few at a time, each as one question, so a busy entity's day is a handful of
+        // lookups on one connection and not hundreds.
+        for chunk in contexts.chunks(200) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let Ok(mut statement) = conn.prepare(&format!(
+                "SELECT id, at_ns, actor_kind, actor_id, actor_name, actor_person_id, \
+                 actor_person_name, action, target, outcome, detail, context_id, client \
+                 FROM audit WHERE context_id IN ({marks}) AND action = 'command' \
+                 AND outcome = 'ok'"
+            )) else {
+                continue;
+            };
+            let Ok(rows) = statement.query_map(
+                rusqlite::params_from_iter(chunk.iter().map(ContextId::as_str)),
+                |row| Ok((row.get::<_, String>(11)?, read_row(row)?)),
+            ) else {
+                continue;
+            };
+            for (context, entry) in rows.flatten() {
+                if let Ok(context) = ContextId::try_from(context) {
+                    found.insert(context, entry.actor);
+                }
             }
         }
         found
@@ -966,6 +973,11 @@ mod tests {
     #[tokio::test]
     async fn a_row_older_than_the_days_kept_is_removed() -> anyhow::Result<()> {
         let (dir, audit) = open()?;
+        // The writer cuts once as it starts. Once it has answered, it has, and it will not take
+        // the old row before the test has put the new limit to it.
+        audit
+            .record_and_wait(Row::new(AuditActor::Irori, "first", Outcome::Ok))
+            .await;
         {
             let conn = connect(&dir.path().join("irori.db"))?;
             let long_ago = nanos(Timestamp::from_second(1_000_000_000).expect("in range"));
@@ -975,7 +987,7 @@ mod tests {
                 [long_ago],
             )?;
         }
-        assert_eq!(audit.count(), 1);
+        assert_eq!(audit.count(), 2);
         audit.keep(Keep {
             days: 10,
             max_rows: 5000,
@@ -991,7 +1003,7 @@ mod tests {
         let page = audit.list(&Query::default()).map_err(anyhow::Error::msg)?;
         let mut kept: Vec<_> = page.entries.iter().map(|e| e.action.as_str()).collect();
         kept.sort_unstable();
-        assert_eq!(kept, ["new", "newer"]);
+        assert_eq!(kept, ["first", "new", "newer"]);
         Ok(())
     }
 }

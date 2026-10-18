@@ -37,11 +37,18 @@ pub fn what(entry: &AuditEntry) -> String {
         "owner_set_up" if ok => "set the home up".to_owned(),
         "owner_set_up" => "tried to set the home up again".to_owned(),
         "person_added" => format!("added {detail}"),
-        "person_changed" => named("changed"),
+        // What was changed is the point of the row: the role, the rooms, the name.
+        "person_changed" if detail.is_empty() => named("changed"),
+        "person_changed" => format!("{}: {detail}", named("changed")),
         "person_removed" => format!("removed {detail}"),
         "token_made" => format!("made the token {detail}"),
         "token_revoked" => format!("revoked the token {detail}"),
-        "command" => format!("sent {detail} to {target}"),
+        // A refused command's detail goes on past the command, with the reason (`turn_on: not
+        // in their rooms`); the reason is the line under the sentence, not part of it.
+        "command" => format!(
+            "sent {} to {target}",
+            detail.split_once(": ").map_or(detail, |(command, _)| command)
+        ),
         "place_changed" => "changed where the home is".to_owned(),
         "history_kept_changed" => "changed how long history is kept".to_owned(),
         "restart" => "restarted Irori".to_owned(),
@@ -140,17 +147,29 @@ pub fn Section(
     // What to look at: everything, or only what was refused.
     let refused = RwSignal::new(false);
 
+    // Which look at the log is the latest. Narrowing it while an earlier look is still coming
+    // asks again, and the answer to the earlier one is dropped when it lands.
+    let latest = StoredValue::new(0u64);
     let load = move |more: bool| {
-        if loading.get_untracked() {
+        // Older rows are asked for once at a time; a new look at the log is never refused.
+        if more && loading.get_untracked() {
             return;
         }
+        if !more {
+            latest.update_value(|latest| *latest += 1);
+        }
+        let mine = latest.get_value();
         loading.set(true);
         let before = if more { older.get_untracked() } else { None };
         let who = person.get_untracked();
         let outcome = refused.get_untracked().then_some(Outcome::Denied);
         spawn_local(async move {
-            match api::fetch_audit((!who.is_empty()).then_some(who.as_str()), outcome, before).await
-            {
+            let asked =
+                api::fetch_audit((!who.is_empty()).then_some(who.as_str()), outcome, before).await;
+            if latest.get_value() != mine {
+                return;
+            }
+            match asked {
                 Ok(page) => {
                     trouble.set(None);
                     older.set(page.older);
@@ -271,7 +290,20 @@ mod tests {
         row.outcome = Outcome::Denied;
         row.detail = Some("turn_on: not in their rooms".to_owned());
         assert_eq!(chip(row.outcome), Some("Refused"));
+        assert_eq!(sentence(&row), "Leo sent turn_on to light.hall");
         assert_eq!(why(&row).as_deref(), Some("turn_on: not in their rooms"));
+    }
+
+    #[test]
+    fn a_change_to_a_person_says_what_was_changed() {
+        let mut row = entry(leo(), "person_changed", Outcome::Ok);
+        row.target = Some("mia".to_owned());
+        assert_eq!(sentence(&row), "Leo changed mia");
+        row.detail = Some("role to owner; rooms to the whole home".to_owned());
+        assert_eq!(
+            sentence(&row),
+            "Leo changed mia: role to owner; rooms to the whole home"
+        );
     }
 
     #[test]

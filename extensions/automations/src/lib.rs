@@ -53,6 +53,8 @@ pub struct Service {
     pub engine: Engine,
     pub store: Store,
     pub registry: MapRegistry,
+    /// Which reading of the home `registry` is: a person's standing is built on one.
+    home_was: u64,
     /// Where each person who has a flow, or has asked, stands now (`docs/specs/access.md` §4).
     pub people: BTreeMap<UserId, Standing>,
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
@@ -118,9 +120,12 @@ impl Service {
             // A person's flow is checked against their rooms, and says so: what is outside them
             // reads as no entity at all, which is the same thing whether it is hidden or gone.
             for problem in &mut problems {
-                problem.message = problem
-                    .message
-                    .replace("no such entity in the home", "no such entity in your rooms");
+                if problem.message.contains("no such entity") {
+                    problem.message = problem.message.replace(
+                        " — check the entity id",
+                        " in your rooms — check the entity id",
+                    );
+                }
             }
         }
         problems
@@ -207,6 +212,7 @@ impl Service {
             engine,
             store,
             registry,
+            home_was: 0,
             people: BTreeMap::new(),
             calls,
         };
@@ -239,7 +245,15 @@ impl Service {
     pub async fn learn(&mut self, user: &UserId) {
         match self.client.get_reach(user.clone()).await {
             Ok(reach) => {
-                let standing = Standing::of(reach, &self.registry);
+                // The same answer about the same home is what is already known.
+                if self
+                    .people
+                    .get(user)
+                    .is_some_and(|known| known.told == reach && known.home_was == self.home_was)
+                {
+                    return;
+                }
+                let standing = Standing::of(reach, &self.registry, self.home_was);
                 self.people.insert(user.clone(), standing);
             }
             Err(error) => {
@@ -375,6 +389,7 @@ impl Service {
                     Ok(registry) => {
                         let (registry, place) = registry_view(registry);
                         self.registry = registry;
+                        self.home_was += 1;
                         self.engine.set_place(place, now());
                         // The people may have changed with the home: their rooms, their role,
                         // whether they are still here.

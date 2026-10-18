@@ -49,7 +49,10 @@ enum About {
     Flow,
     /// The flow in `flow`, which may be new: if its id is taken by somebody else's, it is taken.
     Draft,
-    /// A suggestion for the flow named by `id`, or for a new one.
+    /// A suggestion, a dry run or a backtest for the flow named by `id`, or for a new one, with
+    /// the flow itself in `flow`: both ids have to be theirs or nobody's. What a draft may read
+    /// is what its owner can reach, and a draft takes the owner of the flow whose id it carries;
+    /// one carrying somebody else's id would read as them.
     Proposal,
     /// Runs going now, of the flow named by `id` or of every flow: a person's own.
     Runs,
@@ -79,8 +82,8 @@ const QUESTIONS: &[(&str, About)] = &[
     ("live", About::Flow),
     ("nearmiss.list", About::Flow),
     ("timeline", About::Flow),
-    ("test", About::Flow),
-    ("backtest", About::Flow),
+    ("test", About::Proposal),
+    ("backtest", About::Proposal),
     ("clock.next", About::Nothing),
     ("clock.holds", About::Nothing),
 ];

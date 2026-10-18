@@ -918,6 +918,7 @@ async fn a_regular_user_has_their_own_flows_and_only_what_they_can_reach() {
     .await
     .expect("answers");
     assert!(hidden.to_string().contains("no such entity"), "{hidden}");
+    assert!(hidden.to_string().contains("in your rooms"), "{hidden}");
     assert_eq!(
         hidden.to_string().replace(OCCUPANCY, "ID"),
         missing
@@ -952,6 +953,33 @@ async fn a_regular_user_has_their_own_flows_and_only_what_they_can_reach() {
         "a dry run read a sensor outside his rooms: {dry}"
     );
 
+    // A draft that carries the id of a flow that is not his is not run as that flow's owner: it
+    // would be read as the home, which sees everything.
+    for method in ["test", "backtest"] {
+        let taken = rpc::handle(
+            &mut service,
+            &leo(),
+            method,
+            serde_json::json!({
+                "id": "probe",
+                "dry": true,
+                "trigger": "start",
+                "flow": {
+                    "id": "hallway_motion_light",
+                    "name": "Probe",
+                    "nodes": {
+                        "start": { "type": "trigger", "trigger": { "type": "startup" } },
+                        "gate": { "type": "gate", "condition": { "type": "expr", "expr": "num('sensor.demo_luminosity_illuminance') < 30" } }
+                    },
+                    "wires": [["start", "gate"]]
+                }
+            }),
+        )
+        .await
+        .expect_err(method);
+        assert!(taken.contains("exists already"), "{method}: {taken}");
+    }
+
     // His motion sensor leaves his rooms: the flow is turned off, and the log is told once.
     people
         .lock()
@@ -965,7 +993,7 @@ async fn a_regular_user_has_their_own_flows_and_only_what_they_can_reach() {
     assert!(
         list["flows"][0]["reason"]
             .as_str()
-            .is_some_and(|why| why.contains("no such entity")),
+            .is_some_and(|why| why.contains("no such entity") && why.contains("in your rooms")),
         "{list}"
     );
     let mut told = Vec::new();

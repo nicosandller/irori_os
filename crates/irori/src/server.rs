@@ -507,6 +507,8 @@ async fn entity_history(
         .filter_map(|change| change.context.parent_id.clone())
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
+        // The newest: ids are in time order, and the changes people look at are the last ones.
+        .rev()
         .take(HISTORY_BY_AT_MOST)
         .collect();
     let audit = state.0.audit.clone();
@@ -7667,6 +7669,43 @@ mod tests {
         assert_eq!(status, StatusCode::OK, "{why}");
         let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}");
+        Ok(())
+    }
+
+    /// An edit that is refused for something else takes nothing away: the tokens of an owner told
+    /// to be a regular user, and to have a room that is not there, are still theirs.
+    #[tokio::test]
+    async fn a_refused_demotion_leaves_the_tokens_alone() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, nico) = locked_home(&server).await?;
+        let ana = person(&app, &nico, "Ana", "owner").await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            Some(&ana),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            "/api/users/ana",
+            Some(serde_json::json!({ "role": "user", "areas": ["no_such_room"] })),
+            Some(&nico),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the refused edit took the token: {why}"
+        );
         Ok(())
     }
 

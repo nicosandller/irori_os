@@ -294,17 +294,30 @@ pub async fn edit_user(
         && people
             .user(&id)
             .is_some_and(|user| user.role.runs_the_home());
-    if demotes {
-        if let Err(why) = can_demote(&people, &id) {
-            return refused(StatusCode::UNPROCESSABLE_ENTITY, why);
-        }
-        if let Err(why) = state.0.auth.tokens.revoke_user(&id) {
-            return refused(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("couldn't write it down: {why}"),
-            );
-        }
-        state.0.sockets.close_user_tokens(&id);
+    // Everything that can still say no, before anything is taken away: an edit that is refused
+    // leaves the person's tokens where they were.
+    if clears {
+        return refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a password can be changed, not taken away: everybody in the home has one".to_owned(),
+        );
+    }
+    if people.user(&id).is_none() {
+        return refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("there's nobody with the id `{id}`"),
+        );
+    }
+    if let Some(name) = &ask.name
+        && people
+            .users
+            .iter()
+            .any(|user| user.id != id && same_name(&user.name, name))
+    {
+        return refused(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!("there's already somebody called {}", name.as_str()),
+        );
     }
     // The rooms to set, checked against the home: `Some(None)` is the whole home again.
     let rooms = match ask.areas.clone() {
@@ -322,6 +335,18 @@ pub async fn edit_user(
         Some(None) => Some(None),
         None => None,
     };
+    if demotes {
+        if let Err(why) = can_demote(&people, &id) {
+            return refused(StatusCode::UNPROCESSABLE_ENTITY, why);
+        }
+        if let Err(why) = state.0.auth.tokens.revoke_user(&id) {
+            return refused(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("couldn't write it down: {why}"),
+            );
+        }
+        state.0.sockets.close_user_tokens(&id);
+    }
     // What was changed, in words, for the activity log. A password is said to have changed and
     // nothing more.
     let mut changed = Vec::new();

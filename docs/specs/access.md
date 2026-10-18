@@ -1,6 +1,6 @@
 # Spec: who may do what (people, rooms, activity, their own automations)
 
-Status: **in progress** (ROADMAP C28). Roles and sign-in are C14 (`config.md` §3.10), tokens for
+Status: **shipped** (ROADMAP C28). Roles and sign-in are C14 (`config.md` §3.10), tokens for
 programs are C16/C17 (`api.md`); this spec adds what sits on top of them.
 
 Two roles are enough for a household that trusts each other, and no more than that for a
@@ -121,6 +121,12 @@ other (C34); a person sees it when they see the rest (§1.1).
 and as before to everybody else. They are addresses, not things: nothing in them can be asked
 about by id. One function in `server/auth.rs` (`whole_home_only`) lists them, and the table that
 says who may ask for what has a case for each.
+
+One address is not closed, on purpose for now: the Automations page asks its engine what a time
+trigger will do (`clock.next`, `clock.holds`), and the answer carries the home's time zone and
+today's sun times, from which a careful person could work out roughly where the home is. A person
+with only some rooms is told them too. Closing it means the page previewing a time without them;
+it is left for a follow-up and listed in the pull request.
 
 ### 2.4 Nothing is let through by being forgotten
 

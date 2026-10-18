@@ -15,6 +15,10 @@ use irori_types::{EntityId, EntityState};
 /// they have it.
 #[derive(Debug, Clone)]
 pub struct Standing {
+    /// What the core said, and which reading of the home it was applied to: while neither
+    /// changes the answer is the same, and a page that polls does not rebuild it.
+    pub told: PersonReach,
+    pub home_was: u64,
     pub here: bool,
     pub name: String,
     pub owner: bool,
@@ -27,7 +31,8 @@ pub struct Standing {
 
 impl Standing {
     /// What the core said of a person, applied to the home as it is.
-    pub fn of(reach: PersonReach, home: &MapRegistry) -> Self {
+    pub fn of(reach: PersonReach, home: &MapRegistry, home_was: u64) -> Self {
+        let told = reach.clone();
         let seen = reach
             .entities
             .map(|ids| ids.into_iter().collect::<BTreeSet<_>>());
@@ -45,6 +50,8 @@ impl Standing {
             },
         };
         Self {
+            told,
+            home_was,
             here: reach.here,
             name: reach.name,
             owner: reach.owner,

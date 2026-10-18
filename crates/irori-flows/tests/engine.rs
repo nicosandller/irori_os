@@ -708,6 +708,39 @@ fn queued_runs_take_their_turn() {
     );
 }
 
+/// A test a person started waits its turn in a queued flow; when it starts, the run still says
+/// who asked for it.
+#[test]
+fn a_test_that_waited_its_turn_still_says_who_started_it() {
+    let mut queued = hallway();
+    queued.mode =
+        serde_json::from_value(serde_json::json!({ "type": "queued", "max": 1 })).expect("a mode");
+    let flow_id = queued.id.clone();
+    let mut engine = engine_with(queued);
+    change(&mut engine, flag(OCCUPANCY, true, 1));
+    change(&mut engine, flag(MOTION, true, 10));
+    let leo: irori_types::UserId = "leo".parse().expect("a user id");
+    let motion = irori_flow_types::NodeId::try_from("motion").expect("a node id");
+    engine
+        .fire_by(
+            &flow_id,
+            &motion,
+            Some(irori_flow_types::trace::TestKind::Live),
+            Some(leo.clone()),
+            at(11),
+        )
+        .expect("it waits");
+    let _ = effects(&mut engine, at(14));
+    engine.advance(at(14 + 600));
+    let _ = effects(&mut engine, at(614));
+    let started: Vec<_> = engine
+        .active(None)
+        .into_iter()
+        .map(|run| run.record.started_by)
+        .collect();
+    assert_eq!(started, [Some(leo)], "the queued test is the one running");
+}
+
 #[test]
 fn a_join_that_timed_out_doesnt_go_on_again_when_the_late_path_arrives() {
     let late = flow(serde_json::json!({
