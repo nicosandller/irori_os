@@ -214,11 +214,9 @@ fn App() -> impl IntoView {
                 if let Ok(health) = api::fetch_health().await {
                     live.health.set(Some(health));
                 }
-                // The assistant reads the home as a whole, so it answers only people who have
-                // all of it (`docs/specs/access.md` §2).
-                let limited =
-                    session.with_untracked(|s| s.as_ref().is_some_and(api::Session::limited));
-                if !limited && let Ok(status) = api::fetch_assistant().await {
+                // Whoever is asking is answered from what they have of the home, so everybody is
+                // told whether it can (`docs/specs/access.md` §2).
+                if let Ok(status) = api::fetch_assistant().await {
                     assistant.set(Some(status));
                 }
             }
@@ -400,6 +398,8 @@ const IGNITE: Duration = Duration::from_millis(1700);
 #[component]
 fn Mark() -> impl IntoView {
     let Assistant(assistant) = expect_context::<Assistant>();
+    let Session(session) = expect_context::<Session>();
+    let owner = move || session.with(|s| s.as_ref().is_none_or(|s| s.owner));
     let ready = Memo::new(move |_| assistant.get().map(|status| status.ready));
     let igniting = RwSignal::new(false);
     // Only a change seen happening catches light: a page that opens with a model already
@@ -454,7 +454,7 @@ fn Mark() -> impl IntoView {
                     class="mark"
                     class:igniting=move || igniting.get()
                     title=move || {
-                        if igniting.get() {
+                        if igniting.get() || !owner() {
                             "IroriOS"
                         } else {
                             "IroriOS. Its assistant is set up in Settings."

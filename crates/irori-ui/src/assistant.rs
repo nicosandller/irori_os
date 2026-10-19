@@ -502,14 +502,17 @@ pub fn ask(
 
 /// Opens the chat about `scope` under itself when a model is ready, and Settings otherwise.
 ///
-/// Not there at all for a person who has only some rooms: the assistant reads the home as a
-/// whole to answer, so it answers people who have all of it (`docs/specs/access.md` §2).
+/// Where no model is ready it is only for an owner, who is led to set one up: anybody else
+/// would be sent to a page they can't use. A person with only some rooms is answered from
+/// those rooms (`docs/specs/access.md` §2).
 #[component]
 pub fn Ask(scope: String, title: String) -> impl IntoView {
     let crate::Session(session) = expect_context::<crate::Session>();
-    let limited = move || session.with(|s| s.as_ref().is_some_and(crate::api::Session::limited));
+    let assistant = expect_context::<Assistant>();
+    let owner = move || session.with(|s| s.as_ref().is_none_or(|s| s.owner));
+    let ready = move || assistant.0.get().is_some_and(|status| status.ready);
     move || {
-        (!limited()).then(|| {
+        (ready() || owner()).then(|| {
             view! { <AskButton scope=scope.clone() title=title.clone() /> }
         })
     }
@@ -613,6 +616,8 @@ pub fn Popover() -> impl IntoView {
 #[component]
 pub fn Page() -> impl IntoView {
     let assistant = expect_context::<Assistant>();
+    let crate::Session(session) = expect_context::<crate::Session>();
+    let owner = move || session.with(|s| s.as_ref().is_none_or(|s| s.owner));
     view! {
         <div class="page-head">
             <h1>"Assistant"</h1>
@@ -621,8 +626,10 @@ pub fn Page() -> impl IntoView {
             assistant.0.get().filter(|status| !status.ready).map(|status| view! {
                 <p class="why">
                     {status.detail}
-                    " "
-                    <a href="/settings#assistant">"Set it up in Settings."</a>
+                    {owner().then(|| view! {
+                        " "
+                        <a href="/settings#assistant">"Set it up in Settings."</a>
+                    })}
                 </p>
             })
         }}

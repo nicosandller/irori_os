@@ -81,7 +81,7 @@ CLI, the assistant and the app bridge all ask it.
 | A command | Only to an entity in their rooms (§2.1). |
 | Extensions, devices waiting to be added, updates waiting to install, extension pages | None. What the extensions are doing and what they have found is the owner's. |
 | Other people | A person is told about themselves only. |
-| The assistant | **Not until it is scoped.** It reads the home as a whole to answer, so for now it answers people who have the whole home only (403 for the rest). Its chats are shared among them as they are today. |
+| The assistant | Asked everywhere they can ask it (the sidebar mark, the Ask buttons on a device, an automation and the floor plan), and **answered from their rooms** (§2.4). |
 | Where the home is, what can be installed, the machine, how history is kept | 403: these describe the home as a whole, not a thing in a room (§2.3). |
 | Setup: the logs, tokens, backups, anything that writes | The owner's, as before (§2.2). |
 
@@ -117,8 +117,8 @@ other (C34); a person sees it when they see the rest (§1.1).
 ### 2.3 Addresses that are for the whole home
 
 `GET /api/place`, `/api/catalog`, `/api/system`, `/api/system/usage`, `/api/serial-ports`,
-`/api/recorder` and the assistant's addresses answer **403** to a person who has only some rooms
-and as before to everybody else. They are addresses, not things: nothing in them can be asked
+and `/api/recorder` answer **403** to a person who has only some rooms and as before to
+everybody else. They are addresses, not things: nothing in them can be asked
 about by id. One function in `server/auth.rs` (`whole_home_only`) lists them, and the table that
 says who may ask for what has a case for each.
 
@@ -128,7 +128,36 @@ today's sun times, from which a careful person could work out roughly where the 
 with only some rooms is told them too. Closing it means the page previewing a time without them;
 it is left for a follow-up and listed in the pull request.
 
-### 2.4 Nothing is let through by being forgotten
+### 2.4 The assistant
+
+A person with only some rooms may ask the assistant anywhere a regular user may, and what it
+knows is what they have. One `Reach` rides on the turn, and everything the model is given or finds
+goes through it, in one place each:
+
+- **The picture it starts from** (devices, rooms, floors, the floor plan, what each entity is
+  reporting) is the list of §2 for them. A device, an entity or a floor outside their rooms is
+  not in it, and a tool asked for one answers as it would for one that was never there ("there's
+  no device …", "no changes in the last 24 hours").
+- **Automations** are the ones the Automations engine shows them: their own (§4), checked against
+  what they reach. The model suggests a flow the same way, and a suggestion is only a draft on the
+  canvas: saving it is held to §4.
+- **Not offered, and refused if asked for anyway**, to anybody who is not an owner (a regular
+  user with the whole home included): the logs (they hold the sign-in lines), Settings, the helper
+  builder and its tools, and drawing on the floor plan or adding floors and rooms. The
+  conversations about Settings and the helper builder are the owner's; to anybody else they don't
+  exist.
+- **What is said is theirs.** A person with only some rooms has chats of their own, kept apart from
+  the ones everybody with the whole home shares, since what the model said in them was drawn from
+  their rooms alone. They are forgotten when the person's rooms change or the person is removed.
+  Clearing a chat clears that person's.
+- **How it is set up is the owner's.** Anybody else is told whether a model is ready and whether
+  what they ask leaves the house; not which model, where it is, the key, or the standing
+  instructions. Those, and installing or changing a model, stay behind setup (§2.2).
+
+What the model is told is not a way round anything: it reads only the lists above, and the leak
+test asks it, as a person with a room, for a device in the cellar by every route it has.
+
+### 2.5 Nothing is let through by being forgotten
 
 Every address under `/api/` is listed, with what a person who has only some rooms gets from it, in
 a table in the server's tests. The test reads the router's source for its addresses, so one added

@@ -417,6 +417,7 @@ pub async fn edit_user(
             // Closed once the change is written, so the page that reconnects is served the new.
             if ask.areas.is_some() || ask.role.is_some() {
                 state.0.sockets.close_user_sessions(&id, None);
+                forget_chats(&state, &id);
             }
             if changes_password {
                 // Every other screen signed in as them is signed out; this one stays.
@@ -480,11 +481,24 @@ pub async fn remove_user(
         Ok(()) => {
             state.0.auth.end_all(&id, None);
             state.0.sockets.close_user_sessions(&id, None);
+            forget_chats(&state, &id);
             tracing::info!(user = %id, "somebody was removed from the home");
             Json(list(&state).await).into_response()
         }
         Err(error) => edit_failed(error),
     }
+}
+
+/// What the assistant said to a person with rooms was drawn from the rooms they had then, so it
+/// goes when their rooms change, or they do. Only what is kept for them alone: the chats
+/// everybody with the whole home shares are not theirs to take away.
+fn forget_chats(state: &AppState, id: &UserId) {
+    #[cfg(feature = "assist")]
+    if let Err(error) = crate::assistant::forget_conversations_of(&state.0.db.path, id) {
+        tracing::warn!(user = %id, "couldn't forget a person's chats: {error}");
+    }
+    #[cfg(not(feature = "assist"))]
+    let _ = (state, id);
 }
 
 /// Whether `id` can leave, in the same words the write would use. Nothing is changed.

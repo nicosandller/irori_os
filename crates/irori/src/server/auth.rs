@@ -198,13 +198,13 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
             Needs::Use
         };
     }
-    // Asking the assistant, and stopping an answer. Setting it up is running the home.
-    let asking = rest == "assistant/turns"
-        || (rest.starts_with("assistant/turns/") && rest.ends_with("/stop"));
-    if asking {
-        return Needs::Whole;
-    }
     let using = rest == "command"
+        // Asking the assistant, stopping an answer and clearing a chat: whoever asks is
+        // answered from what they have of the home, and the chat is theirs. Setting it up is
+        // running the home.
+        || rest == "assistant/turns"
+        || (rest.starts_with("assistant/turns/") && rest.ends_with("/stop"))
+        || (method == Method::DELETE && rest.starts_with("assistant/transcript/"))
         // A person's own name and password; the handler refuses anybody else's.
         || (method == Method::PATCH && rest.starts_with("users/"))
         // A question to an extension's engine. A regular user asks only one that limits what
@@ -214,13 +214,13 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
 }
 
 /// The reads that describe the whole home or the machine rather than a thing in a room: where
-/// the home is, what can be installed, how the machine is doing, how history is kept, and the
-/// assistant, which reads the home as a whole to answer (`docs/specs/access.md` §2).
+/// the home is, what can be installed, how the machine is doing and how history is kept
+/// (`docs/specs/access.md` §2). The assistant is not here: it answers from what the person has.
 fn whole_home_only(rest: &str) -> bool {
     matches!(
         rest,
-        "place" | "catalog" | "system" | "system/usage" | "serial-ports" | "recorder" | "assistant"
-    ) || rest.starts_with("assistant/")
+        "place" | "catalog" | "system" | "system/usage" | "serial-ports" | "recorder"
+    )
 }
 
 /// A GET that reads the home, as opposed to one that runs it.
@@ -1140,9 +1140,10 @@ mod tests {
             (Method::GET, "/api/place", Whole),
             (Method::GET, "/api/catalog", Whole),
             (Method::GET, "/api/serial-ports", Whole),
-            (Method::GET, "/api/assistant", Whole),
-            (Method::GET, "/api/assistant/transcript/general", Whole),
-            (Method::GET, "/api/assistant/turns/general", Whole),
+            (Method::GET, "/api/assistant", Use),
+            (Method::GET, "/api/assistant/transcript/general", Use),
+            (Method::GET, "/api/assistant/turns/general", Use),
+            (Method::DELETE, "/api/assistant/transcript/general", Use),
             (Method::GET, "/api/history/light.hall", Use),
             (Method::GET, "/api/history/sensor.temp/summary", Use),
             (Method::GET, "/api/recorder", Whole),
@@ -1159,8 +1160,8 @@ mod tests {
             (Method::GET, "/api/assistant/log", Run),
             (Method::GET, "/api/extensions/demo/log", Run),
             (Method::POST, "/api/command", Use),
-            (Method::POST, "/api/assistant/turns", Whole),
-            (Method::POST, "/api/assistant/turns/general/stop", Whole),
+            (Method::POST, "/api/assistant/turns", Use),
+            (Method::POST, "/api/assistant/turns/general/stop", Use),
             (Method::PATCH, "/api/users/nico", Use),
             (Method::POST, "/api/users", Run),
             (Method::DELETE, "/api/users/nico", Run),
