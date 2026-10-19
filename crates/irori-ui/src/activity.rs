@@ -47,7 +47,9 @@ pub fn what(entry: &AuditEntry) -> String {
         // in their rooms`); the reason is the line under the sentence, not part of it.
         "command" => format!(
             "sent {} to {target}",
-            detail.split_once(": ").map_or(detail, |(command, _)| command)
+            detail
+                .split_once(": ")
+                .map_or(detail, |(command, _)| command)
         ),
         "place_changed" => "changed where the home is".to_owned(),
         "history_kept_changed" => "changed how long history is kept".to_owned(),

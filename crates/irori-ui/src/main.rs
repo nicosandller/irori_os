@@ -509,7 +509,7 @@ fn AppLinks() -> impl IntoView {
     // Asked when they are known to be one, and again whenever the home is read again, since a
     // page can start or stop.
     Effect::new(move |_| {
-        let _ = live.home.track();
+        live.home.track();
         if session.with(|s| s.as_ref().is_some_and(|s| !s.owner)) {
             spawn_local(async move {
                 if let Ok(entries) = api::fetch_apps().await {
