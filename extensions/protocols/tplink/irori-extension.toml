@@ -1,0 +1,19 @@
+[extension]
+id = "tplink"
+name = "TP-Link Tapo and Kasa"
+version = "0.1.0"
+irori = ">=1.4.0"
+description = "TP-Link Tapo and Kasa plugs and power strips on the local network: each outlet, and power, voltage, current and energy where the device meters."
+config_schema = "config.schema.json"
+
+[[contributes.protocol]]
+iot_class = "local_polling"
+entity_kinds = ["switch", "sensor"]
+run = { command = "bin/irori-ext-tplink" }
+
+# Discovery (UDP 20002) and the device's own HTTP API (port 80) stay on the local network. The
+# TP-Link account in the settings is only used to derive the key each device checks: it is never
+# sent anywhere, and nothing talks to TP-Link's cloud. A known host is checked when the settings
+# are read: only a local address is accepted.
+[permissions]
+lan = true

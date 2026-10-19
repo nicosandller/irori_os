@@ -18,6 +18,7 @@ members = [
     "extensions/protocols/cast",
     "extensions/protocols/esphome",
     "extensions/protocols/mqtt",
+    "extensions/protocols/tplink",
     "extensions/protocols/zigbee",
     "extras/irori-assist",
     "xtask",
@@ -54,6 +55,7 @@ irori-protocol-demo = { path = "extensions/demo" }
 irori-protocol-cast = { path = "extensions/protocols/cast" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
 irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
+irori-protocol-tplink = { path = "extensions/protocols/tplink" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
