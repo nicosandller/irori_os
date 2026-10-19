@@ -83,6 +83,9 @@ struct Inner {
     /// The questions the assistant is in the middle of answering, by conversation.
     #[cfg(feature = "assist")]
     turns: crate::assistant::Turns,
+    /// Whether a model is ready, as anybody who is not an owner is told.
+    #[cfg(feature = "assist")]
+    readiness: crate::assistant::Readiness,
 }
 
 impl AppState {
@@ -116,6 +119,8 @@ impl AppState {
             last_restart: Mutex::new(None),
             #[cfg(feature = "assist")]
             turns: crate::assistant::Turns::default(),
+            #[cfg(feature = "assist")]
+            readiness: crate::assistant::Readiness::default(),
         }))
     }
 }
@@ -6800,7 +6805,7 @@ mod tests {
                             history: &server.history,
                             db: &db.path,
                             log: &server.log,
-                            owner: false,
+                            owner: true,
                             user: None,
                             reach: irori_core::Reach::Whole,
                         },
@@ -9790,6 +9795,7 @@ mod tests {
             lamp_entities,
             hidden,
             camera_device,
+            rooms,
             ..
         } = house_with_a_vault().await?;
         let call = |method: &str, path: &str, body: Option<serde_json::Value>, cookie: &str| {
@@ -9974,14 +9980,28 @@ mod tests {
         let mias = transcript(mia.clone()).await?;
         assert!(leos.contains("What is on?"));
         assert!(owners.contains("What is on?"), "the owner's own chat");
-        assert_eq!(
-            mias, owners,
-            "Mia has the whole home and shares the owner's chat"
-        );
         assert!(
             owners.contains("read_settings") && !leos.contains("read_settings"),
             "Leo's chat is not the owner's"
         );
+        // Mia has the whole home and is not an owner: what the model told the owner, from
+        // Settings and the logs, is not hers to read, clear or stop. Her chat is her own.
+        assert!(mias.contains("read_logs"), "Mia's own chat: {mias}");
+        assert!(
+            !mias.contains("read_settings"),
+            "the owner's chat is not Mia's"
+        );
+        let (status, _, _) =
+            call("DELETE", "/api/assistant/transcript/general", None, &mia).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(transcript(mia.clone()).await?, "[]");
+        assert_eq!(
+            transcript(owner.clone()).await?,
+            owners,
+            "clearing Mia's chat left the owner's"
+        );
+        let (_, mias_view, _) = call("GET", "/api/assistant", None, &mia).await?;
+        assert!(mias_view["base_url"].as_str().is_none_or(str::is_empty));
         let (status, _, _) =
             call("DELETE", "/api/assistant/transcript/general", None, &leo).await?;
         assert_eq!(status, StatusCode::NO_CONTENT);
@@ -10023,10 +10043,41 @@ mod tests {
         let (_, owners_view, _) = call("GET", "/api/assistant", None, &owner).await?;
         assert_eq!(owners_view["base_url"], base);
 
-        // Their rooms changing forgets what was said about the old ones.
+        // What was said about a room is forgotten once it is not theirs, however that came
+        // about: here the owner moves the lamp out of the hall. Gaining a room loses nothing.
         let (_, _, _) = call("POST", "/api/assistant/turns/general/stop", None, &leo).await?;
         asked(&app, &leo, "general", "Again?").await?;
         assert!(transcript(leo.clone()).await?.contains("Again?"));
+        let move_to = |device: String, room: String| {
+            let call = &call;
+            let owner = owner.clone();
+            async move {
+                let (status, why, _) = call(
+                    "PATCH",
+                    &format!("/api/devices/{device}"),
+                    Some(serde_json::json!({ "area": room })),
+                    &owner,
+                )
+                .await?;
+                assert_eq!(status, StatusCode::OK, "{why}");
+                anyhow::Ok(())
+            }
+        };
+        move_to(LAMP.to_owned(), rooms[1].clone()).await?;
+        assert_eq!(
+            transcript(leo.clone()).await?,
+            "[]",
+            "the lamp left the hall"
+        );
+        move_to(LAMP.to_owned(), rooms[0].clone()).await?;
+        asked(&app, &leo, "general", "After?").await?;
+        assert!(transcript(leo.clone()).await?.contains("After?"));
+        move_to(camera_device.clone(), rooms[0].clone()).await?;
+        assert!(
+            transcript(leo.clone()).await?.contains("After?"),
+            "a room gained takes nothing away"
+        );
+        // Changing the person's rooms forgets them at once.
         let (status, why, _) = call(
             "PATCH",
             "/api/users/leo",

@@ -106,7 +106,7 @@ const LOG_ANSWER: usize = 4_000;
 static LOCAL_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// What the Settings page and the sidebar need. The key itself is never in here.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub ready: bool,
     pub mode: Mode,
@@ -183,7 +183,7 @@ impl Status {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Pulled {
     pub name: String,
     pub size: u64,
@@ -327,11 +327,10 @@ impl Env<'_> {
         self.reach.floorplan(self.core.floorplan())
     }
 
-    /// Where this person's conversation in `scope` is kept. People who have the whole home
-    /// share theirs; a person with only some rooms has their own, since what the model said in
-    /// it was drawn from their rooms alone.
+    /// Where this person's conversation in `scope` is kept: owners share theirs, and anybody
+    /// else has their own.
     fn memory(&self, scope: &str) -> String {
-        remembered_in(scope, !self.reach.is_whole(), self.user.as_ref())
+        remembered_in(scope, !self.owner, self.user.as_ref())
     }
 
     /// Who the Automations extension is told is asking: the flows it shows are the asker's.
@@ -587,12 +586,13 @@ async fn room_for(data_dir: &Path, tag: &str, had: u64, asked: u64) -> Result<()
     }
 }
 
-/// Where the conversation `scope` is kept for somebody: the one everybody with the whole home
-/// shares, or, for a person with only some rooms (`limited`), their own, so that what was said
-/// about their rooms is read by nobody else. `scope` is checked by [`check_scope`] first; a
-/// scope with a `#` in it never passes, so a key can't be asked for by its name.
-pub fn remembered_in(scope: &str, limited: bool, user: Option<&irori_types::UserId>) -> String {
-    if limited {
+/// Where the conversation `scope` is kept for somebody: the one the owners share, or, for
+/// anybody who is not an owner (`own`), theirs alone. What the model says to an owner is drawn
+/// from Settings and the logs, and what it says to a person with some rooms from those rooms, so
+/// neither is for anybody else to read, clear or stop. `scope` is checked by [`check_scope`]
+/// first; a scope with a `#` in it never passes, so a key can't be asked for by its name.
+pub fn remembered_in(scope: &str, own: bool, user: Option<&irori_types::UserId>) -> String {
+    if own {
         format!("{scope}#{}", user.map_or("", |user| user.as_str()))
     } else {
         scope.to_owned()
@@ -604,10 +604,14 @@ fn scope_of(key: &str) -> &str {
     key.split_once('#').map_or(key, |(scope, _)| scope)
 }
 
-/// Forgets every conversation a person with rooms had: what they were told came from the
-/// rooms they had then.
+/// Forgets every conversation a person had, and what is known of what they could reach.
 pub fn forget_conversations_of(db: &Path, user: &irori_types::UserId) -> Result<(), String> {
     let conn = open_db(db)?;
+    conn.execute(
+        "DELETE FROM assistant_reach WHERE user = ?1",
+        [user.as_str()],
+    )
+    .map_err(|error| error.to_string())?;
     let suffix = format!("#{user}");
     for table in ["assistant_message", "assistant_usage"] {
         conn.execute(
@@ -616,6 +620,58 @@ pub fn forget_conversations_of(db: &Path, user: &irori_types::UserId) -> Result<
         )
         .map_err(|error| error.to_string())?;
     }
+    Ok(())
+}
+
+/// Keeps a person's chats only while everything they were told in them is still theirs. What
+/// they could reach is written down with the chats; when anything of it is gone (a room taken
+/// away, a device moved out, the whole home become some of it) the chats go, whichever way that
+/// happened. A person who only gains reach keeps theirs: what was said is still within it.
+pub fn keep_to_reach(
+    db: &Path,
+    user: &irori_types::UserId,
+    reach: &irori_core::Reach,
+) -> Result<(), String> {
+    let now: Option<std::collections::BTreeSet<String>> = reach
+        .entity_ids()
+        .map(|ids| ids.iter().map(ToString::to_string).collect());
+    let current = match &now {
+        None => "*".to_owned(),
+        Some(ids) => ids.iter().cloned().collect::<Vec<_>>().join("\n"),
+    };
+    use rusqlite::OptionalExtension as _;
+    let conn = open_db(db)?;
+    let before: Option<String> = conn
+        .query_row(
+            "SELECT entities FROM assistant_reach WHERE user = ?1",
+            [user.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if before.as_deref() == Some(current.as_str()) {
+        return Ok(());
+    }
+    let lost = match (&before, &now) {
+        // Nothing is known of what they could reach, so nothing can be said to be theirs still.
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(before), Some(now)) => {
+            before == "*"
+                || before
+                    .split('\n')
+                    .any(|id| !id.is_empty() && !now.contains(id))
+        }
+    };
+    if lost {
+        forget_conversations_of(db, user)?;
+    }
+    conn.execute(
+        "INSERT INTO assistant_reach (user, entities) VALUES (?1, ?2)
+         ON CONFLICT (user) DO UPDATE SET entities = excluded.entities",
+        [user.as_str(), current.as_str()],
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -1049,6 +1105,13 @@ async fn answer(
         }
     };
     let memory = env.memory(&scope);
+    if !env.owner
+        && let Some(user) = &env.user
+        && let Err(error) = keep_to_reach(env.db, user, &env.reach)
+    {
+        let _ = tx.send(ChatEvent::Error(error)).await;
+        return;
+    }
     let turns = match load_turns(env.db, &memory) {
         Ok(turns) => turns,
         Err(error) => {
@@ -3421,6 +3484,10 @@ fn open_db(db: &Path) -> Result<rusqlite::Connection, String> {
             created_at TEXT NOT NULL,
             PRIMARY KEY (scope, seq)
         );
+        CREATE TABLE IF NOT EXISTS assistant_reach (
+            user TEXT PRIMARY KEY,
+            entities TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS assistant_usage (
             scope TEXT PRIMARY KEY,
             used INTEGER NOT NULL,
@@ -3577,10 +3644,17 @@ fn trim_global(tx: &rusqlite::Transaction<'_>) -> Result<(), String> {
         if total <= irori_assist::LIMIT_GLOBAL_BYTES as i64 {
             return Ok(());
         }
+        // From the conversation that holds the most, so that one long chat is cut before it
+        // pushes out anybody else's.
         let removed = tx
             .execute(
                 "DELETE FROM assistant_message WHERE rowid = (
-                    SELECT rowid FROM assistant_message ORDER BY created_at, scope, seq LIMIT 1
+                    SELECT rowid FROM assistant_message
+                    WHERE scope = (
+                        SELECT scope FROM assistant_message
+                        GROUP BY scope ORDER BY SUM(LENGTH(body)) DESC, scope LIMIT 1
+                    )
+                    ORDER BY created_at, seq LIMIT 1
                  )",
                 [],
             )
@@ -3681,6 +3755,37 @@ impl<'a> Turn<'a> {
 pub async fn read_status(turn: Turn<'_>, data_dir: &Path) -> Status {
     let env = turn.env();
     status(&env, data_dir).await
+}
+
+/// What anybody who is not an owner is told, kept for a few seconds: working it out asks the
+/// model runner what it has, and every browser signed in asks every few seconds.
+#[derive(Debug, Default)]
+pub struct Readiness(Mutex<Option<(Instant, Status)>>);
+
+impl Readiness {
+    const FRESH: Duration = Duration::from_secs(5);
+
+    pub async fn of(&self, turn: Turn<'_>, data_dir: &Path) -> Status {
+        let kept = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < Self::FRESH)
+            .map(|(_, status)| status.clone());
+        if let Some(status) = kept {
+            return status;
+        }
+        let status = read_status(turn, data_dir).await.for_a_person();
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((Instant::now(), status.clone()));
+        status
+    }
+
+    /// The owner changed how it is set up: the next question is answered afresh.
+    pub fn forget(&self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 /// `plan` is the floorplan the person is editing, when they asked from the Floorplan page with
@@ -4047,6 +4152,31 @@ mod tests {
         store(&db, "two", "second")?;
         let bodies: Vec<String> = kept(&db)?.into_iter().map(|turn| turn.body).collect();
         assert_eq!(bodies, ["one", "first", "two", "second"]);
+        Ok(())
+    }
+
+    #[test]
+    fn one_long_chat_is_cut_before_it_pushes_out_somebody_elses() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("irori.db");
+        store_turns(&db, "general#leo", exchange("hello", "hi"), None)
+            .map_err(anyhow::Error::msg)?;
+        // Past the cap for everything kept, by chats that were all said after Leo's.
+        let big = "x".repeat(irori_assist::LIMIT_BYTES / 2 - 8);
+        for who in 0..40 {
+            store_turns(&db, &format!("general#p{who}"), exchange(&big, &big), None)
+                .map_err(anyhow::Error::msg)?;
+        }
+        let left: Vec<String> = load_turns(&db, "general#leo")
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .map(|turn| turn.body)
+            .collect();
+        assert_eq!(
+            left,
+            ["hello", "hi"],
+            "the short chat is not the oldest to go"
+        );
         Ok(())
     }
 

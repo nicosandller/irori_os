@@ -28,29 +28,29 @@ pub async fn get(
     State(state): State<AppState>,
     axum::Extension(who): axum::Extension<Actor>,
 ) -> Json<assistant::Status> {
-    let status = assistant::read_status(turn(&state), data_dir(&state)).await;
-    Json(if who.owner {
-        status
-    } else {
-        status.for_a_person()
-    })
+    if who.owner {
+        return Json(assistant::read_status(turn(&state), data_dir(&state)).await);
+    }
+    Json(state.0.readiness.of(turn(&state), data_dir(&state)).await)
 }
 
 /// Where `scope` is kept for whoever is asking, or why they have no such conversation. Settings
-/// and the helper builder are how the home is set up, and belong to an owner.
-fn conversation(who: &Actor, reach: &irori_core::Reach, scope: &str) -> Result<String, String> {
+/// and the helper builder are how the home is set up, and belong to an owner. Anybody else's
+/// chats are their own.
+fn conversation(who: &Actor, scope: &str) -> Result<String, String> {
     assistant::check_scope(scope)?;
     if !who.owner && matches!(scope, "settings" | "helpers") {
         return Err("that conversation doesn't exist".to_owned());
     }
     Ok(assistant::remembered_in(
         scope,
-        !reach.is_whole(),
+        !who.owner,
         who.user.as_ref().map(|user| &user.id),
     ))
 }
 
 pub async fn put(State(state): State<AppState>, Json(body): Json<serde_json::Value>) -> Response {
+    state.0.readiness.forget();
     match assistant::save(&state.0.config, &state.0.core, data_dir(&state), &body).await {
         Ok(_) => Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response(),
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
@@ -91,7 +91,7 @@ pub async fn turns(
     axum::Extension(reach): axum::Extension<irori_core::Reach>,
     Json(ask): Json<Ask>,
 ) -> impl IntoResponse {
-    let pending = conversation(&who, &reach, &ask.scope)
+    let pending = conversation(&who, &ask.scope)
         .and_then(|key| Ok((state.0.turns.begin(&key, &ask.message)?, key)));
     let (pending, key) = match pending {
         Ok(begun) => begun,
@@ -132,10 +132,9 @@ pub async fn turns(
 pub async fn follow(
     State(state): State<AppState>,
     axum::Extension(who): axum::Extension<Actor>,
-    axum::Extension(reach): axum::Extension<irori_core::Reach>,
     Path(scope): Path<String>,
 ) -> impl IntoResponse {
-    let pending = conversation(&who, &reach, &scope)
+    let pending = conversation(&who, &scope)
         .ok()
         .and_then(|key| state.0.turns.pending(&key));
     match pending {
@@ -152,10 +151,9 @@ pub async fn follow(
 pub async fn stop(
     State(state): State<AppState>,
     axum::Extension(who): axum::Extension<Actor>,
-    axum::Extension(reach): axum::Extension<irori_core::Reach>,
     Path(scope): Path<String>,
 ) -> StatusCode {
-    if let Ok(key) = conversation(&who, &reach, &scope) {
+    if let Ok(key) = conversation(&who, &scope) {
         state.0.turns.stop(&key);
     }
     StatusCode::NO_CONTENT
@@ -187,6 +185,7 @@ pub async fn install(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Deletes one downloaded model. A body, not a path: a tag has colons and slashes in it.
 pub async fn forget(State(state): State<AppState>, Json(body): Json<Pull>) -> Response {
+    state.0.readiness.forget();
     match assistant::forget(&state.0.config, &body.tag).await {
         Ok(()) => {
             Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response()
@@ -204,6 +203,7 @@ pub async fn unload(State(state): State<AppState>, Json(body): Json<Pull>) -> Re
 }
 
 async fn hold(state: &AppState, tag: &str, load: bool) -> Response {
+    state.0.readiness.forget();
     // Loading a model is choosing it: it becomes the one in use, in place of a cloud model
     // or another local one. Unloading leaves the choice alone.
     let done = if load {
@@ -224,6 +224,7 @@ pub async fn model_log(State(state): State<AppState>) -> Response {
 }
 
 pub async fn uninstall(State(state): State<AppState>) -> Response {
+    state.0.readiness.forget();
     match assistant::uninstall(&state.0.config, data_dir(&state)).await {
         Ok(()) => {
             Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response()
@@ -238,10 +239,17 @@ pub async fn transcript(
     axum::Extension(reach): axum::Extension<irori_core::Reach>,
     Path(scope): Path<String>,
 ) -> Response {
-    let key = match conversation(&who, &reach, &scope) {
+    let key = match conversation(&who, &scope) {
         Ok(key) => key,
         Err(error) => return refused(StatusCode::BAD_REQUEST, error),
     };
+    // What they were told in these chats may no longer be theirs to read.
+    if !who.owner
+        && let Some(user) = &who.user
+        && let Err(error) = assistant::keep_to_reach(&state.0.db.path, &user.id, &reach)
+    {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
     match assistant::transcript(&state.0.db.path, &key) {
         Ok((turns, context)) => {
             let turns: Vec<Stored> = turns
@@ -262,10 +270,9 @@ pub async fn transcript(
 pub async fn clear(
     State(state): State<AppState>,
     axum::Extension(who): axum::Extension<Actor>,
-    axum::Extension(reach): axum::Extension<irori_core::Reach>,
     Path(scope): Path<String>,
 ) -> Response {
-    let key = match conversation(&who, &reach, &scope) {
+    let key = match conversation(&who, &scope) {
         Ok(key) => key,
         Err(error) => return refused(StatusCode::BAD_REQUEST, error),
     };

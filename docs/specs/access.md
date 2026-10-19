@@ -146,10 +146,16 @@ goes through it, in one place each:
   builder and its tools, and drawing on the floor plan or adding floors and rooms. The
   conversations about Settings and the helper builder are the owner's; to anybody else they don't
   exist.
-- **What is said is theirs.** A person with only some rooms has chats of their own, kept apart from
-  the ones everybody with the whole home shares, since what the model said in them was drawn from
-  their rooms alone. They are forgotten when the person's rooms change or the person is removed.
-  Clearing a chat clears that person's.
+- **What is said is theirs.** Owners share their chats. Anybody else, a regular user with the
+  whole home included, has chats of their own: what the model says to an owner is drawn from
+  Settings and the logs, and to a person with rooms from those rooms, so neither is for anybody
+  else to read, clear or stop. A person's chats are forgotten when anything they were told in
+  them stops being theirs: their rooms edited, a room deleted, a device moved out of it, the
+  whole home narrowed to some of it, or the person removed. It is worked out from what they could
+  reach when they last asked, so it holds whichever way the change came, a hand edit of
+  `users.toml` included. Gaining a room loses nothing. (A person removed by hand-editing the file
+  leaves their chats behind until the same name is used again; whoever has that name gets them
+  only if they reach all of what they say.)
 - **How it is set up is the owner's.** Anybody else is told whether a model is ready and whether
   what they ask leaves the house; not which model, where it is, the key, or the standing
   instructions. Those, and installing or changing a model, stay behind setup (§2.2).
