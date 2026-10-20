@@ -888,6 +888,26 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
     if (parts.state && parts.history && parts.activity) || !current.exists() {
         // The backup's database is a finished file of its own (it was written by VACUUM INTO).
         fs::copy(staged, &out)?;
+        // A backup from before the activity log existed has no table for it, and must not take
+        // the home's own rows with it.
+        if current.exists() {
+            let conn = Connection::open(&out)?;
+            conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS other",
+                sql_path(current)?
+            ))?;
+            for table in crate::audit::TABLES {
+                let in_backup: i64 = conn.query_row(
+                    "SELECT count(*) FROM main.sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )?;
+                if in_backup == 0 {
+                    copy_table(&conn, table)?;
+                }
+            }
+            conn.execute_batch("DETACH DATABASE other")?;
+        }
     } else {
         // The base is the file that has the rest (everything but the two kinds below), which is
         // the backup's when the state is asked for. The tables of a kind the base is not the

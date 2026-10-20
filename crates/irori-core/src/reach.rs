@@ -111,6 +111,25 @@ impl Reach {
         }
     }
 
+    /// Everything they have (rooms, floors, devices, entities) as one list of tagged ids, or
+    /// `None` for the whole home. For whoever must notice that something stopped being theirs:
+    /// a room or a device with nothing in it is theirs too.
+    pub fn marks(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Whole => None,
+            Self::Rooms(rooms) => Some(
+                rooms
+                    .areas
+                    .iter()
+                    .map(|id| format!("a:{id}"))
+                    .chain(rooms.floors.iter().map(|id| format!("f:{id}")))
+                    .chain(rooms.devices.iter().map(|id| format!("d:{id}")))
+                    .chain(rooms.entities.iter().map(|id| format!("e:{id}")))
+                    .collect(),
+            ),
+        }
+    }
+
     pub fn sees_entity(&self, id: &EntityId) -> bool {
         match self {
             Self::Whole => true,

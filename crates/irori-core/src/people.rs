@@ -34,6 +34,16 @@ pub trait Notes: Send + Sync + fmt::Debug {
 /// What an engine may say through [`Notes`]: the log keeps no other kind of remark from one.
 pub const NOTE_ACTIONS: [&str; 2] = ["flow_turned_off", "flow_handed_over"];
 
+/// How the home decides which extensions it trusts to limit what a regular user can do.
+#[derive(Clone)]
+pub(crate) struct Trust(Arc<dyn Fn(&ExtensionId) -> bool + Send + Sync>);
+
+impl fmt::Debug for Trust {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Trust")
+    }
+}
+
 impl Core {
     /// Replaces who is in the home. Engines are told when anyone's rooms or role changed:
     /// what a flow of theirs may touch is not the same as it was.
@@ -49,16 +59,28 @@ impl Core {
     }
 
     /// The extensions whose page a regular user may open when their manifest says
-    /// `users = true`, until permissions are approved one by one (ROADMAP C26): the official
-    /// ones.
+    /// `users = true`, until permissions are approved one by one (ROADMAP C26): these.
     pub fn trust_with_people(&self, extensions: impl IntoIterator<Item = ExtensionId>) {
-        *write(&self.0.trusted_with_people) = extensions.into_iter().collect::<BTreeSet<_>>();
+        let trusted = extensions.into_iter().collect::<BTreeSet<_>>();
+        self.trust_with_people_if(move |id| trusted.contains(id));
+    }
+
+    /// The same, decided each time it is asked: by what is installed now, not by a name. The
+    /// official extensions are trusted because of where their package came from, and a package
+    /// from anywhere else that calls itself by the same id is not.
+    pub fn trust_with_people_if(
+        &self,
+        trusted: impl Fn(&ExtensionId) -> bool + Send + Sync + 'static,
+    ) {
+        *write(&self.0.trusted_with_people) = Some(Trust(Arc::new(trusted)));
     }
 
     /// Whether this extension's page is for regular users too, and may ask who can reach what:
     /// its manifest says it limits what they can do, and the home trusts it to.
     pub fn limits_people(&self, extension: &ExtensionId) -> bool {
-        read(&self.0.trusted_with_people).contains(extension)
+        read(&self.0.trusted_with_people)
+            .as_ref()
+            .is_some_and(|trusted| (trusted.0)(extension))
             && read(&self.0.extensions)
                 .get(extension)
                 .and_then(|overview| overview.info.as_ref())

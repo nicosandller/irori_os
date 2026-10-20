@@ -398,6 +398,34 @@ fn a_backup_from_before_the_log_leaves_the_log_there_is() -> anyhow::Result<()> 
     Ok(())
 }
 
+/// The same when everything is asked for, the log included: a backup with nothing to give it
+/// leaves the log as it is, and does not empty it.
+#[test]
+fn a_backup_from_before_the_log_leaves_it_there_even_when_everything_is_asked_for()
+-> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let staged = tempfile::tempdir()?;
+    let tree = staged.path().join("tree");
+    fs::create_dir_all(&tree)?;
+    unpack(&backup, None, &tree, room_at(&data))?;
+    let old = tree.join("data/irori.db");
+    Connection::open(&old)?.execute_batch("DROP TABLE IF EXISTS audit")?;
+    drop(crate::audit::Audit::open(
+        &data.join("irori.db"),
+        crate::audit::Keep::default(),
+    )?);
+    Connection::open(data.join("irori.db"))?.execute(
+        "INSERT INTO audit (at_ns, actor_kind, action, outcome) VALUES (?1, 'irori', 'kept', 'ok')",
+        [now()],
+    )?;
+    compose_database(&data.join("irori.db"), &old, Parts::ALL)?;
+    assert_eq!(sql(&data, "SELECT count(*) FROM audit")?, "1");
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
+    Ok(())
+}
+
 #[test]
 fn a_home_with_a_config_problem_is_still_backed_up_and_restored() -> anyhow::Result<()> {
     let tmp = home()?;

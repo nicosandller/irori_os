@@ -285,8 +285,10 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             core.use_history(Arc::new(history.clone()));
             core.use_notes(Arc::new(audit::EngineNotes(audit.clone())));
             // Until permissions are approved one by one (ROADMAP C26), only the official
-            // extensions are trusted to limit what a regular user can do with their page.
-            core.trust_with_people(packages::official().into_iter().map(|item| item.id));
+            // extensions are trusted to limit what a regular user can do with their page: the
+            // packages put there by an official install, not whatever has the same id.
+            let installed = packages::packages_dir(&data);
+            core.trust_with_people_if(move |id| packages::is_official_install(&installed, id));
             core.use_config_dir(config.clone());
             // Before the extensions, so a device that arrives in the first second already has
             // the name and the room its owner gave it, rather than appearing under its old name

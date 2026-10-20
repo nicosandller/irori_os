@@ -402,8 +402,9 @@ struct Shared {
     reaches: Mutex<ReachCache>,
     /// Who is in the home and what each can reach, as the one who reads `users.toml` said.
     people: RwLock<Vec<Person>>,
-    /// Extensions the home trusts to limit what a regular user can do with their page.
-    trusted_with_people: RwLock<BTreeSet<ExtensionId>>,
+    /// Which extensions the home trusts to limit what a regular user can do with their page.
+    /// Asked each time, so a package that is replaced stops being trusted at once.
+    trusted_with_people: RwLock<Option<people::Trust>>,
     /// Where an engine's remarks go, for the activity log.
     notes: RwLock<Option<Arc<dyn Notes>>>,
 }

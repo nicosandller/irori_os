@@ -768,7 +768,11 @@ async fn edit_area(
 
 /// Removes a room. Devices that were in it are left unplaced, and what was said about them is
 /// kept: making the room again puts them back.
-async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> Response {
+async fn remove_area(
+    State(state): State<AppState>,
+    Extension(trail): Extension<trail::Trail>,
+    Path(id): Path<AreaId>,
+) -> Response {
     if !state.0.core.areas().iter().any(|area| area.id == id) {
         return refused(StatusCode::BAD_REQUEST, format!("there's no room `{id}`"));
     }
@@ -785,7 +789,7 @@ async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> R
                     && rooms.contains(&id)
                 {
                     rooms.retain(|room| room != &id);
-                    had_it.push(user.id.clone());
+                    had_it.push((user.id.clone(), user.name.as_str().to_owned()));
                 }
             }
             Ok(had_it)
@@ -795,8 +799,13 @@ async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> R
         // Their open pages were shown the home with that room in it. Closed once the list is
         // written, so the page that reconnects is served the new one.
         Ok(had_it) => {
-            for user in &had_it {
+            for (user, _) in &had_it {
                 state.0.sockets.close_user_sessions(user, None);
+            }
+            // Said in the log, which an owner reads: whose rooms these were.
+            if !had_it.is_empty() {
+                let names: Vec<&str> = had_it.iter().map(|(_, name)| name.as_str()).collect();
+                trail.detail(format!("no longer a room of {}", names.join(", ")));
             }
         }
         Err(e) => return edit_failed(e),
@@ -10225,7 +10234,36 @@ mod tests {
             transcript(leo.clone()).await?.contains("After?"),
             "a room gained takes nothing away"
         );
+        // A room with nothing in it is theirs too: losing it forgets the chat all the same,
+        // though no entity or device went anywhere.
+        let (status, empty, _) = call(
+            "POST",
+            "/api/areas",
+            Some(serde_json::json!({ "name": "Zqempty" })),
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{empty}");
+        let empty = empty["id"].as_str().unwrap_or_default().to_owned();
+        let (status, why, _) = call(
+            "PATCH",
+            "/api/users/leo",
+            Some(serde_json::json!({ "areas": [rooms[0], empty] })),
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        asked(&app, &leo, "general", "Empty?").await?;
+        assert!(transcript(leo.clone()).await?.contains("Empty?"));
+        let (status, why, _) = call("DELETE", &format!("/api/areas/{empty}"), None, &owner).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{why}");
+        assert_eq!(
+            transcript(leo.clone()).await?,
+            "[]",
+            "an empty room is theirs, and was taken from them"
+        );
         // Changing the person's rooms forgets them at once.
+        asked(&app, &leo, "general", "Before?").await?;
         let (status, why, _) = call(
             "PATCH",
             "/api/users/leo",
@@ -10385,6 +10423,28 @@ mod tests {
         let mut feed = open_live(address, &[("cookie", leo.as_str())]).await?;
         let frames = drain(&mut feed).await?;
         assert!(frames[0].contains(&camera_device), "{}", frames[0]);
+
+        // His password is taken out of the file by hand: the feed that was opened with it ends,
+        // though nothing else about him changed.
+        let file = _server.config_dir().join("secrets.toml");
+        let text = std::fs::read_to_string(&file)?;
+        let without: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("leo ="))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_ne!(text, without, "Leo had a password in the file");
+        std::fs::write(&file, without)?;
+        _server.config.home().await;
+        let closed = tokio::time::timeout(Duration::from_secs(8), async {
+            while let Some(Ok(frame)) = feed.next().await {
+                if matches!(frame, Message::Close(_)) {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "his feed should end when his password goes");
         Ok(())
     }
     // ---- who did what (`audit.rs`, `server/trail.rs`) ---------------------------------------

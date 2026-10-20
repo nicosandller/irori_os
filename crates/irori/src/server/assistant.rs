@@ -246,7 +246,7 @@ pub async fn transcript(
     // What they were told in these chats may no longer be theirs to read.
     if !who.owner
         && let Some(user) = &who.user
-        && let Err(error) = assistant::keep_to_reach(&state.0.db.path, &user.id, &reach)
+        && let Err(error) = assistant::keep_to_reach(&state.0.db.path, &user.id, &reach).map(drop)
     {
         return refused(StatusCode::INTERNAL_SERVER_ERROR, error);
     }

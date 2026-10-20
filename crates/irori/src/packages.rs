@@ -59,8 +59,29 @@ pub fn packages_dir(data: &Path) -> PathBuf {
     data.join("extensions")
 }
 
-/// Install an official extension into `dest` (`packages_dir/<id>`).
+/// The file an official install leaves in its package, and an install from anywhere else never
+/// does: what says a package came from the catalog and not from whoever chose its id.
+const OFFICIAL_MARK: &str = ".irori-official";
+
+/// Whether the package installed as `id` under `packages` is the catalog's: the id is one the
+/// catalog has, and the package was put there by an official install. Trusted with regular users
+/// (`docs/specs/access.md` §4.1) on this and not on the name, which anything can be called.
+pub fn is_official_install(packages: &Path, id: &ExtensionId) -> bool {
+    static CATALOG_IDS: std::sync::OnceLock<std::collections::BTreeSet<ExtensionId>> =
+        std::sync::OnceLock::new();
+    CATALOG_IDS
+        .get_or_init(|| official().into_iter().map(|item| item.id).collect())
+        .contains(id)
+        && packages.join(id.as_str()).join(OFFICIAL_MARK).is_file()
+}
+
+/// Install an official extension into `dest` (`packages_dir/<id>`), and mark it the catalog's.
 pub fn install_official(item: &Official, dest: &Path) -> Result<(), String> {
+    fetch_official(item, dest)?;
+    fs::write(dest.join(OFFICIAL_MARK), item.id.as_str()).map_err(|e| e.to_string())
+}
+
+fn fetch_official(item: &Official, dest: &Path) -> Result<(), String> {
     if let Some(dir) = official_packages_dir()
         && let Ok(()) = copy_package(&dir.join(item.id.as_str()), dest)
     {
@@ -170,6 +191,10 @@ fn install_archive(archive: &Path, dest: &Path) -> Result<(), String> {
     for name in listing.lines() {
         let normalized = checked_member(name)?;
         if normalized.is_empty() {
+            continue;
+        }
+        // Only an official install says a package is the catalog's; an archive can't.
+        if normalized == OFFICIAL_MARK {
             continue;
         }
         if name.ends_with('/') {
@@ -782,6 +807,49 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(manifest & 0o777, 0o644, "the manifest stays a plain file");
+    }
+
+    /// A package is the catalog's because an official install put it there, not because of the
+    /// id its manifest gives it: one fetched from a URL that calls itself `automations`, and
+    /// carries the mark in its archive, is not.
+    #[test]
+    fn only_an_official_install_is_trusted_with_regular_users() {
+        let packages = tempfile::tempdir().expect("temp dir");
+        let automations = ExtensionId::try_from("automations").expect("an id");
+        let somebody_elses = ExtensionId::try_from("zq_somebody_elses").expect("an id");
+        // Not installed at all, and installed by anything but an official install.
+        assert!(!is_official_install(packages.path(), &automations));
+        std::fs::create_dir_all(packages.path().join("automations")).expect("mkdir");
+        assert!(!is_official_install(packages.path(), &automations));
+
+        // A tarball that carries the mark is unpacked without it.
+        let tree = tempfile::tempdir().expect("temp dir");
+        std::fs::write(tree.path().join(OFFICIAL_MARK), "automations").expect("write");
+        std::fs::write(tree.path().join("irori-extension.toml"), "x").expect("write");
+        let archive = tarball(tree.path(), "forged.tar.gz");
+        let dest = packages.path().join("automations");
+        install_archive(&archive, &dest).expect("unpacks");
+        assert!(dest.join("irori-extension.toml").is_file());
+        assert!(
+            !dest.join(OFFICIAL_MARK).exists(),
+            "an archive can't say it"
+        );
+        assert!(!is_official_install(packages.path(), &automations));
+
+        // An official install does.
+        std::fs::write(dest.join(OFFICIAL_MARK), "automations").expect("write");
+        assert!(is_official_install(packages.path(), &automations));
+        // And an id the catalog doesn't have never is, whatever is in its folder.
+        std::fs::create_dir_all(packages.path().join("zq_somebody_elses")).expect("mkdir");
+        std::fs::write(
+            packages
+                .path()
+                .join("zq_somebody_elses")
+                .join(OFFICIAL_MARK),
+            "x",
+        )
+        .expect("write");
+        assert!(!is_official_install(packages.path(), &somebody_elses));
     }
 
     #[test]

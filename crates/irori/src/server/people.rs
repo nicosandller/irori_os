@@ -257,13 +257,13 @@ impl std::fmt::Debug for UserEdit {
 pub async fn edit_user(
     State(state): State<AppState>,
     Extension(who): Extension<Actor>,
-    Extension(reach): Extension<irori_core::Reach>,
     Extension(Client(from)): Extension<Client>,
     Extension(trail): Extension<Trail>,
     Path(id): Path<UserId>,
     headers: HeaderMap,
     Json(ask): Json<UserEdit>,
 ) -> Response {
+    let reach = who.reach(&state.0.core);
     let own = who.user.as_ref().is_some_and(|user| user.id == id);
     if !who.owner && (!own || ask.role.is_some() || ask.areas.is_some()) {
         return refused(

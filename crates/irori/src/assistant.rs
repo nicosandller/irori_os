@@ -624,20 +624,20 @@ pub fn forget_conversations_of(db: &Path, user: &irori_types::UserId) -> Result<
 }
 
 /// Keeps a person's chats only while everything they were told in them is still theirs. What
-/// they could reach is written down with the chats; when anything of it is gone (a room taken
-/// away, a device moved out, the whole home become some of it) the chats go, whichever way that
-/// happened. A person who only gains reach keeps theirs: what was said is still within it.
+/// they could reach (rooms, floors, devices and entities) is written down with the chats; when
+/// anything of it is gone (a room taken away, a device moved out, the whole home become some of
+/// it) the chats go, whichever way that happened, and this says `true`. A person who only gains
+/// reach keeps theirs: what was said is still within it.
 pub fn keep_to_reach(
     db: &Path,
     user: &irori_types::UserId,
     reach: &irori_core::Reach,
-) -> Result<(), String> {
-    let now: Option<std::collections::BTreeSet<String>> = reach
-        .entity_ids()
-        .map(|ids| ids.iter().map(ToString::to_string).collect());
+) -> Result<bool, String> {
+    let now: Option<std::collections::BTreeSet<String>> =
+        reach.marks().map(|marks| marks.into_iter().collect());
     let current = match &now {
         None => "*".to_owned(),
-        Some(ids) => ids.iter().cloned().collect::<Vec<_>>().join("\n"),
+        Some(marks) => marks.iter().cloned().collect::<Vec<_>>().join("\n"),
     };
     use rusqlite::OptionalExtension as _;
     let conn = open_db(db)?;
@@ -650,7 +650,7 @@ pub fn keep_to_reach(
         .optional()
         .map_err(|error| error.to_string())?;
     if before.as_deref() == Some(current.as_str()) {
-        return Ok(());
+        return Ok(false);
     }
     let lost = match (&before, &now) {
         // Nothing is known of what they could reach, so nothing can be said to be theirs still.
@@ -660,7 +660,7 @@ pub fn keep_to_reach(
             before == "*"
                 || before
                     .split('\n')
-                    .any(|id| !id.is_empty() && !now.contains(id))
+                    .any(|mark| !mark.is_empty() && !now.contains(mark))
         }
     };
     if lost {
@@ -672,7 +672,16 @@ pub fn keep_to_reach(
         [user.as_str(), current.as_str()],
     )
     .map_err(|error| error.to_string())?;
-    Ok(())
+    Ok(lost)
+}
+
+/// What a person has of the home as it is now, not as it was when they asked.
+async fn reach_now(env: &Env<'_>, user: &irori_types::UserId) -> irori_core::Reach {
+    match env.config.people().await.user(user) {
+        Some(person) if person.role.runs_the_home() => irori_core::Reach::Whole,
+        Some(person) => env.core.reach_for(person.areas.as_deref()),
+        None => irori_core::Reach::nothing(),
+    }
 }
 
 /// What was said in the conversation kept as `key` (see [`remembered_in`]), and how much of
@@ -1107,7 +1116,7 @@ async fn answer(
     let memory = env.memory(&scope);
     if !env.owner
         && let Some(user) = &env.user
-        && let Err(error) = keep_to_reach(env.db, user, &env.reach)
+        && let Err(error) = keep_to_reach(env.db, user, &env.reach).map(drop)
     {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
@@ -1331,6 +1340,29 @@ async fn answer(
         used,
         size: provider.context(),
     });
+    // The answer was drawn from what they had when they asked. If something of it has stopped
+    // being theirs in the meantime, it is not kept, and nor is what came before.
+    if !env.owner
+        && let Some(user) = &env.user
+    {
+        match keep_to_reach(env.db, user, &reach_now(&env, user).await) {
+            Ok(false) => {}
+            Ok(true) => {
+                let _ = tx
+                    .send(ChatEvent::Error(
+                        "Your rooms changed while this was being answered, so it isn't kept. \
+                         Ask again."
+                            .to_owned(),
+                    ))
+                    .await;
+                return;
+            }
+            Err(error) => {
+                let _ = tx.send(ChatEvent::Error(error)).await;
+                return;
+            }
+        }
+    }
     if let Err(error) = store_turns(env.db, &memory, said, used) {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;

@@ -118,6 +118,17 @@ pub(super) fn change_of(
         }
         "flows.delete" => Some(("flow_deleted", named(params.get("id")))),
         "versions.restore" => Some(("flow_restored", named(params.get("id")))),
+        // Stopping a run that is going: it may be in the middle of switching things.
+        "runs.cancel" => Some((
+            "flow_run_cancelled",
+            params
+                .get("run_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|run| irori_types::ContextId::try_from(*run).is_ok())
+                .map(str::to_owned),
+        )),
+        // How a flow is tested is kept with it, and is the test's own record of what was tried.
+        "tests.save" => Some(("flow_test_saved", named(params.get("id")))),
         // A live test makes real calls. A dry run only imagines them.
         "test" if params.get("dry").and_then(serde_json::Value::as_bool) != Some(true) => {
             Some(("flow_test_run", named(params.get("id"))))
@@ -420,6 +431,21 @@ mod tests {
                 serde_json::json!({ "id": "hall", "version": "ab" })
             ),
             Some(("flow_restored", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "tests.save",
+                serde_json::json!({ "id": "hall", "settings": {} })
+            ),
+            Some(("flow_test_saved", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "runs.cancel",
+                serde_json::json!({ "run_id": "01JABCDEFGHJKMNPQRSTVWXYZ0" })
+            )
+            .map(|(action, _)| action),
+            Some("flow_run_cancelled")
         );
         // A test that makes real calls is a change; one that imagines them is not.
         assert_eq!(

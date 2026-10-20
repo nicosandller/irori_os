@@ -80,7 +80,7 @@ CLI, the assistant and the app bridge all ask it.
 | History, a camera picture | Of an entity in their rooms; anything else is 404. |
 | A command | Only to an entity in their rooms (§2.1). |
 | Extensions, devices waiting to be added, updates waiting to install, extension pages | None. What the extensions are doing and what they have found is the owner's. |
-| Other people | A person is told about themselves only. |
+| Other people | A person is told about themselves only. Every answer that lists people says so, an edit of their own name or password included. They change their password; an owner changes their name, because a name that was refused as taken would say who else is in the home. |
 | The assistant | Asked everywhere they can ask it (the sidebar mark, the Ask buttons on a device, an automation and the floor plan), and **answered from their rooms** (§2.4). |
 | Where the home is, what can be installed, the machine, how history is kept | 403: these describe the home as a whole, not a thing in a room (§2.3). |
 | Setup: the logs, tokens, backups, anything that writes | The owner's, as before (§2.2). |
@@ -150,15 +150,19 @@ goes through it, in one place each:
   whole home included, has chats of their own: what the model says to an owner is drawn from
   Settings and the logs, and to a person with rooms from those rooms, so neither is for anybody
   else to read, clear or stop. A person's chats are forgotten when anything they were told in
-  them stops being theirs: their rooms edited, a room deleted, a device moved out of it, the
-  whole home narrowed to some of it, or the person removed. It is worked out from what they could
-  reach when they last asked, so it holds whichever way the change came, a hand edit of
-  `users.toml` included. Gaining a room loses nothing. (A person removed by hand-editing the file
+  them stops being theirs: their rooms edited, a room deleted (one with nothing in it too), a
+  device moved out of it, the whole home narrowed to some of it, or the person removed. It is
+  worked out from the rooms, floors, devices and entities they could reach when they last asked,
+  so it holds whichever way the change came, a hand edit of `users.toml` included. An answer that
+  finishes after they lost something is not kept either (they are told, and asked to ask again).
+  Gaining a room loses nothing. (A person removed by hand-editing the file
   leaves their chats behind until the same name is used again; whoever has that name gets them
   only if they reach all of what they say.)
 - **How it is set up is the owner's.** Anybody else is told whether a model is ready and whether
   what they ask leaves the house; not which model, where it is, the key, or the standing
-  instructions. Those, and installing or changing a model, stay behind setup (§2.2).
+  instructions. Those, and installing or changing a model, stay behind setup (§2.2). The standing
+  instructions are the owner's notes and may name anything in the home, so they are in the
+  owner's prompt and in nobody else's.
 
 What the model is told is not a way round anything: it reads only the lists above, and the leak
 test asks it, as a person with a room, for a device in the cellar by every route it has.
@@ -212,8 +216,16 @@ A person who is **nobody** (a wrong password, a request with no sign-in) leaves 
 signing in and for setting the home up, and at most 30 of them a minute: anyone who can reach Irori
 can make those, and a log that wrote them all would be a way to push out what matters. The ones
 over are counted and said once (`tries_unwritten`). A wrong password for a name that is somebody
-names them; a name that is nobody's is not written at all, because it may be a password typed in
-the wrong box.
+names them; a name that is nobody's is written as "a name nobody has" and never as what was
+typed, because it may be a password typed in the wrong box.
+
+A **refusal** of somebody who is known (a command to a thing outside their rooms, an address that
+is not theirs) is a row too, and so is as cheap to make as a request: at most 120 of them a minute
+are written, and the rest are counted and said once (`refusals_unwritten`).
+
+What is written has no line breaks, tabs or escape sequences in it, whatever the request typed:
+a row is read in a table and on a terminal (`irori audit list` shows any older row the same
+way).
 
 **Who** is kept as the id and the name at the time. An id can be made again after a person is
 removed (`config.md` §3.10), and a token is gone from its table when it is revoked; the row
@@ -234,7 +246,9 @@ sent is there: a switch pressed on the wall, or a flow, is not.
 | Key | Default | |
 |---|---|---|
 | `retain_days` | 90 | Older rows are removed. Never less than `[recorder] retain_days`. |
-| `max_rows` | 100000 | Oldest first. A program that calls the API every few seconds is recorded by design, and this is what it can cost. Cutting goes down to 90% so it does not happen at the next row; the log says so (`activity_trimmed`) and names the actor that wrote more than half of what is left. |
+| `max_rows` | 100000 | Oldest first. A program that calls the API every few seconds is recorded by design, and this is what it can cost. Cutting goes down to 90% so it does not happen at the next row; the log says so (`activity_trimmed`) and names the actor that wrote more than half of what is left (nobody who was signed in included). **Refusals and tries by nobody are cut first, to a tenth of this**, so a script that is refused over and over cannot push out what people did. |
+
+What is configured is what the first cut after a start uses; a restart does not cut to the defaults first.
 
 Rows are written by a writer of their own that batches. Sign-ins and sign-outs, changes to
 people and to tokens, a restart, the recovery key and a restore are written **before the answer goes
@@ -246,6 +260,11 @@ that part is chosen (`backup.md` §6). A restore is itself written to the log: o
 for (`restore_asked`), and again by Irori when it has been applied, in the log as it then stands
 (`restore_applied`), so a restore that brings the backup's log back still leaves the line that
 says it did. The record of a restore that rolled itself back would be worthless.
+
+Restoring from the welcome screen, where there is no owner yet, brings everything back, the log
+included: there is no log of the home's own to leave, and the one row for the asking was made by
+nobody. A backup that has no log in it (one made before the log existed) leaves the log the home
+has, however much of it is restored.
 
 ### 3.3 Reading it
 
@@ -261,7 +280,7 @@ A flow gets an optional `owner` (a user id; absent means the home's own, as ever
 It is not part of the flow's version (`flows.md` F6), so naming an owner forks nothing. A saved
 version records who saved it, and a test or dry run records who started it.
 
-- **A person sees and edits their own flows.** An owner sees all of them, with whose each is. Another person's flow, and the home's own, answer a regular user as a flow that is not there (to read, to change, to test, to delete); saving over another's id says the id is taken, which tells them a flow of that name exists and nothing else of it.
+- **A person sees and edits their own flows.** An owner sees all of them, with whose each is. Another person's flow, and the home's own, answer a regular user as a flow that is not there (to read, to change, to test, to delete); saving over another's id says the id is taken, which tells them a flow of that name exists and nothing else of it. A flow's name is not free once anything of that name is kept: a flow that was deleted (its old definitions and what it read are the home's to look at, not a regular user's) and a file that does not read count as taken. Every question about a flow that is not theirs, deleted or never there, answers "there's no flow".
 - **Whose a flow is, is not the page's to say.** A flow a regular user saves for the first time is theirs. One that is there keeps its owner whoever saves it: an owner who edits a person's flow leaves it theirs, and the owner's own flows stay the home's own (so removing or demoting an owner does not turn off the household's automations). Whatever `owner` a draft, a suggestion or an old version says is replaced.
 - **What a flow reads is its owner's too.** A draft, a dry run, a backtest and the timeline are told the states and history of what its owner can see and nothing else, however the draft is written.
 - **What a flow may touch is the owner's rooms and the owner's commands.** The home checks of
@@ -275,8 +294,12 @@ version records who saved it, and a test or dry run records who started it.
   `areas`, an owner is made a user. The engine already checks every flow whenever the registry
   changes; the core now sends that signal for any of these too, and the engine asks the core what
   each flow's owner can reach now (`get_reach`, engine API, `automations.md` §B2). A flow that
-  fails is **turned off and says why**, and the log records it once, when it stops (not on every
-  later check). The reason is the same one a flow that names an entity that does not exist gets,
+  fails is **turned off and says why**: it is switched off for good (it does not start again by
+  itself when the room comes back; its owner turns it on), and the log records it once. This is
+  also looked for when Irori starts, so a change made while it was stopped counts. A flow whose
+  owner the core could not be asked about is left as it is, not run on an old answer, until it can
+  be. A flow that is wrong for its own reasons (an entity the home does not have) is not turned
+  off by this: it arms again when the home does. The reason is the same one a flow that names an entity that does not exist gets,
   worded for a person's rooms ("`light.kitchen` = no such entity in your rooms"): it does not
   say that the thing exists, or what it is called, so that being out of their rooms and not being
   there stay one thing. Nothing is deleted.
@@ -292,8 +315,10 @@ version records who saved it, and a test or dry run records who started it.
 An extension page is the owner's unless its manifest says `users = true`, which means "regular users
 may open this page and I limit what they can do". That is trust handed to the extension, so it is
 shown in the install prompt like any permission (`extensions.md` §7). Until permissions are
-approved one by one (ROADMAP C26), the flag is honoured for official packages (`official.toml`)
-only, so there is nothing yet for an owner to approve. The shell tells the extension who is asking with each request
+approved one by one (ROADMAP C26), the flag is honoured for packages that an **official install**
+put there (a mark only that install leaves, which an archive cannot carry), not for whatever is
+called by an official id. A package from a URL is never trusted with it, so there is nothing yet
+for an owner to approve, and the install prompt has nothing to ask. The shell tells the extension who is asking with each request
 (`caller`), and the page cannot set it. A regular user's question goes only to an extension that has
 the flag and is trusted with it; to any other the page answers as if it had none. Only such an
 extension may call `get_reach` or ask the core to write a remark in the log (`note`).
@@ -303,6 +328,9 @@ extension may call `get_reach` or ask the core to write a remark in the log (`no
 Unchanged: a token carries scopes and is not a copy of its owner (`api.md` §1). It is whole-home
 within its scopes. A token cannot read the activity log. Rooms on a token are a follow-up.
 When an owner is made a regular user, their tokens are revoked (they may no longer make them).
+A token is also looked at against its person each time it is used: it is heard only while that
+person is an owner, so a hand edit of `users.toml`, or a restore that brings the tokens back,
+leaves a person who is no longer an owner with none.
 
 ## 6. Not here
 

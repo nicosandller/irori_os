@@ -205,16 +205,19 @@ async fn push(
     }
 }
 
-/// Whether the person this socket was opened for still has the same role and the same rooms.
-/// A person who has gone, or changed, is not who the socket was shown the home for.
+/// Whether the person this socket was opened for still has the same role and the same rooms,
+/// and can still sign in at all. A person who has gone, or changed, or whose password was taken
+/// out of the file by hand, is not who the socket was shown the home for.
 async fn still_the_same_person(state: &AppState, who: &Actor) -> bool {
     let Some(me) = &who.user else {
         return true;
     };
     let people = state.0.config.people().await;
-    people
-        .user(&me.id)
-        .is_some_and(|now| now.role == me.role && now.areas == me.areas)
+    let can_sign_in = !people.locked() || people.hashes.contains_key(&me.id);
+    can_sign_in
+        && people
+            .user(&me.id)
+            .is_some_and(|now| now.role == me.role && now.areas == me.areas)
 }
 
 /// Whether what a person has of the home could be different after this.
