@@ -57,6 +57,9 @@ pub struct Service {
     home_was: u64,
     /// Where each person who has a flow, or has asked, stands now (`docs/specs/access.md` §4).
     pub people: BTreeMap<UserId, Standing>,
+    /// Whether the flows have been armed once already: before that, what each flow was doing is
+    /// not known, and a change made while Irori was stopped is the one to find.
+    started: bool,
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
 }
 
@@ -214,10 +217,12 @@ impl Service {
             registry,
             home_was: 0,
             people: BTreeMap::new(),
+            started: false,
             calls,
         };
         service.refresh_people().await;
         service.arm();
+        service.started = true;
         service.engine.start(now());
         service.apply_effects();
         Ok((service, answers))
@@ -240,8 +245,9 @@ impl Service {
         self.hand_over_the_gone();
     }
 
-    /// Asks the core where this person stands, and keeps the answer. What it knew stays when
-    /// the core can't say.
+    /// Asks the core where this person stands, and keeps the answer. When the core can't say,
+    /// nothing is known of them: what they could reach before might be more than they can now,
+    /// so their flows wait to be checked until the core answers.
     pub async fn learn(&mut self, user: &UserId) {
         match self.client.get_reach(user.clone()).await {
             Ok(reach) => {
@@ -258,6 +264,7 @@ impl Service {
             }
             Err(error) => {
                 tracing::warn!(%user, %error, "couldn't ask what this person can reach");
+                self.people.remove(user);
             }
         }
     }
@@ -296,8 +303,11 @@ impl Service {
     /// Checks every flow against the home and hands them to the engine. A definition not seen
     /// before — a hand edit, say — is kept as a version, so its runs can be drawn on it.
     ///
-    /// A person's flow that was running and no longer can is said once, to the activity log:
-    /// the home changed under it (`docs/specs/access.md` §4).
+    /// A person's flow that is running and has lost what it needs of their rooms or their role
+    /// is turned off, for good: it does not start again by itself when the room comes back
+    /// (`docs/specs/access.md` §4). The reason is said once, to the activity log. Done here and
+    /// not only when a flow was seen running, so a change made while Irori was stopped counts.
+    /// A flow whose owner could not be asked about is left as it is, until they can be.
     pub fn arm(&mut self) {
         let at = now();
         for flow in self.store.flows() {
@@ -306,6 +316,7 @@ impl Service {
             }
         }
         let before = self.engine.armed();
+        self.turn_off_what_lost_access(at, &before);
         let arms: Vec<Arm> = self
             .store
             .flows()
@@ -314,21 +325,57 @@ impl Service {
                 problems: self.problems(flow),
             })
             .collect();
-        for arm in &arms {
-            let was_running = matches!(
-                before.get(&arm.flow.id),
-                Some((irori_flow_types::api::Armed::Armed, _))
-            );
-            let reason = arm.problems.iter().find(|problem| problem.is_error());
-            if let (true, true, Some(reason), Some(_)) =
-                (was_running, arm.flow.enabled, reason, &arm.flow.owner)
-            {
-                self.client
-                    .note("flow_turned_off", arm.flow.id.as_str(), &reason.message);
-            }
-        }
         self.engine.set_flows(arms, now());
         self.apply_effects();
+    }
+
+    /// Turns off the flows of people that are on and can't be, for want of what their owner
+    /// has now: what is wrong with them would not be, were the owner the home's. A flow that is
+    /// wrong for its own reasons (an entity the home doesn't have) is left to arm again when
+    /// the home does.
+    fn turn_off_what_lost_access(
+        &mut self,
+        at: Timestamp,
+        before: &BTreeMap<RuleId, (irori_flow_types::api::Armed, String)>,
+    ) {
+        let lost: Vec<(Flow, String)> = self
+            .store
+            .flows()
+            .filter(|flow| flow.enabled && flow.owner.is_some())
+            // One that was running, or any at all when starting: a flow just written that can't
+            // run never did, and is told so by the save.
+            .filter(|flow| {
+                !self.started
+                    || matches!(
+                        before.get(&flow.id),
+                        Some((irori_flow_types::api::Armed::Armed, _))
+                    )
+            })
+            .filter_map(|flow| {
+                // Only when they could be asked: a person not told yet is not a person who lost.
+                self.view(flow.owner.as_ref()).ok()?;
+                let reason = self
+                    .problems(flow)
+                    .into_iter()
+                    .find(|problem| problem.is_error())?
+                    .message;
+                let wrong_anyway = validate::check_for(flow, &self.registry, true)
+                    .iter()
+                    .any(irori_flow_types::api::Problem::is_error);
+                (!wrong_anyway).then(|| (flow.clone(), reason))
+            })
+            .collect();
+        for (mut flow, reason) in lost {
+            flow.enabled = false;
+            match self.store.save(&flow, at, None) {
+                Ok(()) => self
+                    .client
+                    .note("flow_turned_off", flow.id.as_str(), &reason),
+                Err(error) => {
+                    tracing::warn!(flow = %flow.id, %error, "couldn't turn off a flow that can't run");
+                }
+            }
+        }
     }
 
     /// Does what the engine asked: makes its calls, keeps its records.

@@ -45,12 +45,17 @@ pub async fn users(
     Extension(who): Extension<Actor>,
     Extension(reach): Extension<irori_core::Reach>,
 ) -> Response {
-    let mut everybody = list(&state).await;
+    Json(narrowed(list(&state).await, &who, &reach)).into_response()
+}
+
+/// `everybody` as `who` is shown it: for a person who has only some rooms, themselves alone.
+/// Every answer that lists people goes through here.
+fn narrowed(mut everybody: Vec<UserView>, who: &Actor, reach: &irori_core::Reach) -> Vec<UserView> {
     if !reach.is_whole() {
         let me = who.user.as_ref().map(|user| &user.id);
         everybody.retain(|view| Some(&view.user.id) == me);
     }
-    Json(everybody).into_response()
+    everybody
 }
 
 #[derive(Deserialize)]
@@ -252,6 +257,7 @@ impl std::fmt::Debug for UserEdit {
 pub async fn edit_user(
     State(state): State<AppState>,
     Extension(who): Extension<Actor>,
+    Extension(reach): Extension<irori_core::Reach>,
     Extension(Client(from)): Extension<Client>,
     Extension(trail): Extension<Trail>,
     Path(id): Path<UserId>,
@@ -263,6 +269,14 @@ pub async fn edit_user(
         return refused(
             StatusCode::FORBIDDEN,
             "only an owner can change somebody else, or what anybody may do".to_owned(),
+        );
+    }
+    // A name that is taken would say that somebody has it, and a person with only some rooms is
+    // not shown who else lives in the home. Their name is changed for them.
+    if !who.owner && !reach.is_whole() && ask.name.is_some() {
+        return refused(
+            StatusCode::FORBIDDEN,
+            "an owner changes the name of a person who has only some rooms".to_owned(),
         );
     }
     let clears = ask.password.as_deref() == Some("");
@@ -427,7 +441,7 @@ pub async fn edit_user(
                 state.0.sockets.close_user_sessions(&id, kept.as_deref());
                 tracing::info!(user = %id, "a password was changed");
             }
-            let mut response = Json(list(&state).await).into_response();
+            let mut response = Json(narrowed(list(&state).await, &who, &reach)).into_response();
             if locks {
                 // The home asks who is there from here on. Whoever just set the password is
                 // signed in as its owner, rather than shown the door they just fitted.

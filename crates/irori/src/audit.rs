@@ -39,6 +39,14 @@ const TRIES: u32 = 5;
 /// Irori can make these, so they are bounded; the ones over are counted and said once, and
 /// the rows about people who are known are never held back by this.
 const NOBODY_PER_MINUTE: u32 = 30;
+/// How many refusals of people and programs that are known are written in a minute. A person
+/// with rooms can have a command refused as fast as they can send one; the ones over are
+/// counted and said once. What is written is what shows who tried, and it is plenty.
+const REFUSED_PER_MINUTE: u32 = 120;
+/// The share of the log's size that rows about nobody and refusals may take. They are what a
+/// stranger or a person with a script can fill, so they are cut first and the rest of the log
+/// keeps its months.
+const NOISE_OF_MAX_PERCENT: i64 = 10;
 /// How often the log is pruned when nothing is being written.
 const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 /// Rows written between prunes while they keep coming.
@@ -191,8 +199,12 @@ struct Shared {
     /// Tries by somebody who is nobody (a wrong password, a request with no sign-in) that were
     /// over [`NOBODY_PER_MINUTE`], not yet said in the log.
     unwritten_tries: AtomicU64,
-    /// When the minute `tries_this_minute` counts began, and how many were written in it.
+    /// When the minute `nobody` counts began, and how many were written in it.
     nobody: Mutex<(std::time::Instant, u32)>,
+    /// Refusals of known people and programs over [`REFUSED_PER_MINUTE`], not yet said.
+    unwritten_refusals: AtomicU64,
+    /// The same minute count, for refusals of those who are known.
+    refused: Mutex<(std::time::Instant, u32)>,
 }
 
 /// The log, as the rest of Irori holds it. Cheap to clone.
@@ -203,17 +215,21 @@ pub struct Audit {
 }
 
 impl Audit {
-    /// Opens the log in `db`, making its table if it is not there, and starts its writer.
-    pub fn open(db: &Path) -> anyhow::Result<Self> {
+    /// Opens the log in `db`, making its table if it is not there, and starts its writer, which
+    /// keeps what `keep` says from its first cut: a restart must not cut to the defaults before
+    /// it is told what the home chose.
+    pub fn open(db: &Path, keep: Keep) -> anyhow::Result<Self> {
         let conn = connect(db)?;
         drop(conn);
         let (queue, waiting) = std::sync::mpsc::sync_channel(QUEUE);
         let shared = Arc::new(Shared {
             db: db.to_path_buf(),
-            keep: Mutex::new(Keep::default()),
+            keep: Mutex::new(keep),
             lost: AtomicU64::new(0),
             unwritten_tries: AtomicU64::new(0),
             nobody: Mutex::new((std::time::Instant::now(), 0)),
+            unwritten_refusals: AtomicU64::new(0),
+            refused: Mutex::new((std::time::Instant::now(), 0)),
         });
         let writer = Arc::clone(&shared);
         std::thread::Builder::new()
@@ -238,21 +254,30 @@ impl Audit {
         let _ = self.queue.try_send(Message::Prune);
     }
 
-    /// Whether a row about somebody who is nobody may be written now. Anything else may.
+    /// Whether a row may be written now. What strangers and refusals can fill is bounded a
+    /// minute at a time; anything else may be written.
     fn allowed(&self, row: &Row) -> bool {
-        if !matches!(row.actor, AuditActor::Nobody) {
+        let (bucket, per_minute, counted) = if matches!(row.actor, AuditActor::Nobody) {
+            (
+                &self.shared.nobody,
+                NOBODY_PER_MINUTE,
+                &self.shared.unwritten_tries,
+            )
+        } else if row.outcome == Outcome::Denied {
+            (
+                &self.shared.refused,
+                REFUSED_PER_MINUTE,
+                &self.shared.unwritten_refusals,
+            )
+        } else {
             return true;
-        }
-        let mut held = self
-            .shared
-            .nobody
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        };
+        let mut held = bucket.lock().unwrap_or_else(PoisonError::into_inner);
         if held.0.elapsed() >= Duration::from_secs(60) {
             *held = (std::time::Instant::now(), 0);
         }
-        if held.1 >= NOBODY_PER_MINUTE {
-            self.shared.unwritten_tries.fetch_add(1, Ordering::Relaxed);
+        if held.1 >= per_minute {
+            counted.fetch_add(1, Ordering::Relaxed);
             return false;
         }
         held.1 += 1;
@@ -390,10 +415,21 @@ impl Audit {
 const TARGET_AT_MOST: usize = 200;
 const DETAIL_AT_MOST: usize = 500;
 
+/// Cut to length, and with no line breaks, tabs or escape sequences in it: a row is read in a
+/// table and on a terminal, and some of what is in one was typed by whoever was refused.
 fn clip(text: Option<String>, at_most: usize) -> Option<String> {
-    text.map(|text| match text.char_indices().nth(at_most) {
-        Some((end, _)) => format!("{}…", &text[..end]),
-        None => text,
+    text.map(|text| {
+        let text: String = if text.chars().any(char::is_control) {
+            text.chars()
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect()
+        } else {
+            text
+        };
+        match text.char_indices().nth(at_most) {
+            Some((end, _)) => format!("{}…", &text[..end]),
+            None => text,
+        }
     })
 }
 
@@ -595,6 +631,18 @@ fn write_forever(shared: &Shared, waiting: &Receiver<Message>) {
                 ),
             });
         }
+        let refusals = shared.unwritten_refusals.swap(0, Ordering::Relaxed);
+        if refusals > 0 {
+            rows.push(Stamped {
+                at: Timestamp::from_jiff(jiff::Timestamp::now()),
+                row: Row::new(AuditActor::Irori, "refusals_unwritten", Outcome::Denied).detail(
+                    format!(
+                        "{refusals} more refusals were not written: more than \
+                         {REFUSED_PER_MINUTE} a minute"
+                    ),
+                ),
+            });
+        }
         if !rows.is_empty() {
             let written = write_batch(&mut conn, shared, &rows);
             since_prune += rows.len() as u64;
@@ -649,10 +697,14 @@ fn prune(conn: &mut Connection, shared: &Shared) {
         return;
     }
     let max = i64::from(keep.max_rows);
+    let noise_removed = trim_noise(conn, max);
     let rows: i64 = conn
         .query_row("SELECT count(*) FROM audit", [], |row| row.get(0))
         .unwrap_or(0);
     if rows <= max {
+        if noise_removed > 0 {
+            say_trimmed(conn, noise_removed, max, true);
+        }
         return;
     }
     let keep_rows = max * i64::try_from(KEEP_OF_MAX_PERCENT).unwrap_or(90) / 100;
@@ -664,11 +716,53 @@ fn prune(conn: &mut Connection, shared: &Shared) {
         tracing::warn!("couldn't trim the activity log to its size");
         return;
     };
-    let busiest = busiest(conn);
-    let mut detail = format!(
-        "{removed} of the oldest rows were removed to keep the log under {max} rows ([audit] max_rows)"
-    );
-    if let Some(actor) = busiest {
+    say_trimmed(conn, removed + noise_removed, max, false);
+}
+
+/// Cuts rows about nobody and refusals to their share of the log, keeping the newest. Returns
+/// how many were removed.
+fn trim_noise(conn: &Connection, max: i64) -> usize {
+    const NOISE: &str = "(actor_kind = 'nobody' OR outcome = 'denied')";
+    let share = (max * NOISE_OF_MAX_PERCENT / 100).max(1);
+    let kept = share * i64::try_from(KEEP_OF_MAX_PERCENT).unwrap_or(90) / 100;
+    let count: i64 = conn
+        .query_row(
+            &format!("SELECT count(*) FROM audit WHERE {NOISE}"),
+            [],
+            |row| row.get(0),
+        )
+        .unwrap_or(0);
+    if count <= share {
+        return 0;
+    }
+    conn.execute(
+        &format!(
+            "DELETE FROM audit WHERE {NOISE} AND id <= \
+             (SELECT id FROM audit WHERE {NOISE} ORDER BY id DESC LIMIT 1 OFFSET ?1)"
+        ),
+        [kept],
+    )
+    .unwrap_or_else(|_| {
+        tracing::warn!("couldn't trim the refusals in the activity log");
+        0
+    })
+}
+
+/// Says in the log that rows were removed for its size, and who wrote most of what is left.
+fn say_trimmed(conn: &Connection, removed: usize, max: i64, only_noise: bool) {
+    let mut detail = if only_noise {
+        format!(
+            "{removed} of the oldest refusals and tries by nobody who was signed in were removed: \
+             they are kept to a tenth of {max} rows ([audit] max_rows), so the rest of the log \
+             keeps its time"
+        )
+    } else {
+        format!(
+            "{removed} of the oldest rows were removed to keep the log under {max} rows \
+             ([audit] max_rows)"
+        )
+    };
+    if let Some(actor) = busiest(conn) {
         detail.push_str(&format!("; most of what is kept is from {actor}"));
     }
     let _ = insert(
@@ -685,7 +779,7 @@ fn busiest(conn: &Connection) -> Option<AuditActor> {
         .query_row(
             "SELECT id, at_ns, actor_kind, actor_id, actor_name, actor_person_id, \
              actor_person_name, action, target, outcome, detail, context_id, client, count(*) AS c \
-             FROM audit WHERE actor_kind IN ('person', 'token', 'extension') \
+             FROM audit WHERE actor_kind IN ('person', 'token', 'extension', 'nobody') \
              GROUP BY actor_kind, actor_id ORDER BY c DESC LIMIT 1",
             [],
             |row| Ok((read_row(row)?, row.get(13)?)),
@@ -710,7 +804,7 @@ mod tests {
 
     fn open() -> anyhow::Result<(tempfile::TempDir, Audit)> {
         let dir = tempfile::tempdir()?;
-        let audit = Audit::open(&dir.path().join("irori.db"))?;
+        let audit = Audit::open(&dir.path().join("irori.db"), Keep::default())?;
         Ok((dir, audit))
     }
 
@@ -1004,6 +1098,165 @@ mod tests {
         let mut kept: Vec<_> = page.entries.iter().map(|e| e.action.as_str()).collect();
         kept.sort_unstable();
         assert_eq!(kept, ["first", "new", "newer"]);
+        Ok(())
+    }
+    /// What a refused request typed into a row can't break the table it is read in, or the
+    /// terminal of whoever reads it.
+    #[tokio::test]
+    async fn a_row_has_no_line_breaks_tabs_or_escapes_in_it() -> anyhow::Result<()> {
+        let (_dir, audit) = open()?;
+        audit
+            .record_and_wait(
+                Row::new(person("leo", "Leo"), "command", Outcome::Denied)
+                    .target("light.hall")
+                    .detail("turn_on\n2026-01-01T00:00:00Z\tok\tNico\x1b[2J"),
+            )
+            .await;
+        let page = audit.list(&Query::default()).map_err(anyhow::Error::msg)?;
+        let detail = page.entries[0].detail.as_deref().unwrap_or_default();
+        assert!(!detail.chars().any(char::is_control), "{detail:?}");
+        assert!(detail.starts_with("turn_on 2026"), "{detail:?}");
+        Ok(())
+    }
+
+    /// A person who is known can have commands refused as fast as they send them: only so many
+    /// are written in a minute, and the rest are counted and said once. Writes that went
+    /// through are never held back by it.
+    #[tokio::test]
+    async fn refusals_are_bounded_and_the_rest_are_counted() -> anyhow::Result<()> {
+        let (_dir, audit) = open()?;
+        for _ in 0..(REFUSED_PER_MINUTE + 15) {
+            audit.record(Row::new(person("leo", "Leo"), "command", Outcome::Denied));
+        }
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "command", Outcome::Ok))
+            .await;
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "sign_out", Outcome::Ok))
+            .await;
+        let page = audit
+            .list(&Query {
+                limit: Some(MOST_AUDIT_ROWS),
+                ..Query::default()
+            })
+            .map_err(anyhow::Error::msg)?;
+        let refused = page
+            .entries
+            .iter()
+            .filter(|e| e.action == "command" && e.outcome == Outcome::Denied)
+            .count();
+        assert_eq!(refused, REFUSED_PER_MINUTE as usize);
+        assert!(
+            page.entries
+                .iter()
+                .any(|e| e.action == "command" && e.outcome == Outcome::Ok)
+        );
+        let said = page
+            .entries
+            .iter()
+            .find(|e| e.action == "refusals_unwritten")
+            .and_then(|e| e.detail.clone())
+            .unwrap_or_default();
+        assert!(said.starts_with("15 more"), "{said}");
+        Ok(())
+    }
+
+    /// Refusals and tries by nobody are cut to a tenth of the log first, so a flood of them does
+    /// not push out what people did.
+    #[tokio::test]
+    async fn a_flood_of_refusals_does_not_push_out_the_rest() -> anyhow::Result<()> {
+        let (dir, audit) = open()?;
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "first", Outcome::Ok))
+            .await;
+        {
+            let mut conn = connect(&dir.path().join("irori.db"))?;
+            let tx = conn.transaction()?;
+            let at = Timestamp::from_jiff(jiff::Timestamp::now());
+            for _ in 0..600 {
+                insert(
+                    &tx,
+                    at,
+                    &Row::new(AuditActor::Nobody, "sign_in", Outcome::Denied),
+                )?;
+            }
+            for _ in 0..300 {
+                insert(
+                    &tx,
+                    at,
+                    &Row::new(person("leo", "Leo"), "command", Outcome::Ok),
+                )?;
+            }
+            tx.commit()?;
+        }
+        audit.keep(Keep {
+            days: 30,
+            max_rows: 1000,
+        });
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "second", Outcome::Ok))
+            .await;
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "third", Outcome::Ok))
+            .await;
+        let conn = connect(&dir.path().join("irori.db"))?;
+        let nobody: i64 = conn.query_row(
+            "SELECT count(*) FROM audit WHERE actor_kind = 'nobody'",
+            [],
+            |r| r.get(0),
+        )?;
+        let people: i64 = conn.query_row(
+            "SELECT count(*) FROM audit WHERE action = 'command'",
+            [],
+            |r| r.get(0),
+        )?;
+        assert!(nobody <= 100, "{nobody} rows about nobody are kept");
+        assert_eq!(people, 300, "what people did is all still there");
+        let said: String = conn.query_row(
+            "SELECT detail FROM audit WHERE action = 'activity_trimmed' ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )?;
+        assert!(said.contains("refusals"), "{said}");
+        assert!(said.contains("nobody who was signed in"), "{said}");
+        Ok(())
+    }
+
+    /// A restart cuts to what the home chose from the first cut, not to the defaults.
+    #[tokio::test]
+    async fn the_first_cut_is_to_what_was_configured() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("irori.db");
+        {
+            let mut conn = connect(&db)?;
+            let tx = conn.transaction()?;
+            // Older than the default 90 days, newer than the 400 asked for.
+            let old = Timestamp::from_jiff(
+                jiff::Timestamp::now().checked_sub(jiff::SignedDuration::from_hours(24 * 200))?,
+            );
+            for _ in 0..50 {
+                insert(
+                    &tx,
+                    old,
+                    &Row::new(person("leo", "Leo"), "command", Outcome::Ok),
+                )?;
+            }
+            tx.commit()?;
+        }
+        let audit = Audit::open(
+            &db,
+            Keep {
+                days: 400,
+                max_rows: 100_000,
+            },
+        )?;
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "sign_in", Outcome::Ok))
+            .await;
+        audit
+            .record_and_wait(Row::new(person("leo", "Leo"), "sign_out", Outcome::Ok))
+            .await;
+        assert_eq!(audit.count(), 52, "nothing was cut to 90 days");
         Ok(())
     }
 }

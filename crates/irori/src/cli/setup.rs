@@ -471,20 +471,29 @@ pub async fn audit(remote: &Remote, cmd: AuditCmd) -> Result<(), String> {
         .map_err(err)?;
     output::show(link.json, &page, || {
         for row in &page.entries {
+            // One row a line, whatever was typed into it: rows written before the log cleaned
+            // them may hold line breaks, tabs and escape sequences.
             println!(
                 "{}\t{}\t{}\t{}\t{}\t{}",
                 row.at,
                 row.outcome,
-                row.actor,
-                row.action,
-                row.target.as_deref().unwrap_or("-"),
-                row.detail.as_deref().unwrap_or("")
+                plain(&row.actor.to_string()),
+                plain(&row.action),
+                plain(row.target.as_deref().unwrap_or("-")),
+                plain(row.detail.as_deref().unwrap_or(""))
             );
         }
         if page.older.is_some() {
             eprintln!("(older rows exist: raise --limit, or narrow it)");
         }
     })
+}
+
+/// `text` with each control character (a line break, a tab, an escape) shown as a space.
+fn plain(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 pub async fn restart(remote: &Remote) -> Result<(), String> {

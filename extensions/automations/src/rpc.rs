@@ -119,8 +119,10 @@ async fn who_asks(service: &mut Service, caller: &Caller) -> Result<Who, String>
     }
 }
 
-/// Whether the flow named in `named` is the asker's, or isn't there. Somebody else's flow
-/// answers the way one that does not exist does.
+/// Whether the flow named in `named` is the asker's. `taken` is for a flow that may be new: its
+/// name is free unless anything of that name is kept, a file that doesn't read or what a deleted
+/// flow left behind, and then it is taken. Otherwise the flow has to be there and be theirs: one
+/// that is somebody else's, one that was deleted and one that never was all answer the same way.
 fn theirs(service: &Service, who: &Who, named: Option<&Value>, taken: bool) -> Result<(), String> {
     let Some(id) = named
         .and_then(Value::as_str)
@@ -130,12 +132,18 @@ fn theirs(service: &Service, who: &Who, named: Option<&Value>, taken: bool) -> R
         return Ok(());
     };
     match service.store.flow(&id) {
-        Some(flow) if !who.is(flow.owner.as_ref()) => Err(if taken {
-            format!("a flow called `{id}` exists already; give this one another name")
-        } else {
-            format!("there's no flow `{id}`")
-        }),
-        _ => Ok(()),
+        Some(flow) if who.is(flow.owner.as_ref()) => Ok(()),
+        Some(_) => Err(not_free(&id, taken)),
+        None if taken && !service.store.knows(&id) => Ok(()),
+        None => Err(not_free(&id, taken)),
+    }
+}
+
+fn not_free(id: &RuleId, taken: bool) -> String {
+    if taken {
+        format!("a flow called `{id}` exists already; give this one another name")
+    } else {
+        format!("there's no flow `{id}`")
     }
 }
 
@@ -152,7 +160,11 @@ fn allowed(service: &Service, who: &Who, method: &str, raw: &Value) -> Result<()
         About::Flow | About::Runs => theirs(service, who, raw.get("id"), false),
         About::Draft => theirs(service, who, raw.pointer("/flow/id"), true),
         About::Proposal => {
-            theirs(service, who, raw.get("id"), false)?;
+            // A suggestion is about a flow that is there. A dry run or a backtest of a draft may
+            // be about one that is not saved yet: the draft carries its name.
+            let drafted =
+                method != "flows.propose" && raw.get("flow").is_some_and(|flow| !flow.is_null());
+            theirs(service, who, raw.get("id"), drafted)?;
             theirs(service, who, raw.pointer("/flow/id"), true)
         }
         About::Run => {

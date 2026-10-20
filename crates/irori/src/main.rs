@@ -275,8 +275,8 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
             ));
             // Who did what: a table of its own in the same file, written by a thread of its own,
             // so a person's change never waits on the recorder or the other way round.
-            let audit = audit::Audit::open(&db.path).context("failed to open the activity log")?;
-            audit.keep(audit_keep);
+            let audit = audit::Audit::open(&db.path, audit_keep)
+                .context("failed to open the activity log")?;
             // After a restore, the log says it was done; before the extensions are looked after,
             // which rewrite the same result.
             backup::record_restore(&audit, &data);

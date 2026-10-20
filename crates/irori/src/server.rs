@@ -2710,7 +2710,10 @@ mod tests {
                 &dir.path().join("irori.db"),
                 irori_recorder::Retention::default(),
             )?;
-            let audit = crate::audit::Audit::open(&dir.path().join("irori.db"))?;
+            let audit = crate::audit::Audit::open(
+                &dir.path().join("irori.db"),
+                crate::audit::Keep::default(),
+            )?;
             Ok(Self {
                 dir,
                 core,
@@ -7678,6 +7681,46 @@ mod tests {
         Ok(())
     }
 
+    /// A token is looked at against its person each time it is used: an owner made a regular
+    /// user by a hand edit of `users.toml` (or by a restore that brings their tokens back) doesn't
+    /// keep a token, which is whole-home.
+    #[tokio::test]
+    async fn a_token_of_somebody_who_is_not_an_owner_is_not_heard() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, nico) = locked_home(&server).await?;
+        let ana = person(&app, &nico, "Ana", "owner").await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            Some(&ana),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        // By hand, in the file: the tokens are not touched.
+        let file = server.config_dir().join("users.toml");
+        let text = std::fs::read_to_string(&file)?;
+        let (before, after) = text.split_once("[users.ana]").expect("ana is in the file");
+        let after = after.replacen("role = \"owner\"", "role = \"user\"", 1);
+        std::fs::write(&file, format!("{before}[users.ana]{after}"))?;
+        server.config.home().await;
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}");
+
+        // And back: she is an owner again, and the token is hers again.
+        std::fs::write(&file, text)?;
+        server.config.home().await;
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        Ok(())
+    }
+
     /// An edit that is refused for something else takes nothing away: the tokens of an owner told
     /// to be a regular user, and to have a room that is not there, are still theirs.
     #[tokio::test]
@@ -9160,16 +9203,22 @@ mod tests {
     const ADDRESSES: &[(&str, &str, Leak)] = &[
         ("GET", "/api/health", Open),
         ("GET", "/api/session", Open),
+        ("POST", "/api/session", Open),
+        ("DELETE", "/api/session", Open),
         ("POST", "/api/setup", Open),
         ("GET", "/api/users", Filtered),
+        ("POST", "/api/users", Run),
         ("GET", "/api/audit", Run),
         ("PATCH", "/api/users/{id}", Own),
+        ("DELETE", "/api/users/{id}", Run),
         ("GET", "/api/place", Whole),
+        ("PUT", "/api/place", Run),
         ("GET", "/api/home", Filtered),
         ("POST", "/api/command", Hidden),
         ("GET", "/api/ws", Socket),
         ("GET", "/api/extension", Run),
         ("GET", "/api/tokens", Run),
+        ("POST", "/api/tokens", Run),
         ("DELETE", "/api/tokens/{id}", Run),
         ("GET", "/api/devices", Filtered),
         ("GET", "/api/entities", Filtered),
@@ -9177,6 +9226,7 @@ mod tests {
         ("GET", "/api/history/{entity_id}/summary", Hidden),
         ("GET", "/api/history/{entity_id}", Hidden),
         ("GET", "/api/recorder", Whole),
+        ("PUT", "/api/recorder", Run),
         ("GET", "/api/system", Whole),
         ("GET", "/api/system/usage", Whole),
         ("GET", "/api/system/log", Run),
@@ -9184,16 +9234,23 @@ mod tests {
         ("POST", "/api/restart", Run),
         ("GET", "/api/extensions", Filtered),
         ("GET", "/api/areas", Filtered),
+        ("POST", "/api/areas", Run),
         ("GET", "/api/floors", Filtered),
+        ("POST", "/api/floors", Run),
         ("PATCH", "/api/floors/{id}", Run),
+        ("DELETE", "/api/floors/{id}", Run),
         ("PATCH", "/api/areas/{id}", Run),
+        ("DELETE", "/api/areas/{id}", Run),
         ("GET", "/api/floorplan", Filtered),
+        ("PUT", "/api/floorplan", Run),
         ("PATCH", "/api/devices/{id}", Run),
+        ("DELETE", "/api/devices/{id}", Run),
         ("PATCH", "/api/entities/{id}", Run),
         ("GET", "/api/entities/{id}/picture", Hidden),
         ("PUT", "/api/extensions/{id}/secrets", Run),
         ("POST", "/api/extensions/{id}/settings", Run),
         ("POST", "/api/extensions/{id}/actions/{action_id}", Run),
+        ("DELETE", "/api/extensions/{id}/actions/{action_id}", Run),
         ("GET", "/api/catalog", Whole),
         ("POST", "/api/extensions/{id}/install", Run),
         ("POST", "/api/extensions/install", Run),
@@ -9203,11 +9260,13 @@ mod tests {
         ("POST", "/api/helpers/{table}/check", Run),
         ("POST", "/api/helpers/{table}/preview", Run),
         ("PATCH", "/api/helpers/{table}/{id}", Run),
+        ("DELETE", "/api/helpers/{table}/{id}", Run),
         ("GET", "/api/extensions/{id}/icon.svg", Open),
         ("GET", "/api/extensions/{id}/log", Run),
         ("GET", "/api/apps", Filtered),
         ("POST", "/api/apps/{id}/rpc", Hidden),
         ("GET", "/api/assistant", Filtered),
+        ("PUT", "/api/assistant", Run),
         ("POST", "/api/assistant/turns", Asks),
         ("GET", "/api/assistant/turns/{scope}", Filtered),
         ("POST", "/api/assistant/turns/{scope}/stop", Asks),
@@ -9220,7 +9279,11 @@ mod tests {
         ("POST", "/api/assistant/load", Run),
         ("POST", "/api/assistant/unload", Run),
         ("GET", "/api/assistant/transcript/{scope}", Filtered),
+        ("DELETE", "/api/assistant/transcript/{scope}", Asks),
         ("GET", "/api/backups", Run),
+        ("POST", "/api/backups", Run),
+        ("POST", "/api/backups/key", Run),
+        ("DELETE", "/api/backups/{name}", Run),
         ("POST", "/api/backups/upload", Run),
         ("PUT", "/api/backups/settings", Run),
         ("GET", "/api/backups/key", Run),
@@ -9237,26 +9300,73 @@ mod tests {
         ("POST", "/api/setup/backup/verify", Open),
     ];
 
-    /// The `/api/` addresses the router is built with, read out of the source, so that an address
-    /// somebody adds shows up here without anyone remembering to say so.
-    fn routed_addresses() -> std::collections::BTreeSet<String> {
-        [include_str!("server.rs"), include_str!("server/backups.rs")]
-            .iter()
-            .flat_map(|source| source.split(".route(").skip(1))
-            .filter_map(|after| {
-                let after = after.trim_start().strip_prefix('"')?;
-                let path = &after[..after.find('"')?];
-                path.starts_with("/api/").then(|| path.to_owned())
-            })
-            .collect()
+    /// The `/api/` addresses the router is built with, each with its method, read out of the
+    /// source, so that an address (or a second method on one) somebody adds shows up here without
+    /// anyone remembering to say so. The methods are the calls at the top of a route's arguments:
+    /// `get(..).post(..)`, not whatever a handler's own code calls.
+    fn routed_addresses() -> std::collections::BTreeSet<(String, String)> {
+        let mut found = std::collections::BTreeSet::new();
+        for source in [include_str!("server.rs"), include_str!("server/backups.rs")] {
+            for after in source.split(".route(").skip(1) {
+                let Some(rest) = after.trim_start().strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = rest.find('"') else {
+                    continue;
+                };
+                let path = &rest[..end];
+                if !path.starts_with("/api/") {
+                    continue;
+                }
+                let (mut depth, mut word, mut in_string) = (0_u32, String::new(), false);
+                for c in rest[end + 1..].chars() {
+                    if in_string {
+                        in_string = c != '"';
+                        continue;
+                    }
+                    match c {
+                        '"' => {
+                            in_string = true;
+                            word.clear();
+                        }
+                        '(' => {
+                            if depth == 0
+                                && matches!(
+                                    word.as_str(),
+                                    "get" | "post" | "put" | "patch" | "delete"
+                                )
+                            {
+                                found.insert((word.to_uppercase(), path.to_owned()));
+                            }
+                            word.clear();
+                            depth += 1;
+                        }
+                        ')' => {
+                            if depth == 0 {
+                                break;
+                            }
+                            depth -= 1;
+                            word.clear();
+                        }
+                        c if c.is_alphanumeric() || c == '_' => word.push(c),
+                        _ => word.clear(),
+                    }
+                }
+            }
+        }
+        found
     }
 
     #[test]
     fn every_address_is_decided_for_a_person_with_rooms() {
         let routed = routed_addresses();
-        let decided: std::collections::BTreeSet<String> = ADDRESSES
+        assert!(
+            routed.len() > 60,
+            "read too little of the router: {routed:?}"
+        );
+        let decided: std::collections::BTreeSet<(String, String)> = ADDRESSES
             .iter()
-            .map(|(_, path, _)| (*path).to_owned())
+            .map(|(method, path, _)| ((*method).to_owned(), (*path).to_owned()))
             .collect();
         let forgotten: Vec<_> = routed.difference(&decided).collect();
         assert!(
@@ -9553,7 +9663,39 @@ mod tests {
                     let (status, got, _) = call(method, &path, None, &mia).await?;
                     assert_ne!(status, StatusCode::FORBIDDEN, "{what}: {got}");
                 }
-                Hidden | Own => {}
+                // A thing by its id: what it answers for one that is his must hold nothing of
+                // the rest either. (What it answers for one that is not his is checked below.)
+                Hidden if *method == "GET" => {
+                    let (status, got, _) = call(method, &path, None, &leo).await?;
+                    if status.is_success() {
+                        holds_nothing_hidden(&what, &got);
+                    }
+                }
+                // His own name and password: the answer is a list of people, and he is told
+                // of himself alone, even when what he sent changed nothing. A name is not
+                // his to change, and the refusal must not say whether it is taken.
+                Own => {
+                    let (status, got, _) =
+                        call(method, "/api/users/leo", Some(serde_json::json!({})), &leo).await?;
+                    assert_eq!(status, StatusCode::OK, "{what}: {got}");
+                    holds_nothing_hidden(&what, &got);
+                    assert_eq!(ids(&got, "id"), ["leo"], "{what}: {got}");
+                    for name in ["Mia", "Leonard"] {
+                        let (status, got, _) = call(
+                            method,
+                            "/api/users/leo",
+                            Some(serde_json::json!({ "name": name })),
+                            &leo,
+                        )
+                        .await?;
+                        assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {got}");
+                        assert!(
+                            !got.to_string().contains("already"),
+                            "{what}: a refusal that says a name is taken: {got}"
+                        );
+                    }
+                }
+                Hidden => {}
             }
         }
 
@@ -9814,6 +9956,8 @@ mod tests {
             Some(serde_json::json!({
                 "mode": "cloud", "preset": "compatible", "base_url": base,
                 "model": "echo", "api_key": "sk-test-key-should-not-leak",
+                // The owner's standing notes may name what a person with rooms has no room for.
+                "instructions": "Never mention the Zqsecret freezer to the guests.",
             })),
             &owner,
         )
@@ -9835,6 +9979,10 @@ mod tests {
         // What the model is shown: the owner's whole home, Leo's hall and nothing more.
         let for_owner = asked(&app, &owner, "general", "What is on?").await?;
         assert!(names(&for_owner, CAMERA), "the owner is shown the camera");
+        assert!(
+            for_owner.contains("Zqsecret"),
+            "the owner's own notes are in the owner's prompt"
+        );
         assert!(for_owner.contains("read_settings") && for_owner.contains("read_logs"));
         let for_leo = asked(&app, &leo, "general", "What is on?").await?;
         assert!(names(&for_leo, &lamp_entities[0]), "Leo is shown his lamp");

@@ -68,6 +68,19 @@ impl Store {
         &self.problems
     }
 
+    /// Whether anything of a flow called `id` is kept: a flow, a file that does not read, or what
+    /// a flow that was deleted left behind (versions, runs, near-misses). A name with any of these
+    /// is not free for a regular user to take, whose it was: the old definition and what it read
+    /// are not theirs to find, and a restore would make them the owner.
+    pub fn knows(&self, id: &RuleId) -> bool {
+        self.flows.contains_key(id)
+            || self.flows_dir.join(format!("{id}.json")).exists()
+            || self.versions_dir(id).exists()
+            || self.log("runs", id).exists()
+            || self.log("near_misses", id).exists()
+            || self.tests_file(id).exists()
+    }
+
     /// Whether any flow file changed on disk since the last look; reloads if so.
     pub fn poll(&mut self) -> bool {
         let now = listing(&self.flows_dir);

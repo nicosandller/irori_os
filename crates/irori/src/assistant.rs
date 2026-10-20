@@ -2980,7 +2980,14 @@ async fn system_prompt(
     // and `full` for a cloud model.
     // The person's instructions come out of the same room, so a model on this machine is
     // handed that much less of the picture, down to a quarter of it.
-    let spent = status.instructions.chars().count();
+    // The standing instructions are the owner's, who may name things a person with rooms has no
+    // room for: they go to the owner's questions and nobody else's.
+    let instructions = if env.owner {
+        status.instructions.as_str()
+    } else {
+        ""
+    };
+    let spent = instructions.chars().count();
     let within = |tight: usize, full: usize| match local {
         Some(context) => {
             let room = roomy(tight, context, full);
@@ -2994,11 +3001,10 @@ async fn system_prompt(
          Keep answers short. Put every value or state you report in backticks, like `on` or \
          `21.5 °C`, and use **bold** for a device's name. Short lists are fine.\n",
     );
-    if !status.instructions.is_empty() {
+    if !instructions.is_empty() {
         prompt.push_str(&format!(
             "The person has left you these standing instructions. Keep to them in every \
-             answer:\n{}\n\n",
-            status.instructions
+             answer:\n{instructions}\n\n"
         ));
     }
     if scope == "general" && !env.owner {

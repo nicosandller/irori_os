@@ -509,6 +509,12 @@ fn token_actor(people: &People, token: &AccessToken) -> Option<Actor> {
     if people.locked() && (user.is_none() || !people.hashes.contains_key(&token.user)) {
         return None;
     }
+    // Only an owner makes a token, and a token is whole-home inside its scopes. Whoever it was
+    // made for is looked at each time it is used: a person made a regular user by a hand edit of
+    // `users.toml`, or by a restore that brought the token back, doesn't keep it.
+    if people.locked() && !user.as_ref().is_some_and(|user| user.role.runs_the_home()) {
+        return None;
+    }
     Some(Actor {
         user,
         owner: false,

@@ -264,7 +264,10 @@ fn the_activity_log_stays_as_it_is_unless_a_restore_asks_for_it() -> anyhow::Res
     let tmp = home()?;
     let (config, data) = paths(&tmp);
     // The log, with one row in it, then a backup, then a row more.
-    drop(crate::audit::Audit::open(&data.join("irori.db"))?);
+    drop(crate::audit::Audit::open(
+        &data.join("irori.db"),
+        crate::audit::Keep::default(),
+    )?);
     let row = |what: &str| -> anyhow::Result<()> {
         Connection::open(data.join("irori.db"))?.execute(
             "INSERT INTO audit (at_ns, actor_kind, action, outcome) VALUES (?1, 'irori', ?2, 'ok')",
@@ -338,7 +341,7 @@ async fn a_restore_is_written_down_once_after_it_is_applied() -> anyhow::Result<
     let (config, data) = paths(&tmp);
     let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
     restore_now(&backup, None, Parts::USUAL, &config, &data)?;
-    let audit = crate::audit::Audit::open(&data.join("irori.db"))?;
+    let audit = crate::audit::Audit::open(&data.join("irori.db"), crate::audit::Keep::default())?;
     record_restore(&audit, &data);
     record_restore(&audit, &data);
     let mut rows = Vec::new();
@@ -381,7 +384,10 @@ fn a_backup_from_before_the_log_leaves_the_log_there_is() -> anyhow::Result<()> 
     unpack(&backup, None, &tree, room_at(&data))?;
     let old = tree.join("data/irori.db");
     Connection::open(&old)?.execute_batch("DROP TABLE IF EXISTS audit")?;
-    drop(crate::audit::Audit::open(&data.join("irori.db"))?);
+    drop(crate::audit::Audit::open(
+        &data.join("irori.db"),
+        crate::audit::Keep::default(),
+    )?);
     Connection::open(data.join("irori.db"))?.execute(
         "INSERT INTO audit (at_ns, actor_kind, action, outcome) VALUES (?1, 'irori', 'kept', 'ok')",
         [now()],
