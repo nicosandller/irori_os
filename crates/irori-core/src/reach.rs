@@ -16,6 +16,7 @@ use irori_types::{
     Area, AreaId, Device, DeviceId, Entity, EntityId, EntityState, Floor, FloorId, Floorplan,
 };
 
+use crate::Core;
 use crate::home::Home;
 
 /// The things in some rooms.
@@ -231,5 +232,72 @@ impl Reach {
                 });
         }
         Floorplan { floors }
+    }
+}
+
+/// The home as one person has it. Every way to read the home on somebody's behalf goes through
+/// here: a list holds what is in their reach, and a lookup by id answers `None` for a thing that
+/// is outside it, which is what a thing that was never there answers too. A handler given a
+/// `Seen` has no whole-home list to forget to filter. (`Core`'s own getters are the whole home's,
+/// and are for the code that runs it: a test fails when request-handling code calls one without
+/// saying why.)
+#[derive(Debug, Clone, Copy)]
+pub struct Seen<'a> {
+    core: &'a Core,
+    reach: &'a Reach,
+}
+
+impl Core {
+    /// The home as `reach` has it.
+    pub fn seen<'a>(&'a self, reach: &'a Reach) -> Seen<'a> {
+        Seen { core: self, reach }
+    }
+}
+
+impl Seen<'_> {
+    pub fn reach(&self) -> &Reach {
+        self.reach
+    }
+
+    pub fn devices(&self) -> Vec<Device> {
+        self.reach.devices(self.core.devices())
+    }
+
+    pub fn device(&self, id: &DeviceId) -> Option<Device> {
+        self.devices().into_iter().find(|device| &device.id == id)
+    }
+
+    pub fn entities(&self) -> Vec<Entity> {
+        self.reach.entities(self.core.entities())
+    }
+
+    pub fn entity(&self, id: &EntityId) -> Option<Entity> {
+        self.reach
+            .sees_entity(id)
+            .then(|| self.core.entity(id))
+            .flatten()
+    }
+
+    pub fn states(&self) -> Vec<EntityState> {
+        self.reach.states(self.core.states())
+    }
+
+    pub fn state(&self, id: &EntityId) -> Option<EntityState> {
+        self.reach
+            .sees_entity(id)
+            .then(|| self.core.state(id))
+            .flatten()
+    }
+
+    pub fn areas(&self) -> Vec<Area> {
+        self.reach.areas(self.core.areas())
+    }
+
+    pub fn floors(&self) -> Vec<Floor> {
+        self.reach.floors(self.core.floors())
+    }
+
+    pub fn floorplan(&self) -> Floorplan {
+        self.reach.floorplan(self.core.floorplan())
     }
 }

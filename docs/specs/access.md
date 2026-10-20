@@ -176,6 +176,13 @@ the words of everything outside their rooms known, and fails if any of them come
 list the page is built from is taken apart field by field in the code, so a field added to it
 does not compile until someone has said what a person with rooms is shown of it.
 
+Code that answers a request reads the home through `core.seen(&reach)`, which holds only what
+that person has: a list is already cut down, and a thing by id outside their rooms is `None`, the
+same as one that was never there. `Core`'s own lists are the whole home's. A call to one in
+request-handling code has to say why in a `// whole-home:` comment on the line before (in
+practice, that only an owner gets that far), and a test fails on one that doesn't, so a new
+handler can't forget to filter by not knowing it had to.
+
 ## 3. The activity log
 
 A record of what people and programs **did**, kept in `irori.db` beside the sessions and

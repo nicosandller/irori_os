@@ -304,27 +304,27 @@ struct Env<'a> {
 
 impl Env<'_> {
     fn devices(&self) -> Vec<irori_types::Device> {
-        self.reach.devices(self.core.devices())
+        self.core.seen(&self.reach).devices()
     }
 
     fn entities(&self) -> Vec<irori_types::Entity> {
-        self.reach.entities(self.core.entities())
+        self.core.seen(&self.reach).entities()
     }
 
     fn states(&self) -> Vec<EntityState> {
-        self.reach.states(self.core.states())
+        self.core.seen(&self.reach).states()
     }
 
     fn areas(&self) -> Vec<irori_types::Area> {
-        self.reach.areas(self.core.areas())
+        self.core.seen(&self.reach).areas()
     }
 
     fn floors(&self) -> Vec<irori_types::Floor> {
-        self.reach.floors(self.core.floors())
+        self.core.seen(&self.reach).floors()
     }
 
     fn floorplan(&self) -> Floorplan {
-        self.reach.floorplan(self.core.floorplan())
+        self.core.seen(&self.reach).floorplan()
     }
 
     /// Where this person's conversation in `scope` is kept: owners share theirs, and anybody
@@ -2122,6 +2122,7 @@ async fn arrange(
                 }
             }
             HomeOp::RemoveArea { area } => {
+                // whole-home: removing a room is an owner's
                 match env.core.areas().into_iter().find(|known| known.id == area) {
                     Some(known) => {
                         removals.push(Removal {
@@ -2878,8 +2879,10 @@ async fn settings_picture(env: &Env<'_>, status: &Status) -> SettingsPicture {
         ));
     }
 
+    // whole-home: the Settings chat is an owner's
     let mut floors = env.core.floors();
     floors.sort_by_key(|floor| floor.level);
+    // whole-home: the Settings chat is an owner's
     let devices = env.core.devices();
     let named = |area: Option<&irori_types::AreaId>| -> Vec<String> {
         devices

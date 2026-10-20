@@ -88,6 +88,7 @@ fn rooms_to_keep(state: &AppState, asked: Vec<AreaId>, role: Role) -> Result<Vec
     if role.runs_the_home() {
         return Err("an owner has the whole home: rooms are for somebody who isn't one".to_owned());
     }
+    // whole-home: an owner sets rooms, checked against the home's rooms
     let have = state.0.core.areas();
     let mut kept: Vec<AreaId> = Vec::new();
     for area in asked {

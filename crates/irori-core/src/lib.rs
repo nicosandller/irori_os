@@ -35,7 +35,7 @@ pub use clock::{Clock, SystemClock};
 pub use events::Event;
 pub use host::{ExtensionHost, InboundLink, Timing};
 pub use people::{NOTE_ACTIONS, Notes, Person};
-pub use reach::{Reach, Rooms};
+pub use reach::{Reach, Rooms, Seen};
 pub use services::{CallError, Command};
 
 pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};

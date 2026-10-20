@@ -177,7 +177,7 @@ pub fn router(state: AppState) -> Router {
             "/api/devices",
             get(
                 |State(s): State<AppState>, Extension(reach): Extension<Reach>| async move {
-                    Json(reach.devices(s.0.core.devices()))
+                    Json(s.0.core.seen(&reach).devices())
                 },
             ),
         )
@@ -185,7 +185,7 @@ pub fn router(state: AppState) -> Router {
             "/api/entities",
             get(
                 |State(s): State<AppState>, Extension(reach): Extension<Reach>| async move {
-                    Json(reach.entities(s.0.core.entities()))
+                    Json(s.0.core.seen(&reach).entities())
                 },
             ),
         )
@@ -193,7 +193,7 @@ pub fn router(state: AppState) -> Router {
             "/api/states",
             get(
                 |State(s): State<AppState>, Extension(reach): Extension<Reach>| async move {
-                    Json(reach.states(s.0.core.states()))
+                    Json(s.0.core.seen(&reach).states())
                 },
             ),
         )
@@ -321,37 +321,35 @@ struct HomeView {
 }
 
 impl HomeView {
-    /// What `reach` has of it.
+    /// The home as `reach` has it.
     ///
-    /// Every field is taken apart by name, so one added to the view will not compile until
-    /// somebody has said what a person with only some rooms is shown of it.
-    fn within(self, reach: &Reach) -> HomeView {
-        if reach.is_whole() {
-            return self;
-        }
-        let HomeView {
-            devices,
-            entities,
-            states,
-            extensions: _,
-            areas,
-            floors,
-            held: _,
-            floorplan,
-            installs,
-        } = self;
+    /// Every field is named, so one added to the view will not compile until somebody has said
+    /// what a person with only some rooms is shown of it. The lists come from [`irori_core::Seen`],
+    /// which has nothing else to give.
+    fn of(core: &Core, reach: &Reach) -> HomeView {
+        let seen = core.seen(reach);
+        let whole = reach.is_whole();
         HomeView {
-            devices: reach.devices(devices),
-            entities: reach.entities(entities),
-            states: reach.states(states),
+            devices: seen.devices(),
+            entities: seen.entities(),
+            states: seen.states(),
             // What the extensions have found and are doing is the owner's.
-            extensions: BTreeMap::new(),
-            areas: reach.areas(areas),
-            floors: reach.floors(floors),
+            extensions: if whole {
+                core.extensions()
+            } else {
+                BTreeMap::new()
+            },
+            areas: seen.areas(),
+            floors: seen.floors(),
             // Devices kept out of the home are the owner's to let back in.
-            held: Vec::new(),
-            floorplan: reach.floorplan(floorplan),
-            installs: installs
+            held: if whole {
+                core.held_devices()
+            } else {
+                Vec::new()
+            },
+            floorplan: seen.floorplan(),
+            installs: core
+                .queued_installs()
                 .into_iter()
                 .filter(|install| reach.sees_entity(&install.entity_id))
                 .collect(),
@@ -360,19 +358,7 @@ impl HomeView {
 }
 
 fn snapshot(state: &AppState, reach: &Reach) -> HomeView {
-    let core = &state.0.core;
-    HomeView {
-        devices: core.devices(),
-        entities: core.entities(),
-        states: core.states(),
-        extensions: core.extensions(),
-        areas: core.areas(),
-        floors: core.floors(),
-        held: core.held_devices(),
-        floorplan: core.floorplan(),
-        installs: core.queued_installs(),
-    }
-    .within(reach)
+    HomeView::of(&state.0.core, reach)
 }
 
 async fn home(State(state): State<AppState>, Extension(reach): Extension<Reach>) -> Json<HomeView> {
@@ -498,7 +484,7 @@ async fn entity_history(
     Path(entity_id): Path<EntityId>,
 ) -> Response {
     // Outside a person's rooms it is answered as an entity that was never there.
-    if !reach.sees_entity(&entity_id) || state.0.core.state(&entity_id).is_none() {
+    if state.0.core.seen(&reach).state(&entity_id).is_none() {
         return refused(
             StatusCode::NOT_FOUND,
             format!("there's no entity `{entity_id}`"),
@@ -605,7 +591,7 @@ async fn entity_summary(
     Path(entity_id): Path<EntityId>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if !reach.sees_entity(&entity_id) || state.0.core.state(&entity_id).is_none() {
+    if state.0.core.seen(&reach).state(&entity_id).is_none() {
         return refused(
             StatusCode::NOT_FOUND,
             format!("there's no entity `{entity_id}`"),
@@ -679,7 +665,7 @@ async fn areas(
     State(state): State<AppState>,
     Extension(reach): Extension<Reach>,
 ) -> Json<Vec<Area>> {
-    Json(reach.areas(state.0.core.areas()))
+    Json(state.0.core.seen(&reach).areas())
 }
 
 #[derive(Debug, Deserialize)]
@@ -773,6 +759,7 @@ async fn remove_area(
     Extension(trail): Extension<trail::Trail>,
     Path(id): Path<AreaId>,
 ) -> Response {
+    // whole-home: removing a room is an owner's
     if !state.0.core.areas().iter().any(|area| area.id == id) {
         return refused(StatusCode::BAD_REQUEST, format!("there's no room `{id}`"));
     }
@@ -832,7 +819,7 @@ async fn floorplan(
     State(state): State<AppState>,
     Extension(reach): Extension<Reach>,
 ) -> Json<Floorplan> {
-    Json(reach.floorplan(state.0.core.floorplan()))
+    Json(state.0.core.seen(&reach).floorplan())
 }
 
 /// Replaces the whole plan.
@@ -939,7 +926,7 @@ async fn floors(
     State(state): State<AppState>,
     Extension(reach): Extension<Reach>,
 ) -> Json<Vec<Floor>> {
-    Json(reach.floors(state.0.core.floors()))
+    Json(state.0.core.seen(&reach).floors())
 }
 
 #[derive(Debug, Deserialize)]
@@ -1091,6 +1078,7 @@ async fn edit_device(
 ) -> Response {
     let core = &state.0.core;
     // A found device isn't in the registry, but it's still one a person can add.
+    // whole-home: adding or editing a device is an owner's
     let known = core.devices().iter().any(|device| device.id == id)
         || core.held_devices().iter().any(|device| device.id == id);
     if !known {
@@ -1129,6 +1117,7 @@ async fn edit_device(
         .await;
     match edited {
         // The device as it now is, so the page doesn't have to guess what the change produced.
+        // whole-home: the owner's edit answers with the device
         Ok(()) => Json(core.devices().into_iter().find(|device| device.id == id)).into_response(),
         Err(e) => edit_failed(e),
     }
@@ -1156,6 +1145,7 @@ async fn remove_device(
     // For a device that didn't answer a plain unpair: drop it from its network anyway.
     let force = query.as_deref() == Some("force=true");
     let core = &state.0.core;
+    // whole-home: removing a device is an owner's
     let in_home = core.devices().iter().any(|device| device.id == id);
     let found = core.held_devices().iter().any(|device| device.id == id);
     let unpairs = core.unpairs(&id);
@@ -1191,6 +1181,7 @@ async fn remove_device(
                 let core = &state.0.core;
                 for _ in 0..LATE_UNPAIR_CHECKS {
                     tokio::time::sleep(Duration::from_secs(1)).await;
+                    // whole-home: removing a device is an owner's
                     let gone = !core.devices().iter().any(|device| device.id == id)
                         && !core.held_devices().iter().any(|device| device.id == id);
                     if gone {
@@ -1299,6 +1290,7 @@ async fn edit_entity(
         })
         .await;
     match edited {
+        // whole-home: the owner's edit answers with the entity
         Ok(()) => Json(core.entities().into_iter().find(|entity| entity.id == id)).into_response(),
         Err(e) => edit_failed(e),
     }
@@ -1482,6 +1474,7 @@ async fn preview_helper(
         );
     };
     let core = &state.0.core;
+    // whole-home: previewing a helper is an owner's
     let entities = core.entities();
     let history = state.0.history.clone();
     let live = core.clone();
@@ -1730,7 +1723,7 @@ async fn camera_picture(
     if id.kind() != irori_types::EntityKind::Camera {
         return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
     }
-    if !reach.sees_entity(&id) || state.0.core.state(&id).is_none() {
+    if state.0.core.seen(&reach).state(&id).is_none() {
         return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
     }
     match state.0.core.camera_picture(&id).await {
@@ -2483,16 +2476,15 @@ async fn command(
     {
         Ok(()) => {
             // Something with no value (a button) reports nothing to wait for.
-            let has_value = core
-                .entities()
-                .iter()
-                .find(|entity| entity.id == request.entity_id)
+            let seen = core.seen(&reach);
+            let has_value = seen
+                .entity(&request.entity_id)
                 .is_some_and(|entity| entity.capabilities.primary_shape().is_some());
             if !has_value {
-                return Json(core.state(&request.entity_id)).into_response();
+                return Json(seen.state(&request.entity_id)).into_response();
             }
             let settled = settled(changes, &request.entity_id, &who.id).await;
-            Json(settled.or_else(|| core.state(&request.entity_id))).into_response()
+            Json(settled.or_else(|| seen.state(&request.entity_id))).into_response()
         }
         Err(e) => refused(status_for(&e), e.to_string()),
     }
@@ -9181,6 +9173,74 @@ mod tests {
     }
 
     // --- Rooms: what a person who has some of the home is shown (`docs/specs/access.md` §2) ---
+
+    /// Code that answers a request reads the home through [`irori_core::Seen`], which holds only
+    /// what the person has. `Core`'s own getters are the whole home's: a call to one in this code
+    /// has to say why, in a `// whole-home:` comment on the line before, and the reason is always
+    /// that only an owner gets that far. A new handler that reaches for the whole home fails here
+    /// until somebody has said it is meant to.
+    #[test]
+    fn the_whole_home_is_read_only_where_it_says_why() {
+        let sources: &[(&str, &str)] = &[
+            ("server.rs", include_str!("server.rs")),
+            ("server/people.rs", include_str!("server/people.rs")),
+            ("server/live.rs", include_str!("server/live.rs")),
+            ("server/apps.rs", include_str!("server/apps.rs")),
+            ("server/tokens.rs", include_str!("server/tokens.rs")),
+            ("server/activity.rs", include_str!("server/activity.rs")),
+            ("server/backups.rs", include_str!("server/backups.rs")),
+            ("server/trail.rs", include_str!("server/trail.rs")),
+            ("server/auth.rs", include_str!("server/auth.rs")),
+            ("assistant.rs", include_str!("assistant.rs")),
+        ];
+        #[cfg(feature = "assist")]
+        let assist = ("server/assistant.rs", include_str!("server/assistant.rs"));
+        let getters = [
+            "devices",
+            "entities",
+            "states",
+            "areas",
+            "floors",
+            "floorplan",
+            "state",
+            "entity",
+        ];
+        let mut unexplained = Vec::new();
+        let mut read = 0;
+        #[allow(unused_mut)]
+        let mut all = sources.to_vec();
+        #[cfg(feature = "assist")]
+        all.push(assist);
+        for (file, source) in all {
+            let production = source.split("\nmod tests {").next().unwrap_or(source);
+            let lines: Vec<&str> = production.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let asks = getters
+                    .iter()
+                    .any(|getter| line.contains(&format!("core.{getter}(")));
+                if !asks {
+                    continue;
+                }
+                read += 1;
+                let said = at > 0 && lines[at - 1].contains("// whole-home:");
+                if !said {
+                    unexplained.push(format!("{file}:{}: {}", at + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            read >= 8,
+            "read too little of the source ({read} calls found)"
+        );
+        assert!(
+            unexplained.is_empty(),
+            "these read the whole home without saying why; use `core.seen(&reach)`, or say why \
+             with a `// whole-home:` comment on the line before: {unexplained:#?}"
+        );
+    }
 
     /// What an address must do for a person who has only some rooms.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
