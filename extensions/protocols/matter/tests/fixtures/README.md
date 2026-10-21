@@ -1,7 +1,7 @@
 # Matter node dumps
 
 Each file is one node as the Matter server describes it (`MatterNodeData`): its id, whether it's
-reachable, and every attribute it read, keyed `endpoint/cluster/attribute`. `src/map.rs` and
+reachable, and every attribute it read, keyed `endpoint/cluster/attribute`. `src/map/` and
 `src/lib.rs` test against them.
 
 - `lab_*.json`: the dev lab's emulated devices (`dev/lab/matter/device.mjs`), commissioned onto a

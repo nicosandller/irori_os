@@ -7,9 +7,6 @@ runs it on loopback, and talks to it over its WebSocket API. It's the same trade
 with Zigbee2MQTT: a bundled runtime, in exchange for a controller that already works in a great
 many homes. [Why not `rs-matter`](#why-wrap-a-server-instead-of-rs-matter) is below.
 
-**Read-only for now.** Devices show up with their live state, but switching them is refused
-until it has been tried on real devices.
-
 ## What it does
 
 - **Installs Node.js and the Matter server** into its own package directory the first time it
@@ -18,18 +15,31 @@ until it has been tried on real devices.
 - **Runs the server on loopback only** (`127.0.0.1`, port 15580 by default). Its WebSocket API
   has no authentication, so nothing off this machine may reach it. Port 15580, not the server's
   usual 5580, so it doesn't collide with a Home Assistant Matter server on the same machine.
-- **Adds a device from a pairing code**, with the extension's "Add with a pairing code" action.
-  Over the network only (see below).
-- **Shows each device and its readings**, kept up to date as the device reports them:
+- **Adds a device from a pairing code**, with the extension's "Add with a pairing code" action:
+  over the network, or, with Bluetooth turned on, a new device fresh out of its box (see below).
+- **Shows each device and its readings**, kept up to date as the device reports them, and
+  **carries out commands** on them:
   - Lights: on and off, brightness, colour temperature and colour, as the light supports.
   - Plugs, in-wall switches and appliances' power: switches.
+  - Locks: lock, unlock, and unlatch for a lock that can pull its latch. A lock that wants a PIN
+    for remote use is sent the code given with the command.
+  - Blinds, shades, curtains, awnings and shutters: open, close, stop, and a position and tilt
+    for one that knows where it is.
+  - Thermostats and radiator valves: off, heat, cool, or heat and cool between two setpoints, as
+    the thermostat supports, with its own limits. Turning one on goes back to the mode it was
+    last in.
+  - Fans and air purifiers' fans: speed, auto and the wind presets, oscillation and direction,
+    as the fan supports.
+  - Each device's firmware, when it can take new firmware (see [Firmware](#firmware)).
   - Temperature, humidity, illuminance, pressure, flow, battery, power, voltage, current and
     energy: sensors in Irori's units (°C, %, lx, kPa, m³/h, W, V, A, kWh).
   - Occupancy, door contact, water leak, freeze and rain: binary sensors.
   - A bridge's devices (a Hue bridge, an IKEA hub) as devices of their own, reached through the
     bridge.
-- **Lists what it doesn't read yet** on the device: locks, covers, thermostats, fans, buttons,
-  valves and smoke alarms appear under "not supported yet" rather than vanishing.
+- **Lists what it doesn't read yet** on the device: buttons, valves and smoke alarms appear
+  under "not supported yet" rather than vanishing.
+- **Says who asked.** The state a command causes is reported as that command's result, so an
+  automation's run and the activity log show what it changed.
 - **Marks a device unavailable** when the server can't reach it, or, behind a bridge, when the
   bridge says it can't. The extension's card says how many aren't answering.
 - **Removing a device takes Irori off it.** A Matter device can belong to several apps at once
@@ -52,11 +62,13 @@ last digit is a check digit.
   - Home Assistant: the device → Share device.
 - **A new device that's already on the network** (Wi-Fi or Ethernet): the 11 digits printed
   under its QR code.
-- **A new device that joins over Bluetooth**, which is most new Wi-Fi and Thread devices, can't
-  be added directly yet. Set it up in another app first, then share it.
+- **A new device that joins over Bluetooth**, which is most new Wi-Fi and Thread devices: turn
+  on Bluetooth in settings and give the network it should join (see
+  [Bluetooth](#adding-over-bluetooth)), then type the 11 digits printed on it. Or set it up in
+  another app first, then share it.
 
-Adding takes a few seconds once the device is found. If nothing on the network answers to the
-code within two minutes, the action says so. The device then waits under "+ Add device" on the
+Adding takes a few seconds once the device is found. If nothing answers to the code within two
+minutes (about five over Bluetooth), the action says so. The device then waits under "+ Add device" on the
 Devices page, like anything else an extension finds, until it's added to the home.
 
 ## Removing a device
@@ -76,6 +88,44 @@ Everything has a default.
 | `port` | 15580 | The server's loopback port. Change it only if something else here uses it. |
 | `primary_interface` | the server picks | The network interface Matter devices are on (`eth0`, `wlan0`), for a machine with more than one. |
 | `allow_test_devices` | off | Accept devices made with development certificates: Matter SDK samples, the dev lab's devices, a prototype. A shop-bought device never needs it. |
+| `firmware_updates` | on | Offer each device's firmware updates. Off, the server doesn't look for any. |
+| `bluetooth` | off | Add new devices over Bluetooth. |
+| `bluetooth_adapter` | 0 | Which adapter on Linux: 0 for `hci0`. A Mac ignores it. |
+| `wifi_ssid`, `wifi_password` | none | The Wi-Fi network a new Wi-Fi device joins when it's added over Bluetooth. The password is a secret. |
+| `thread_dataset` | none | The Thread network a new Thread device joins, as hex. A secret. |
+
+The two secrets are kept in Irori's `secrets.toml`, never shown again once saved, and handed to
+the Matter server each time it starts.
+
+## Adding over Bluetooth
+
+A device fresh out of its box isn't on any network yet. Over Bluetooth, the Matter server
+proves it's genuine, then gives it the network to join, Wi-Fi or Thread, and finds it there.
+
+- Turn on `bluetooth` and give `wifi_ssid` and `wifi_password` (most Matter devices need 2.4 GHz),
+  or `thread_dataset` for Thread devices. The dataset is the border router's "active operational
+  dataset" in hex: Home Assistant's Thread settings show it, as does `ot-ctl dataset active -x`.
+  Apple's and Google's border routers don't give theirs out; add their Thread devices in their
+  own apps first, then share them.
+- **Linux:** the Matter server talks to the adapter directly, so its Node.js needs two
+  capabilities: `sudo setcap cap_net_raw,cap_net_admin+eip <package directory>/runtime/bin/node`
+  (again after each upgrade, which reinstalls Node.js). If the server still can't use the adapter,
+  BlueZ may be holding it: stop it (`sudo systemctl stop bluetooth`) or use a second adapter,
+  set with `bluetooth_adapter`.
+- **macOS:** the app Irori runs in (Terminal, say) needs Bluetooth permission, in System
+  Settings → Privacy & Security → Bluetooth.
+- Keep the device within a few metres while it's added.
+
+## Firmware
+
+With `firmware_updates` on, the Matter server looks up each device in the DCL, the register
+where makers publish their firmware, and Irori asks it what it found a minute after starting and
+every six hours after. A device that can take new firmware gets a "Firmware" entity under its
+settings, which shows the version it runs and any newer one, with its release notes.
+
+Nothing is installed until someone installs it. Installing has the server download the firmware
+and hand it to the device, which says how far it has got; the device restarts to finish, and the
+entity then shows the new version. "Check for updates" asks again at once.
 
 ## Networking
 
@@ -114,10 +164,10 @@ and what it is: `…-1-light`, `…-1-temperature`.
 
 ## What it doesn't do yet
 
-- Switching, dimming and every other command. Next, once tried on real devices.
-- Commissioning over Bluetooth, and giving a device Wi-Fi or Thread credentials.
-- Firmware updates (the server's OTA is turned off until it can be offered as the `update` kind).
-- Locks, covers, thermostats, fans, buttons and valves: listed, not read.
+- Buttons (their presses are events), valves and smoke alarms: listed, not read.
+- Thermostat presets and fan modes beyond the fan's own, a thermostat's humidity, lock users and
+  PIN management, and schedules.
+- Running a Thread border router. Thread devices need one already in the home.
 - Using a Matter server someone already runs (Home Assistant's, say). Irori would then act on
   that server's fabric: removing a device would remove it from Home Assistant.
 
@@ -133,15 +183,16 @@ server, the way Zigbee wraps Zigbee2MQTT. In October 2026:
 | Controller work | Irori's to build: fabric and certificate storage, node ids, resubscribing, keeping each node's attributes, attestation | the server's: commissioning, certificates, sessions, subscriptions, attestation |
 | Maturity | its commissioner landed in May 2026 and changed incompatibly in October; crates.io 0.4.1; no controller example | the controller Home Assistant ships; Matter 1.6; tagged releases |
 
-The part that turns Matter into Irori's devices (`src/map.rs`) is written in Matter's own terms,
+The part that turns Matter into Irori's devices (`src/map/`) is written in Matter's own terms,
 nodes, endpoints, clusters and attributes, and doesn't know where they came from. `src/client.rs`
-is the whole of what the rest asks of a controller: the server's events, and commissioning and
-removing a node. A controller on `rs-matter` could take its place later without touching the
+is the whole of what the rest asks of a controller: the server's events; commissioning and
+removing a node; a cluster command or an attribute write; and firmware to look for and install. A controller on `rs-matter` could take its place later without touching the
 mapping, and drop the Node.js.
 
 ## Credits
 
 The mapping follows Home Assistant's Matter integration
 (`homeassistant/components/matter/`, Apache-2.0): which device types make an On/Off cluster a
-light or a switch, and each measurement's units. Most of the node dumps in `tests/fixtures/` are
+light or a switch, each measurement's units, and how locks, covers, thermostats and fans are read
+and commanded. Most of the node dumps in `tests/fixtures/` are
 Home Assistant's own test fixtures; see [`tests/fixtures/README.md`](tests/fixtures/README.md).

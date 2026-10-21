@@ -11,15 +11,25 @@
 //!   A bridged device adds the bridged device's own UniqueID, or `ep<N>` when it gives none.
 //!   An entity adds its endpoint and what it is: `…-1-light`, `…-1-temperature`.
 
+mod climate;
+mod cover;
+mod fan;
+mod light;
+mod lock;
+pub mod update;
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::model::{Node, NodeId, cluster, device_type};
+use serde_json::json;
+
+use crate::client::SoftwareUpdate;
+use crate::model::{Command, Node, NodeId, cluster, device_type};
 use irori_types::{
-    BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities, ColorMode,
-    ColorTempRange, DeviceDescription, EntityCategory, EntityDescription, LightCapabilities,
-    LightState, Name, ObjectId, SensorCapabilities, SensorClass, SensorState, SensorValue,
-    SensorValueType, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId,
-    Unmodeled,
+    BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities,
+    ClimateCapabilities, CoverCapabilities, DeviceDescription, EntityCategory, EntityDescription,
+    FanCapabilities, HvacMode, LightCapabilities, LockCapabilities, Name, ObjectId,
+    SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, Service, State,
+    StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId, Unmodeled,
 };
 
 /// Everything a node is, in Irori's terms.
@@ -42,13 +52,25 @@ pub struct Mapped {
     pub reading: Reading,
 }
 
-/// What an entity's state is read from.
+/// What an entity's state is read from, and what it's commanded through.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Reading {
     Light(LightCapabilities),
     Switch(SwitchClass),
     Sensor(Measure),
     Binary(Binary),
+    Lock(LockCapabilities),
+    Cover(CoverCapabilities),
+    Climate(ClimateCapabilities),
+    Fan(FanCapabilities),
+    /// The node's firmware.
+    Update,
+}
+
+/// What an entity's state needs beside the node: what the Matter server found newer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Known<'a> {
+    pub update: Option<&'a SoftwareUpdate>,
 }
 
 /// The node device's id.
@@ -86,16 +108,16 @@ const APPLIANCES: &[u32] = &[
     0x0304, 0x0070, 0x0074, 0x0072,
 ];
 
+/// Devices whose own entity locks, moves or heats: an On/Off cluster beside it isn't a switch
+/// anyone would use. Door lock, window covering, thermostat.
+const NOT_SWITCHES: &[u32] = &[0x000A, 0x0202, 0x0301];
+
 /// A speaker's On/Off cluster is its mute, which isn't a switch Irori can show the right way
 /// round yet.
 const SPEAKER: u32 = 0x0022;
 
 /// Clusters for things Irori has a kind for but this extension doesn't read yet.
 const NOT_YET: &[(u32, &str)] = &[
-    (cluster::DOOR_LOCK, "lock"),
-    (cluster::WINDOW_COVERING, "cover"),
-    (cluster::THERMOSTAT, "climate"),
-    (cluster::FAN_CONTROL, "fan"),
     (cluster::SWITCH, "event"),
     (cluster::VALVE, "valve"),
     (cluster::SMOKE_CO_ALARM, "smoke_co_alarm"),
@@ -259,7 +281,9 @@ pub enum Binary {
     Rain,
 }
 
-pub fn describe(fabric: u64, node: &Node) -> Described {
+/// Everything the node is. `updates`: its firmware is offered as an `update` entity, when it
+/// can take new firmware.
+pub fn describe(fabric: u64, node: &Node, updates: bool) -> Described {
     let own = node_device(fabric, node.id);
     let bridged: Vec<u16> = node
         .endpoints()
@@ -327,7 +351,7 @@ pub fn describe(fabric: u64, node: &Node) -> Described {
                     endpoint,
                     "light",
                     None,
-                    light(node, endpoint),
+                    light::reading(node, endpoint),
                 ));
             } else if is_any(APPLIANCES) {
                 found.push((
@@ -337,7 +361,7 @@ pub fn describe(fabric: u64, node: &Node) -> Described {
                     Some("Power"),
                     Reading::Switch(SwitchClass::Switch),
                 ));
-            } else if !types.contains(&SPEAKER) {
+            } else if !types.contains(&SPEAKER) && !is_any(NOT_SWITCHES) {
                 // A plug is an outlet; an in-wall switch and the rest switch whatever's wired.
                 let class = if types.contains(&device_type::ON_OFF_PLUG_IN_UNIT) {
                     SwitchClass::Outlet
@@ -407,6 +431,51 @@ pub fn describe(fabric: u64, node: &Node) -> Described {
                 ));
             }
         }
+        if node.has(endpoint, cluster::DOOR_LOCK, 0) {
+            found.push((
+                device.clone(),
+                endpoint,
+                "lock",
+                None,
+                Reading::Lock(lock::capabilities(node, endpoint)),
+            ));
+        }
+        if node.has_cluster(endpoint, cluster::WINDOW_COVERING) {
+            found.push((
+                device.clone(),
+                endpoint,
+                "cover",
+                None,
+                Reading::Cover(cover::capabilities(node, endpoint)),
+            ));
+        }
+        if node.has(endpoint, cluster::THERMOSTAT, 0x001C) {
+            found.push((
+                device.clone(),
+                endpoint,
+                "climate",
+                None,
+                Reading::Climate(climate::capabilities(node, endpoint)),
+            ));
+        }
+        if node.has(endpoint, cluster::FAN_CONTROL, 0) {
+            found.push((
+                device.clone(),
+                endpoint,
+                "fan",
+                None,
+                Reading::Fan(fan::capabilities(node, endpoint)),
+            ));
+        }
+        if endpoint == 0 && updates && update::has_requestor(node) {
+            found.push((
+                own.clone(),
+                0,
+                "firmware",
+                Some("Firmware"),
+                Reading::Update,
+            ));
+        }
         for &(of, platform) in NOT_YET {
             if node.has_cluster(endpoint, of) {
                 unmodeled.push(Unmodeled {
@@ -449,6 +518,7 @@ pub fn describe(fabric: u64, node: &Node) -> Described {
                         Reading::Sensor(measure) if info(*measure).diagnostic => {
                             Some(EntityCategory::Diagnostic)
                         }
+                        Reading::Update => Some(EntityCategory::Config),
                         _ => None,
                     },
                 },
@@ -469,6 +539,10 @@ pub fn describe(fabric: u64, node: &Node) -> Described {
 fn title(key: &str) -> &'static str {
     match key {
         "light" => "Light",
+        "lock" => "Lock",
+        "cover" => "Cover",
+        "climate" => "Thermostat",
+        "fan" => "Fan",
         _ => "Switch",
     }
 }
@@ -530,57 +604,6 @@ fn short_name(text: &str) -> Option<Name> {
     Name::try_from(cut.trim()).ok()
 }
 
-/// What a light can do: dim, unless it says it's only an On/Off Light; colour temperature and
-/// colour, as its Color Control features say.
-fn light(node: &Node, endpoint: u16) -> Reading {
-    let brightness = node.has(endpoint, cluster::LEVEL_CONTROL, 0)
-        && node.device_types(endpoint) != [device_type::ON_OFF_LIGHT];
-    let color = node.has_cluster(endpoint, cluster::COLOR_CONTROL);
-    let features = node.features(endpoint, cluster::COLOR_CONTROL);
-    let rgb = color && features & (color_feature::HUE_SATURATION | color_feature::XY) != 0;
-    let color_temp = color && features & color_feature::COLOR_TEMPERATURE != 0;
-    Reading::Light(LightCapabilities {
-        brightness,
-        color_temp_kelvin: color_temp.then(|| color_temp_range(node, endpoint)),
-        rgb,
-    })
-}
-
-/// Color Control's feature bits.
-mod color_feature {
-    pub const HUE_SATURATION: u64 = 1;
-    pub const XY: u64 = 8;
-    pub const COLOR_TEMPERATURE: u64 = 16;
-}
-
-/// The light's own colour temperature limits, or Home Assistant's 153-500 mireds when it gives
-/// none.
-fn color_temp_range(node: &Node, endpoint: u16) -> ColorTempRange {
-    let mireds = |attribute, fallback| {
-        node.number(endpoint, cluster::COLOR_CONTROL, attribute)
-            .filter(|mireds| *mireds > 0.0)
-            .unwrap_or(fallback)
-    };
-    // The fewest mireds are the coolest light, the most kelvin.
-    let warmest = kelvin(mireds(0x400C, 500.0));
-    let coolest = kelvin(mireds(0x400B, 153.0));
-    ColorTempRange {
-        min: warmest.min(coolest),
-        max: warmest.max(coolest),
-    }
-}
-
-/// Mireds to kelvin, within Irori's 1000-20000 K.
-fn kelvin(mireds: f64) -> u16 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 1000..=20000 first"
-    )]
-    let kelvin = (1_000_000.0 / mireds).round().clamp(1000.0, 20000.0) as u16;
-    kelvin
-}
-
 fn capabilities(reading: &Reading) -> Capabilities {
     match reading {
         Reading::Light(light) => Capabilities::Light(light.clone()),
@@ -597,6 +620,11 @@ fn capabilities(reading: &Reading) -> Capabilities {
                 options: Vec::new(),
             })
         }
+        Reading::Lock(lock) => Capabilities::Lock(lock.clone()),
+        Reading::Cover(cover) => Capabilities::Cover(cover.clone()),
+        Reading::Climate(climate) => Capabilities::Climate(climate.clone()),
+        Reading::Fan(fan) => Capabilities::Fan(fan.clone()),
+        Reading::Update => Capabilities::Update(update::capabilities()),
         Reading::Binary(binary) => Capabilities::BinarySensor(BinarySensorCapabilities {
             device_class: Some(match binary {
                 Binary::Occupancy => BinarySensorClass::Occupancy,
@@ -609,10 +637,15 @@ fn capabilities(reading: &Reading) -> Capabilities {
 }
 
 /// The entity's state now, or `None` when the node doesn't know it (a `null` reading).
-pub fn state(node: &Node, mapped: &Mapped) -> Option<State> {
+pub fn state(node: &Node, mapped: &Mapped, known: &Known<'_>) -> Option<State> {
     let endpoint = mapped.endpoint;
     match &mapped.reading {
-        Reading::Light(known) => light_state(node, endpoint, known),
+        Reading::Lock(_) => lock::state(node, endpoint),
+        Reading::Cover(caps) => cover::state(node, endpoint, caps),
+        Reading::Climate(caps) => climate::state(node, endpoint, caps),
+        Reading::Fan(caps) => fan::state(node, endpoint, caps),
+        Reading::Update => update::state(node, known.update),
+        Reading::Light(known) => light::state(node, endpoint, known),
         Reading::Switch(_) => Some(State::Switch(SwitchState {
             on: node.value(endpoint, cluster::ON_OFF, 0)?.as_bool()?,
         })),
@@ -633,6 +666,49 @@ pub fn state(node: &Node, mapped: &Mapped) -> Option<State> {
                 }
             };
             Some(State::BinarySensor(BinarySensorState { on }))
+        }
+    }
+}
+
+/// What a service call sends the node, in order. `last_on` is the mode a thermostat was last in
+/// that wasn't off, for `climate.turn_on`. Firmware is installed and checked through the
+/// Matter server itself, not with commands (`lib`).
+pub fn command(
+    node: &Node,
+    mapped: &Mapped,
+    service: &Service,
+    last_on: Option<HvacMode>,
+) -> Result<Vec<Command>, String> {
+    let endpoint = mapped.endpoint;
+    match &mapped.reading {
+        Reading::Light(caps) => light::command(node, endpoint, caps, service),
+        Reading::Switch(_) => match service {
+            Service::SwitchTurnOn => Ok(vec![Command::invoke(
+                endpoint,
+                cluster::ON_OFF,
+                "on",
+                json!({}),
+            )]),
+            Service::SwitchTurnOff => Ok(vec![Command::invoke(
+                endpoint,
+                cluster::ON_OFF,
+                "off",
+                json!({}),
+            )]),
+            other => Err(format!("a switch doesn't take {}", other.name())),
+        },
+        Reading::Lock(_) => lock::command(endpoint, service),
+        Reading::Cover(_) => cover::command(endpoint, service),
+        Reading::Climate(caps) => {
+            let current = match climate::state(node, endpoint, caps) {
+                Some(State::Climate(state)) => Some(state.hvac_mode),
+                _ => None,
+            };
+            climate::command(endpoint, caps, current, last_on, service)
+        }
+        Reading::Fan(_) => fan::command(node, endpoint, service),
+        Reading::Sensor(_) | Reading::Binary(_) | Reading::Update => {
+            Err(format!("it doesn't take {}", service.name()))
         }
     }
 }
@@ -661,150 +737,74 @@ fn round(value: f64, places: i32) -> f64 {
     (value * scale).round() / scale
 }
 
-/// A light's state, trimmed to what it was described as doing: the core refuses a reading the
-/// entity didn't declare.
-fn light_state(node: &Node, endpoint: u16, known: &LightCapabilities) -> Option<State> {
-    let on = node.value(endpoint, cluster::ON_OFF, 0)?.as_bool()?;
-    let brightness = known
-        .brightness
-        .then(|| node.number(endpoint, cluster::LEVEL_CONTROL, 0))
-        .flatten()
-        .and_then(level);
-    let color = |attribute| node.number(endpoint, cluster::COLOR_CONTROL, attribute);
-    // 0 hue and saturation, 1 XY, 2 colour temperature.
-    let mode = color(8);
-    let showing_ct = known.color_temp_kelvin.is_some() && (mode == Some(2.0) || !known.rgb);
-    let showing_rgb = known.rgb && !showing_ct;
-    let color_temp_kelvin = known
-        .color_temp_kelvin
-        .filter(|_| showing_ct)
-        .and_then(|range| {
-            let mireds = color(7).filter(|mireds| *mireds > 0.0)?;
-            Some(kelvin(mireds).clamp(range.min, range.max))
-        });
-    let rgb = showing_rgb
-        .then(|| {
-            if mode == Some(1.0) {
-                xy_to_rgb(color(3)? / 65535.0, color(4)? / 65535.0)
-            } else {
-                Some(hs_to_rgb(color(0)? / 254.0 * 360.0, color(1)? / 254.0))
-            }
-        })
-        .flatten();
-    let both = known.rgb && known.color_temp_kelvin.is_some();
-    let color_mode = match (both, rgb.is_some(), color_temp_kelvin.is_some()) {
-        (true, true, _) => Some(ColorMode::Rgb),
-        (true, false, true) => Some(ColorMode::ColorTemp),
-        _ => None,
-    };
-    Some(State::Light(LightState {
-        on,
-        brightness,
-        color_mode,
-        color_temp_kelvin,
-        rgb,
-    }))
-}
-
-/// Level Control's 1-254 to Irori's 1-255. Level 0 isn't a brightness.
-fn level(value: f64) -> Option<u8> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 1..=255 first"
-    )]
-    (value >= 1.0).then(|| (value * 255.0 / 254.0).round().clamp(1.0, 255.0) as u8)
-}
-
-/// Hue in degrees and saturation 0-1, at full value.
-fn hs_to_rgb(hue: f64, saturation: f64) -> [u8; 3] {
-    let saturation = saturation.clamp(0.0, 1.0);
-    let sector = (hue.rem_euclid(360.0)) / 60.0;
-    let chroma = saturation;
-    let x = chroma * (1.0 - (sector % 2.0 - 1.0).abs());
-    let (r, g, b) = match sector as u8 {
-        0 => (chroma, x, 0.0),
-        1 => (x, chroma, 0.0),
-        2 => (0.0, chroma, x),
-        3 => (0.0, x, chroma),
-        4 => (x, 0.0, chroma),
-        _ => (chroma, 0.0, x),
-    };
-    let m = 1.0 - chroma;
-    [byte(r + m), byte(g + m), byte(b + m)]
-}
-
-/// CIE xy at full brightness to sRGB, as Home Assistant's `color_xy_to_RGB` does it.
-fn xy_to_rgb(x: f64, y: f64) -> Option<[u8; 3]> {
-    if y <= 0.0 {
-        return None;
-    }
-    let (big_x, big_y, big_z) = (x / y, 1.0, (1.0 - x - y) / y);
-    let linear = [
-        big_x * 1.656_492 - big_y * 0.354_851 - big_z * 0.255_038,
-        -big_x * 0.707_196 + big_y * 1.655_397 + big_z * 0.036_152,
-        big_x * 0.051_713 - big_y * 0.121_364 + big_z * 1.011_530,
-    ];
-    let gamma = linear.map(|c| {
-        let c = c.max(0.0);
-        if c <= 0.003_130_8 {
-            12.92 * c
-        } else {
-            1.055 * c.powf(1.0 / 2.4) - 0.055
-        }
-    });
-    let max = gamma.iter().copied().fold(0.0_f64, f64::max);
-    let scale = if max > 1.0 { max } else { 1.0 };
-    Some(gamma.map(|c| byte(c / scale)))
-}
-
-fn byte(fraction: f64) -> u8 {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "clamped to 0..=255 first"
-    )]
-    let byte = (fraction * 255.0).round().clamp(0.0, 255.0) as u8;
-    byte
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Path;
+    use irori_types::{ColorMode, ColorTempRange, LightState};
 
     const FABRIC: u64 = 0x8E57_6D93_9A1C_2B52;
 
     fn fixture(name: &str) -> Node {
         let text = match name {
-            "atios_knx_bridge" => include_str!("../tests/fixtures/atios_knx_bridge.json"),
+            "atios_knx_bridge" => include_str!("../../tests/fixtures/atios_knx_bridge.json"),
             "color_temperature_light" => {
-                include_str!("../tests/fixtures/color_temperature_light.json")
+                include_str!("../../tests/fixtures/color_temperature_light.json")
             }
-            "eve_contact_sensor" => include_str!("../tests/fixtures/eve_contact_sensor.json"),
-            "eve_energy_plug" => include_str!("../tests/fixtures/eve_energy_plug.json"),
-            "extended_color_light" => include_str!("../tests/fixtures/extended_color_light.json"),
-            "fritz_bridge" => include_str!("../tests/fixtures/fritz_bridge.json"),
-            "mock_composed_bridge" => include_str!("../tests/fixtures/mock_composed_bridge.json"),
-            "mock_dimmable_light" => include_str!("../tests/fixtures/mock_dimmable_light.json"),
-            "mock_generic_switch" => include_str!("../tests/fixtures/mock_generic_switch.json"),
-            "mock_humidity_sensor" => include_str!("../tests/fixtures/mock_humidity_sensor.json"),
-            "mock_leak_sensor" => include_str!("../tests/fixtures/mock_leak_sensor.json"),
-            "mock_light_sensor" => include_str!("../tests/fixtures/mock_light_sensor.json"),
+            "eve_contact_sensor" => include_str!("../../tests/fixtures/eve_contact_sensor.json"),
+            "eve_energy_plug" => include_str!("../../tests/fixtures/eve_energy_plug.json"),
+            "extended_color_light" => {
+                include_str!("../../tests/fixtures/extended_color_light.json")
+            }
+            "fritz_bridge" => include_str!("../../tests/fixtures/fritz_bridge.json"),
+            "mock_composed_bridge" => {
+                include_str!("../../tests/fixtures/mock_composed_bridge.json")
+            }
+            "mock_dimmable_light" => include_str!("../../tests/fixtures/mock_dimmable_light.json"),
+            "mock_generic_switch" => include_str!("../../tests/fixtures/mock_generic_switch.json"),
+            "mock_humidity_sensor" => {
+                include_str!("../../tests/fixtures/mock_humidity_sensor.json")
+            }
+            "mock_leak_sensor" => include_str!("../../tests/fixtures/mock_leak_sensor.json"),
+            "mock_light_sensor" => include_str!("../../tests/fixtures/mock_light_sensor.json"),
             "mock_occupancy_sensor" => {
-                include_str!("../tests/fixtures/mock_occupancy_sensor.json")
+                include_str!("../../tests/fixtures/mock_occupancy_sensor.json")
             }
             "mock_on_off_plugin_unit" => {
-                include_str!("../tests/fixtures/mock_on_off_plugin_unit.json")
+                include_str!("../../tests/fixtures/mock_on_off_plugin_unit.json")
             }
-            "mock_onoff_light" => include_str!("../tests/fixtures/mock_onoff_light.json"),
-            "mock_pressure_sensor" => include_str!("../tests/fixtures/mock_pressure_sensor.json"),
+            "mock_onoff_light" => include_str!("../../tests/fixtures/mock_onoff_light.json"),
+            "mock_pressure_sensor" => {
+                include_str!("../../tests/fixtures/mock_pressure_sensor.json")
+            }
             "mock_temperature_sensor" => {
-                include_str!("../tests/fixtures/mock_temperature_sensor.json")
+                include_str!("../../tests/fixtures/mock_temperature_sensor.json")
             }
-            "silabs_light_switch" => include_str!("../tests/fixtures/silabs_light_switch.json"),
-            "lab_plug" => include_str!("../tests/fixtures/lab_plug.json"),
-            "lab_occupancy" => include_str!("../tests/fixtures/lab_occupancy.json"),
-            "lab_switch" => include_str!("../tests/fixtures/lab_switch.json"),
+            "silabs_light_switch" => include_str!("../../tests/fixtures/silabs_light_switch.json"),
+            "lab_plug" => include_str!("../../tests/fixtures/lab_plug.json"),
+            "lab_occupancy" => include_str!("../../tests/fixtures/lab_occupancy.json"),
+            "lab_switch" => include_str!("../../tests/fixtures/lab_switch.json"),
+            "mock_door_lock" => include_str!("../../tests/fixtures/mock_door_lock.json"),
+            "mock_door_lock_with_unbolt" => {
+                include_str!("../../tests/fixtures/mock_door_lock_with_unbolt.json")
+            }
+            "mock_window_covering_full" => {
+                include_str!("../../tests/fixtures/mock_window_covering_full.json")
+            }
+            "mock_window_covering_lift" => {
+                include_str!("../../tests/fixtures/mock_window_covering_lift.json")
+            }
+            "mock_thermostat" => include_str!("../../tests/fixtures/mock_thermostat.json"),
+            "mock_fan" => include_str!("../../tests/fixtures/mock_fan.json"),
+            "mock_air_purifier" => include_str!("../../tests/fixtures/mock_air_purifier.json"),
+            "tado_smart_radiator_thermostat_x" => {
+                include_str!("../../tests/fixtures/tado_smart_radiator_thermostat_x.json")
+            }
+            "lab_light" => include_str!("../../tests/fixtures/lab_light.json"),
+            "lab_lock" => include_str!("../../tests/fixtures/lab_lock.json"),
+            "lab_blind" => include_str!("../../tests/fixtures/lab_blind.json"),
+            "lab_thermostat" => include_str!("../../tests/fixtures/lab_thermostat.json"),
+            "lab_fan" => include_str!("../../tests/fixtures/lab_fan.json"),
             other => panic!("no fixture {other}"),
         };
         Node::from_json(&serde_json::from_str(text).expect("a fixture is JSON")).expect("a node")
@@ -812,7 +812,7 @@ mod tests {
 
     /// Each entity as `(id after the device's, name, kind, state)`.
     fn summary(node: &Node) -> Vec<(String, Option<String>, String, Option<State>)> {
-        let described = describe(FABRIC, node);
+        let described = describe(FABRIC, node, false);
         described
             .entities
             .iter()
@@ -830,7 +830,7 @@ mod tests {
                         .as_ref()
                         .map(|n| n.as_str().to_owned()),
                     mapped.description.capabilities.kind().to_string(),
-                    state(node, mapped),
+                    state(node, mapped, &Known::default()),
                 )
             })
             .collect()
@@ -859,7 +859,7 @@ mod tests {
     #[test]
     fn a_node_is_a_device_named_by_its_label_with_its_maker_and_firmware() {
         let node = fixture("lab_plug");
-        let described = describe(FABRIC, &node);
+        let described = describe(FABRIC, &node, false);
         assert_eq!(described.devices.len(), 1);
         let device = &described.devices[0];
         assert_eq!(
@@ -871,7 +871,7 @@ mod tests {
         assert_eq!(device.model.as_deref(), Some("plug"));
         assert_eq!(device.via_device_unique_id, None);
         // No label: the product's name.
-        let eve = describe(FABRIC, &fixture("eve_contact_sensor"));
+        let eve = describe(FABRIC, &fixture("eve_contact_sensor"), false);
         assert_eq!(eve.devices[0].name.as_str(), "Eve Door");
         assert_eq!(eve.devices[0].sw_version.as_deref(), Some("3.2.1"));
     }
@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn a_plug_is_an_outlet_and_an_in_wall_switch_a_switch() {
-        let class = |name: &str| match describe(FABRIC, &fixture(name)).entities[0]
+        let class = |name: &str| match describe(FABRIC, &fixture(name), false).entities[0]
             .description
             .capabilities
         {
@@ -921,7 +921,7 @@ mod tests {
         assert_eq!(class("lab_plug"), Some(SwitchClass::Outlet));
         assert_eq!(class("lab_switch"), Some(SwitchClass::Switch));
         assert_eq!(
-            describe(FABRIC, &fixture("lab_switch")).devices[0]
+            describe(FABRIC, &fixture("lab_switch"), false).devices[0]
                 .name
                 .as_str(),
             "Outside wall switch"
@@ -952,7 +952,7 @@ mod tests {
         );
 
         let node = fixture("color_temperature_light");
-        let described = describe(FABRIC, &node);
+        let described = describe(FABRIC, &node, false);
         assert_eq!(
             described.entities[0].reading,
             Reading::Light(LightCapabilities {
@@ -965,7 +965,7 @@ mod tests {
             })
         );
         assert_eq!(
-            state(&node, &described.entities[0]),
+            state(&node, &described.entities[0], &Known::default()),
             Some(State::Light(LightState {
                 brightness: Some(129),
                 // 284 mireds; only colour temperature, so no mode to say.
@@ -975,13 +975,13 @@ mod tests {
         );
 
         let node = fixture("extended_color_light");
-        let described = describe(FABRIC, &node);
+        let described = describe(FABRIC, &node, false);
         let Reading::Light(caps) = &described.entities[0].reading else {
             panic!("a light");
         };
         assert!(caps.rgb && caps.color_temp_kelvin.is_some());
         assert_eq!(
-            state(&node, &described.entities[0]),
+            state(&node, &described.entities[0], &Known::default()),
             Some(State::Light(LightState {
                 brightness: Some(129),
                 // Showing hue and saturation (mode 0): hue 36 of 254, saturation 51 of 254.
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn a_battery_is_a_diagnostic() {
-        let described = describe(FABRIC, &fixture("eve_contact_sensor"));
+        let described = describe(FABRIC, &fixture("eve_contact_sensor"), false);
         assert_eq!(
             described.entities[0].description.entity_category,
             Some(EntityCategory::Diagnostic)
@@ -1052,7 +1052,7 @@ mod tests {
 
     #[test]
     fn a_bridged_device_is_its_own_device_through_the_bridge() {
-        let described = describe(FABRIC, &fixture("mock_composed_bridge"));
+        let described = describe(FABRIC, &fixture("mock_composed_bridge"), false);
         let bridge = "8E576D939A1C2B52-0000000000000063";
         assert_eq!(described.devices.len(), 2);
         assert_eq!(described.devices[0].unique_id.as_str(), bridge);
@@ -1084,7 +1084,7 @@ mod tests {
         );
 
         // No UniqueID: its endpoint, then.
-        let fritz = describe(FABRIC, &fixture("fritz_bridge"));
+        let fritz = describe(FABRIC, &fixture("fritz_bridge"), false);
         assert_eq!(
             fritz.devices[1].unique_id.as_str(),
             "8E576D939A1C2B52-0000000000000001-ep42"
@@ -1126,7 +1126,7 @@ mod tests {
     #[test]
     fn buttons_are_listed_as_not_read_yet() {
         for name in ["mock_generic_switch", "silabs_light_switch"] {
-            let described = describe(FABRIC, &fixture(name));
+            let described = describe(FABRIC, &fixture(name), false);
             assert!(described.entities.is_empty(), "{name}");
             assert_eq!(described.unmodeled.len(), 1, "{name}");
             assert_eq!(described.unmodeled[0].platform.as_str(), "event");
@@ -1184,13 +1184,13 @@ mod tests {
             "lab_switch",
         ] {
             let node = fixture(name);
-            let described = describe(FABRIC, &node);
+            let described = describe(FABRIC, &node, false);
             for mapped in &described.entities {
                 mapped
                     .description
                     .validate()
                     .unwrap_or_else(|e| panic!("{name}: {e}"));
-                if let Some(state) = state(&node, mapped) {
+                if let Some(state) = state(&node, mapped, &Known::default()) {
                     state.validate().unwrap_or_else(|e| panic!("{name}: {e}"));
                     mapped
                         .description
@@ -1212,19 +1212,357 @@ mod tests {
         assert!(!belongs_to(&own, FABRIC + 1, 3));
     }
 
+    /// The one entity of `kind` on the node, and what it reads.
+    fn only(node: &Node, kind: &str) -> (Mapped, Option<State>) {
+        let described = describe(FABRIC, node, false);
+        let mut of_kind = described
+            .entities
+            .into_iter()
+            .filter(|mapped| mapped.description.capabilities.kind().to_string() == kind);
+        let mapped = of_kind.next().unwrap_or_else(|| panic!("no {kind}"));
+        assert!(of_kind.next().is_none(), "one {kind}");
+        let state = state(node, &mapped, &Known::default());
+        (mapped, state)
+    }
+
     #[test]
-    fn colours_cross_to_rgb() {
-        assert_eq!(hs_to_rgb(0.0, 1.0), [255, 0, 0]);
-        assert_eq!(hs_to_rgb(120.0, 1.0), [0, 255, 0]);
-        assert_eq!(hs_to_rgb(0.0, 0.0), [255, 255, 255]);
-        // D65 white comes out near white; a red point comes out red.
-        let white = xy_to_rgb(0.3127, 0.3290).expect("a colour");
-        assert!(white.iter().all(|c| *c >= 240), "{white:?}");
-        let red = xy_to_rgb(0.68, 0.31).expect("a colour");
-        assert!(red[0] == 255 && red[1] < 60 && red[2] < 60, "{red:?}");
-        assert_eq!(xy_to_rgb(0.3, 0.0), None);
-        assert_eq!(level(254.0), Some(255));
-        assert_eq!(level(1.0), Some(1));
-        assert_eq!(level(0.0), None);
+    fn a_lock_says_whether_it_unlatches_and_a_switch_beside_it_isnt_one() {
+        let (mapped, state) = only(&fixture("mock_door_lock"), "lock");
+        assert_eq!(
+            mapped.description.capabilities,
+            Capabilities::Lock(irori_types::LockCapabilities {
+                open: false,
+                requires_code: false,
+                code_format: None,
+            })
+        );
+        assert_eq!(
+            state,
+            Some(State::Lock(irori_types::LockState {
+                state: irori_types::LockStatus::Unlocked
+            }))
+        );
+        // Its On/Off cluster isn't offered as a switch, as Home Assistant doesn't.
+        assert_eq!(
+            summary(&fixture("mock_door_lock"))
+                .into_iter()
+                .map(|(id, ..)| id)
+                .collect::<Vec<_>>(),
+            vec!["-1-lock"]
+        );
+        let (unbolts, _) = only(&fixture("mock_door_lock_with_unbolt"), "lock");
+        assert!(matches!(
+            unbolts.description.capabilities,
+            Capabilities::Lock(irori_types::LockCapabilities { open: true, .. })
+        ));
+        let (lab, state) = only(&fixture("lab_lock"), "lock");
+        assert!(matches!(
+            lab.description.capabilities,
+            Capabilities::Lock(irori_types::LockCapabilities { open: true, .. })
+        ));
+        assert_eq!(
+            state,
+            Some(State::Lock(irori_types::LockState {
+                state: irori_types::LockStatus::Locked
+            }))
+        );
+    }
+
+    #[test]
+    fn a_covering_is_percent_open_and_only_says_where_it_is_if_it_knows() {
+        let (full, state) = only(&fixture("mock_window_covering_full"), "cover");
+        assert_eq!(
+            full.description.capabilities,
+            Capabilities::Cover(irori_types::CoverCapabilities {
+                device_class: Some(irori_types::CoverClass::Shutter),
+                position: true,
+                tilt: true,
+                stop: true,
+            })
+        );
+        assert_eq!(
+            state,
+            Some(State::Cover(irori_types::CoverState {
+                state: irori_types::OpenState::Open,
+                position: Some(100),
+                tilt: Some(100),
+            }))
+        );
+        // Lift without Position Aware Lift: it moves, but can't say where it is.
+        let (lift, state) = only(&fixture("mock_window_covering_lift"), "cover");
+        assert!(matches!(
+            lift.description.capabilities,
+            Capabilities::Cover(irori_types::CoverCapabilities {
+                device_class: Some(irori_types::CoverClass::Awning),
+                position: false,
+                tilt: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            state,
+            Some(State::Cover(irori_types::CoverState { position: None, .. }))
+        ));
+        let (_, state) = only(&fixture("lab_blind"), "cover");
+        assert!(matches!(
+            state,
+            Some(State::Cover(irori_types::CoverState {
+                position: Some(100),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn a_thermostat_offers_the_modes_its_features_and_sequence_allow() {
+        let (both, state) = only(&fixture("mock_thermostat"), "climate");
+        let Capabilities::Climate(caps) = &both.description.capabilities else {
+            panic!("a climate");
+        };
+        assert_eq!(
+            caps.hvac_modes,
+            vec![
+                HvacMode::Off,
+                HvacMode::Heat,
+                HvacMode::Cool,
+                HvacMode::HeatCool
+            ]
+        );
+        assert!(caps.target_temperature_range);
+        let Some(State::Climate(climate)) = state else {
+            panic!("a climate state");
+        };
+        assert_eq!(climate.hvac_mode, HvacMode::HeatCool);
+        assert_eq!(climate.hvac_action, Some(irori_types::HvacAction::Heating));
+        assert_eq!(climate.current_temperature, Some(18.0));
+        assert_eq!(
+            (climate.target_temp_low, climate.target_temp_high),
+            (Some(20.0), Some(26.0))
+        );
+        assert_eq!(climate.target_temperature, None);
+
+        // A radiator valve: heat only, its own limits.
+        let (valve, state) = only(&fixture("tado_smart_radiator_thermostat_x"), "climate");
+        let Capabilities::Climate(caps) = &valve.description.capabilities else {
+            panic!("a climate");
+        };
+        assert_eq!(caps.hvac_modes, vec![HvacMode::Off, HvacMode::Heat]);
+        assert_eq!((caps.min_temp, caps.max_temp), (5.0, 30.0));
+        assert!(!caps.target_temperature_range);
+        let Some(State::Climate(climate)) = state else {
+            panic!("a climate state");
+        };
+        assert_eq!(climate.target_temperature, Some(18.0));
+        assert_eq!(climate.current_temperature, Some(20.9));
+
+        let (_, state) = only(&fixture("lab_thermostat"), "climate");
+        let Some(State::Climate(climate)) = state else {
+            panic!("a climate state");
+        };
+        assert_eq!(climate.hvac_mode, HvacMode::Heat);
+        assert_eq!(climate.target_temperature, Some(21.0));
+    }
+
+    #[test]
+    fn a_fan_reads_its_speed_and_presets_and_standing_still_is_off() {
+        let (fan, state) = only(&fixture("mock_fan"), "fan");
+        assert_eq!(
+            fan.description.capabilities,
+            Capabilities::Fan(irori_types::FanCapabilities {
+                speed_count: 3,
+                oscillate: false,
+                direction: false,
+                preset_modes: vec!["sleep_wind".to_owned(), "natural_wind".to_owned()],
+            })
+        );
+        assert!(matches!(
+            state,
+            Some(State::Fan(irori_types::FanState {
+                on: false,
+                percentage: Some(0),
+                ..
+            }))
+        ));
+        // An air purifier's fan in auto: on, at a speed it doesn't say.
+        let (purifier, state) = only(&fixture("mock_air_purifier"), "fan");
+        assert!(matches!(
+            &purifier.description.capabilities,
+            Capabilities::Fan(irori_types::FanCapabilities {
+                speed_count: 10,
+                oscillate: true,
+                direction: true,
+                preset_modes,
+            }) if preset_modes == &["auto", "sleep_wind", "natural_wind"]
+        ));
+        assert_eq!(
+            state,
+            Some(State::Fan(irori_types::FanState {
+                on: true,
+                percentage: None,
+                oscillating: Some(false),
+                direction: Some(irori_types::FanDirection::Forward),
+                preset_mode: Some("auto".to_owned()),
+            }))
+        );
+    }
+
+    #[test]
+    fn each_kind_is_commanded_with_the_nodes_own_commands() {
+        let send = |fixture_name: &str, kind: &str, service: Service| {
+            let node = fixture(fixture_name);
+            let (mapped, _) = only(&node, kind);
+            command(&node, &mapped, &service, None)
+        };
+        assert_eq!(
+            send("lab_plug", "switch", Service::SwitchTurnOn),
+            Ok(vec![Command::invoke(1, cluster::ON_OFF, "on", json!({}))])
+        );
+        assert_eq!(
+            send(
+                "lab_lock",
+                "lock",
+                Service::LockOpen(irori_types::LockCode::default())
+            ),
+            Ok(vec![Command::Invoke {
+                endpoint: 1,
+                cluster: cluster::DOOR_LOCK,
+                name: "unboltDoor",
+                payload: json!({}),
+                timed: true,
+            }])
+        );
+        assert_eq!(
+            send(
+                "lab_blind",
+                "cover",
+                Service::CoverSetPosition(irori_types::SetPosition { position: 30 })
+            ),
+            Ok(vec![Command::invoke(
+                1,
+                cluster::WINDOW_COVERING,
+                "goToLiftPercentage",
+                json!({"liftPercent100thsValue": 7000})
+            )])
+        );
+        assert_eq!(
+            send(
+                "lab_thermostat",
+                "climate",
+                Service::ClimateSetHvacMode(irori_types::ClimateHvacMode {
+                    hvac_mode: HvacMode::Cool
+                })
+            ),
+            Ok(vec![Command::write(1, cluster::THERMOSTAT, 0x1C, json!(3))])
+        );
+        assert_eq!(
+            send(
+                "lab_fan",
+                "fan",
+                Service::FanSetPercentage(irori_types::FanPercentage { percentage: 40 })
+            ),
+            Ok(vec![Command::write(1, cluster::FAN_CONTROL, 2, json!(40))])
+        );
+        assert_eq!(
+            send(
+                "lab_fan",
+                "fan",
+                Service::FanSetPresetMode(irori_types::FanPresetMode {
+                    preset_mode: "auto".to_owned()
+                })
+            ),
+            Ok(vec![Command::write(1, cluster::FAN_CONTROL, 0, json!(5))])
+        );
+        assert_eq!(
+            send(
+                "lab_fan",
+                "fan",
+                Service::FanOscillate(irori_types::FanOscillate { oscillating: true })
+            ),
+            Ok(vec![Command::write(1, cluster::FAN_CONTROL, 8, json!(1))])
+        );
+        // A sensor takes nothing.
+        assert!(send("lab_occupancy", "binary_sensor", Service::SwitchTurnOn).is_err());
+    }
+
+    #[test]
+    fn firmware_is_an_update_entity_and_says_what_the_server_found() {
+        let node = fixture("mock_door_lock");
+        assert!(
+            !describe(FABRIC, &node, false)
+                .entities
+                .iter()
+                .any(|mapped| mapped.reading == Reading::Update)
+        );
+        let described = describe(FABRIC, &node, true);
+        let firmware = described
+            .entities
+            .iter()
+            .find(|mapped| mapped.reading == Reading::Update)
+            .expect("a firmware entity");
+        assert_eq!(
+            firmware.description.unique_id.as_str(),
+            format!("{}-0-firmware", node_device(FABRIC, node.id))
+        );
+        assert_eq!(
+            firmware.description.entity_category,
+            Some(EntityCategory::Config)
+        );
+        let Some(State::Update(now)) = state(&node, firmware, &Known::default()) else {
+            panic!("an update state");
+        };
+        assert!(!now.available);
+        assert_eq!(now.installed_version.as_deref(), Some("1.0"));
+        assert_eq!(now.latest_version.as_deref(), Some("1.0"));
+
+        let newer = SoftwareUpdate {
+            version: 2,
+            version_string: "2.0".to_owned(),
+            release_url: Some("https://example.com/notes".to_owned()),
+        };
+        let known = Known {
+            update: Some(&newer),
+        };
+        let Some(State::Update(offered)) = state(&node, firmware, &known) else {
+            panic!("an update state");
+        };
+        assert!(offered.available);
+        assert_eq!(offered.latest_version.as_deref(), Some("2.0"));
+        assert_eq!(
+            offered.release_url.as_deref(),
+            Some("https://example.com/notes")
+        );
+
+        // Once the node runs it, it isn't newer, even before the server forgets it.
+        let mut updated = node.clone();
+        updated.set(
+            Path {
+                endpoint: 0,
+                cluster: cluster::BASIC_INFORMATION,
+                attribute: 9,
+            },
+            json!(2),
+        );
+        let Some(State::Update(done)) = state(&updated, firmware, &known) else {
+            panic!("an update state");
+        };
+        assert!(!done.available);
+
+        // Downloading, halfway.
+        let mut installing = node;
+        for (attribute, value) in [(2, json!(4)), (3, json!(50))] {
+            installing.set(
+                Path {
+                    endpoint: 0,
+                    cluster: cluster::OTA_SOFTWARE_UPDATE_REQUESTOR,
+                    attribute,
+                },
+                value,
+            );
+        }
+        let Some(State::Update(going)) = state(&installing, firmware, &known) else {
+            panic!("an update state");
+        };
+        assert!(going.in_progress);
+        assert_eq!(going.progress, Some(50.0));
     }
 }

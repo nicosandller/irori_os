@@ -1,29 +1,30 @@
 [extension]
 id = "matter"
 name = "Matter"
-version = "0.1.0"
+version = "0.2.0"
 irori = ">=1.5.0"
 # 1.5.0 is the first core whose actions take a line of text (the pairing code) and can say how
 # long they take to answer.
-description = "Matter devices on the local network, through the Open Home Foundation Matter Server it installs and runs. Read-only for now."
+description = "Matter devices on the local network, through the Open Home Foundation Matter Server it installs and runs: lights, plugs, locks, blinds, thermostats, fans and sensors, and their firmware."
 config_schema = "config.schema.json"
 icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "lock", "cover", "climate", "fan", "update"]
 # Removing a Matter device takes Irori's fabric off it. Other controllers it belongs to keep it.
 unpairs = true
 run = { command = "bin/irori-ext-matter" }
 
 # A device already set up with another controller (Google Home, Apple Home, Home Assistant) is
-# shared from there: its app gives a pairing code, and this takes it. Adding a device takes a
-# while, so the core waits up to two minutes for the answer.
+# shared from there: its app gives a pairing code, and this takes it. So does a new device, on
+# the network or, with Bluetooth turned on in settings, over Bluetooth. Adding a device takes a
+# while, Bluetooth longest, so the core waits up to five minutes for the answer.
 [[contributes.protocol.actions]]
 id = "add_device"
 label = "Add with a pairing code"
-input = { label = "Pairing code", hint = "Share the device from the app it's set up in (Google Home, Apple Home, Home Assistant) and paste the code it shows, or type the 11 digits printed on a new device. Devices that need Bluetooth to join aren't supported yet.", placeholder = "3497-011-2332" }
-answer_within_seconds = 120
+input = { label = "Pairing code", hint = "Share the device from the app it's set up in (Google Home, Apple Home, Home Assistant) and paste the code it shows, or type the 11 digits printed on a new device. A new device that joins over Bluetooth needs Bluetooth turned on in Matter's settings.", placeholder = "3497-011-2332" }
+answer_within_seconds = 300
 
 # This extension downloads a Node.js runtime and installs the Matter server (an npm package) the
 # first time it starts, then runs it as a supervised subprocess — full access to this machine,

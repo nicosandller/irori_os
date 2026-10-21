@@ -32,3 +32,5 @@ opencode.json
 /crates/irori-ui-kit/target
 # State of `dev/native` (its own data and config, kept apart from ./data and ./config).
 /dev/.native
+# The lab Matter devices' packages, from `npm ci` in dev/lab/matter (the lab image and dev/native).
+/dev/lab/matter/node_modules

@@ -66,6 +66,7 @@ impl fmt::Display for Path {
 pub mod cluster {
     pub const DESCRIPTOR: u32 = 0x001D;
     pub const BASIC_INFORMATION: u32 = 0x0028;
+    pub const OTA_SOFTWARE_UPDATE_REQUESTOR: u32 = 0x002A;
     pub const POWER_SOURCE: u32 = 0x002F;
     pub const BRIDGED_DEVICE_BASIC_INFORMATION: u32 = 0x0039;
     pub const SWITCH: u32 = 0x003B;
@@ -105,6 +106,44 @@ pub mod device_type {
     pub const COLOR_TEMPERATURE_LIGHT: u32 = 0x010C;
     pub const EXTENDED_COLOR_LIGHT: u32 = 0x010D;
     pub const MOUNTED_DIMMABLE_LOAD_CONTROL: u32 = 0x0110;
+}
+
+/// Something to send a node: a cluster command, or an attribute to write. A service call
+/// becomes one or a few of these (`map`), sent in order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Command {
+    /// A cluster command, by its name in matter.js (`moveToLevelWithOnOff`), with its fields by
+    /// theirs. `timed`: the cluster requires a timed interaction for it (Door Lock's).
+    Invoke {
+        endpoint: u16,
+        cluster: u32,
+        name: &'static str,
+        payload: Value,
+        timed: bool,
+    },
+    Write {
+        path: Path,
+        value: Value,
+    },
+}
+
+impl Command {
+    pub fn invoke(endpoint: u16, cluster: u32, name: &'static str, payload: Value) -> Self {
+        Self::Invoke {
+            endpoint,
+            cluster,
+            name,
+            payload,
+            timed: false,
+        }
+    }
+
+    pub fn write(endpoint: u16, cluster: u32, attribute: u32, value: Value) -> Self {
+        Self::Write {
+            path: Path::new(endpoint, cluster, attribute),
+            value,
+        }
+    }
 }
 
 /// The attributes every cluster has, beside its own (`0xFFF8`…`0xFFFD`).

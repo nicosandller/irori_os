@@ -152,7 +152,7 @@ shown as a button on the extension's "+ Add device" screen.
   text for an action that doesn't ask for any.
 - An action that does its work before answering says how long it may take with
   `answer_within_seconds` (1 to 300). The core waits that long for it instead of the usual ten
-  seconds. Adding a Matter device takes up to two minutes. While it waits, the protocol keeps
+  seconds. Adding a Matter device takes up to two minutes, about five over Bluetooth. While it waits, the protocol keeps
   serving everything else: it answers the action from a task of its own.
 
 A protocol whose devices are paired to a network it keeps declares `unpairs = true`. Removing one

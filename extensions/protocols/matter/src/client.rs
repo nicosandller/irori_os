@@ -1,8 +1,8 @@
 //! The Matter server's WebSocket API, on loopback: one request and its answer, matched by
 //! `message_id` (answers can come back in any order), and the events it sends once listening.
 //!
-//! This module, [`Event`] and the three commands on [`Client`] are the whole of what the rest
-//! of the extension asks of a Matter controller. A controller built on `rs-matter` instead
+//! This module, [`Event`] and the commands on [`Client`] are the whole of what the rest of the
+//! extension asks of a Matter controller. A controller built on `rs-matter` instead
 //! would provide the same and leave `map` and `lib` as they are (#82).
 
 use std::collections::HashMap;
@@ -20,7 +20,7 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::model::{Node, NodeId, Path};
+use crate::model::{Command, Node, NodeId, Path};
 
 /// How many events can wait for the extension before the server's own socket waits too.
 const EVENTS_CAPACITY: usize = 1024;
@@ -29,13 +29,49 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long the server looks for the device on the network before giving up. Newer servers
 /// take it; 1.4.0 looks until [`COMMISSION_TIMEOUT`] ends the wait.
 const DISCOVERY_SECONDS: u64 = 45;
-/// How long adding a device may take in all: finding it, then commissioning and reading it.
-/// Inside the two minutes the manifest says the action takes, so the answer is this
+/// How long adding a device on the network may take in all: finding it, then commissioning
+/// and reading it. Inside the time the manifest says the action takes, so the answer is this
 /// extension's words, not the core's timeout.
-const COMMISSION_TIMEOUT: Duration = Duration::from_secs(110);
+pub const COMMISSION_TIMEOUT: Duration = Duration::from_secs(110);
+/// The same over Bluetooth, which also hands the device the network and waits for it to join.
+pub const BLUETOOTH_COMMISSION_TIMEOUT: Duration = Duration::from_secs(280);
+/// How long a device has to answer a command. Inside the ten seconds the core waits for a
+/// service call (`SERVICE_CALL_TIMEOUT`), so a device that doesn't answer gets this extension's
+/// words.
+const DEVICE_TIMEOUT: Duration = Duration::from_secs(8);
+/// The window Door Lock's timed commands are given, as Home Assistant gives it.
+const TIMED_REQUEST_MS: u64 = 10_000;
 
 /// The [`CommandError::reason`] of a command whose answer didn't come in time.
 pub const TIMED_OUT: &str = "timed-out";
+
+/// Newer firmware the server found for a node, from the DCL or its own store.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SoftwareUpdate {
+    /// The number the device compares (`SoftwareVersion`), what installing it asks for.
+    pub version: u64,
+    /// What people read (`SoftwareVersionString`).
+    pub version_string: String,
+    pub release_url: Option<String>,
+}
+
+impl SoftwareUpdate {
+    fn from_json(value: &Value) -> Option<Self> {
+        let version = value.get("software_version")?.as_u64()?;
+        Some(Self {
+            version,
+            version_string: value
+                .get("software_version_string")
+                .and_then(Value::as_str)
+                .map_or_else(|| version.to_string(), str::to_owned),
+            release_url: value
+                .get("release_notes_url")
+                .and_then(Value::as_str)
+                .filter(|url| url.starts_with("https://"))
+                .map(str::to_owned),
+        })
+    }
+}
 
 /// What the server says about itself on connecting.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,22 +394,129 @@ impl Client {
             .collect())
     }
 
-    /// Finds the device the code is for on the network and commissions it onto Irori's
-    /// fabric. Over the network only: Bluetooth, for a device that isn't on a network yet,
-    /// isn't done.
-    pub async fn commission(&self, code: &str) -> Result<Node, CommandError> {
+    /// Finds the device the code is for and commissions it onto Irori's fabric. On the network
+    /// only, or, with `bluetooth`, also over Bluetooth: a new device that isn't on a network yet
+    /// is handed the Wi-Fi or Thread network the server was given
+    /// ([`Client::set_wifi_credentials`], [`Client::set_thread_dataset`]).
+    pub async fn commission(&self, code: &str, bluetooth: bool) -> Result<Node, CommandError> {
         let answer = self
             .command(
                 "commission_with_code",
                 json!({
                     "code": code,
-                    "network_only": true,
+                    "network_only": !bluetooth,
                     "discovery_timeout_s": DISCOVERY_SECONDS,
                 }),
-                COMMISSION_TIMEOUT,
+                if bluetooth {
+                    BLUETOOTH_COMMISSION_TIMEOUT
+                } else {
+                    COMMISSION_TIMEOUT
+                },
             )
             .await?;
         Node::from_json(&answer).map_err(CommandError::local)
+    }
+
+    /// The Wi-Fi network a device commissioned over Bluetooth joins. The server keeps it in its
+    /// storage.
+    pub async fn set_wifi_credentials(
+        &self,
+        ssid: &str,
+        password: &str,
+    ) -> Result<(), CommandError> {
+        self.command(
+            "set_wifi_credentials",
+            json!({"ssid": ssid, "credentials": password}),
+            COMMAND_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// The Thread network a Thread device commissioned over Bluetooth joins: the operational
+    /// dataset, as hex. The server keeps it in its storage.
+    pub async fn set_thread_dataset(&self, dataset: &str) -> Result<(), CommandError> {
+        self.command(
+            "set_thread_dataset",
+            json!({"dataset": dataset}),
+            COMMAND_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// Sends one command or attribute write to a node, and waits for the device to accept it.
+    pub async fn send(&self, node: NodeId, command: &Command) -> Result<(), CommandError> {
+        match command {
+            Command::Invoke {
+                endpoint,
+                cluster,
+                name,
+                payload,
+                timed,
+            } => {
+                let mut args = json!({
+                    "node_id": node,
+                    "endpoint_id": endpoint,
+                    "cluster_id": cluster,
+                    "command_name": name,
+                    "payload": payload,
+                });
+                if *timed {
+                    args["timed_request_timeout_ms"] = json!(TIMED_REQUEST_MS);
+                }
+                self.command("device_command", args, DEVICE_TIMEOUT)
+                    .await
+                    .map(|_| ())
+            }
+            Command::Write { path, value } => {
+                let answer = self
+                    .command(
+                        "write_attribute",
+                        json!({"node_id": node, "attribute_path": path.to_string(), "value": value}),
+                        DEVICE_TIMEOUT,
+                    )
+                    .await?;
+                // One status per attribute written; anything but 0 is the device refusing it.
+                let refused = answer
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|status| status.get("Status").and_then(Value::as_u64))
+                    .find(|&status| status != 0);
+                match refused {
+                    None => Ok(()),
+                    Some(status) => Err(CommandError::local(format!(
+                        "the device refused to change {path} (status {status:#04x})"
+                    ))),
+                }
+            }
+        }
+    }
+
+    /// Newer firmware for the node, if the server knows of any. The server checks by itself
+    /// now and then; this answers from what it found, or asks the DCL.
+    pub async fn check_update(&self, node: NodeId) -> Result<Option<SoftwareUpdate>, CommandError> {
+        let answer = self
+            .command(
+                "check_node_update",
+                json!({"node_id": node}),
+                COMMAND_TIMEOUT,
+            )
+            .await?;
+        Ok(SoftwareUpdate::from_json(&answer))
+    }
+
+    /// Tells the node to install `version`. The server downloads it and hands it over; the
+    /// node's OTA Software Update Requestor says how far it has got.
+    pub async fn install_update(&self, node: NodeId, version: u64) -> Result<(), CommandError> {
+        self.command(
+            "update_node",
+            json!({"node_id": node, "software_version": version}),
+            COMMAND_TIMEOUT,
+        )
+        .await
+        .map(|_| ())
     }
 
     /// Takes Irori's fabric off the node, and forgets it. Other controllers it was shared with

@@ -27,9 +27,10 @@ const MATTER_SERVER: Package = Package {
     // (`entry_point`). Its presence is what tells an install happened.
     entry: "package.json",
     allow_builds: &[],
-    // Bluetooth, serial and USB: native parts for commissioning over Bluetooth, which this
-    // extension doesn't do yet. Without a decision pnpm refuses to install at all
-    // (`ERR_PNPM_IGNORED_BUILDS`, naming exactly these five).
+    // Bluetooth, serial and USB: native parts. The Bluetooth ones ship prebuilt for Linux and
+    // macOS on arm64 and x86_64 (`prebuilds/`, loaded by `node-gyp-build`), so their build
+    // scripts, which would compile them with a toolchain a Pi doesn't have, aren't run. Without
+    // a decision pnpm refuses to install at all (`ERR_PNPM_IGNORED_BUILDS`, naming these five).
     decline_builds: &[
         "@serialport/bindings-cpp",
         "@stoprocent/bleno",
@@ -106,12 +107,18 @@ pub fn arguments(settings: &Settings, storage: &Path) -> Vec<std::ffi::OsString>
         "--default-fabric-label".into(),
         "Irori".into(),
         "--disable-dashboard".into(),
-        // Firmware updates come later, as the `update` kind; until then the server leaves the
-        // devices' firmware alone.
-        "--disable-ota".into(),
         "--log-level".into(),
         "notice".into(),
     ];
+    // The server looks for firmware in the DCL now and then, and downloads one only when it's
+    // asked to install it (`update_node`).
+    if !settings.firmware_updates {
+        args.push("--disable-ota".into());
+    }
+    if settings.bluetooth {
+        args.push("--bluetooth-adapter".into());
+        args.push(settings.bluetooth_adapter.to_string().into());
+    }
     if let Some(interface) = &settings.primary_interface {
         args.push("--primary-interface".into());
         args.push(interface.into());
@@ -238,10 +245,18 @@ mod tests {
         );
         assert!(!text.iter().any(|arg| arg == "--enable-test-net-dcl"));
         assert!(!text.iter().any(|arg| arg == "--primary-interface"));
+        assert!(
+            !text.iter().any(|arg| arg == "--disable-ota"),
+            "updates by default"
+        );
+        assert!(!text.iter().any(|arg| arg == "--bluetooth-adapter"));
 
         let lab = Settings {
             allow_test_devices: true,
             primary_interface: Some("eth0".to_owned()),
+            firmware_updates: false,
+            bluetooth: true,
+            bluetooth_adapter: 1,
             ..Settings::default()
         };
         let text: Vec<String> = arguments(&lab, Path::new("/x"))
@@ -252,6 +267,11 @@ mod tests {
         assert!(
             text.windows(2)
                 .any(|pair| pair == ["--primary-interface", "eth0"])
+        );
+        assert!(text.iter().any(|arg| arg == "--disable-ota"));
+        assert!(
+            text.windows(2)
+                .any(|pair| pair == ["--bluetooth-adapter", "1"])
         );
     }
 

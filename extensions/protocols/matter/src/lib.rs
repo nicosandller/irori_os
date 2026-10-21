@@ -3,11 +3,11 @@
 //!
 //! On start: install Node.js and the server if they aren't there (`server`), run it on
 //! loopback, connect to its WebSocket API (`client`) and listen. Every node the server knows
-//! becomes devices and entities (`map`), kept up to date from its events. A person adds a
-//! device with the `add_device` action and a pairing code; removing one takes Irori's fabric
-//! off it.
-//!
-//! Read-only for now: commands are refused until they've been tried on real devices.
+//! becomes devices and entities (`map`), kept up to date from its events. A service call
+//! becomes the node's own commands and attribute writes (`map::command`), sent from a task of
+//! its own so readings keep flowing while a device answers. A person adds a device with the
+//! `add_device` action and a pairing code, over the network or Bluetooth; removing one takes
+//! Irori's fabric off it. Firmware the server finds is offered as each node's `update`.
 //!
 //! If the server's own process exits, `run` returns an error, and the core's restart with
 //! backoff brings it back (`docs/specs/protocols.md` §3), as with Zigbee.
@@ -18,18 +18,18 @@ mod model;
 mod server;
 pub mod settings;
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use irori_protocol::{
-    AvailabilityTarget, Health, Incoming, IncomingAction, IncomingUnpair, Protocol,
+    AvailabilityTarget, Health, Incoming, IncomingAction, IncomingCall, IncomingUnpair, Protocol,
     ProtocolContext, ProtocolError, ServiceError,
 };
-use irori_types::{Availability, State, StateReport, UniqueId};
+use irori_types::{Availability, ContextId, HvacMode, Service, State, StateReport, UniqueId};
 use tokio::sync::mpsc;
 
-use crate::client::{Client, CommandError, Connection, Event};
-use crate::map::Described;
+use crate::client::{Client, CommandError, Connection, Event, SoftwareUpdate};
+use crate::map::{Described, Known, Reading};
 use crate::model::{Node, NodeId};
 use crate::settings::Settings;
 
@@ -38,8 +38,12 @@ const ADD_DEVICE: &str = "add_device";
 /// How long the server has to start listening before the extension gives up on it. The first
 /// start on a small machine reads its whole device database first.
 const STARTUP: Duration = Duration::from_secs(180);
-const READ_ONLY: &str = "Matter devices are read-only in Irori for now: switching comes once it's \
-                         been tried on real devices";
+/// A report this soon after a command to its entity is that command's result (`caused_by`).
+const CAUSED_BY_WINDOW: Duration = Duration::from_secs(10);
+/// When firmware is first looked for after the server starts, and how often after that. The
+/// server looks in the DCL by itself; this asks what it found.
+const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(60);
+const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// The Matter protocol.
 #[derive(Debug)]
@@ -113,7 +117,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         connection = connect_patiently(&url) => match connection {
             Ok(connection) => {
                 let exit = async { Ended::ServerExited(spawned.child.wait().await) };
-                drive(connection, &mut ctx, exit).await
+                drive(connection, &settings, &mut ctx, exit).await
             }
             Err(why) => Ended::Failed(why),
         },
@@ -163,12 +167,20 @@ async fn connect_patiently(url: &str) -> Result<Connection, String> {
 enum Done {
     Added(IncomingAction, Result<Node, String>),
     Removed(IncomingUnpair, NodeId, Result<(), String>),
+    /// What the server knows of newer firmware for a node, and the `update.check` that asked,
+    /// if one did.
+    Checked(
+        NodeId,
+        Option<IncomingCall>,
+        Result<Option<SoftwareUpdate>, String>,
+    ),
 }
 
 /// Listens, then keeps Irori up to date with the server until told to stop, the connection
 /// ends, or `exit` (the server's process ending) resolves.
 async fn drive(
     connection: Connection,
+    settings: &Settings,
     ctx: &mut ProtocolContext,
     exit: impl Future<Output = Ended>,
 ) -> Ended {
@@ -186,7 +198,10 @@ async fn drive(
             return Ended::Failed(format!("the Matter server didn't start listening: {e}"));
         }
     };
+    give_networks(&client, settings).await;
     let mut home = Home::new(info.compressed_fabric_id);
+    home.updates = settings.firmware_updates;
+    home.bluetooth = settings.bluetooth;
     for node in nodes {
         home.apply(node, ctx, true).await;
     }
@@ -194,6 +209,11 @@ async fn drive(
     ctx.set_available_actions(vec![ADD_DEVICE.to_owned()]).await;
 
     let (done_tx, mut done) = mpsc::channel(8);
+    let mut update_check = tokio::time::interval_at(
+        tokio::time::Instant::now() + FIRST_UPDATE_CHECK,
+        UPDATE_CHECK_EVERY,
+    );
+    update_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     tokio::pin!(exit);
     let ended = loop {
         tokio::select! {
@@ -203,12 +223,13 @@ async fn drive(
                 None => break Ended::Stopped,
                 Some(Incoming::Action(action)) => home.add_device(action, &client, &done_tx),
                 Some(Incoming::Unpair(unpair)) => home.unpair(unpair, &client, &done_tx, ctx).await,
-                Some(Incoming::Call(call)) => call.reply(Err(ServiceError::failed(READ_ONLY))),
+                Some(Incoming::Call(call)) => home.call(call, &client, &done_tx),
                 Some(Incoming::Picture(asked)) => {
                     asked.reply(Err("Matter devices have no cameras here yet".to_owned()));
                 }
             },
             Some(finished) = done.recv() => home.finish(finished, ctx).await,
+            _ = update_check.tick() => home.check_updates(None, &client, &done_tx),
             event = events.recv() => match event {
                 Some(Event::ServerShutdown) => {
                     break Ended::Failed("the Matter server shut down".to_owned());
@@ -223,11 +244,43 @@ async fn drive(
     ended
 }
 
+/// Gives the server the Wi-Fi network and the Thread dataset a device added over Bluetooth
+/// joins, when settings have them. A refusal is logged, not fatal: devices on the network can
+/// still be added.
+async fn give_networks(client: &Client, settings: &Settings) {
+    if let Some(ssid) = &settings.wifi_ssid {
+        let password = settings
+            .wifi_password
+            .as_ref()
+            .map_or("", |password| password.expose());
+        if let Err(e) = client.set_wifi_credentials(ssid, password).await {
+            tracing::warn!(error = %e, "the Matter server didn't take the Wi-Fi network");
+        }
+    }
+    if let Some(dataset) = &settings.thread_dataset
+        && let Err(e) = client.set_thread_dataset(dataset.expose()).await
+    {
+        tracing::warn!(error = %e, "the Matter server didn't take the Thread dataset");
+    }
+}
+
 /// Every node, as last told to Irori.
 #[derive(Debug)]
 struct Home {
     fabric: u64,
     nodes: BTreeMap<NodeId, Tracked>,
+    /// Firmware is offered as an `update` entity (settings).
+    updates: bool,
+    /// Devices can be added over Bluetooth (settings).
+    bluetooth: bool,
+    /// Newer firmware the server found, by node.
+    newer: BTreeMap<NodeId, SoftwareUpdate>,
+    /// Nodes whose firmware is being looked for.
+    checking: BTreeSet<NodeId>,
+    /// Who asked for each entity's recent commands, oldest first: the reports they cause say so.
+    commanded: BTreeMap<UniqueId, VecDeque<(ContextId, Instant)>>,
+    /// The mode each thermostat was last in that wasn't off, for `climate.turn_on`.
+    last_on: BTreeMap<UniqueId, HvacMode>,
     /// A device is being added: one at a time.
     adding: bool,
     /// Nodes being removed.
@@ -249,6 +302,12 @@ impl Home {
         Self {
             fabric,
             nodes: BTreeMap::new(),
+            updates: true,
+            bluetooth: false,
+            newer: BTreeMap::new(),
+            checking: BTreeSet::new(),
+            commanded: BTreeMap::new(),
+            last_on: BTreeMap::new(),
             adding: false,
             removing: BTreeSet::new(),
             unmodeled: Vec::new(),
@@ -276,7 +335,11 @@ impl Home {
     /// Tells Irori what changed about `node`: devices and entities new, changed or gone, its
     /// reachability, and the readings that differ from those last reported.
     async fn apply(&mut self, node: Node, ctx: &ProtocolContext, replayed: bool) {
-        let described = map::describe(self.fabric, &node);
+        let described = map::describe(self.fabric, &node, self.updates);
+        let newer = self.newer.get(&node.id).cloned();
+        let known = Known {
+            update: newer.as_ref(),
+        };
         let previous = self.nodes.remove(&node.id);
         let before = previous.as_ref().map(|tracked| &tracked.described);
         for device in &described.devices {
@@ -353,7 +416,12 @@ impl Home {
         let mut states = BTreeMap::new();
         for mapped in &described.entities {
             let id = mapped.description.unique_id.clone();
-            let state = map::state(&node, mapped);
+            let state = map::state(&node, mapped, &known);
+            if let Some(State::Climate(climate)) = &state
+                && climate.hvac_mode != HvacMode::Off
+            {
+                self.last_on.insert(id.clone(), climate.hvac_mode);
+            }
             let unchanged = previous
                 .as_ref()
                 .and_then(|tracked| tracked.states.get(&id))
@@ -363,7 +431,7 @@ impl Home {
                     unique_id: id.clone(),
                     state: state.clone(),
                     attributes: BTreeMap::new(),
-                    caused_by: None,
+                    caused_by: caused_by(&mut self.commanded, &id),
                     replayed,
                 });
             }
@@ -381,9 +449,14 @@ impl Home {
 
     /// The node is gone from the server: its devices, bridged ones first, go from Irori too.
     async fn forget(&mut self, node: NodeId, ctx: &ProtocolContext) {
+        self.newer.remove(&node);
         let Some(tracked) = self.nodes.remove(&node) else {
             return;
         };
+        for mapped in &tracked.described.entities {
+            self.commanded.remove(&mapped.description.unique_id);
+            self.last_on.remove(&mapped.description.unique_id);
+        }
         for device in tracked.described.devices.iter().rev() {
             if let Err(e) = ctx.remove_device(device.unique_id.clone()).await {
                 tracing::warn!(device = %device.unique_id, error = %e, "couldn't remove a device");
@@ -447,11 +520,12 @@ impl Home {
         self.adding = true;
         let client = client.clone();
         let done = done.clone();
+        let bluetooth = self.bluetooth;
         tokio::spawn(async move {
             let added = client
-                .commission(&code)
+                .commission(&code, bluetooth)
                 .await
-                .map_err(|e| commission_failed(&e));
+                .map_err(|e| commission_failed(&e, bluetooth));
             if let Err(mpsc::error::SendError(Done::Added(action, added))) =
                 done.send(Done::Added(action, added)).await
             {
@@ -542,9 +616,192 @@ impl Home {
                 }
                 unpair.reply(removed);
             }
+            Done::Checked(node, call, found) => {
+                self.checking.remove(&node);
+                match found {
+                    Ok(found) => {
+                        let changed = match found {
+                            Some(update) => self.newer.insert(node, update.clone()) != Some(update),
+                            None => self.newer.remove(&node).is_some(),
+                        };
+                        if changed && let Some(tracked) = self.nodes.get(&node) {
+                            let again = tracked.node.clone();
+                            self.apply(again, ctx, false).await;
+                        }
+                        if let Some(call) = call {
+                            call.reply(Ok(()));
+                        }
+                    }
+                    Err(why) => {
+                        tracing::debug!(node, %why, "couldn't look for newer firmware");
+                        if let Some(call) = call {
+                            call.reply(Err(ServiceError::failed(why)));
+                        }
+                    }
+                }
+            }
         }
         self.publish(ctx).await;
     }
+
+    /// Carries out a service call: the node's commands, sent in order from a task of its own,
+    /// or, for its firmware, the Matter server's own look and install.
+    fn call(&mut self, call: IncomingCall, client: &Client, done: &mpsc::Sender<Done>) {
+        let unique_id = call.call.unique_id.clone();
+        let found = self.nodes.values().find_map(|tracked| {
+            tracked
+                .described
+                .entities
+                .iter()
+                .find(|mapped| mapped.description.unique_id == unique_id)
+                .map(|mapped| (tracked, mapped))
+        });
+        let Some((tracked, mapped)) = found else {
+            call.reply(Err(ServiceError::failed(
+                "Matter doesn't have this entity any more",
+            )));
+            return;
+        };
+        let node = tracked.node.id;
+        if !tracked.node.available {
+            call.reply(Err(ServiceError::unavailable(
+                "The Matter device isn't answering",
+            )));
+            return;
+        }
+        if mapped.reading == Reading::Update {
+            let installing = map::update::installing(&tracked.node);
+            let service = call.call.service.clone();
+            match service {
+                Service::UpdateCheck => self.check_updates(Some((node, call)), client, done),
+                Service::UpdateInstall => {
+                    let Some(version) = self.newer.get(&node).map(|update| update.version) else {
+                        call.reply(Err(ServiceError::failed(
+                            "There's no newer firmware for it to install",
+                        )));
+                        return;
+                    };
+                    if installing {
+                        call.reply(Err(ServiceError::failed(
+                            "It's installing firmware already",
+                        )));
+                        return;
+                    }
+                    let client = client.clone();
+                    tokio::spawn(async move {
+                        let installed = client.install_update(node, version).await.map_err(|e| {
+                            ServiceError::failed(format!(
+                                "The Matter server couldn't start the update: {e}"
+                            ))
+                        });
+                        call.reply(installed);
+                    });
+                }
+                other => call.reply(Err(ServiceError::failed(format!(
+                    "firmware doesn't take {}",
+                    other.name()
+                )))),
+            }
+            return;
+        }
+        let commands = match map::command(
+            &tracked.node,
+            mapped,
+            &call.call.service,
+            self.last_on.get(&unique_id).copied(),
+        ) {
+            Ok(commands) => commands,
+            Err(why) => {
+                call.reply(Err(ServiceError::failed(why)));
+                return;
+            }
+        };
+        self.commanded
+            .entry(unique_id)
+            .or_default()
+            .push_back((call.call.context.id.clone(), Instant::now()));
+        let client = client.clone();
+        tokio::spawn(async move {
+            for command in &commands {
+                if let Err(e) = client.send(node, command).await {
+                    call.reply(Err(command_failed(&e)));
+                    return;
+                }
+            }
+            call.reply(Ok(()));
+        });
+    }
+
+    /// Asks the server what newer firmware it knows of: for one node, for an `update.check`,
+    /// or for every node that can take firmware. One node at a time, from a task of its own.
+    fn check_updates(
+        &mut self,
+        asked: Option<(NodeId, IncomingCall)>,
+        client: &Client,
+        done: &mpsc::Sender<Done>,
+    ) {
+        let mut nodes: Vec<(NodeId, Option<IncomingCall>)> = match asked {
+            Some((node, call)) => vec![(node, Some(call))],
+            None => self
+                .nodes
+                .values()
+                .filter(|tracked| tracked.node.available)
+                .filter(|tracked| {
+                    tracked
+                        .described
+                        .entities
+                        .iter()
+                        .any(|mapped| mapped.reading == Reading::Update)
+                })
+                .map(|tracked| (tracked.node.id, None))
+                .collect(),
+        };
+        nodes.retain(|(node, call)| call.is_some() || !self.checking.contains(node));
+        if nodes.is_empty() {
+            return;
+        }
+        self.checking.extend(nodes.iter().map(|(node, _)| *node));
+        let client = client.clone();
+        let done = done.clone();
+        tokio::spawn(async move {
+            for (node, call) in nodes {
+                let found = client
+                    .check_update(node)
+                    .await
+                    .map_err(|e| format!("The Matter server couldn't look for firmware: {e}"));
+                if let Err(mpsc::error::SendError(Done::Checked(_, Some(call), found))) =
+                    done.send(Done::Checked(node, call, found)).await
+                {
+                    call.reply(found.map(|_| ()).map_err(ServiceError::failed));
+                }
+            }
+        });
+    }
+}
+
+/// The context of the command a report answers, if one was sent to its entity recently enough.
+/// Each report answers the oldest command still waiting; anything older than the window was
+/// answered by a report Irori never saw.
+fn caused_by(
+    commanded: &mut BTreeMap<UniqueId, VecDeque<(ContextId, Instant)>>,
+    entity: &UniqueId,
+) -> Option<ContextId> {
+    let waiting = commanded.get_mut(entity)?;
+    while let Some((context, at)) = waiting.pop_front() {
+        if at.elapsed() < CAUSED_BY_WINDOW {
+            return Some(context);
+        }
+    }
+    commanded.remove(entity);
+    None
+}
+
+/// A device that didn't take a command, in words.
+fn command_failed(error: &CommandError) -> ServiceError {
+    if error.reason.as_deref() == Some(client::TIMED_OUT) {
+        return ServiceError::unavailable("The Matter device didn't answer in time");
+    }
+    ServiceError::failed(format!("The Matter device didn't do it: {}", error.details))
 }
 
 /// The code as the server takes it: a QR code's text as it is, a manual code's digits
@@ -621,17 +878,24 @@ fn verhoeff_valid(digits: &str) -> bool {
     check == 0
 }
 
-fn commission_failed(error: &CommandError) -> String {
+fn commission_failed(error: &CommandError, bluetooth: bool) -> String {
     // Either the server gave up looking, or it was still looking when the wait ran out.
     if matches!(
         error.reason.as_deref(),
         Some("not-discovered" | client::TIMED_OUT)
     ) {
-        return "No Matter device on this network answered to that code. Check that it's on \
-                the same network as Irori and that the code is fresh: a shared code lasts \
-                about 15 minutes. A new device that joins over Bluetooth can't be added yet; \
-                set it up in another app first, then share it."
-            .to_owned();
+        return if bluetooth {
+            "No Matter device answered to that code, on the network or over Bluetooth. Check \
+             that it's close to Irori and in pairing mode, and that the code is fresh: a shared \
+             code lasts about 15 minutes."
+                .to_owned()
+        } else {
+            "No Matter device on this network answered to that code. Check that it's on the \
+             same network as Irori and that the code is fresh: a shared code lasts about 15 \
+             minutes. A new device that joins over Bluetooth needs \"Bluetooth\" turned on in \
+             Matter's settings, or set it up in another app first, then share it."
+                .to_owned()
+        };
     }
     if error.details.contains("test/development certificate") {
         return "This device uses a development certificate, not one from its maker. If you \
@@ -751,6 +1015,9 @@ mod tests {
             "plug" => include_str!("../tests/fixtures/lab_plug.json"),
             "occupancy" => include_str!("../tests/fixtures/lab_occupancy.json"),
             "bridge" => include_str!("../tests/fixtures/mock_composed_bridge.json"),
+            "lock" => include_str!("../tests/fixtures/lab_lock.json"),
+            "thermostat" => include_str!("../tests/fixtures/lab_thermostat.json"),
+            "mock_door_lock" => include_str!("../tests/fixtures/mock_door_lock.json"),
             other => panic!("no fixture {other}"),
         })
         .expect("JSON")
@@ -836,15 +1103,22 @@ mod tests {
     }
 
     async fn running(nodes: Vec<Value>) -> Running {
-        let mut server = FakeServer::start().await;
+        let mut running = connected(Settings::default()).await;
+        let (id, _) = running.server.next("start_listening").await;
+        running.server.answer(&id, Value::Array(nodes));
+        running.told.until("actions add_device").await;
+        running
+    }
+
+    /// The extension connected with `settings`, before the server has answered anything.
+    async fn connected(settings: Settings) -> Running {
+        let server = FakeServer::start().await;
         let (mut ctx, mut host) = host::connect();
         let told = record(std::mem::replace(&mut host.ops, mpsc::channel(1).1));
         let connection = client::connect(&server.url).await.expect("connects");
-        let driving =
-            tokio::spawn(async move { drive(connection, &mut ctx, std::future::pending()).await });
-        let (id, _) = server.next("start_listening").await;
-        server.answer(&id, Value::Array(nodes));
-        told.until("actions add_device").await;
+        let driving = tokio::spawn(async move {
+            drive(connection, &settings, &mut ctx, std::future::pending()).await
+        });
         Running {
             server,
             host,
@@ -853,11 +1127,50 @@ mod tests {
         }
     }
 
+    fn settings(given: Value) -> Settings {
+        serde_json::from_value(given).expect("settings")
+    }
+
+    const ASKED_BY: &str = "01K5B2Q9A1B2C3D4E5F6G7H8J9";
+
+    /// Calls `service` on the entity, as a person would; the answer comes on the receiver.
+    async fn call(
+        running: &Running,
+        unique_id: &str,
+        service: Service,
+    ) -> tokio::sync::oneshot::Receiver<Result<(), ServiceError>> {
+        let call = irori_types::ServiceCall {
+            unique_id: UniqueId::try_from(unique_id.to_owned()).expect("valid"),
+            service,
+            context: irori_types::Context {
+                id: ContextId::try_from(ASKED_BY).expect("valid"),
+                parent_id: None,
+                origin: irori_types::Origin::System,
+            },
+        };
+        let (incoming, answer) = host::incoming_call(call);
+        running.host.calls.send(incoming).await.expect("sent");
+        answer
+    }
+
+    async fn answered(
+        answer: tokio::sync::oneshot::Receiver<Result<(), ServiceError>>,
+    ) -> Result<(), ServiceError> {
+        tokio::time::timeout(Duration::from_secs(5), answer)
+            .await
+            .expect("in time")
+            .expect("answered")
+    }
+
     fn device(node: u64) -> String {
         map::node_device(FABRIC, node).to_string()
     }
 
     async fn reported(host: &host::HostEnd, unique_id: &str) -> Option<State> {
+        report(host, unique_id).await.state
+    }
+
+    async fn report(host: &host::HostEnd, unique_id: &str) -> StateReport {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Some(report) = host
@@ -866,7 +1179,7 @@ mod tests {
                     .into_iter()
                     .rfind(|report| report.unique_id.as_str() == unique_id)
                 {
-                    return report.state;
+                    return report;
                 }
                 host.reports.ready().await;
             }
@@ -1117,26 +1430,175 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn switching_is_refused_for_now() {
-        let running = running(vec![lab("plug")]).await;
-        let call = irori_types::ServiceCall {
-            unique_id: UniqueId::try_from(format!("{}-1-switch", device(3))).expect("valid"),
-            service: irori_types::Service::SwitchTurnOn,
-            context: irori_types::Context {
-                id: irori_types::ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9").expect("valid"),
-                parent_id: None,
-                origin: irori_types::Origin::System,
-            },
-        };
-        let (incoming, answer) = host::incoming_call(call);
-        running.host.calls.send(incoming).await.expect("sent");
-        let answered = answer.await.expect("answered");
-        assert!(
-            answered
-                .expect_err("read-only")
-                .message
-                .contains("read-only")
+    async fn a_switch_is_switched_and_the_report_it_causes_says_who_asked() {
+        let mut running = running(vec![lab("plug")]).await;
+        let switch = format!("{}-1-switch", device(3));
+        let _ = report(&running.host, &switch).await;
+        let answer = call(&running, &switch, Service::SwitchTurnOn).await;
+        let (id, args) = running.server.next("device_command").await;
+        assert_eq!(
+            args,
+            json!({
+                "node_id": 3,
+                "endpoint_id": 1,
+                "cluster_id": 6,
+                "command_name": "on",
+                "payload": {},
+            })
         );
+        running.server.answer(&id, Value::Null);
+        assert_eq!(answered(answer).await, Ok(()));
+        running
+            .server
+            .event("attribute_updated", json!([3, "1/6/0", true]));
+        let caused = report(&running.host, &switch).await;
+        assert_eq!(
+            caused.state,
+            Some(State::Switch(irori_types::SwitchState { on: true }))
+        );
+        assert_eq!(
+            caused.caused_by.as_ref().map(ContextId::as_str),
+            Some(ASKED_BY)
+        );
+        // The next change is the device's own.
+        running
+            .server
+            .event("attribute_updated", json!([3, "1/6/0", false]));
+        assert_eq!(report(&running.host, &switch).await.caused_by, None);
+    }
+
+    #[tokio::test]
+    async fn a_lock_is_sent_its_code_in_a_timed_command() {
+        let mut running = running(vec![lab("lock")]).await;
+        let answer = call(
+            &running,
+            &format!("{}-1-lock", device(2)),
+            Service::LockUnlock(irori_types::LockCode {
+                code: Some("1234".to_owned()),
+            }),
+        )
+        .await;
+        let (id, args) = running.server.next("device_command").await;
+        assert_eq!(args["command_name"], "unlockDoor");
+        assert_eq!(args["cluster_id"], 257);
+        assert_eq!(args["payload"], json!({"pinCode": "MTIzNA=="}));
+        assert_eq!(args["timed_request_timeout_ms"], 10_000);
+        // A wrong code, as matter.js says it.
+        running.server.refuse(&id, 0, None, "Failure (code 1)");
+        let refused = answered(answer).await.expect_err("refused");
+        assert!(refused.message.contains("didn't do it"), "{refused:?}");
+    }
+
+    #[tokio::test]
+    async fn a_thermostat_is_written_and_a_write_the_device_refuses_fails_the_call() {
+        let mut running = running(vec![lab("thermostat")]).await;
+        let climate = format!("{}-1-climate", device(4));
+        let set =
+            |hvac_mode| Service::ClimateSetHvacMode(irori_types::ClimateHvacMode { hvac_mode });
+        let answer = call(&running, &climate, set(HvacMode::Cool)).await;
+        let (id, args) = running.server.next("write_attribute").await;
+        assert_eq!(
+            args,
+            json!({"node_id": 4, "attribute_path": "1/513/28", "value": 3})
+        );
+        running
+            .server
+            .answer(&id, json!([{"Path": {"EndpointId": 1}, "Status": 0}]));
+        assert_eq!(answered(answer).await, Ok(()));
+
+        let answer = call(&running, &climate, set(HvacMode::Off)).await;
+        let (id, _) = running.server.next("write_attribute").await;
+        running
+            .server
+            .answer(&id, json!([{"Path": {"EndpointId": 1}, "Status": 135}]));
+        let refused = answered(answer).await.expect_err("refused");
+        assert!(refused.message.contains("refused"), "{refused:?}");
+    }
+
+    #[tokio::test]
+    async fn a_command_to_a_device_not_answering_isnt_sent() {
+        let mut node = lab("plug");
+        node["available"] = json!(false);
+        let mut running = running(vec![node]).await;
+        let answer = call(
+            &running,
+            &format!("{}-1-switch", device(3)),
+            Service::SwitchTurnOff,
+        )
+        .await;
+        let refused = answered(answer).await.expect_err("not answering");
+        assert!(refused.message.contains("isn't answering"), "{refused:?}");
+        assert!(running.server.commands.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn firmware_the_server_finds_is_offered_and_installed_when_asked() {
+        let mut running = running(vec![lab("mock_door_lock")]).await;
+        let firmware = format!("{}-0-firmware", device(16));
+        let Some(State::Update(before)) = reported(&running.host, &firmware).await else {
+            panic!("an update state");
+        };
+        assert!(!before.available);
+
+        // Nothing newer to install yet.
+        let answer = call(&running, &firmware, Service::UpdateInstall).await;
+        assert!(answered(answer).await.is_err());
+
+        let answer = call(&running, &firmware, Service::UpdateCheck).await;
+        let (id, args) = running.server.next("check_node_update").await;
+        assert_eq!(args, json!({"node_id": 16}));
+        running.server.answer(
+            &id,
+            json!({
+                "vid": 65521,
+                "pid": 32769,
+                "software_version": 2,
+                "software_version_string": "2.0",
+                "release_notes_url": "https://example.com/notes",
+            }),
+        );
+        assert_eq!(answered(answer).await, Ok(()));
+        let Some(State::Update(found)) = reported(&running.host, &firmware).await else {
+            panic!("an update state");
+        };
+        assert!(found.available);
+        assert_eq!(found.latest_version.as_deref(), Some("2.0"));
+
+        let answer = call(&running, &firmware, Service::UpdateInstall).await;
+        let (id, args) = running.server.next("update_node").await;
+        assert_eq!(args, json!({"node_id": 16, "software_version": 2}));
+        running.server.answer(&id, Value::Null);
+        assert_eq!(answered(answer).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn the_networks_a_new_device_joins_are_given_to_the_server() {
+        let mut running = connected(settings(json!({
+            "bluetooth": true,
+            "wifi_ssid": "Home",
+            "wifi_password": "hunter22",
+            "thread_dataset": "0e080000000000010000",
+        })))
+        .await;
+        let (id, _) = running.server.next("start_listening").await;
+        running.server.answer(&id, json!([]));
+        let (id, args) = running.server.next("set_wifi_credentials").await;
+        assert_eq!(args, json!({"ssid": "Home", "credentials": "hunter22"}));
+        running.server.answer(&id, Value::Null);
+        let (id, args) = running.server.next("set_thread_dataset").await;
+        assert_eq!(args, json!({"dataset": "0e080000000000010000"}));
+        // A refusal doesn't stop devices being added.
+        running.server.refuse(&id, 0, None, "not a dataset");
+        running.told.until("actions add_device").await;
+
+        // With Bluetooth on, a code is looked for over Bluetooth too.
+        let (action, _answer) = host::incoming_action_with_input(
+            ADD_DEVICE.to_owned(),
+            Some("3497-011-2332".to_owned()),
+        );
+        running.host.actions.send(action).await.expect("sent");
+        let (_, args) = running.server.next("commission_with_code").await;
+        assert_eq!(args["network_only"], false);
     }
 
     #[tokio::test]
@@ -1164,11 +1626,14 @@ mod tests {
     #[test]
     fn a_device_not_found_in_time_is_said_as_one_not_found() {
         let refused = |code, reason: Option<&str>, details: &str| {
-            commission_failed(&CommandError {
-                code,
-                reason: reason.map(str::to_owned),
-                details: details.to_owned(),
-            })
+            commission_failed(
+                &CommandError {
+                    code,
+                    reason: reason.map(str::to_owned),
+                    details: details.to_owned(),
+                },
+                false,
+            )
         };
         let not_found = refused(Some(1), Some("not-discovered"), "Commission failed");
         assert!(not_found.contains("No Matter device on this network answered"));

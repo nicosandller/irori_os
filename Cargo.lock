@@ -1781,6 +1781,7 @@ dependencies = [
 name = "irori-protocol-matter"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "irori-node-runtime",
  "irori-protocol",

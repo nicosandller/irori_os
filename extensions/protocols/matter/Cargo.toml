@@ -12,6 +12,7 @@ irori-types.workspace = true
 irori-protocol.workspace = true
 irori-node-runtime.workspace = true
 
+base64.workspace = true
 futures-util.workspace = true
 schemars.workspace = true
 serde.workspace = true
