@@ -11,6 +11,8 @@ pub use irori_node_runtime::child::Spawned;
 const STYLE: LogStyle = LogStyle {
     name: "zigbee2mqtt",
     error: error_sentence,
+    // Zigbee2MQTT writes its whole log to stdout; on stderr is only what crashed it.
+    ordinary: |_| false,
 };
 
 /// Starts Zigbee2MQTT, pointed at `data_dir` for its own `configuration.yaml` (Zigbee2MQTT's

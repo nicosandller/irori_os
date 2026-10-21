@@ -19,6 +19,12 @@ use tokio::process::Command;
 
 const RUNTIME_DIR: &str = "runtime";
 
+/// Where a download unpacks before it becomes [`RUNTIME_DIR`]. The extension can be stopped
+/// halfway through unpacking (a settings change restarts it, so can a power cut), and `tar`
+/// writes `bin/node` long before the rest: unpacked in place, that half a runtime would pass for
+/// a whole one on the next start and fail every install after it.
+const UNPACKING_DIR: &str = "runtime.partial";
+
 /// A current Node.js LTS. Only used the very first time an extension runs on a machine — after
 /// that, whichever version already made it to disk keeps being used, so Irori never silently
 /// upgrades the Node underneath a working installation. Both Zigbee2MQTT and the Matter server
@@ -73,10 +79,18 @@ async fn run(command: &mut Command, what: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Downloads and extracts Node.js if it isn't already provisioned (checked by
-/// `runtime/bin/node` already existing — a one-time cost after the first successful run).
+/// Whether `dir` holds a whole runtime: `node`, and the `corepack` that installs packages with
+/// it. `corepack` is a link into `lib/`, so this also checks that `lib/` arrived.
+fn is_whole_runtime(dir: &Path) -> bool {
+    let bin = dir.join("bin");
+    bin.join("node").is_file() && bin.join("corepack").is_file()
+}
+
+/// Downloads and extracts Node.js if it isn't already provisioned — a one-time cost after the
+/// first successful run. It unpacks beside [`RUNTIME_DIR`] and moves in only once whole, so an
+/// interrupted unpack starts over rather than leaving a runtime that can't install anything.
 pub async fn ensure_node() -> Result<(), String> {
-    if node_binary().is_file() {
+    if is_whole_runtime(Path::new(RUNTIME_DIR)) {
         return Ok(());
     }
     let platform = platform_target()?;
@@ -85,10 +99,13 @@ pub async fn ensure_node() -> Result<(), String> {
     let url = format!("https://nodejs.org/dist/v{version}/{archive}");
     tracing::info!(%url, "downloading Node.js (only needed once)");
 
-    tokio::fs::create_dir_all(RUNTIME_DIR)
+    let unpacking = Path::new(UNPACKING_DIR);
+    // Whatever an earlier, interrupted attempt left.
+    let _ = tokio::fs::remove_dir_all(unpacking).await;
+    tokio::fs::create_dir_all(unpacking)
         .await
-        .map_err(|e| format!("couldn't create {RUNTIME_DIR}: {e}"))?;
-    let archive_path = Path::new(RUNTIME_DIR).join(&archive);
+        .map_err(|e| format!("couldn't create {UNPACKING_DIR}: {e}"))?;
+    let archive_path = unpacking.join(&archive);
     run(
         Command::new("curl")
             .args([
@@ -123,18 +140,26 @@ pub async fn ensure_node() -> Result<(), String> {
             .args(["xzf"])
             .arg(&archive_path)
             .args(["--strip-components=1", "-C"])
-            .arg(RUNTIME_DIR),
+            .arg(unpacking),
         "tar (extracting Node.js)",
     )
     .await?;
     let _ = tokio::fs::remove_file(&archive_path).await;
 
-    if !node_binary().is_file() {
+    if !is_whole_runtime(unpacking) {
         return Err(format!(
-            "extracted {archive} but {} still doesn't exist",
-            node_binary().display()
+            "extracted {archive} but it has no bin/node and bin/corepack"
         ));
     }
+    // A half runtime an older Irori unpacked in place, before this moved in whole.
+    if Path::new(RUNTIME_DIR).exists() {
+        tokio::fs::remove_dir_all(RUNTIME_DIR)
+            .await
+            .map_err(|e| format!("couldn't remove the incomplete {RUNTIME_DIR}: {e}"))?;
+    }
+    tokio::fs::rename(unpacking, RUNTIME_DIR)
+        .await
+        .map_err(|e| format!("couldn't move Node.js into {RUNTIME_DIR}: {e}"))?;
     tracing::info!(version, "Node.js ready");
     Ok(())
 }
@@ -392,6 +417,28 @@ pub fn checked_version<'a>(version: &'a str, title: &str) -> Result<&'a str, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a restart in the middle of unpacking used to leave: `node` there, `corepack` not.
+    /// Taken for a whole runtime, every install after it failed with `couldn't run pnpm`.
+    #[test]
+    fn a_runtime_without_corepack_is_not_whole() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::fs::write(bin.join("node"), "").expect("node");
+        assert!(!is_whole_runtime(dir.path()));
+
+        // `corepack` is a link into `lib/`; one whose target hasn't arrived doesn't count.
+        let target = dir
+            .path()
+            .join("lib/node_modules/corepack/dist/corepack.js");
+        std::os::unix::fs::symlink(&target, bin.join("corepack")).expect("link");
+        assert!(!is_whole_runtime(dir.path()));
+
+        std::fs::create_dir_all(target.parent().expect("a parent")).expect("lib");
+        std::fs::write(&target, "").expect("corepack.js");
+        assert!(is_whole_runtime(dir.path()));
+    }
 
     const Z2M: Package = Package {
         name: "zigbee2mqtt",

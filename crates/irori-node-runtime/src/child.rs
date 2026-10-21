@@ -28,6 +28,10 @@ pub struct LogStyle {
     /// own level, and that line is what reaches the extension's card when it fails: "Failed to
     /// start EZSP layer" is an answer, "exited exit status: 1" is not.
     pub error: fn(&str) -> Option<String>,
+    /// Whether a line is the program's own, at a level below error. Such a line stays ordinary
+    /// even on stderr, where some programs write their warnings (matter.js does): otherwise a
+    /// "BLE is not enabled" warning would read as an error, and as the reason it stopped.
+    pub ordinary: fn(&str) -> bool,
 }
 
 /// The running program, and the two background tasks forwarding its stdout/stderr into Irori's
@@ -145,7 +149,9 @@ async fn log_lines(
         match lines.next_line().await {
             Ok(Some(line)) => {
                 let said = (style.error)(&line)
-                    .or_else(|| from_stderr.then(|| line.trim().to_owned()))
+                    .or_else(|| {
+                        (from_stderr && !(style.ordinary)(&line)).then(|| line.trim().to_owned())
+                    })
                     .filter(|said| !said.is_empty());
                 if let Some(said) = said {
                     *last_error
@@ -191,6 +197,7 @@ mod tests {
     const STYLE: LogStyle = LogStyle {
         name: "test",
         error: after_error,
+        ordinary: |line| line.contains("warn:"),
     };
 
     fn command(program: &str, arg: &Path) -> Command {
@@ -314,5 +321,18 @@ mod tests {
             spawned.drain_logs().await.as_deref(),
             Some("Error: Cannot find module x")
         );
+    }
+
+    /// A warning the program writes to stderr in its own format isn't the reason it stopped.
+    #[tokio::test]
+    async fn the_programs_own_warning_on_stderr_is_not_the_reason() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let script = dir.path().join("die.sh");
+        std::fs::write(&script, "echo 'warn: no Bluetooth here' >&2\nexit 1\n")
+            .expect("write the script");
+
+        let mut spawned = spawn(command("/bin/sh", &script), STYLE).expect("spawns");
+        spawned.child.wait().await.expect("the script exits");
+        assert_eq!(spawned.drain_logs().await, None);
     }
 }
