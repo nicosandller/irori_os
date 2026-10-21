@@ -320,22 +320,26 @@ impl Home {
                 }
             }
         }
-        let reachability_changed = previous
-            .as_ref()
-            .is_none_or(|tracked| tracked.node.available != node.available);
-        let availability = if node.available {
-            Availability::Available
-        } else {
-            Availability::Unavailable
+        // A device is reachable when its node is, and, behind a bridge, when the bridge says so.
+        let reachable = |node: &Node, described: &Described, device: &UniqueId| {
+            node.available && !described.unreachable.contains(device)
         };
         for device in &described.devices {
-            let new = before.is_none_or(|before| {
-                !before
+            let now = reachable(&node, &described, &device.unique_id);
+            let was = previous.as_ref().and_then(|tracked| {
+                tracked
+                    .described
                     .devices
                     .iter()
                     .any(|d| d.unique_id == device.unique_id)
+                    .then(|| reachable(&tracked.node, &tracked.described, &device.unique_id))
             });
-            if (reachability_changed || new)
+            let availability = if now {
+                Availability::Available
+            } else {
+                Availability::Unavailable
+            };
+            if was != Some(now)
                 && let Err(e) = ctx
                     .set_availability(
                         AvailabilityTarget::Device(device.unique_id.clone()),
@@ -944,6 +948,25 @@ mod tests {
             .told
             .until("health the Matter device isn't answering")
             .await;
+    }
+
+    #[tokio::test]
+    async fn a_bridged_device_its_bridge_cant_reach_is_unavailable_alone() {
+        let running = running(vec![lab("bridge")]).await;
+        let bridge = device(99);
+        let plug = format!("{bridge}-0011223344556677");
+        running.told.until(&format!("available {plug}")).await;
+        running
+            .server
+            .event("attribute_updated", json!([99, "2/57/17", false]));
+        running.told.until(&format!("unavailable {plug}")).await;
+        assert!(
+            !running
+                .told
+                .lines()
+                .contains(&format!("unavailable {bridge}")),
+            "the bridge itself still answers"
+        );
     }
 
     #[tokio::test]

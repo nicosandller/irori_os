@@ -42,6 +42,7 @@ const MATTER_SERVER: Package = Package {
 const STYLE: LogStyle = LogStyle {
     name: "matter-server",
     error: error_sentence,
+    ordinary: below_error,
 };
 
 pub async fn ensure_node() -> Result<(), String> {
@@ -138,12 +139,14 @@ pub fn spawn(node: &Path, entry: &Path, args: Vec<std::ffi::OsString>) -> Result
 const SHUTDOWN: Duration = Duration::from_secs(3);
 
 /// Asks the server to stop, and kills it if it hasn't within [`SHUTDOWN`]. It holds Irori's
-/// fabric and every device's keys, so it gets the chance to finish writing them. `kill` the
-/// command, since this workspace has no `unsafe` to send a signal with.
+/// fabric and every device's keys, so it gets the chance to finish writing them.
+///
+/// The signal goes through the shell's own `kill`: this workspace has no `unsafe` to send one
+/// with, and a slim Debian has no `/bin/kill` (that's `procps`), but always a `/bin/sh`.
 pub async fn stop(child: &mut Child) {
     if let Some(pid) = child.id() {
-        let asked = Command::new("kill")
-            .args(["-TERM", &pid.to_string()])
+        let asked = Command::new("/bin/sh")
+            .args(["-c", "kill -TERM \"$1\"", "sh", &pid.to_string()])
             .status()
             .await;
         if asked.is_ok_and(|status| status.success())
@@ -154,6 +157,22 @@ pub async fn stop(child: &mut Child) {
     }
     let _ = child.start_kill();
     let _ = child.wait().await;
+}
+
+/// The level a line of the server's log gives: `2026-10-21 13:06:13.384 WARN Facility message`.
+fn level(line: &str) -> Option<&str> {
+    line.split_whitespace().nth(2)
+}
+
+/// A line that isn't, on its own, what went wrong: the server's own log below error (matter.js
+/// writes its warnings to stderr), a stack frame under one, or the `Node.js v24.21.0` Node prints
+/// last when it crashes. What's left on stderr, such as `Error: Cannot find module`, is the
+/// reason.
+fn below_error(line: &str) -> bool {
+    let trimmed = line.trim_start();
+    matches!(level(line), Some("DEBUG" | "INFO" | "NOTICE" | "WARN"))
+        || trimmed.starts_with("at ")
+        || trimmed.starts_with("Node.js v")
 }
 
 /// The sentence of a line the server calls an error, if it is one. Its lines read
@@ -249,6 +268,19 @@ mod tests {
             None
         );
         assert_eq!(error_sentence("ERROR"), None, "not the server's format");
+    }
+
+    #[test]
+    fn the_servers_warnings_and_stack_frames_are_ordinary_and_a_crash_is_not() {
+        assert!(below_error(
+            "2026-10-21 05:51:45.326 WARN CommissioningController BLE is not enabled on this platform"
+        ));
+        assert!(!below_error(
+            "2026-10-21 05:51:45.326 ERROR MatterServer storage is locked"
+        ));
+        assert!(below_error("    at Object.<anonymous> (/x/bin.js:1:1)"));
+        assert!(below_error("Node.js v24.21.0"));
+        assert!(!below_error("Error: Cannot find module 'x'"));
     }
 
     #[tokio::test]

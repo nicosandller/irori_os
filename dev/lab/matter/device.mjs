@@ -86,12 +86,13 @@ const endpoint = await node.add(
 
 if (kind === "occupancy") {
     let occupied = false;
+    // Unref'd: once matter.js has closed the device on SIGTERM, this mustn't keep Node alive.
     setInterval(() => {
         occupied = !occupied;
         endpoint.set({ occupancySensing: { occupancy: { occupied } } }).catch(error => {
             console.error(`irori lab: couldn't change occupancy: ${error}`);
         });
-    }, 20_000);
+    }, 20_000).unref();
 }
 
 const { manualPairingCode } = node.state.commissioning.pairingCodes;

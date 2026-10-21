@@ -42,6 +42,9 @@ pub const TIMED_OUT: &str = "timed-out";
 pub struct ServerInfo {
     /// Identifies Irori's fabric. Device ids start with it, so a device commissioned onto a new
     /// fabric (after the server's storage is lost) is a new device, as it is on the network.
+    ///
+    /// Read straight from the server's JSON, which writes it whole: past JavaScript's safe
+    /// integers, it only looks rounded once a JavaScript client parses it.
     pub compressed_fabric_id: u64,
     pub sdk_version: String,
 }

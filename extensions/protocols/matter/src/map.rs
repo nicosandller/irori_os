@@ -11,7 +11,7 @@
 //!   A bridged device adds the bridged device's own UniqueID, or `ep<N>` when it gives none.
 //!   An entity adds its endpoint and what it is: `…-1-light`, `…-1-temperature`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::model::{Node, NodeId, cluster, device_type};
 use irori_types::{
@@ -27,6 +27,9 @@ use irori_types::{
 pub struct Described {
     /// The node's own device first, then any it bridges, so each `via` is described first.
     pub devices: Vec<DeviceDescription>,
+    /// Bridged devices the bridge says it can't reach right now (Bridged Device Basic
+    /// Information's Reachable): a bulb switched off at the wall, a sensor out of range.
+    pub unreachable: BTreeSet<UniqueId>,
     pub entities: Vec<Mapped>,
     pub unmodeled: Vec<Unmodeled>,
 }
@@ -289,6 +292,16 @@ pub fn describe(fabric: u64, node: &Node) -> Described {
         ));
     }
 
+    let unreachable = bridged_ids
+        .iter()
+        .filter(|&(&endpoint, _)| {
+            node.value(endpoint, cluster::BRIDGED_DEVICE_BASIC_INFORMATION, 17)
+                .and_then(serde_json::Value::as_bool)
+                == Some(false)
+        })
+        .map(|(_, unique_id)| unique_id.clone())
+        .collect();
+
     let owner = |endpoint: u16| -> &UniqueId {
         bridged_ids
             .get(&endpoint)
@@ -447,6 +460,7 @@ pub fn describe(fabric: u64, node: &Node) -> Described {
 
     Described {
         devices,
+        unreachable,
         entities,
         unmodeled,
     }
@@ -1076,6 +1090,12 @@ mod tests {
             "8E576D939A1C2B52-0000000000000001-ep42"
         );
         assert_eq!(fritz.devices[1].name.as_str(), "my_device");
+        // Its bridge says it can't reach it; the composed bridge's plug is reachable.
+        assert_eq!(
+            fritz.unreachable,
+            BTreeSet::from([fritz.devices[1].unique_id.clone()])
+        );
+        assert!(described.unreachable.is_empty());
         assert!(
             fritz
                 .entities

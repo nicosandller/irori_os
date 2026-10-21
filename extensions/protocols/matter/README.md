@@ -30,8 +30,8 @@ until it has been tried on real devices.
     bridge.
 - **Lists what it doesn't read yet** on the device: locks, covers, thermostats, fans, buttons,
   valves and smoke alarms appear under "not supported yet" rather than vanishing.
-- **Marks a device unavailable** when the server can't reach it, and says how many aren't
-  answering on the extension's card.
+- **Marks a device unavailable** when the server can't reach it, or, behind a bridge, when the
+  bridge says it can't. The extension's card says how many aren't answering.
 - **Removing a device takes Irori off it.** A Matter device can belong to several apps at once
   (its "fabrics"). Removing it from Irori removes only Irori's fabric; Google Home, Apple Home
   or Home Assistant keep it. A device that isn't answering can still be removed anyway: it's
@@ -56,7 +56,8 @@ last digit is a check digit.
   be added directly yet. Set it up in another app first, then share it.
 
 Adding takes a few seconds once the device is found. If nothing on the network answers to the
-code within two minutes, the action says so.
+code within two minutes, the action says so. The device then waits under "+ Add device" on the
+Devices page, like anything else an extension finds, until it's added to the home.
 
 ## Removing a device
 
