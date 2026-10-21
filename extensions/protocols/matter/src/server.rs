@@ -133,10 +133,11 @@ pub fn spawn(node: &Path, entry: &Path, args: Vec<std::ffi::OsString>) -> Result
     child::spawn(command, STYLE)
 }
 
-/// How long the server has to shut down on its own before it's killed: matter-server 1.4.0
-/// takes about 2.5 seconds, closing its storage last. Inside the five seconds the core gives an
-/// extension to stop; reading its last log lines after a clean exit is immediate.
-const SHUTDOWN: Duration = Duration::from_secs(3);
+/// How long the server has to shut down on its own before it's killed. matter-server 1.4.0 took
+/// about 2.9 seconds with devices connected (closing its storage last), and a tenth of that with
+/// none; a Pi is slower. Still inside the five seconds the core gives an extension to stop:
+/// reading its last log lines after a clean exit is immediate.
+const SHUTDOWN: Duration = Duration::from_secs(4);
 
 /// Asks the server to stop, and kills it if it hasn't within [`SHUTDOWN`]. It holds Irori's
 /// fabric and every device's keys, so it gets the chance to finish writing them.
