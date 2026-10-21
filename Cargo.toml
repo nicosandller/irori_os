@@ -12,6 +12,7 @@ members = [
     "crates/irori-client",
     "crates/irori-helpers",
     "crates/irori-ha-discovery",
+    "crates/irori-node-runtime",
     "crates/irori",
     "extensions/demo",
     "extensions/automations",
@@ -49,6 +50,7 @@ irori-config = { path = "crates/irori-config" }
 irori-client = { path = "crates/irori-client" }
 irori-helpers = { path = "crates/irori-helpers" }
 irori-ha-discovery = { path = "crates/irori-ha-discovery" }
+irori-node-runtime = { path = "crates/irori-node-runtime" }
 irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
 irori-protocol-demo = { path = "extensions/demo" }
 irori-protocol-cast = { path = "extensions/protocols/cast" }

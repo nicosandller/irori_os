@@ -71,6 +71,7 @@ COPY crates/irori-rules crates/irori-rules
 COPY crates/irori-flow-types crates/irori-flow-types
 COPY crates/irori-protocol crates/irori-protocol
 COPY crates/irori-ha-discovery crates/irori-ha-discovery
+COPY crates/irori-node-runtime crates/irori-node-runtime
 COPY extensions/protocols/cast extensions/protocols/cast
 COPY extensions/protocols/mqtt extensions/protocols/mqtt
 COPY extensions/protocols/zigbee extensions/protocols/zigbee

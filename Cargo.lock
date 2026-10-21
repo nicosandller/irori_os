@@ -1705,6 +1705,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-node-runtime"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
@@ -1786,6 +1797,7 @@ name = "irori-protocol-zigbee"
 version = "0.0.0"
 dependencies = [
  "irori-ha-discovery",
+ "irori-node-runtime",
  "irori-protocol",
  "irori-types",
  "rumqttc",
@@ -1793,7 +1805,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tracing",
