@@ -1778,6 +1778,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-protocol-matter"
+version = "0.0.0"
+dependencies = [
+ "futures-util",
+ "irori-node-runtime",
+ "irori-protocol",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "irori-protocol-mqtt"
 version = "0.0.0"
 dependencies = [
@@ -4600,6 +4618,7 @@ dependencies = [
  "anyhow",
  "irori-flow-types",
  "irori-protocol-cast",
+ "irori-protocol-matter",
  "irori-protocol-mqtt",
  "irori-protocol-zigbee",
  "irori-rules",

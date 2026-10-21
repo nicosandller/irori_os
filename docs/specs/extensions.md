@@ -164,7 +164,7 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 
 | Kind | Status | What it is |
 |---|---|---|
-| `protocol` | **Phase 1**, specified below and in [protocols.md](protocols.md) | Brings in devices and entities — MQTT, ESPHome, Zigbee, or a vendor API |
+| `protocol` | **Phase 1**, specified below and in [protocols.md](protocols.md) | Brings in devices and entities — MQTT, ESPHome, Zigbee, Matter, or a vendor API |
 | `dashboard` | Reserved for Phase 2c (ROADMAP §6.4) | A pre-built view that binds to matching devices |
 | `card` | Reserved for Phase 2c | A visualization used inside dashboards |
 | `app` | **Specified** in [automations.md](automations.md) §B1, §B3 | A page of its own in the sidebar, served from the package |

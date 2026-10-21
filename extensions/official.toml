@@ -56,6 +56,19 @@ bin = "irori-ext-zigbee"
 full_access = true
 
 [[extension]]
+id = "matter"
+name = "Matter"
+category = "protocol"
+description = "Matter devices on the local network, added with a pairing code or shared from Google Home, Apple Home or Home Assistant. Read-only for now."
+version = "0.1.0"
+source = "extensions/protocols/matter"
+crate = "irori-protocol-matter"
+bin = "irori-ext-matter"
+# `host_shell` in the manifest: it downloads and runs Node.js and the Open Home Foundation
+# Matter Server, the same trade as Zigbee.
+full_access = true
+
+[[extension]]
 id = "automations"
 name = "Automations"
 category = "automation"

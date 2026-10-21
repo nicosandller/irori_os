@@ -188,13 +188,16 @@ The first time the Zigbee extension starts, it downloads Node and installs Zigbe
 its package directory. A later start of any mode keeps `runtime/` and `z2m/` when it refreshes
 the binary from the image, so that install does not run again. The network key lives in
 `extension-data/` either way. Changing `zigbee2mqtt_version` still reinstalls.
+Matter does the same with `runtime/` and `matter/`: its server is about 340 MB installed, so
+check `docker system df` before a lab build on a small VM disk. Its fabric, and every device
+added to it, lives in `extension-data/` too.
 
 | | Where it shows up |
 |---|---|
 | Zigbee dongle | `/dev/zigbee0`, an Ember coordinator. In the Zigbee extension's settings set the serial port to that path and `zigbee2mqtt_version` to `2.14.1`. |
 | Zigbee devices | Named and placed from `dev/lab/home/devices.toml`. Permit joining announces the catalog devices; Zigbee2MQTT interviews them and they show up in the add-device flow. |
 | ESPHome | Four boards announce `_esphomelib._tcp` inside the container. One extra encrypted board prints its key in `dev/pi logs`. |
-| Matter | Three nodes, once their binaries are pinned in `dev/lab/matter/`. Until then the log names each one's discriminator and passcode. |
+| Matter | Three devices from the catalog, emulated with matter.js: an in-wall switch, a plug and a motion sensor that changes every 20 seconds. In the Matter extension's settings turn on **Allow test devices** (they use development certificates), then add each with "Add with a pairing code": `34970112332` (switch), `34970212338` (plug), `34970312335` (motion). `dev/pi logs` prints them too. |
 
 `areas.toml` and `devices.toml` from `dev/lab/home/` are each copied only when that file is missing. A file already in the volume is left alone, so lab mode does not replace device names that were saved without a rooms file. `dev/pi down --wipe` starts the house over.
 

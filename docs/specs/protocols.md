@@ -164,7 +164,8 @@ of its devices then asks the protocol to unpair it first ([config.md](config.md)
   still paired and still in the home.
 - With `force`, the protocol drops the device from the network's records without waiting for the
   device to agree. This is for a device that is asleep, broken or gone.
-- A protocol refuses what can't be unpaired. Zigbee refuses its own controller.
+- A protocol refuses what can't be unpaired. Zigbee refuses its own controller. Matter refuses a
+  device it reaches through a bridge: that one leaves through the bridge's own app.
 
 On the wire these are `action_call { id, action_id, stop, input }` and
 `unpair_device { id, unique_id, force }`, both answered with `action_result { id, error }`, and

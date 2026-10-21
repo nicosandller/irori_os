@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "allow_test_devices": {
+      "description": "Accept devices made with development certificates: samples from Matter SDKs, the dev lab's\nemulated devices, a prototype. A shop-bought device never needs this. Turn it on only for\ndevices you made or trust.",
+      "type": "boolean",
+      "default": false
+    },
+    "matter_server_version": {
+      "description": "Pins the Open Home Foundation Matter Server to one version, e.g. `1.5.0`. Left out, the\nfirst start installs the version this extension was tested with, and keeps it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "port": {
+      "description": "The port the Matter server listens on for this extension. It only listens on this\nmachine's loopback address, never the network. Change it only if something else here\nalready uses it. Not 5580, which a Home Assistant Matter server on this machine may use.",
+      "type": "integer",
+      "format": "uint16",
+      "default": 15580,
+      "maximum": 65535,
+      "minimum": 1
+    },
+    "primary_interface": {
+      "description": "The network interface Matter devices are on, e.g. `eth0` or `wlan0`, for a machine with\nmore than one. Left out, the server picks.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "additionalProperties": false
+}

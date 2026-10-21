@@ -78,7 +78,7 @@ No YAML. No Jinja. No custom cards to install. And you installed the whole thing
 9. **Least privilege for extensions.** Every extension declares its permissions (which devices it may control, network hosts, serial ports, host shell or files) and the owner approves them at install. A card can't reach what it didn't declare; a terminal app is labeled for what it is (full access to the machine).
 10. **Local-first.** The core never needs the internet. Cloud protocols are clearly labeled as such. AI is an optional add-on and bring-your-own: a cloud API key or a local model. A hosted tier may exist later as a convenience, never a requirement.
 11. **Install in seconds.** `curl` → running setup wizard, sensible defaults.
-12. **Borrow ecosystems, don't rebuild them.** Speak HA's MQTT Discovery protocol, wrap `zwave-js-server`, use `rs-matter`. Use HA-familiar domain/service vocabulary where it fits — LLMs already know it.
+12. **Borrow ecosystems, don't rebuild them.** Speak HA's MQTT Discovery protocol, wrap `zwave-js-server` and the Open Home Foundation Matter Server. Use HA-familiar domain/service vocabulary where it fits — LLMs already know it.
 13. **Rust end to end.** Core and web UI share the same type definitions. An engine that ships a WASM editor shares *its* types with *its* page — not with the OS.
 
 ## 6. Who it's for (first)

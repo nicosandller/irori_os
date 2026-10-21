@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Matter">
+  <!-- An original mark: three devices joined into one network. -->
+  <path d="M24 12L12 33h24z" fill="none" stroke="#c4784a" stroke-width="2.6" stroke-linejoin="round"/>
+  <circle cx="24" cy="12" r="5.5" fill="#c4784a"/>
+  <circle cx="12" cy="33" r="5.5" fill="#c4784a"/>
+  <circle cx="36" cy="33" r="5.5" fill="#c4784a"/>
+  <circle cx="24" cy="12" r="2.2" fill="#fff"/>
+  <circle cx="12" cy="33" r="2.2" fill="#fff"/>
+  <circle cx="36" cy="33" r="2.2" fill="#fff"/>
+</svg>

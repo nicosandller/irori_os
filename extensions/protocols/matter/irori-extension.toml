@@ -1,0 +1,35 @@
+[extension]
+id = "matter"
+name = "Matter"
+version = "0.1.0"
+irori = ">=1.5.0"
+# 1.5.0 is the first core whose actions take a line of text (the pairing code) and can say how
+# long they take to answer.
+description = "Matter devices on the local network, through the Open Home Foundation Matter Server it installs and runs. Read-only for now."
+config_schema = "config.schema.json"
+icon = "icon.svg"
+
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = ["light", "switch", "sensor", "binary_sensor"]
+# Removing a Matter device takes Irori's fabric off it. Other controllers it belongs to keep it.
+unpairs = true
+run = { command = "bin/irori-ext-matter" }
+
+# A device already set up with another controller (Google Home, Apple Home, Home Assistant) is
+# shared from there: its app gives a pairing code, and this takes it. Adding a device takes a
+# while, so the core waits up to two minutes for the answer.
+[[contributes.protocol.actions]]
+id = "add_device"
+label = "Add with a pairing code"
+input = { label = "Pairing code", hint = "Share the device from the app it's set up in (Google Home, Apple Home, Home Assistant) and paste the code it shows, or type the 11 digits printed on a new device. Devices that need Bluetooth to join aren't supported yet.", placeholder = "3497-011-2332" }
+answer_within_seconds = 120
+
+# This extension downloads a Node.js runtime and installs the Matter server (an npm package) the
+# first time it starts, then runs it as a supervised subprocess — full access to this machine,
+# the same as a terminal would have. That's the same trade the Zigbee extension makes: no Rust
+# Matter controller exists yet that does what this server does in a great many homes (#82).
+# The server listens on loopback only; devices are reached over the local network (`lan`).
+[permissions]
+host_shell = true
+lan = true

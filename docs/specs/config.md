@@ -121,9 +121,10 @@ to adding them by hand.
 entities' rows, and its spot on the floorplan. The device goes back to being found, listed under
 **+ Add device**.
 
-A device whose protocol keeps a network of its own is different (Zigbee;
+A device whose protocol keeps a network of its own is different (Zigbee, Matter;
 [protocols.md](protocols.md) §5.1). Leaving it paired would leave it on the network, still
-talking, and offered again as if it were new. So removing it unpairs it first:
+talking, and offered again as if it were new. So removing it unpairs it first. A Matter device
+can belong to several apps at once; unpairing takes only Irori off it, and the others keep it.
 
 - If the network lets it go, it is gone altogether. It has to be paired again to come back.
 - If the device doesn't answer, nothing is removed and the page says why. A battery device is
