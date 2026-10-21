@@ -21,6 +21,36 @@
     "extension"
   ],
   "$defs": {
+    "ActionInput": {
+      "description": "The field an action asks a person to fill in before it runs (`ProtocolAction::input`).",
+      "type": "object",
+      "properties": {
+        "hint": {
+          "description": "A sentence under the field saying where to find what goes in it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "label": {
+          "description": "The field's label, e.g. \"Pairing code\".",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "placeholder": {
+          "description": "Example text shown in the empty field, e.g. \"3497-011-2332\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label"
+      ]
+    },
     "ApiScope": {
       "description": "Access to the Irori API beyond the extension's own devices and entities.",
       "oneOf": [
@@ -506,12 +536,33 @@
       "description": "A UI-triggerable action a protocol declares — the other half of \"dedicated add-device path\nper protocol,\" alongside the passive `Waiting` list.",
       "type": "object",
       "properties": {
+        "answer_within_seconds": {
+          "description": "How long, in seconds, the action may take to answer — for one that does its work before\nreplying, like adding a device. The core waits this long instead of the usual ten\nseconds. At most [`MAX_ACTION_ANSWER_SECONDS`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 300,
+          "minimum": 1
+        },
         "id": {
           "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\nA slug — the same shape as an extension id — because the UI and the API place it in a\nURL as one path segment (`/api/extensions/{id}/actions/{action_id}`) without\nencoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.\n\n`validate` is the authority: a manifest is always parsed through it, whatever a JSON\nSchema consumer independently accepts. The pattern here is the same slug, so the schema\nrejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —\nthere is no keyword for \"unique by one field of an array item\" — so `validate` remains\nthe only place that catches a repeated id.",
           "type": "string",
           "maxLength": 64,
           "minLength": 1,
           "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        "input": {
+          "description": "A line of text the person types before the action can run — a pairing code, say. The page\nshows a field for it beside the button, and the text travels with the call. Without it\nthe action is a plain button and the call carries no text.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionInput"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "label": {
           "description": "The button's label, e.g. \"Permit joining\".",

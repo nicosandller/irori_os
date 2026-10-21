@@ -305,6 +305,9 @@ pub struct IncomingAction {
     /// Asked to end early an action it said is open (`set_action_open`): close the window
     /// rather than open it.
     pub stop: bool,
+    /// What the person typed into the action's field, for an action whose manifest declares an
+    /// `input` (a pairing code, say). `None` for a plain button.
+    pub input: Option<String>,
     /// Set when this isn't an action at all but an unpair, which travels the same way.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Unpair`].
     unpair: Option<(UniqueId, bool)>,
@@ -364,6 +367,7 @@ impl IncomingAction {
             (unpair, picture, reply) => Incoming::Action(Self {
                 action_id: self.action_id,
                 stop: self.stop,
+                input: self.input,
                 unpair,
                 picture,
                 reply,
@@ -1008,10 +1012,21 @@ pub mod host {
         let incoming = IncomingAction {
             action_id,
             stop: false,
+            input: None,
             unpair: None,
             picture: None,
             reply: ActionReply::Done(reply),
         };
+        (incoming, result)
+    }
+
+    /// The same, carrying what the person typed into the action's field.
+    pub fn incoming_action_with_input(
+        action_id: String,
+        input: Option<String>,
+    ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
+        let (mut incoming, result) = incoming_action(action_id);
+        incoming.input = input;
         (incoming, result)
     }
 
@@ -1044,6 +1059,7 @@ pub mod host {
         let incoming = IncomingAction {
             action_id: String::new(),
             stop: false,
+            input: None,
             unpair: None,
             picture: Some(unique_id),
             reply: ActionReply::Picture(reply),

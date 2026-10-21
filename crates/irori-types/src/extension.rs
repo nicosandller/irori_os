@@ -346,6 +346,26 @@ impl ProtocolContribution {
                     action.id
                 )));
             }
+            if action
+                .input
+                .as_ref()
+                .is_some_and(|input| input.label.trim().is_empty())
+            {
+                return Err(InvariantError(format!(
+                    "contributes.protocol.actions: action `{}`'s input needs a non-empty label",
+                    action.id
+                )));
+            }
+            if action
+                .answer_within_seconds
+                .is_some_and(|seconds| seconds == 0 || seconds > MAX_ACTION_ANSWER_SECONDS)
+            {
+                return Err(InvariantError(format!(
+                    "contributes.protocol.actions: action `{}`'s answer_within_seconds must be \
+                     between 1 and {MAX_ACTION_ANSWER_SECONDS}",
+                    action.id
+                )));
+            }
         }
         Ok(())
     }
@@ -376,6 +396,40 @@ pub struct ProtocolAction {
     /// "for 60s"), not enforced by the core.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<u32>,
+    /// A line of text the person types before the action can run — a pairing code, say. The page
+    /// shows a field for it beside the button, and the text travels with the call. Without it
+    /// the action is a plain button and the call carries no text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<ActionInput>,
+    /// How long, in seconds, the action may take to answer — for one that does its work before
+    /// replying, like adding a device. The core waits this long instead of the usual ten
+    /// seconds. At most [`MAX_ACTION_ANSWER_SECONDS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 300))]
+    pub answer_within_seconds: Option<u32>,
+}
+
+/// The longest an action may say it takes to answer (`answer_within_seconds`): five minutes.
+/// Past that, a person staring at "Working…" has long since given up.
+pub const MAX_ACTION_ANSWER_SECONDS: u32 = 300;
+
+/// The most text an action's input takes, in bytes. A Matter QR payload is under 100; this is
+/// generous for any code a person would type or paste.
+pub const MAX_ACTION_INPUT: usize = 512;
+
+/// The field an action asks a person to fill in before it runs (`ProtocolAction::input`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ActionInput {
+    /// The field's label, e.g. "Pairing code".
+    #[schemars(length(min = 1), pattern(r"\S"))]
+    pub label: String,
+    /// A sentence under the field saying where to find what goes in it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// Example text shown in the empty field, e.g. "3497-011-2332".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
 }
 
 /// Where a protocol's devices live and how it learns about changes (ROADMAP D24).
@@ -919,8 +973,9 @@ impl JsonSchema for NetworkHost {
 mod tests {
     use super::*;
 
+    /// The whole schema for `T`, with the `$defs` it refers to (an action's `ActionInput`).
     fn validator<T: JsonSchema>() -> jsonschema::Validator {
-        let schema = T::json_schema(&mut SchemaGenerator::default());
+        let schema = SchemaGenerator::default().into_root_schema_for::<T>();
         jsonschema::validator_for(schema.as_value()).expect("valid schema")
     }
 
@@ -1125,6 +1180,66 @@ mod tests {
         assert!(manifest("permit_join").is_ok());
         let rejected = manifest("foo/bar").expect_err("a slash is not one path segment");
         assert!(rejected.to_string().contains("action id"), "{rejected}");
+    }
+
+    /// An action that asks for a line of text (Matter's pairing code) and takes a while to
+    /// answer. A blank field label or an answer time of nothing or forever is refused.
+    #[test]
+    fn an_action_can_ask_for_text_and_say_how_long_it_takes() {
+        let manifest = |action: serde_json::Value| {
+            serde_json::from_value::<ExtensionManifest>(serde_json::json!({
+                "extension": {
+                    "id": "matter",
+                    "name": "Matter",
+                    "version": "0.1.0",
+                    "irori": ">=0.0.0"
+                },
+                "contributes": {
+                    "protocol": [{
+                        "iot_class": "local_push",
+                        "entity_kinds": ["switch"],
+                        "actions": [action]
+                    }]
+                }
+            }))
+        };
+        let parsed = manifest(serde_json::json!({
+            "id": "add_device",
+            "label": "Add",
+            "input": {"label": "Pairing code", "hint": "On the device", "placeholder": "3497-011-2332"},
+            "answer_within_seconds": 120
+        }))
+        .expect("a valid action with an input");
+        let action = &parsed.contributes.protocol[0].actions[0];
+        assert_eq!(
+            action.input.as_ref().map(|input| input.label.as_str()),
+            Some("Pairing code")
+        );
+        assert_eq!(action.answer_within_seconds, Some(120));
+
+        let blank = manifest(serde_json::json!({
+            "id": "add_device", "label": "Add", "input": {"label": "  "}
+        }))
+        .expect_err("a blank field label");
+        assert!(blank.to_string().contains("input"), "{blank}");
+        for seconds in [0, MAX_ACTION_ANSWER_SECONDS + 1] {
+            let too = manifest(serde_json::json!({
+                "id": "add_device", "label": "Add", "answer_within_seconds": seconds
+            }))
+            .expect_err("out of range");
+            assert!(too.to_string().contains("answer_within_seconds"), "{too}");
+        }
+
+        let validator = validator::<ProtocolAction>();
+        assert!(validator.is_valid(&serde_json::json!({
+            "id": "add_device", "label": "Add", "input": {"label": "Code"}, "answer_within_seconds": 300
+        })));
+        assert!(!validator.is_valid(&serde_json::json!({
+            "id": "add_device", "label": "Add", "answer_within_seconds": 301
+        })));
+        assert!(!validator.is_valid(&serde_json::json!({
+            "id": "add_device", "label": "Add", "input": {"label": ""}
+        })));
     }
 
     #[test]

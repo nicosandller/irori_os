@@ -177,6 +177,8 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 | `iot_class` | `local_push` \| `local_polling` \| `cloud_push` \| `cloud_polling` | yes | Shown as a badge; `cloud_*` means it needs the internet (D24) |
 | `entity_kinds` | list of entity kinds, at least one, no repeats | yes | The kinds it creates. It must handle the standard services of each ([protocols.md](protocols.md) §6) |
 | `run` | `{ command = <package path>, args = [<string>…] }` | external only | How the core starts it. Built-in extensions leave it out |
+| `unpairs` | bool | no | Removing one of its devices takes it off the protocol's network too ([protocols.md](protocols.md) §5.1) |
+| `actions` | list of `{ id, label, seconds?, input?, answer_within_seconds? }` | no | Buttons on its "+ Add device" screen. `input = { label, hint?, placeholder? }` asks for a line of text first; `answer_within_seconds` (1–300) is how long the core waits for the answer ([protocols.md](protocols.md) §5.1) |
 
 **At most one protocol per extension** in this version (D25). The protocol's id is the
 extension id.

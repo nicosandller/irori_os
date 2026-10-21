@@ -540,6 +540,88 @@ async fn calls_time_out_and_health_is_shown() {
     assert!(matches!(err, CallError::NotRunning(_)), "{err}");
 }
 
+// --- Actions that take text and take their time ------------------------------------------
+
+/// Holds a plain press forever; answers a pairing a while later, if the code is right.
+struct Pairer;
+impl Protocol for Pairer {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "pairer"
+        name = "Pairer"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.protocol]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+
+        [[contributes.protocol.actions]]
+        id = "press"
+        label = "Press"
+
+        [[contributes.protocol.actions]]
+        id = "pair"
+        label = "Pair"
+        input = { label = "Code" }
+        answer_within_seconds = 60
+    "#;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        ctx.set_available_actions(vec!["press".into(), "pair".into()])
+            .await;
+        let mut held = Vec::new();
+        while let Some(incoming) = ctx.next_action().await {
+            if incoming.action_id == "pair" {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    let answer = match incoming.input.as_deref() {
+                        Some("1234") => Ok(()),
+                        other => Err(format!("wrong code {other:?}")),
+                    };
+                    incoming.reply(answer);
+                });
+            } else {
+                held.push(incoming); // never replies
+            }
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn an_action_gets_its_text_and_as_long_as_it_says_it_takes() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Pairer>().expect("valid"));
+    let pairer = ExtensionId::try_from("pairer").expect("valid");
+    eventually("actions offered", || {
+        core.extensions()
+            .get(&pairer)
+            .is_some_and(|overview| overview.available_actions.len() == 2)
+    })
+    .await;
+
+    let started = tokio::time::Instant::now();
+    let pressed = core.call_action(&pairer, "press", None).await;
+    assert_eq!(pressed, Err(irori_core::CallActionError::Timeout));
+    assert_eq!(started.elapsed(), irori_core::SERVICE_CALL_TIMEOUT);
+
+    // Thirty seconds is past the usual ten, and within the sixty this action asked for.
+    let started = tokio::time::Instant::now();
+    let paired = core.call_action(&pairer, "pair", Some("1234".into())).await;
+    assert_eq!(paired, Ok(()));
+    assert_eq!(started.elapsed(), Duration::from_secs(30));
+
+    let wrong = core.call_action(&pairer, "pair", Some("9999".into())).await;
+    assert_eq!(
+        wrong,
+        Err(irori_core::CallActionError::Failed(
+            "wrong code Some(\"9999\")".into()
+        ))
+    );
+    host.shutdown().await;
+}
+
 struct FromTheFuture;
 impl Protocol for FromTheFuture {
     type Config = NoSettings;

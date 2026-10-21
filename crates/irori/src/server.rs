@@ -1767,6 +1767,7 @@ fn write_non_secrets(
 async fn trigger_extension_action(
     State(state): State<AppState>,
     Path((id, action_id)): Path<(ExtensionId, String)>,
+    body: Option<Json<Option<ActionBody>>>,
 ) -> Response {
     let core = &state.0.core;
     let Some(overview) = core.extensions().remove(&id) else {
@@ -1780,22 +1781,61 @@ async fn trigger_extension_action(
         .as_ref()
         .map(|info| info.actions.as_slice())
         .unwrap_or(&[]);
-    if !declared.iter().any(|action| action.id == action_id) {
+    let Some(action) = declared.iter().find(|action| action.id == action_id) else {
         return refused(
             StatusCode::NOT_FOUND,
             format!("`{id}` has no `{action_id}` action"),
         );
-    }
+    };
+    let input = body.and_then(|Json(body)| body).and_then(|body| body.input);
+    let input = match (&action.input, input) {
+        (None, None) => None,
+        (None, Some(_)) => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                format!("`{action_id}` doesn't take any text"),
+            );
+        }
+        (Some(field), input) => {
+            let text = input.as_deref().map(str::trim).unwrap_or_default();
+            if text.is_empty() {
+                return refused(
+                    StatusCode::BAD_REQUEST,
+                    format!("fill in \"{}\" first", field.label),
+                );
+            }
+            if text.len() > irori_types::MAX_ACTION_INPUT {
+                return refused(
+                    StatusCode::BAD_REQUEST,
+                    format!(
+                        "\"{}\" is too long: at most {} characters",
+                        field.label,
+                        irori_types::MAX_ACTION_INPUT
+                    ),
+                );
+            }
+            Some(text.to_owned())
+        }
+    };
     if !overview.available_actions.contains(&action_id) {
         return refused(
             StatusCode::CONFLICT,
             format!("`{action_id}` isn't available on `{id}` right now"),
         );
     }
-    match core.call_action(&id, &action_id).await {
+    match core.call_action(&id, &action_id, input).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
     }
+}
+
+/// What can come with an action: the text typed into its field, for one that declares an
+/// `input`. No body at all is a plain press.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActionBody {
+    #[serde(default)]
+    input: Option<String>,
 }
 
 /// Ends early an action an extension says is open: closes Zigbee's network before its minute
@@ -3999,6 +4039,13 @@ mod tests {
             [[contributes.protocol.actions]]
             id = "open"
             label = "Open the safe"
+
+            # Asks for text, like Matter's pairing code, and takes its time answering.
+            [[contributes.protocol.actions]]
+            id = "dial"
+            label = "Dial"
+            input = { label = "Combination", hint = "On the back of the door" }
+            answer_within_seconds = 30
         "#;
         async fn run(
             settings: SafeSettings,
@@ -4020,10 +4067,17 @@ mod tests {
             // Only offered once it has a code — same idea as `zigbee`'s permit_join only
             // showing up once it's actually found a Z2M bridge.
             if settings.code.is_some() {
-                ctx.set_available_actions(vec!["open".to_owned()]).await;
+                ctx.set_available_actions(vec!["open".to_owned(), "dial".to_owned()])
+                    .await;
             }
             while let Some(incoming) = ctx.next_action().await {
-                incoming.reply(Ok(()));
+                let answer = match (incoming.action_id.as_str(), &incoming.input) {
+                    ("open", None) => Ok(()),
+                    ("dial", Some(dialled)) if Some(dialled) == settings.code.as_ref() => Ok(()),
+                    ("dial", Some(_)) => Err("that's not the combination".to_owned()),
+                    (action, input) => Err(format!("unexpected {action} with {input:?}")),
+                };
+                incoming.reply(answer);
             }
             Ok(())
         }
@@ -4758,7 +4812,7 @@ mod tests {
             )
             .await?;
         waiting_for(&core, 0).await?;
-        available_actions_for(&core, 1).await?;
+        available_actions_for(&core, 2).await?;
 
         let (status, body) = server
             .json(
@@ -4768,6 +4822,74 @@ mod tests {
             )
             .await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// An action with a field gets what was typed in it, trimmed. A missing or blank field,
+    /// text for a plain button, and text too long to be a code are refused before they reach
+    /// the extension. (How long the core waits for it is `irori-core`'s test.)
+    #[tokio::test]
+    async fn an_action_with_a_field_gets_what_was_typed() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+        server
+            .json(
+                "PUT",
+                "/api/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "1234-5678"}),
+            )
+            .await?;
+        waiting_for(&core, 0).await?;
+        available_actions_for(&core, 2).await?;
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/extensions/safe/actions/dial",
+                serde_json::json!({"input": " 1234-5678 "}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/extensions/safe/actions/dial",
+                serde_json::json!({"input": "0000"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.to_string().contains("not the combination"), "{body}");
+
+        for nothing in [serde_json::json!(null), serde_json::json!({"input": "   "})] {
+            let (status, body) = server
+                .json("POST", "/api/extensions/safe/actions/dial", nothing)
+                .await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+            assert!(body.to_string().contains("Combination"), "{body}");
+        }
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/extensions/safe/actions/dial",
+                serde_json::json!({"input": "9".repeat(irori_types::MAX_ACTION_INPUT + 1)}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.to_string().contains("too long"), "{body}");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/extensions/safe/actions/open",
+                serde_json::json!({"input": "1234-5678"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body.to_string().contains("doesn't take any text"), "{body}");
 
         host.shutdown().await;
         Ok(())

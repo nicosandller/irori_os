@@ -400,7 +400,8 @@ pub enum CallActionError {
     NotRunning(ExtensionId),
     /// The extension says the action failed.
     Failed(String),
-    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`].
+    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`], or the action's own
+    /// `answer_within_seconds`.
     Timeout,
 }
 
@@ -409,7 +410,7 @@ impl fmt::Display for CallActionError {
         match self {
             Self::NotRunning(extension) => write!(f, "`{extension}` isn't running"),
             Self::Failed(why) => f.write_str(why),
-            Self::Timeout => f.write_str("the action didn't finish within 10 seconds"),
+            Self::Timeout => f.write_str("the extension didn't answer in time"),
         }
     }
 }
@@ -1096,16 +1097,34 @@ impl Core {
     }
 
     /// Triggers one of an extension's declared actions — the Zigbee `zigbee` protocol's
-    /// `permit_join`, say — and waits for its answer (at most [`SERVICE_CALL_TIMEOUT`]).
+    /// `permit_join`, say — and waits for its answer: at most [`SERVICE_CALL_TIMEOUT`], or the
+    /// action's own `answer_within_seconds` when it declares one (Matter's adding a device).
     /// Unlike a service call, there's no entity to resolve through: the extension id is all
-    /// that's needed.
+    /// that's needed. `input` is what the person typed into the action's field, if it has one.
     pub async fn call_action(
         &self,
         extension: &ExtensionId,
         action_id: &str,
+        input: Option<String>,
     ) -> Result<(), CallActionError> {
-        let asked = irori_protocol::host::incoming_action(action_id.to_owned());
-        self.ask(extension, asked, SERVICE_CALL_TIMEOUT).await
+        let wait = self.action_wait(extension, action_id);
+        let asked = irori_protocol::host::incoming_action_with_input(action_id.to_owned(), input);
+        self.ask(extension, asked, wait).await
+    }
+
+    /// How long to wait for an action's answer: what its manifest says, or the usual.
+    fn action_wait(&self, extension: &ExtensionId, action_id: &str) -> Duration {
+        read(&self.0.extensions)
+            .get(extension)
+            .and_then(|overview| overview.info.as_ref())
+            .and_then(|info| info.actions.iter().find(|action| action.id == action_id))
+            .and_then(|action| action.answer_within_seconds)
+            .map(|seconds| {
+                Duration::from_secs(u64::from(
+                    seconds.min(irori_types::MAX_ACTION_ANSWER_SECONDS),
+                ))
+            })
+            .unwrap_or(SERVICE_CALL_TIMEOUT)
     }
 
     /// Asks an extension to end early an action it said is open: close Zigbee's network

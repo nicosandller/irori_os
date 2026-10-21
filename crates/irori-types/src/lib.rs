@@ -33,10 +33,10 @@ mod users;
 pub use api::LiveMessage;
 pub use context::{Context, Origin};
 pub use extension::{
-    ApiScope, AppContribution, AppPlacement, AutomationContribution, Contributions,
-    CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath, IotClass, NetworkHost,
-    PackagePath, Permissions, ProtocolAction, ProtocolContribution, ReservedContribution,
-    RunCommand, SerialPath, Version,
+    ActionInput, ApiScope, AppContribution, AppPlacement, AutomationContribution, Contributions,
+    CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath, IotClass,
+    MAX_ACTION_ANSWER_SECONDS, MAX_ACTION_INPUT, NetworkHost, PackagePath, Permissions,
+    ProtocolAction, ProtocolContribution, ReservedContribution, RunCommand, SerialPath, Version,
 };
 pub use floorplan::{
     Floorplan, Glyph, Hinge, Level, Marked, Opening, OpeningKind, PlacedArea, PlacedDevice,

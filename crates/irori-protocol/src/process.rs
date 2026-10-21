@@ -183,6 +183,10 @@ pub enum ToExt {
         /// End the action's open window early instead of starting it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stop: bool,
+        /// What the person typed into the action's field, for an action that declares an
+        /// `input`. Absent for a plain button, so older extensions read the message unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input: Option<String>,
     },
     /// Take a device off the protocol's network. Only sent to a protocol whose manifest says
     /// `unpairs`. Answered with `action_result`.
@@ -602,11 +606,12 @@ fn handle_host_line(
             id,
             action_id,
             stop,
+            input,
         } => {
             let (incoming, result) = if stop {
                 host::incoming_stop(action_id)
             } else {
-                host::incoming_action(action_id)
+                host::incoming_action_with_input(action_id, input)
             };
             if !queue_action(id, incoming, result, actions, out, runtime) {
                 return ReadControl::Stop;

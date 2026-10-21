@@ -1307,9 +1307,19 @@ fn ProtocolActions(
         }
     });
 
+    // An action with a field is a small form of its own rather than a button.
+    let (with_field, usable): (Vec<_>, Vec<_>) = usable
+        .into_iter()
+        .partition(|action| action.input.is_some());
+    let fields = with_field
+        .into_iter()
+        .map(|action| view! { <ActionWithField id=id.clone() action=action /> })
+        .collect_view();
+
     view! {
         <div class="protocol-actions">
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+            {fields}
             {usable
                 .into_iter()
                 .map(|action| {
@@ -1465,6 +1475,97 @@ fn ProtocolActions(
         </div>
     }
         .into_any()
+}
+
+/// An action that needs a line of text first — Matter's "Add with a pairing code". The field,
+/// the button, and where to find what goes in the field. The press waits for the extension's
+/// answer, which for adding a device takes a while; a refusal is shown under the field and the
+/// text is kept so it can be corrected, and success clears it and reads the home again, which is
+/// where the new device shows up.
+#[component]
+fn ActionWithField(id: ExtensionId, action: crate::api::ProtocolActionInfo) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let value = RwSignal::new(String::new());
+    let sending = RwSignal::new(false);
+    let trouble = RwSignal::new(None::<String>);
+    let done = RwSignal::new(false);
+    let field = action.input.clone().unwrap_or(crate::api::ActionInputInfo {
+        label: action.label.clone(),
+        hint: None,
+        placeholder: None,
+    });
+    let action_id = action.id.clone();
+    let send = move || {
+        let typed = value.get_untracked();
+        if typed.trim().is_empty() || sending.get_untracked() {
+            return;
+        }
+        let id = id.clone();
+        let action_id = action_id.clone();
+        sending.set(true);
+        done.set(false);
+        spawn_local(async move {
+            match crate::api::trigger_action_with(&id, &action_id, typed.trim()).await {
+                Ok(()) => {
+                    value.set(String::new());
+                    trouble.set(None);
+                    done.set(true);
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(why)),
+            }
+            sending.set(false);
+        });
+    };
+    let label = action.label.clone();
+    let placeholder = field
+        .placeholder
+        .clone()
+        .unwrap_or_else(|| field.label.clone());
+    view! {
+        <div class="action-field">
+            <form
+                class="inline-form"
+                on:submit=move |ev| {
+                    ev.prevent_default();
+                    send();
+                }
+            >
+                <input
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    aria-label=field.label.clone()
+                    placeholder=placeholder
+                    prop:value=value
+                    disabled=move || sending.get()
+                    on:input:target=move |ev| value.set(ev.target().value())
+                />
+                <button
+                    type="submit"
+                    class="add"
+                    class:join-waiting=move || sending.get()
+                    aria-busy=move || sending.get().to_string()
+                    disabled=move || sending.get() || value.get().trim().is_empty()
+                >
+                    {move || if sending.get() {
+                        view! {
+                            <span class="join-wait" aria-hidden="true"></span>
+                            "Working…"
+                        }
+                            .into_any()
+                    } else {
+                        label.clone().into_any()
+                    }}
+                </button>
+            </form>
+            {field.hint.clone().map(|hint| view! { <p class="muted small">{hint}</p> })}
+            {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+            {move || done.get().then(|| view! {
+                <p class="muted small" role="status">"Done. It's listed under what was found."</p>
+            })}
+        </div>
+    }
 }
 
 /// Waits for an extension to say its action is open (or no longer is), reading the home again

@@ -146,6 +146,14 @@ shown as a button on the extension's "+ Add device" screen.
   page. The protocol reports what's true however it came about: Zigbee2MQTT's own "Permit join"
   switch opens the same network, and that shows as the same countdown.
 - An open action can be **stopped** early. The protocol receives the same action with `stop` set.
+- An action can ask for a line of **text** first: `input = { label, hint, placeholder }`. Matter
+  takes a pairing code this way. The page shows a field beside the button, and the text travels
+  with the call, trimmed and at most 512 bytes. The API refuses a press without it, and refuses
+  text for an action that doesn't ask for any.
+- An action that does its work before answering says how long it may take with
+  `answer_within_seconds` (1 to 300). The core waits that long for it instead of the usual ten
+  seconds. Adding a Matter device takes up to two minutes. While it waits, the protocol keeps
+  serving everything else: it answers the action from a task of its own.
 
 A protocol whose devices are paired to a network it keeps declares `unpairs = true`. Removing one
 of its devices then asks the protocol to unpair it first ([config.md](config.md) §3.2):
@@ -158,7 +166,7 @@ of its devices then asks the protocol to unpair it first ([config.md](config.md)
   device to agree. This is for a device that is asleep, broken or gone.
 - A protocol refuses what can't be unpaired. Zigbee refuses its own controller.
 
-On the wire these are `action_call { id, action_id, stop }` and
+On the wire these are `action_call { id, action_id, stop, input }` and
 `unpair_device { id, unique_id, force }`, both answered with `action_result { id, error }`, and
 `set_action_open { action_id, closes_in_ms }` from the protocol.
 
