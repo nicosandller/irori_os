@@ -18,7 +18,7 @@ mod model;
 mod server;
 pub mod settings;
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use irori_protocol::{
@@ -38,12 +38,19 @@ const ADD_DEVICE: &str = "add_device";
 /// How long the server has to start listening before the extension gives up on it. The first
 /// start on a small machine reads its whole device database first.
 const STARTUP: Duration = Duration::from_secs(180);
-/// A report this soon after a command to its entity is that command's result (`caused_by`).
-const CAUSED_BY_WINDOW: Duration = Duration::from_secs(10);
+/// Reports on an entity while its command is carried out, and this long after the device took
+/// it, are that command's result (`caused_by`). A command changes several attributes, and each
+/// arrives on its own: a light's on/off and level, a fan's mode and speed.
+const SETTLING: Duration = Duration::from_secs(3);
+/// Past this, a command still being carried out names nothing more: a device that never
+/// answers isn't left naming it.
+const CARRYING_OUT: Duration = Duration::from_secs(60);
 /// When firmware is first looked for after the server starts, and how often after that. The
 /// server looks in the DCL by itself; this asks what it found.
 const FIRST_UPDATE_CHECK: Duration = Duration::from_secs(60);
 const UPDATE_CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// At most this many events are taken together.
+const BATCH: usize = 256;
 
 /// The Matter protocol.
 #[derive(Debug)]
@@ -174,6 +181,8 @@ enum Done {
         Option<IncomingCall>,
         Result<Option<SoftwareUpdate>, String>,
     ),
+    /// A service call's commands were all taken, or one wasn't.
+    Commanded(IncomingCall, Result<(), ServiceError>),
 }
 
 /// Listens, then keeps Irori up to date with the server until told to stop, the connection
@@ -234,7 +243,21 @@ async fn drive(
                 Some(Event::ServerShutdown) => {
                     break Ended::Failed("the Matter server shut down".to_owned());
                 }
-                Some(event) => home.event(event, ctx).await,
+                Some(event) => {
+                    // And whatever came with it.
+                    let mut arrived = vec![event];
+                    let mut shut_down = false;
+                    while arrived.len() < BATCH
+                        && let Ok(more) = events.try_recv()
+                    {
+                        shut_down |= matches!(more, Event::ServerShutdown);
+                        arrived.push(more);
+                    }
+                    home.events(arrived, ctx).await;
+                    if shut_down {
+                        break Ended::Failed("the Matter server shut down".to_owned());
+                    }
+                }
                 None => break Ended::Failed("lost the connection to the Matter server".to_owned()),
             },
             ended = &mut exit => break ended,
@@ -277,8 +300,8 @@ struct Home {
     newer: BTreeMap<NodeId, SoftwareUpdate>,
     /// Nodes whose firmware is being looked for.
     checking: BTreeSet<NodeId>,
-    /// Who asked for each entity's recent commands, oldest first: the reports they cause say so.
-    commanded: BTreeMap<UniqueId, VecDeque<(ContextId, Instant)>>,
+    /// Who asked for each entity's latest command: the reports it causes say so.
+    commanded: BTreeMap<UniqueId, Commanded>,
     /// The mode each thermostat was last in that wasn't off, for `climate.turn_on`.
     last_on: BTreeMap<UniqueId, HvacMode>,
     /// A device is being added: one at a time.
@@ -288,6 +311,14 @@ struct Home {
     /// What was last said, so it's said again only when it changes.
     unmodeled: Vec<irori_types::Unmodeled>,
     health: Option<Health>,
+}
+
+/// A command sent to an entity, and when the device took it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Commanded {
+    context: ContextId,
+    sent: Instant,
+    taken: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -315,19 +346,36 @@ impl Home {
         }
     }
 
-    async fn event(&mut self, event: Event, ctx: &ProtocolContext) {
-        match event {
-            Event::Node(node) => self.apply(node, ctx, false).await,
-            Event::AttributeUpdated { node, path, value } => {
-                let Some(tracked) = self.nodes.get_mut(&node) else {
-                    return;
-                };
-                let mut updated = tracked.node.clone();
-                updated.set(path, value);
-                self.apply(updated, ctx, false).await;
+    /// Events that arrived together. Attribute changes to one node become one report each for
+    /// its entities: a device tells each attribute a command changed on its own, a moment
+    /// apart, and Irori is told the result, not every step to it.
+    async fn events(&mut self, events: Vec<Event>, ctx: &ProtocolContext) {
+        let mut changed: BTreeMap<NodeId, Node> = BTreeMap::new();
+        for event in events {
+            match event {
+                Event::AttributeUpdated { node, path, value } => {
+                    let Some(tracked) = self.nodes.get(&node) else {
+                        continue;
+                    };
+                    changed
+                        .entry(node)
+                        .or_insert_with(|| tracked.node.clone())
+                        .set(path, value);
+                }
+                other => {
+                    for (_, node) in std::mem::take(&mut changed) {
+                        self.apply(node, ctx, false).await;
+                    }
+                    match other {
+                        Event::Node(node) => self.apply(node, ctx, false).await,
+                        Event::NodeRemoved(node) => self.forget(node, ctx).await,
+                        Event::AttributeUpdated { .. } | Event::ServerShutdown => {}
+                    }
+                }
             }
-            Event::NodeRemoved(node) => self.forget(node, ctx).await,
-            Event::ServerShutdown => {}
+        }
+        for (_, node) in changed {
+            self.apply(node, ctx, false).await;
         }
         self.publish(ctx).await;
     }
@@ -616,6 +664,24 @@ impl Home {
                 }
                 unpair.reply(removed);
             }
+            Done::Commanded(call, done) => {
+                let unique_id = &call.call.unique_id;
+                let ours = self
+                    .commanded
+                    .get(unique_id)
+                    .is_some_and(|commanded| commanded.context == call.call.context.id);
+                if ours {
+                    if done.is_ok() {
+                        if let Some(commanded) = self.commanded.get_mut(unique_id) {
+                            commanded.taken = Some(Instant::now());
+                        }
+                    } else {
+                        // Nothing it reports now is this command's doing.
+                        self.commanded.remove(unique_id);
+                    }
+                }
+                call.reply(done);
+            }
             Done::Checked(node, call, found) => {
                 self.checking.remove(&node);
                 match found {
@@ -716,19 +782,30 @@ impl Home {
                 return;
             }
         };
-        self.commanded
-            .entry(unique_id)
-            .or_default()
-            .push_back((call.call.context.id.clone(), Instant::now()));
+        // A newer command replaces an older one: what's reported from now on is its doing.
+        self.commanded.insert(
+            unique_id,
+            Commanded {
+                context: call.call.context.id.clone(),
+                sent: Instant::now(),
+                taken: None,
+            },
+        );
         let client = client.clone();
+        let done = done.clone();
         tokio::spawn(async move {
+            let mut sent = Ok(());
             for command in &commands {
                 if let Err(e) = client.send(node, command).await {
-                    call.reply(Err(command_failed(&e)));
-                    return;
+                    sent = Err(command_failed(&e));
+                    break;
                 }
             }
-            call.reply(Ok(()));
+            if let Err(mpsc::error::SendError(Done::Commanded(call, sent))) =
+                done.send(Done::Commanded(call, sent)).await
+            {
+                call.reply(sent);
+            }
         });
     }
 
@@ -779,21 +856,24 @@ impl Home {
     }
 }
 
-/// The context of the command a report answers, if one was sent to its entity recently enough.
-/// Each report answers the oldest command still waiting; anything older than the window was
-/// answered by a report Irori never saw.
+/// The context of the command a report on `entity` is the result of: its latest, while it's
+/// carried out and for [`SETTLING`] after the device took it. Past that, the entity's reports
+/// are its own again.
 fn caused_by(
-    commanded: &mut BTreeMap<UniqueId, VecDeque<(ContextId, Instant)>>,
+    commanded: &mut BTreeMap<UniqueId, Commanded>,
     entity: &UniqueId,
 ) -> Option<ContextId> {
-    let waiting = commanded.get_mut(entity)?;
-    while let Some((context, at)) = waiting.pop_front() {
-        if at.elapsed() < CAUSED_BY_WINDOW {
-            return Some(context);
-        }
+    let command = commanded.get(entity)?;
+    let settling = match command.taken {
+        Some(taken) => taken.elapsed() < SETTLING,
+        None => command.sent.elapsed() < CARRYING_OUT,
+    };
+    if settling {
+        Some(command.context.clone())
+    } else {
+        commanded.remove(entity);
+        None
     }
-    commanded.remove(entity);
-    None
 }
 
 /// A device that didn't take a command, in words.
@@ -1016,6 +1096,7 @@ mod tests {
             "occupancy" => include_str!("../tests/fixtures/lab_occupancy.json"),
             "bridge" => include_str!("../tests/fixtures/mock_composed_bridge.json"),
             "lock" => include_str!("../tests/fixtures/lab_lock.json"),
+            "light" => include_str!("../tests/fixtures/lab_light.json"),
             "thermostat" => include_str!("../tests/fixtures/lab_thermostat.json"),
             "mock_door_lock" => include_str!("../tests/fixtures/mock_door_lock.json"),
             other => panic!("no fixture {other}"),
@@ -1460,11 +1541,90 @@ mod tests {
             caused.caused_by.as_ref().map(ContextId::as_str),
             Some(ASKED_BY)
         );
-        // The next change is the device's own.
+    }
+
+    #[tokio::test]
+    async fn changes_that_come_together_are_one_report_and_each_names_the_command() {
+        let mut running = running(vec![lab("light")]).await;
+        let light = format!("{}-1-light", device(1));
+        let _ = report(&running.host, &light).await;
+        let answer = call(
+            &running,
+            &light,
+            Service::LightTurnOn(irori_types::LightTurnOn {
+                brightness: Some(128),
+                ..irori_types::LightTurnOn::default()
+            }),
+        )
+        .await;
+        let (id, _) = running.server.next("device_command").await;
+        running.server.answer(&id, Value::Null);
+        assert_eq!(answered(answer).await, Ok(()));
+        // On, then the level: as the server sends them, one after the other.
         running
             .server
-            .event("attribute_updated", json!([3, "1/6/0", false]));
-        assert_eq!(report(&running.host, &switch).await.caused_by, None);
+            .event("attribute_updated", json!([1, "1/6/0", true]));
+        running
+            .server
+            .event("attribute_updated", json!([1, "1/8/0", 128]));
+        let mut seen = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                seen.extend(
+                    running
+                        .host
+                        .reports
+                        .drain()
+                        .into_iter()
+                        .filter(|report| report.unique_id.as_str() == light),
+                );
+                let brightness = seen.last().and_then(|report| match &report.state {
+                    Some(State::Light(light)) => light.brightness,
+                    _ => None,
+                });
+                if brightness.is_some() {
+                    break;
+                }
+                running.host.reports.ready().await;
+            }
+        })
+        .await
+        .expect("the level is reported");
+        // Every step there names who asked, the last one too.
+        assert!(
+            seen.iter()
+                .all(|report| report.caused_by.as_ref().map(ContextId::as_str) == Some(ASKED_BY)),
+            "{seen:#?}"
+        );
+    }
+
+    #[test]
+    fn a_command_names_its_reports_until_it_has_settled() {
+        let entity = UniqueId::try_from("ABC-1-light".to_owned()).expect("valid");
+        let context = ContextId::try_from(ASKED_BY).expect("valid");
+        let ago = |seconds| {
+            Instant::now()
+                .checked_sub(Duration::from_secs(seconds))
+                .expect("after boot")
+        };
+        let mut commanded = BTreeMap::new();
+        let mut at = |sent, taken| {
+            commanded.insert(
+                entity.clone(),
+                Commanded {
+                    context: context.clone(),
+                    sent,
+                    taken,
+                },
+            );
+            caused_by(&mut commanded, &entity)
+        };
+        // Being carried out, and just taken: its doing.
+        assert_eq!(at(ago(5), None), Some(context.clone()));
+        assert_eq!(at(ago(5), Some(ago(1))), Some(context.clone()));
+        // Settled, or a device that never answered: the entity's own again.
+        assert_eq!(at(ago(10), Some(ago(5))), None);
+        assert_eq!(at(ago(120), None), None);
     }
 
     #[tokio::test]
