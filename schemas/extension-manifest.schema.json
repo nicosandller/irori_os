@@ -21,8 +21,8 @@
     "extension"
   ],
   "$defs": {
-    "ActionInput": {
-      "description": "The field an action asks a person to fill in before it runs (`ProtocolAction::input`).",
+    "ActionField": {
+      "description": "A line of text an action's way asks for (`ActionWay::fields`).",
       "type": "object",
       "properties": {
         "hint": {
@@ -31,6 +31,13 @@
             "string",
             "null"
           ]
+        },
+        "id": {
+          "description": "Its id, the key the text is sent under, e.g. `code`. A slug, unique within the way.",
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
         },
         "label": {
           "description": "The field's label, e.g. \"Pairing code\".",
@@ -48,6 +55,54 @@
       },
       "additionalProperties": false,
       "required": [
+        "id",
+        "label"
+      ]
+    },
+    "ActionWay": {
+      "description": "One way to do an action (`ProtocolAction::ways`): what the person picks at the top of its\nform, and what it asks for once picked.",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "description": "What the person types for this way, sent with the call: a pairing code, say. Every\nfield must be filled in. At most [`MAX_WAY_FIELDS`].",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionField"
+          },
+          "maxItems": 4
+        },
+        "hint": {
+          "description": "A sentence under the choice saying when it's the one to pick.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Its id, sent with the call so the extension knows which way was picked, e.g. `new`. A\nslug, unique within the action.",
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        "label": {
+          "description": "What the choice says, e.g. \"It's new, or reset\".",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "settings": {
+          "description": "The extension's own settings this way needs, by their name in its `config_schema`:\nBluetooth and the Wi-Fi network a new device joins, say. The form shows each as the\nsettings form does, with what's saved already, and saves what changed before the action\nruns; a change restarts the extension, and the action waits for it to be back. At most\n[`MAX_WAY_SETTINGS`].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
         "label"
       ]
     },
@@ -553,17 +608,6 @@
           "minLength": 1,
           "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
         },
-        "input": {
-          "description": "A line of text the person types before the action can run — a pairing code, say. The page\nshows a field for it beside the button, and the text travels with the call. Without it\nthe action is a plain button and the call carries no text.",
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ActionInput"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
         "label": {
           "description": "The button's label, e.g. \"Permit joining\".",
           "type": "string",
@@ -578,6 +622,14 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "ways": {
+          "description": "The ways to do it, for an action that asks a few things first: adding a device that is\nalready set up elsewhere, or one that's new, say. The page shows a choice between them\n(none when there's one), then the chosen way's settings and fields, and sends what was\nfilled in with the call. Without any, the action is a plain button and the call carries\nnothing. At most [`MAX_ACTION_WAYS`].",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionWay"
+          },
+          "maxItems": 4
         }
       },
       "additionalProperties": false,

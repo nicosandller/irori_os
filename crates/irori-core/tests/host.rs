@@ -14,7 +14,9 @@ use irori_protocol::types::{
     ExtensionId, LightCapabilities, LightState, LightTurnOn, Name, Origin, Service, State,
     StateReport, UniqueId, UserId, Version,
 };
-use irori_protocol::{Health, NoSettings, Protocol, ProtocolContext, ProtocolError, builtin};
+use irori_protocol::{
+    Filled, Health, NoSettings, Protocol, ProtocolContext, ProtocolError, builtin,
+};
 
 fn uid(s: &str) -> UniqueId {
     UniqueId::try_from(s).expect("valid")
@@ -564,8 +566,12 @@ impl Protocol for Pairer {
         [[contributes.protocol.actions]]
         id = "pair"
         label = "Pair"
-        input = { label = "Code" }
         answer_within_seconds = 60
+
+        [[contributes.protocol.actions.ways]]
+        id = "code"
+        label = "With a code"
+        fields = [{ id = "code", label = "Code" }]
     "#;
     async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         ctx.set_available_actions(vec!["press".into(), "pair".into()])
@@ -575,7 +581,7 @@ impl Protocol for Pairer {
             if incoming.action_id == "pair" {
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_secs(30)).await;
-                    let answer = match incoming.input.as_deref() {
+                    let answer = match incoming.field("code") {
                         Some("1234") => Ok(()),
                         other => Err(format!("wrong code {other:?}")),
                     };
@@ -586,6 +592,13 @@ impl Protocol for Pairer {
             }
         }
         Ok(())
+    }
+}
+
+fn code(code: &str) -> Filled {
+    Filled {
+        way: Some("code".into()),
+        fields: [("code".to_owned(), code.to_owned())].into(),
     }
 }
 
@@ -602,17 +615,17 @@ async fn an_action_gets_its_text_and_as_long_as_it_says_it_takes() {
     .await;
 
     let started = tokio::time::Instant::now();
-    let pressed = core.call_action(&pairer, "press", None).await;
+    let pressed = core.call_action(&pairer, "press", Filled::default()).await;
     assert_eq!(pressed, Err(irori_core::CallActionError::Timeout));
     assert_eq!(started.elapsed(), irori_core::SERVICE_CALL_TIMEOUT);
 
     // Thirty seconds is past the usual ten, and within the sixty this action asked for.
     let started = tokio::time::Instant::now();
-    let paired = core.call_action(&pairer, "pair", Some("1234".into())).await;
+    let paired = core.call_action(&pairer, "pair", code("1234")).await;
     assert_eq!(paired, Ok(()));
     assert_eq!(started.elapsed(), Duration::from_secs(30));
 
-    let wrong = core.call_action(&pairer, "pair", Some("9999".into())).await;
+    let wrong = core.call_action(&pairer, "pair", code("9999")).await;
     assert_eq!(
         wrong,
         Err(irori_core::CallActionError::Failed(

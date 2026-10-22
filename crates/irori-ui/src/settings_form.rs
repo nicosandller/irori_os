@@ -246,6 +246,76 @@ fn current_value(
     }
 }
 
+/// Some of an extension's settings as rows in a form that isn't the settings form: an action's
+/// way that changes them on the way through, like Matter's Bluetooth and Wi-Fi for a new device.
+/// Drawn and read the same as the settings form's own rows, prefilled the same way.
+#[derive(Debug, Clone)]
+pub struct SettingRows(Vec<(Field, RwSignal<String>, RwSignal<bool>)>);
+
+impl SettingRows {
+    /// A row for each of `keys` the schema has, in the order given.
+    pub fn new(
+        schema: &serde_json::Value,
+        current: &serde_json::Map<String, serde_json::Value>,
+        keys: &[String],
+    ) -> Self {
+        let mut fields = fields_from_schema(schema);
+        let rows = keys
+            .iter()
+            .filter_map(|key| {
+                let at = fields.iter().position(|field| &field.key == key)?;
+                let field = fields.remove(at);
+                let initial = current_value(current, &field)
+                    .or_else(|| field.default.clone())
+                    .unwrap_or_default();
+                Some((field, RwSignal::new(initial), RwSignal::new(false)))
+            })
+            .collect();
+        Self(rows)
+    }
+
+    /// The rows for `keys`, in that order.
+    pub fn view(&self, keys: &[String]) -> impl IntoView + use<> {
+        keys.iter()
+            .filter_map(|key| self.0.iter().find(|(field, _, _)| &field.key == key))
+            .map(|(field, value, touched)| field_row(field.clone(), *value, *touched))
+            .collect_view()
+    }
+
+    /// What was changed among `keys`, ready to send; a changed row that's blank is left out, as
+    /// in the settings form. Says which row is wrong when one doesn't parse.
+    pub fn changed(
+        &self,
+        keys: &[String],
+    ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        let mut changed = serde_json::Map::new();
+        for (field, value, touched) in &self.0 {
+            if !keys.contains(&field.key) || !touched.get_untracked() {
+                continue;
+            }
+            let text = value.get_untracked();
+            if text.trim().is_empty() {
+                continue;
+            }
+            let parsed = parse_field(&field.kind, &text)
+                .map_err(|why| format!("\"{}\" {why}", field.label))?;
+            changed.insert(field.key.clone(), parsed);
+        }
+        Ok(changed)
+    }
+
+    /// After they were saved: nothing is changed any more, and a secret goes back to blank,
+    /// which keeps what was saved.
+    pub fn saved(&self) {
+        for (field, value, touched) in &self.0 {
+            touched.set(false);
+            if field.kind == FieldKind::Secret {
+                value.set(String::new());
+            }
+        }
+    }
+}
+
 /// A form generated from `schema`; `on_close` fires after a successful save, and on Cancel.
 #[component]
 pub fn SettingsForm(

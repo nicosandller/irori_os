@@ -1,10 +1,10 @@
 [extension]
 id = "matter"
 name = "Matter"
-version = "0.2.1"
+version = "0.2.2"
 irori = ">=1.5.0"
-# 1.5.0 is the first core whose actions take a line of text (the pairing code) and can say how
-# long they take to answer.
+# 1.5.0 is the first core whose actions have ways with fields and settings (the pairing code,
+# and Wi-Fi for a new device) and can say how long they take to answer.
 description = "Matter devices on the local network, through the Open Home Foundation Matter Server it installs and runs: lights, plugs, locks, blinds, thermostats, fans and sensors, and their firmware."
 config_schema = "config.schema.json"
 icon = "icon.svg"
@@ -16,15 +16,28 @@ entity_kinds = ["light", "switch", "sensor", "binary_sensor", "lock", "cover", "
 unpairs = true
 run = { command = "bin/irori-ext-matter" }
 
-# A device already set up with another controller (Google Home, Apple Home, Home Assistant) is
-# shared from there: its app gives a pairing code, and this takes it. So does a new device, on
-# the network or, with Bluetooth turned on in settings, over Bluetooth. Adding a device takes a
-# while, Bluetooth longest, so the core waits up to five minutes for the answer.
+# Adding a device has two ways. One already set up with another controller (Google Home, Apple
+# Home, Home Assistant) is shared from there: its app gives a pairing code, and this takes it. A
+# new or reset device takes the code printed on it, and may need Bluetooth and the Wi-Fi network
+# it should join, which that way's form sets on the way through. Adding a device takes a while,
+# Bluetooth longest, so the core waits up to five minutes for the answer.
 [[contributes.protocol.actions]]
 id = "add_device"
-label = "Add with a pairing code"
-input = { label = "Pairing code", hint = "Share the device from the app it's set up in (Google Home, Apple Home, Home Assistant) and paste the code it shows, or type the 11 digits printed on a new device. A new device that joins over Bluetooth needs Bluetooth turned on in Matter's settings.", placeholder = "3497-011-2332" }
+label = "Add device"
 answer_within_seconds = 300
+
+[[contributes.protocol.actions.ways]]
+id = "shared"
+label = "It's set up in another app"
+hint = "In the app it's set up in (Google Home, Apple Home, Home Assistant), share the device or turn on pairing mode for it, and paste the code the app shows. It stays in that app too."
+fields = [{ id = "code", label = "Pairing code", hint = "The app's code lasts about 15 minutes.", placeholder = "3497-011-2332" }]
+
+[[contributes.protocol.actions.ways]]
+id = "new"
+label = "It's new, or reset"
+hint = "Use the code printed on the device or its box. A device that isn't on a network yet joins over Bluetooth, so turn Bluetooth on and give the Wi-Fi network for it to join. A wired device needs neither."
+settings = ["bluetooth", "wifi_ssid", "wifi_password"]
+fields = [{ id = "code", label = "Pairing code", hint = "11 digits, or the text under the QR code.", placeholder = "3497-011-2332" }]
 
 # This extension downloads a Node.js runtime and installs the Matter server (an npm package) the
 # first time it starts, then runs it as a supervised subprocess — full access to this machine,

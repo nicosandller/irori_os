@@ -1645,34 +1645,50 @@ async fn set_extension_settings(
             format!("there's no extension `{id}`"),
         );
     };
+    match save_extension_settings(&state, &id, &overview, given).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(refusal) => *refusal,
+    }
+}
+
+/// Writes some of an extension's settings, checked against its `config_schema`, as one write: a
+/// `writeOnly` field goes to `secrets.toml`, the rest to `extensions/<id>.toml`. Used by the
+/// settings form and by an action's way that carries settings.
+async fn save_extension_settings(
+    state: &AppState,
+    id: &ExtensionId,
+    overview: &irori_core::ExtensionOverview,
+    given: serde_json::Map<String, serde_json::Value>,
+) -> Result<(), Box<Response>> {
+    let core = &state.0.core;
     let Some(schema) = overview
         .info
         .as_ref()
         .and_then(|info| info.config_schema.as_ref())
     else {
-        return refused(
+        return Err(Box::new(refused(
             StatusCode::BAD_REQUEST,
             format!("`{id}` has no settings to configure"),
-        );
+        )));
     };
     let Some(properties) = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
     else {
-        return refused(
+        return Err(Box::new(refused(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("`{id}`'s settings schema has no properties"),
-        );
+        )));
     };
 
     let mut non_secret = serde_json::Map::new();
     let mut secret_fields = Vec::new();
     for (key, value) in given {
         let Some(field_schema) = properties.get(&key) else {
-            return refused(
+            return Err(Box::new(refused(
                 StatusCode::BAD_REQUEST,
                 format!("`{key}` isn't one of `{id}`'s settings"),
-            );
+            )));
         };
         if is_write_only(field_schema, schema) {
             secret_fields.push((key, value));
@@ -1686,10 +1702,10 @@ async fn set_extension_settings(
     let mut secrets_to_set = Vec::new();
     for (key, value) in secret_fields {
         let Some(text) = value.as_str() else {
-            return refused(
+            return Err(Box::new(refused(
                 StatusCode::BAD_REQUEST,
                 format!("`{key}` must be given as text"),
-            );
+            )));
         };
         secrets_to_set.push((key, text.to_owned()));
     }
@@ -1704,7 +1720,7 @@ async fn set_extension_settings(
             .config
             .edit_extension_with_secrets(
                 core,
-                &id,
+                id,
                 |file| {
                     write_non_secrets(file, &non_secret);
                     Ok(())
@@ -1716,7 +1732,7 @@ async fn set_extension_settings(
         state
             .0
             .config
-            .edit_extension(core, &id, |file| {
+            .edit_extension(core, id, |file| {
                 write_non_secrets(file, &non_secret);
                 Ok(())
             })
@@ -1728,7 +1744,7 @@ async fn set_extension_settings(
             .edit_secrets(core, |secrets| {
                 for (key, text) in &secrets_to_set {
                     secrets
-                        .set(&id, std::slice::from_ref(key), text.clone())
+                        .set(id, std::slice::from_ref(key), text.clone())
                         .map_err(|e| Refused(e.to_string()))?;
                 }
                 Ok(())
@@ -1737,10 +1753,7 @@ async fn set_extension_settings(
     } else {
         Ok(())
     };
-    if let Err(e) = saved {
-        return edit_failed(e);
-    }
-    StatusCode::NO_CONTENT.into_response()
+    saved.map_err(|e| Box::new(edit_failed(e)))
 }
 
 /// Puts the non-secret half of a settings form into the extension's file.
@@ -1787,55 +1800,163 @@ async fn trigger_extension_action(
             format!("`{id}` has no `{action_id}` action"),
         );
     };
-    let input = body.and_then(|Json(body)| body).and_then(|body| body.input);
-    let input = match (&action.input, input) {
-        (None, None) => None,
-        (None, Some(_)) => {
-            return refused(
-                StatusCode::BAD_REQUEST,
-                format!("`{action_id}` doesn't take any text"),
-            );
-        }
-        (Some(field), input) => {
-            let text = input.as_deref().map(str::trim).unwrap_or_default();
-            if text.is_empty() {
-                return refused(
-                    StatusCode::BAD_REQUEST,
-                    format!("fill in \"{}\" first", field.label),
-                );
-            }
-            if text.len() > irori_types::MAX_ACTION_INPUT {
-                return refused(
-                    StatusCode::BAD_REQUEST,
-                    format!(
-                        "\"{}\" is too long: at most {} characters",
-                        field.label,
-                        irori_types::MAX_ACTION_INPUT
-                    ),
-                );
-            }
-            Some(text.to_owned())
-        }
-    };
+    let body = body.and_then(|Json(body)| body).unwrap_or_default();
     if !overview.available_actions.contains(&action_id) {
         return refused(
             StatusCode::CONFLICT,
             format!("`{action_id}` isn't available on `{id}` right now"),
         );
     }
-    match core.call_action(&id, &action_id, input).await {
+    let (filled, settings) = match check_filled(action, body) {
+        Ok(checked) => checked,
+        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
+    };
+
+    if !settings.is_empty() {
+        // The settings come first, and the action waits for the extension to start again with
+        // them: a Wi-Fi password typed into the form must be what the device is given.
+        let before = core.extension_settings_of(&id);
+        let starts = overview.starts;
+        if let Err(refusal) = save_extension_settings(&state, &id, &overview, settings).await {
+            return *refusal;
+        }
+        if core.extension_settings_of(&id) != before
+            && let Err(why) = restarted_with_action(core, &id, &action_id, starts).await
+        {
+            return refused(StatusCode::CONFLICT, why);
+        }
+    }
+
+    match core.call_action(&id, &action_id, filled).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(why) => refused(StatusCode::BAD_REQUEST, why.to_string()),
     }
 }
 
-/// What can come with an action: the text typed into its field, for one that declares an
-/// `input`. No body at all is a plain press.
-#[derive(Debug, Deserialize)]
+/// How long an action whose settings changed waits for the extension to be back. Matter starts
+/// its server in a few seconds; a first run that downloads Node.js is the slow case.
+const RESTART_FOR_ACTION: Duration = Duration::from_secs(60);
+
+/// Waits until `id` has started again since `starts` and offers `action_id` once more. Says why
+/// not when it stopped short: it failed, it needs a setting, or it took too long.
+async fn restarted_with_action(
+    core: &Core,
+    id: &ExtensionId,
+    action_id: &str,
+    starts: u64,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + RESTART_FOR_ACTION;
+    loop {
+        if let Some(overview) = core.extensions().remove(id)
+            && overview.starts > starts
+        {
+            match &overview.status {
+                irori_core::ExtensionStatus::Failed { reason, .. } => {
+                    return Err(format!(
+                        "the settings were saved, but `{id}` stopped: {reason}"
+                    ));
+                }
+                irori_core::ExtensionStatus::NeedsSetup { missing } => {
+                    return Err(format!(
+                        "the settings were saved, but `{id}` still needs {}",
+                        missing.join(", ")
+                    ));
+                }
+                _ if overview.available_actions.iter().any(|a| a == action_id) => {
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "the settings were saved, but `{id}` wasn't ready again within {} seconds: try again in a moment",
+                RESTART_FOR_ACTION.as_secs()
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// Checks what came with an action against what it declares: the way, every one of its
+/// fields, and only the settings it lists. Gives back the fields for the extension and the
+/// settings to save first.
+fn check_filled(
+    action: &irori_types::ProtocolAction,
+    body: ActionBody,
+) -> Result<
+    (
+        irori_protocol::Filled,
+        serde_json::Map<String, serde_json::Value>,
+    ),
+    String,
+> {
+    let ActionBody {
+        way,
+        fields,
+        settings,
+    } = body;
+    if action.ways.is_empty() {
+        if way.is_some() || !fields.is_empty() || !settings.is_empty() {
+            return Err(format!(
+                "`{}` is a plain button: it takes nothing",
+                action.id
+            ));
+        }
+        return Ok((irori_protocol::Filled::default(), settings));
+    }
+    let chosen = match (way, action.ways.as_slice()) {
+        (Some(way), ways) => ways
+            .iter()
+            .find(|w| w.id == way)
+            .ok_or_else(|| format!("`{}` has no way `{way}`", action.id))?,
+        (None, [only]) => only,
+        (None, _) => return Err("choose one of the ways first".to_owned()),
+    };
+    if let Some(stray) = fields
+        .keys()
+        .find(|key| !chosen.fields.iter().any(|f| &f.id == *key))
+    {
+        return Err(format!("\"{}\" has no field `{stray}`", chosen.label));
+    }
+    if let Some(stray) = settings
+        .keys()
+        .find(|key| !chosen.settings.iter().any(|s| s == *key))
+    {
+        return Err(format!("\"{}\" doesn't change `{stray}`", chosen.label));
+    }
+    let mut filled = irori_protocol::Filled {
+        way: Some(chosen.id.clone()),
+        fields: BTreeMap::new(),
+    };
+    for field in &chosen.fields {
+        let text = fields.get(&field.id).map(|t| t.trim()).unwrap_or_default();
+        if text.is_empty() {
+            return Err(format!("fill in \"{}\" first", field.label));
+        }
+        if text.len() > irori_types::MAX_ACTION_INPUT {
+            return Err(format!(
+                "\"{}\" is too long: at most {} bytes",
+                field.label,
+                irori_types::MAX_ACTION_INPUT
+            ));
+        }
+        filled.fields.insert(field.id.clone(), text.to_owned());
+    }
+    Ok((filled, settings))
+}
+
+/// What can come with an action that has ways: which way, what was typed into its fields, and
+/// any of the settings it lists. No body at all is a plain press.
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ActionBody {
     #[serde(default)]
-    input: Option<String>,
+    way: Option<String>,
+    #[serde(default)]
+    fields: BTreeMap<String, String>,
+    #[serde(default)]
+    settings: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Ends early an action an extension says is open: closes Zigbee's network before its minute
@@ -4003,6 +4124,9 @@ mod tests {
     struct SafeSettings {
         #[serde(default)]
         code: Option<String>,
+        /// What's written on the door. Only the `relabel` way of `dial` changes it.
+        #[serde(default)]
+        label: Option<String>,
         /// Never read by `run` below; only here so a test can exercise the generic settings
         /// endpoint's schema-driven secret routing without needing a real external extension.
         #[serde(default)]
@@ -4040,12 +4164,23 @@ mod tests {
             id = "open"
             label = "Open the safe"
 
-            # Asks for text, like Matter's pairing code, and takes its time answering.
+            # Asks for text, like Matter's pairing code, and takes its time answering. One of
+            # its ways changes a setting first, like Matter's Wi-Fi for a new device.
             [[contributes.protocol.actions]]
             id = "dial"
             label = "Dial"
-            input = { label = "Combination", hint = "On the back of the door" }
             answer_within_seconds = 30
+
+            [[contributes.protocol.actions.ways]]
+            id = "typed"
+            label = "Type it"
+            fields = [{ id = "combination", label = "Combination", hint = "On the back of the door" }]
+
+            [[contributes.protocol.actions.ways]]
+            id = "relabel"
+            label = "Relabel the door, then dial"
+            settings = ["label"]
+            fields = [{ id = "combination", label = "Combination" }]
         "#;
         async fn run(
             settings: SafeSettings,
@@ -4071,11 +4206,18 @@ mod tests {
                     .await;
             }
             while let Some(incoming) = ctx.next_action().await {
-                let answer = match (incoming.action_id.as_str(), &incoming.input) {
+                let dialled = incoming.field("combination");
+                let answer = match (incoming.action_id.as_str(), incoming.way.as_deref()) {
                     ("open", None) => Ok(()),
-                    ("dial", Some(dialled)) if Some(dialled) == settings.code.as_ref() => Ok(()),
-                    ("dial", Some(_)) => Err("that's not the combination".to_owned()),
-                    (action, input) => Err(format!("unexpected {action} with {input:?}")),
+                    ("dial", Some(_)) if dialled != settings.code.as_deref() => {
+                        Err("that's not the combination".to_owned())
+                    }
+                    ("dial", Some("typed")) => Ok(()),
+                    ("dial", Some("relabel")) => match &settings.label {
+                        Some(label) => Err(format!("dialled; the door says {label}")),
+                        None => Err("the door has no label".to_owned()),
+                    },
+                    (action, way) => Err(format!("unexpected {action} by {way:?}")),
                 };
                 incoming.reply(answer);
             }
@@ -4827,11 +4969,12 @@ mod tests {
         Ok(())
     }
 
-    /// An action with a field gets what was typed in it, trimmed. A missing or blank field,
-    /// text for a plain button, and text too long to be a code are refused before they reach
-    /// the extension. (How long the core waits for it is `irori-core`'s test.)
+    /// An action with ways gets the way and what was typed in its fields, trimmed. A missing
+    /// way, a blank or unknown field, a setting the way doesn't list, anything for a plain
+    /// button, and text too long to be a code are refused before they reach the extension.
+    /// (How long the core waits for it is `irori-core`'s test.)
     #[tokio::test]
-    async fn an_action_with_a_field_gets_what_was_typed() -> anyhow::Result<()> {
+    async fn an_action_with_ways_gets_what_was_typed() -> anyhow::Result<()> {
         let (core, host) = safe().await?;
         let server = Server::new(core.clone())?;
         server
@@ -4843,53 +4986,115 @@ mod tests {
             .await?;
         waiting_for(&core, 0).await?;
         available_actions_for(&core, 2).await?;
+        let dial = "/api/extensions/safe/actions/dial";
+        let typed = |combination: &str| serde_json::json!({"way": "typed", "fields": {"combination": combination}});
 
-        let (status, body) = server
-            .json(
-                "POST",
-                "/api/extensions/safe/actions/dial",
-                serde_json::json!({"input": " 1234-5678 "}),
-            )
-            .await?;
+        let (status, body) = server.json("POST", dial, typed(" 1234-5678 ")).await?;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 
-        let (status, body) = server
-            .json(
-                "POST",
-                "/api/extensions/safe/actions/dial",
-                serde_json::json!({"input": "0000"}),
-            )
-            .await?;
+        let (status, body) = server.json("POST", dial, typed("0000")).await?;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         assert!(body.to_string().contains("not the combination"), "{body}");
 
-        for nothing in [serde_json::json!(null), serde_json::json!({"input": "   "})] {
-            let (status, body) = server
-                .json("POST", "/api/extensions/safe/actions/dial", nothing)
-                .await?;
-            assert_eq!(status, StatusCode::BAD_REQUEST);
-            assert!(body.to_string().contains("Combination"), "{body}");
+        let refusals = [
+            (serde_json::json!(null), "choose one of the ways"),
+            (
+                serde_json::json!({"fields": {"combination": "1234-5678"}}),
+                "choose one of the ways",
+            ),
+            (typed("   "), "Combination"),
+            (serde_json::json!({"way": "typed"}), "Combination"),
+            (
+                serde_json::json!({"way": "spin", "fields": {"combination": "1"}}),
+                "no way `spin`",
+            ),
+            (
+                serde_json::json!({"way": "typed", "fields": {"combination": "1", "pin": "2"}}),
+                "no field `pin`",
+            ),
+            (
+                serde_json::json!({
+                    "way": "typed",
+                    "fields": {"combination": "1234-5678"},
+                    "settings": {"label": "Front"},
+                }),
+                "doesn't change `label`",
+            ),
+            (
+                typed(&"9".repeat(irori_types::MAX_ACTION_INPUT + 1)),
+                "too long",
+            ),
+        ];
+        for (sent, why) in refusals {
+            let (status, body) = server.json("POST", dial, sent.clone()).await?;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{sent}: {body}");
+            assert!(body.to_string().contains(why), "{sent}: {body}");
         }
 
         let (status, body) = server
             .json(
                 "POST",
-                "/api/extensions/safe/actions/dial",
-                serde_json::json!({"input": "9".repeat(irori_types::MAX_ACTION_INPUT + 1)}),
-            )
-            .await?;
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.to_string().contains("too long"), "{body}");
-
-        let (status, body) = server
-            .json(
-                "POST",
                 "/api/extensions/safe/actions/open",
-                serde_json::json!({"input": "1234-5678"}),
+                serde_json::json!({"way": "typed"}),
             )
             .await?;
         assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert!(body.to_string().contains("doesn't take any text"), "{body}");
+        assert!(body.to_string().contains("plain button"), "{body}");
+
+        // The field this used to be is now a body nobody understands.
+        let (status, _) = server
+            .json("POST", dial, serde_json::json!({"input": "1234-5678"}))
+            .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A way that carries settings saves them first and waits for the extension to start again
+    /// with them, so the action runs on the new settings. Settings that change nothing don't
+    /// restart it.
+    #[tokio::test]
+    async fn a_way_with_settings_runs_on_the_new_settings() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+        server
+            .json(
+                "PUT",
+                "/api/extensions/safe/secrets",
+                serde_json::json!({"path": ["code"], "value": "1234-5678"}),
+            )
+            .await?;
+        waiting_for(&core, 0).await?;
+        available_actions_for(&core, 2).await?;
+        let safe_id = ExtensionId::try_from("safe")?;
+        let starts = || core.extensions()[&safe_id].starts;
+        let relabel = serde_json::json!({
+            "way": "relabel",
+            "fields": {"combination": "1234-5678"},
+            "settings": {"label": "Front"},
+        });
+
+        let before = starts();
+        let (status, body) = server
+            .json("POST", "/api/extensions/safe/actions/dial", relabel.clone())
+            .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(
+            body.to_string().contains("the door says Front"),
+            "it answered after starting again: {body}"
+        );
+        assert_eq!(starts(), before + 1);
+        assert!(
+            std::fs::read_to_string(server.config_dir().join("extensions/safe.toml"))?
+                .contains("Front")
+        );
+
+        let (_, body) = server
+            .json("POST", "/api/extensions/safe/actions/dial", relabel)
+            .await?;
+        assert!(body.to_string().contains("the door says Front"), "{body}");
+        assert_eq!(starts(), before + 1, "the same label doesn't restart it");
 
         host.shutdown().await;
         Ok(())

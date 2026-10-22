@@ -1307,13 +1307,13 @@ fn ProtocolActions(
         }
     });
 
-    // An action with a field is a small form of its own rather than a button.
-    let (with_field, usable): (Vec<_>, Vec<_>) = usable
+    // An action with ways is a small form of its own rather than a button.
+    let (with_ways, usable): (Vec<_>, Vec<_>) = usable
         .into_iter()
-        .partition(|action| action.input.is_some());
-    let fields = with_field
+        .partition(|action| !action.ways.is_empty());
+    let fields = with_ways
         .into_iter()
-        .map(|action| view! { <ActionWithField id=id.clone() action=action /> })
+        .map(|action| view! { <ActionForm id=id.clone() action=action /> })
         .collect_view();
 
     view! {
@@ -1477,94 +1477,235 @@ fn ProtocolActions(
         .into_any()
 }
 
-/// An action that needs a line of text first — Matter's "Add with a pairing code". The field,
-/// the button, and where to find what goes in the field. The press waits for the extension's
-/// answer, which for adding a device takes a while; a refusal is shown under the field and the
-/// text is kept so it can be corrected, and success clears it and reads the home again, which is
-/// where the new device shows up.
+/// An action with ways — Matter's "Add with a pairing code". A choice of way when there's more
+/// than one, the settings that way changes (Bluetooth and Wi-Fi for a new device), its fields,
+/// and the button. The press saves the settings, waits for the extension to start again with
+/// them, and then for its answer, which for adding a device takes a while. A refusal is shown
+/// under the form and what was typed is kept so it can be corrected; success clears the fields
+/// and reads the home again, which is where the new device shows up.
 #[component]
-fn ActionWithField(id: ExtensionId, action: crate::api::ProtocolActionInfo) -> impl IntoView {
+fn ActionForm(id: ExtensionId, action: crate::api::ProtocolActionInfo) -> impl IntoView {
     let live = expect_context::<crate::Live>();
-    let value = RwSignal::new(String::new());
+    let ways = action.ways.clone();
+    let chosen = RwSignal::new(ways.first().map(|way| way.id.clone()).unwrap_or_default());
+    // One box per field id, shared by the ways that ask for it: switching ways keeps the code.
+    let typed: BTreeMap<String, RwSignal<String>> = ways
+        .iter()
+        .flat_map(|way| way.fields.iter())
+        .map(|field| (field.id.clone(), RwSignal::new(String::new())))
+        .collect();
     let sending = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
     let done = RwSignal::new(false);
-    let field = action.input.clone().unwrap_or(crate::api::ActionInputInfo {
-        label: action.label.clone(),
-        hint: None,
-        placeholder: None,
-    });
-    let action_id = action.id.clone();
-    let send = move || {
-        let typed = value.get_untracked();
-        if typed.trim().is_empty() || sending.get_untracked() {
-            return;
-        }
-        let id = id.clone();
-        let action_id = action_id.clone();
-        sending.set(true);
-        done.set(false);
+
+    // The settings a way changes come from the catalog, which has the schema and what's saved.
+    let rows = RwSignal::new(None::<crate::settings_form::SettingRows>);
+    if ways.iter().any(|way| !way.settings.is_empty()) {
+        let wanted = id.to_string();
+        let keys: Vec<String> = ways
+            .iter()
+            .flat_map(|way| way.settings.iter().cloned())
+            .collect();
         spawn_local(async move {
-            match crate::api::trigger_action_with(&id, &action_id, typed.trim()).await {
-                Ok(()) => {
-                    value.set(String::new());
-                    trouble.set(None);
-                    done.set(true);
-                    crate::refresh(live);
+            match crate::api::fetch_catalog().await {
+                Ok(catalog) => {
+                    if let Some(entry) = catalog.into_iter().find(|entry| entry.id == wanted)
+                        && let Some(schema) = entry.config_schema
+                    {
+                        rows.set(Some(crate::settings_form::SettingRows::new(
+                            &schema,
+                            &entry.settings,
+                            &keys,
+                        )));
+                    }
                 }
                 Err(why) => trouble.set(Some(why)),
             }
-            sending.set(false);
         });
+    }
+
+    let way_of = {
+        let ways = ways.clone();
+        move |picked: &str| ways.iter().find(|way| way.id == picked).cloned()
+    };
+    let send = {
+        let typed = typed.clone();
+        let way_of = way_of.clone();
+        let action_id = action.id.clone();
+        move || {
+            if sending.get_untracked() {
+                return;
+            }
+            let Some(way) = way_of(&chosen.get_untracked()) else {
+                return;
+            };
+            let mut fields = BTreeMap::new();
+            for field in &way.fields {
+                let text = typed
+                    .get(&field.id)
+                    .map(|value| value.get_untracked().trim().to_owned())
+                    .unwrap_or_default();
+                if text.is_empty() {
+                    trouble.set(Some(format!("Fill in \"{}\" first.", field.label)));
+                    return;
+                }
+                fields.insert(field.id.clone(), text);
+            }
+            let settings = match rows.with_untracked(|rows| {
+                rows.as_ref()
+                    .map(|rows| rows.changed(&way.settings))
+                    .unwrap_or_else(|| Ok(serde_json::Map::new()))
+            }) {
+                Ok(settings) => settings,
+                Err(why) => {
+                    trouble.set(Some(why));
+                    return;
+                }
+            };
+            let request = crate::api::ActionRequest {
+                way: way.id.clone(),
+                fields,
+                settings,
+            };
+            let id = id.clone();
+            let action_id = action_id.clone();
+            let typed = typed.clone();
+            sending.set(true);
+            done.set(false);
+            trouble.set(None);
+            spawn_local(async move {
+                match crate::api::trigger_action_with(&id, &action_id, &request).await {
+                    Ok(()) => {
+                        for value in typed.values() {
+                            value.set(String::new());
+                        }
+                        rows.with_untracked(|rows| {
+                            if let Some(rows) = rows {
+                                rows.saved();
+                            }
+                        });
+                        done.set(true);
+                        crate::refresh(live);
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+                sending.set(false);
+            });
+        }
+    };
+
+    let picker = (ways.len() > 1).then(|| {
+        let options = ways
+            .iter()
+            .map(|way| (way.id.clone(), way.label.clone()))
+            .collect();
+        crate::choices::choices(
+            action.label.clone(),
+            options,
+            move || Some(chosen.get()),
+            move || sending.get(),
+            move |picked| {
+                chosen.set(picked);
+                trouble.set(None);
+                done.set(false);
+            },
+        )
+    });
+    let way_hint = {
+        let way_of = way_of.clone();
+        move || {
+            way_of(&chosen.get())
+                .and_then(|way| way.hint)
+                .map(|hint| view! { <p class="muted small">{hint}</p> })
+        }
+    };
+    let way_settings = {
+        let way_of = way_of.clone();
+        move || {
+            let way = way_of(&chosen.get())?;
+            if way.settings.is_empty() {
+                return None;
+            }
+            Some(match rows.get() {
+                Some(rows) => view! {
+                    <div class="action-settings">{rows.view(&way.settings)}</div>
+                }
+                .into_any(),
+                None => view! { <p class="muted small">"Reading its settings…"</p> }.into_any(),
+            })
+        }
+    };
+    let way_fields = {
+        let way_of = way_of.clone();
+        let typed = typed.clone();
+        move || {
+            let way = way_of(&chosen.get())?;
+            Some(
+                way.fields
+                    .into_iter()
+                    .map(|field| {
+                        let value = typed.get(&field.id).copied().unwrap_or_default();
+                        let placeholder = field
+                            .placeholder
+                            .clone()
+                            .unwrap_or_else(|| field.label.clone());
+                        view! {
+                            <label class="settings-field">
+                                <span>{field.label.clone()}</span>
+                                <input
+                                    type="text"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                    placeholder=placeholder
+                                    prop:value=value
+                                    disabled=move || sending.get()
+                                    on:input:target=move |ev| value.set(ev.target().value())
+                                />
+                                {field.hint.clone().map(|hint| view! {
+                                    <span class="settings-help">{hint}</span>
+                                })}
+                            </label>
+                        }
+                    })
+                    .collect_view(),
+            )
+        }
     };
     let label = action.label.clone();
-    let placeholder = field
-        .placeholder
-        .clone()
-        .unwrap_or_else(|| field.label.clone());
     view! {
-        <div class="action-field">
-            <form
-                class="inline-form"
-                on:submit=move |ev| {
-                    ev.prevent_default();
-                    send();
-                }
+        <form
+            class="action-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                send();
+            }
+        >
+            {picker}
+            {way_hint}
+            {way_settings}
+            {way_fields}
+            <button
+                type="submit"
+                class="add"
+                class:join-waiting=move || sending.get()
+                aria-busy=move || sending.get().to_string()
+                disabled=move || sending.get()
             >
-                <input
-                    type="text"
-                    autocomplete="off"
-                    spellcheck="false"
-                    aria-label=field.label.clone()
-                    placeholder=placeholder
-                    prop:value=value
-                    disabled=move || sending.get()
-                    on:input:target=move |ev| value.set(ev.target().value())
-                />
-                <button
-                    type="submit"
-                    class="add"
-                    class:join-waiting=move || sending.get()
-                    aria-busy=move || sending.get().to_string()
-                    disabled=move || sending.get() || value.get().trim().is_empty()
-                >
-                    {move || if sending.get() {
-                        view! {
-                            <span class="join-wait" aria-hidden="true"></span>
-                            "Working…"
-                        }
-                            .into_any()
-                    } else {
-                        label.clone().into_any()
-                    }}
-                </button>
-            </form>
-            {field.hint.clone().map(|hint| view! { <p class="muted small">{hint}</p> })}
+                {move || if sending.get() {
+                    view! {
+                        <span class="join-wait" aria-hidden="true"></span>
+                        "Working…"
+                    }
+                        .into_any()
+                } else {
+                    label.clone().into_any()
+                }}
+            </button>
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
             {move || done.get().then(|| view! {
                 <p class="muted small" role="status">"Done. It's listed under what was found."</p>
             })}
-        </div>
+        </form>
     }
 }
 

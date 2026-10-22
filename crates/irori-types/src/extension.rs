@@ -346,16 +346,7 @@ impl ProtocolContribution {
                     action.id
                 )));
             }
-            if action
-                .input
-                .as_ref()
-                .is_some_and(|input| input.label.trim().is_empty())
-            {
-                return Err(InvariantError(format!(
-                    "contributes.protocol.actions: action `{}`'s input needs a non-empty label",
-                    action.id
-                )));
-            }
+            check_ways(action)?;
             if action
                 .answer_within_seconds
                 .is_some_and(|seconds| seconds == 0 || seconds > MAX_ACTION_ANSWER_SECONDS)
@@ -396,11 +387,14 @@ pub struct ProtocolAction {
     /// "for 60s"), not enforced by the core.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seconds: Option<u32>,
-    /// A line of text the person types before the action can run — a pairing code, say. The page
-    /// shows a field for it beside the button, and the text travels with the call. Without it
-    /// the action is a plain button and the call carries no text.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input: Option<ActionInput>,
+    /// The ways to do it, for an action that asks a few things first: adding a device that is
+    /// already set up elsewhere, or one that's new, say. The page shows a choice between them
+    /// (none when there's one), then the chosen way's settings and fields, and sends what was
+    /// filled in with the call. Without any, the action is a plain button and the call carries
+    /// nothing. At most [`MAX_ACTION_WAYS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 4))]
+    pub ways: Vec<ActionWay>,
     /// How long, in seconds, the action may take to answer — for one that does its work before
     /// replying, like adding a device. The core waits this long instead of the usual ten
     /// seconds. At most [`MAX_ACTION_ANSWER_SECONDS`].
@@ -413,14 +407,53 @@ pub struct ProtocolAction {
 /// Past that, a person staring at "Working…" has long since given up.
 pub const MAX_ACTION_ANSWER_SECONDS: u32 = 300;
 
-/// The most text an action's input takes, in bytes. A Matter QR payload is under 100; this is
-/// generous for any code a person would type or paste.
+/// The most text one of an action's fields takes, in bytes. A Matter QR payload is under 100;
+/// this is generous for any code a person would type or paste.
 pub const MAX_ACTION_INPUT: usize = 512;
 
-/// The field an action asks a person to fill in before it runs (`ProtocolAction::input`).
+/// The most ways one action offers, and the most fields and settings one way shows: a form, not
+/// a settings page.
+pub const MAX_ACTION_WAYS: usize = 4;
+pub const MAX_WAY_FIELDS: usize = 4;
+pub const MAX_WAY_SETTINGS: usize = 8;
+
+/// One way to do an action (`ProtocolAction::ways`): what the person picks at the top of its
+/// form, and what it asks for once picked.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ActionInput {
+pub struct ActionWay {
+    /// Its id, sent with the call so the extension knows which way was picked, e.g. `new`. A
+    /// slug, unique within the action.
+    #[schemars(length(min = 1, max = 64), pattern(r"^[a-z0-9]+(_[a-z0-9]+)*$"))]
+    pub id: String,
+    /// What the choice says, e.g. "It's new, or reset".
+    #[schemars(length(min = 1), pattern(r"\S"))]
+    pub label: String,
+    /// A sentence under the choice saying when it's the one to pick.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+    /// The extension's own settings this way needs, by their name in its `config_schema`:
+    /// Bluetooth and the Wi-Fi network a new device joins, say. The form shows each as the
+    /// settings form does, with what's saved already, and saves what changed before the action
+    /// runs; a change restarts the extension, and the action waits for it to be back. At most
+    /// [`MAX_WAY_SETTINGS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 8))]
+    pub settings: Vec<String>,
+    /// What the person types for this way, sent with the call: a pairing code, say. Every
+    /// field must be filled in. At most [`MAX_WAY_FIELDS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(length(max = 4))]
+    pub fields: Vec<ActionField>,
+}
+
+/// A line of text an action's way asks for (`ActionWay::fields`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ActionField {
+    /// Its id, the key the text is sent under, e.g. `code`. A slug, unique within the way.
+    #[schemars(length(min = 1, max = 64), pattern(r"^[a-z0-9]+(_[a-z0-9]+)*$"))]
+    pub id: String,
     /// The field's label, e.g. "Pairing code".
     #[schemars(length(min = 1), pattern(r"\S"))]
     pub label: String,
@@ -430,6 +463,63 @@ pub struct ActionInput {
     /// Example text shown in the empty field, e.g. "3497-011-2332".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+}
+
+/// An action's ways, each way's fields and settings: ids slugs and unique, labels said, within
+/// the limits.
+fn check_ways(action: &ProtocolAction) -> Result<(), InvariantError> {
+    let refuse = |what: String| {
+        Err(InvariantError(format!(
+            "contributes.protocol.actions: action `{}`: {what}",
+            action.id
+        )))
+    };
+    if action.ways.len() > MAX_ACTION_WAYS {
+        return refuse(format!("at most {MAX_ACTION_WAYS} ways"));
+    }
+    let way_ids: Vec<&str> = action.ways.iter().map(|way| way.id.as_str()).collect();
+    if let Err(error) = no_duplicates("way ids", &way_ids) {
+        return refuse(error.0);
+    }
+    for way in &action.ways {
+        if let Err(error) = crate::id::check_slug("way id", &way.id) {
+            return refuse(error.to_string());
+        }
+        if way.label.trim().is_empty() {
+            return refuse(format!("way `{}` needs a non-empty label", way.id));
+        }
+        if way.fields.len() > MAX_WAY_FIELDS {
+            return refuse(format!("way `{}`: at most {MAX_WAY_FIELDS} fields", way.id));
+        }
+        if way.settings.len() > MAX_WAY_SETTINGS {
+            return refuse(format!(
+                "way `{}`: at most {MAX_WAY_SETTINGS} settings",
+                way.id
+            ));
+        }
+        let field_ids: Vec<&str> = way.fields.iter().map(|field| field.id.as_str()).collect();
+        let settings: Vec<&str> = way.settings.iter().map(String::as_str).collect();
+        for (what, ids) in [("field ids", &field_ids), ("settings", &settings)] {
+            if let Err(error) = no_duplicates(what, ids) {
+                return refuse(format!("way `{}`: {}", way.id, error.0));
+            }
+        }
+        for field in &way.fields {
+            if let Err(error) = crate::id::check_slug("field id", &field.id) {
+                return refuse(format!("way `{}`: {error}", way.id));
+            }
+            if field.label.trim().is_empty() {
+                return refuse(format!(
+                    "way `{}`: field `{}` needs a non-empty label",
+                    way.id, field.id
+                ));
+            }
+        }
+        if way.settings.iter().any(|name| name.trim().is_empty()) {
+            return refuse(format!("way `{}`: a setting's name is empty", way.id));
+        }
+    }
+    Ok(())
 }
 
 /// Where a protocol's devices live and how it learns about changes (ROADMAP D24).
@@ -973,7 +1063,7 @@ impl JsonSchema for NetworkHost {
 mod tests {
     use super::*;
 
-    /// The whole schema for `T`, with the `$defs` it refers to (an action's `ActionInput`).
+    /// The whole schema for `T`, with the `$defs` it refers to (an action's `ActionWay`).
     fn validator<T: JsonSchema>() -> jsonschema::Validator {
         let schema = SchemaGenerator::default().into_root_schema_for::<T>();
         jsonschema::validator_for(schema.as_value()).expect("valid schema")
@@ -1203,25 +1293,77 @@ mod tests {
                 }
             }))
         };
+        let shared = serde_json::json!({
+            "id": "shared", "label": "It's set up in another app",
+            "fields": [{"id": "code", "label": "Pairing code", "placeholder": "3497-011-2332"}]
+        });
+        let new = serde_json::json!({
+            "id": "new", "label": "It's new", "hint": "Fresh out of its box",
+            "settings": ["bluetooth", "wifi_ssid"],
+            "fields": [{"id": "code", "label": "Pairing code", "hint": "On the device"}]
+        });
         let parsed = manifest(serde_json::json!({
-            "id": "add_device",
-            "label": "Add",
-            "input": {"label": "Pairing code", "hint": "On the device", "placeholder": "3497-011-2332"},
-            "answer_within_seconds": 120
+            "id": "add_device", "label": "Add", "ways": [shared, new], "answer_within_seconds": 120
         }))
-        .expect("a valid action with an input");
+        .expect("a valid action with two ways");
         let action = &parsed.contributes.protocol[0].actions[0];
-        assert_eq!(
-            action.input.as_ref().map(|input| input.label.as_str()),
-            Some("Pairing code")
-        );
+        assert_eq!(action.ways.len(), 2);
+        assert_eq!(action.ways[1].settings, ["bluetooth", "wifi_ssid"]);
+        assert_eq!(action.ways[0].fields[0].id, "code");
         assert_eq!(action.answer_within_seconds, Some(120));
 
-        let blank = manifest(serde_json::json!({
-            "id": "add_device", "label": "Add", "input": {"label": "  "}
+        // What `validate` refuses: each named in the error.
+        let way = |way: serde_json::Value| {
+            manifest(serde_json::json!({"id": "add_device", "label": "Add", "ways": [way]}))
+                .expect_err("refused")
+                .to_string()
+        };
+        let blank = way(serde_json::json!({"id": "new", "label": "  "}));
+        assert!(
+            blank.contains("way `new` needs a non-empty label"),
+            "{blank}"
+        );
+        let bad_id = way(serde_json::json!({"id": "New Device", "label": "New"}));
+        assert!(bad_id.contains("way id"), "{bad_id}");
+        let twice = way(serde_json::json!({
+            "id": "new", "label": "New",
+            "fields": [{"id": "code", "label": "Code"}, {"id": "code", "label": "Again"}]
+        }));
+        assert!(
+            twice.contains("field ids lists `code` more than once"),
+            "{twice}"
+        );
+        let setting_twice = way(serde_json::json!({
+            "id": "new", "label": "New", "settings": ["bluetooth", "bluetooth"]
+        }));
+        assert!(
+            setting_twice.contains("settings lists `bluetooth`"),
+            "{setting_twice}"
+        );
+        let blank_field = way(serde_json::json!({
+            "id": "new", "label": "New", "fields": [{"id": "code", "label": ""}]
+        }));
+        assert!(
+            blank_field.contains("field `code` needs a non-empty label"),
+            "{blank_field}"
+        );
+        let same_way = manifest(serde_json::json!({
+            "id": "add_device", "label": "Add",
+            "ways": [{"id": "new", "label": "New"}, {"id": "new", "label": "Also new"}]
         }))
-        .expect_err("a blank field label");
-        assert!(blank.to_string().contains("input"), "{blank}");
+        .expect_err("two ways with one id");
+        assert!(
+            same_way.to_string().contains("way ids lists `new`"),
+            "{same_way}"
+        );
+        let many = manifest(serde_json::json!({
+            "id": "add_device", "label": "Add",
+            "ways": (0..=MAX_ACTION_WAYS)
+                .map(|n| serde_json::json!({"id": format!("w{n}"), "label": "A way"}))
+                .collect::<Vec<_>>()
+        }))
+        .expect_err("too many ways");
+        assert!(many.to_string().contains("at most 4 ways"), "{many}");
         for seconds in [0, MAX_ACTION_ANSWER_SECONDS + 1] {
             let too = manifest(serde_json::json!({
                 "id": "add_device", "label": "Add", "answer_within_seconds": seconds
@@ -1232,14 +1374,20 @@ mod tests {
 
         let validator = validator::<ProtocolAction>();
         assert!(validator.is_valid(&serde_json::json!({
-            "id": "add_device", "label": "Add", "input": {"label": "Code"}, "answer_within_seconds": 300
+            "id": "add_device", "label": "Add", "ways": [new], "answer_within_seconds": 300
         })));
         assert!(!validator.is_valid(&serde_json::json!({
             "id": "add_device", "label": "Add", "answer_within_seconds": 301
         })));
         assert!(!validator.is_valid(&serde_json::json!({
-            "id": "add_device", "label": "Add", "input": {"label": ""}
+            "id": "add_device", "label": "Add", "ways": [{"id": "new", "label": ""}]
         })));
+        assert!(
+            !validator.is_valid(&serde_json::json!({
+                "id": "add_device", "label": "Add", "input": {"label": "Code"}
+            })),
+            "the one-field `input` is gone"
+        );
     }
 
     #[test]

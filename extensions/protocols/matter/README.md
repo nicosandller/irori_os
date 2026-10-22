@@ -53,21 +53,24 @@ many homes. [Why not `rs-matter`](#why-wrap-a-server-instead-of-rs-matter) is be
 
 ## Adding a device
 
-The code goes into "Add with a pairing code" on the extension's card. It takes the 11 digits
-(dashes and spaces are fine) or the text of a QR code (`MT:…`). A typo is caught at once: the
-last digit is a check digit.
+"Add device" on the extension's card asks which kind of device it is, then for its code. The
+code is the 11 digits (dashes and spaces are fine) or the text of a QR code (`MT:…`). A typo is
+caught at once: the last digit is a check digit.
 
-- **A device already set up in another app** (the common case). Share it from there, which
-  gives a fresh code good for about 15 minutes:
+- **It's set up in another app** (the common case). Share it from there, which gives a fresh
+  code good for about 15 minutes. It stays in that app too:
   - Google Home: the device → Settings → Linked Matter apps & services → Link apps & services.
   - Apple Home: the device → Settings → Turn On Pairing Mode.
   - Home Assistant: the device → Share device.
-- **A new device that's already on the network** (Wi-Fi or Ethernet): the 11 digits printed
-  under its QR code.
-- **A new device that joins over Bluetooth**, which is most new Wi-Fi and Thread devices: turn
-  on Bluetooth in settings and give the network it should join (see
-  [Bluetooth](#adding-over-bluetooth)), then type the 11 digits printed on it. Or set it up in
-  another app first, then share it.
+- **It's new, or reset**: the code printed on it or its box. The form also shows Bluetooth and
+  the Wi-Fi network, the same settings as behind the gear icon, so they can be set right there:
+  - A wired device, or one already on the network, needs neither.
+  - A device that isn't on a network yet joins over Bluetooth, which is most new Wi-Fi devices:
+    turn Bluetooth on and give the Wi-Fi network's name and password (see
+    [Bluetooth](#adding-over-bluetooth)). Changing them restarts the Matter server first, which
+    takes a few seconds.
+  - A new Thread device can't be added this way yet ([#86](https://github.com/nicosandller/irori_os/issues/86)):
+    set it up in Google Home or Apple Home first, then share it.
 
 Adding takes a few seconds once the device is found. If nothing answers to the code within two
 minutes (about five over Bluetooth), the action says so. The device then waits under "+ Add device" on the

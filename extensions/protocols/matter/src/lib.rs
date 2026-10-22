@@ -219,6 +219,7 @@ async fn drive(
     let mut home = Home::new(info.compressed_fabric_id);
     home.updates = settings.firmware_updates;
     home.bluetooth = settings.bluetooth;
+    home.bluetooth_broken = settings.bluetooth && info.bluetooth_enabled == Some(false);
     for node in nodes {
         home.apply(node, ctx, true).await;
     }
@@ -304,6 +305,8 @@ struct Home {
     updates: bool,
     /// Devices can be added over Bluetooth (settings).
     bluetooth: bool,
+    /// The server says its Bluetooth doesn't work: asked for, and no adapter it could open.
+    bluetooth_broken: bool,
     /// Newer firmware the server found, by node.
     newer: BTreeMap<NodeId, SoftwareUpdate>,
     /// Nodes whose firmware is being looked for.
@@ -343,6 +346,7 @@ impl Home {
             nodes: BTreeMap::new(),
             updates: true,
             bluetooth: false,
+            bluetooth_broken: false,
             newer: BTreeMap::new(),
             checking: BTreeSet::new(),
             commanded: BTreeMap::new(),
@@ -555,7 +559,18 @@ impl Home {
             action.reply(Err(format!("no `{id}` action")));
             return;
         }
-        let code = match action.input.as_deref().map(pairing_code) {
+        // A device shared from another app is on the network already. A new one may still
+        // have to join it, over Bluetooth when that's on.
+        let new = match action.way.as_deref() {
+            Some("new") => true,
+            Some("shared") | None => false,
+            Some(other) => {
+                let other = other.to_owned();
+                action.reply(Err(format!("no `{other}` way to add a device")));
+                return;
+            }
+        };
+        let code = match action.field("code").map(pairing_code) {
             Some(Ok(code)) => code,
             Some(Err(why)) => {
                 action.reply(Err(why));
@@ -566,6 +581,11 @@ impl Home {
                 return;
             }
         };
+        let bluetooth = new && self.bluetooth;
+        if bluetooth && self.bluetooth_broken {
+            action.reply(Err(BLUETOOTH_BROKEN.to_owned()));
+            return;
+        }
         if self.adding {
             action.reply(Err(
                 "A device is being added already. Wait for it to finish, then add the next."
@@ -576,7 +596,6 @@ impl Home {
         self.adding = true;
         let client = client.clone();
         let done = done.clone();
-        let bluetooth = self.bluetooth;
         tokio::spawn(async move {
             let added = client
                 .commission(&code, bluetooth)
@@ -966,7 +985,25 @@ fn verhoeff_valid(digits: &str) -> bool {
     check == 0
 }
 
+/// Bluetooth is on in the settings, and the Matter server couldn't use it.
+const BLUETOOTH_BROKEN: &str = "Bluetooth is on in Matter's settings, but the Matter server \
+    couldn't use this machine's Bluetooth adapter. On Linux it needs permission to: run `sudo \
+    setcap cap_net_raw,cap_net_admin+eip` on the Node.js it installed, or check \"Bluetooth \
+    adapter\" in the settings. On a Mac, allow Bluetooth for the app Irori runs from in \
+    System Settings, Privacy & Security. A device that's wired, or on the network \
+    already, can be added with Bluetooth off.";
+
+/// What the server says when a device needs a network to join and it has none to give.
+const NO_NETWORK: &str = "No Wi-Fi/Thread network credentials are configured";
+
 fn commission_failed(error: &CommandError, bluetooth: bool) -> String {
+    if error.details.contains(NO_NETWORK) {
+        return "This device needs a network to join, and Irori has none to give it. For a Wi-Fi \
+                device, fill in the Wi-Fi network's name and password and try again. A Thread \
+                device can't be added this way yet: set it up in Google Home or Apple Home \
+                first, then share it with Irori."
+            .to_owned();
+    }
     // Either the server gave up looking, or it was still looking when the wait ran out.
     if matches!(
         error.reason.as_deref(),
@@ -974,14 +1011,15 @@ fn commission_failed(error: &CommandError, bluetooth: bool) -> String {
     ) {
         return if bluetooth {
             "No Matter device answered to that code, on the network or over Bluetooth. Check \
-             that it's close to Irori and in pairing mode, and that the code is fresh: a shared \
-             code lasts about 15 minutes."
+             that it's close to Irori and in pairing mode, and that the code is the one on it. \
+             A device that joins Thread rather than Wi-Fi can't be added this way yet: set it \
+             up in Google Home or Apple Home first, then share it with Irori."
                 .to_owned()
         } else {
             "No Matter device on this network answered to that code. Check that it's on the \
              same network as Irori and that the code is fresh: a shared code lasts about 15 \
-             minutes. A new device that joins over Bluetooth needs \"Bluetooth\" turned on in \
-             Matter's settings, or set it up in another app first, then share it."
+             minutes. A new device that isn't on a network yet joins over Bluetooth: choose \
+             \"It's new, or reset\" and turn Bluetooth on."
                 .to_owned()
         };
     }
@@ -1021,6 +1059,11 @@ mod tests {
 
     impl FakeServer {
         async fn start() -> Self {
+            Self::start_saying(json!({})).await
+        }
+
+        /// The same, with more in the `server_info` it greets with.
+        async fn start_saying(more: Value) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
             let url = format!("ws://{}/ws", listener.local_addr().expect("an address"));
             let (commands_tx, commands) = mpsc::unbounded_channel();
@@ -1031,12 +1074,15 @@ mod tests {
                     .await
                     .expect("a handshake");
                 let (mut sink, mut stream) = socket.split();
-                let hello = json!({
+                let mut hello = json!({
                     "fabric_id": 1,
                     "compressed_fabric_id": FABRIC,
                     "schema_version": 13,
                     "sdk_version": "matter-server/1.4.0 (matter.js/0.17.9)",
                 });
+                if let (Some(hello), Some(more)) = (hello.as_object_mut(), more.as_object()) {
+                    hello.extend(more.clone());
+                }
                 sink.send(Message::text(hello.to_string()))
                     .await
                     .expect("sends");
@@ -1201,7 +1247,10 @@ mod tests {
 
     /// The extension connected with `settings`, before the server has answered anything.
     async fn connected(settings: Settings) -> Running {
-        let server = FakeServer::start().await;
+        connected_to(FakeServer::start().await, settings).await
+    }
+
+    async fn connected_to(server: FakeServer, settings: Settings) -> Running {
         let (mut ctx, mut host) = host::connect();
         let told = record(std::mem::replace(&mut host.ops, mpsc::channel(1).1));
         let connection = client::connect(&server.url).await.expect("connects");
@@ -1214,6 +1263,23 @@ mod tests {
             told,
             driving,
         }
+    }
+
+    /// Adding a device the way a person picked, with the code they typed.
+    fn add(
+        way: &str,
+        code: &str,
+    ) -> (
+        IncomingAction,
+        tokio::sync::oneshot::Receiver<Result<(), String>>,
+    ) {
+        host::incoming_action_with(
+            ADD_DEVICE.to_owned(),
+            irori_protocol::Filled {
+                way: Some(way.to_owned()),
+                fields: [("code".to_owned(), code.to_owned())].into(),
+            },
+        )
     }
 
     fn settings(given: Value) -> Settings {
@@ -1374,10 +1440,7 @@ mod tests {
     #[tokio::test]
     async fn a_pairing_code_adds_the_device_before_the_answer_comes() {
         let mut running = running(vec![]).await;
-        let (action, answer) = host::incoming_action_with_input(
-            ADD_DEVICE.to_owned(),
-            Some(" 3497-011-2332 ".to_owned()),
-        );
+        let (action, answer) = add("shared", " 3497-011-2332 ");
         running.host.actions.send(action).await.expect("sent");
         let (id, args) = running.server.next("commission_with_code").await;
         assert_eq!(args["code"], "34970112332");
@@ -1400,8 +1463,7 @@ mod tests {
     #[tokio::test]
     async fn readings_keep_coming_while_a_device_is_being_added() {
         let mut running = running(vec![lab("occupancy")]).await;
-        let (action, mut answer) =
-            host::incoming_action_with_input(ADD_DEVICE.to_owned(), Some("34970112332".to_owned()));
+        let (action, mut answer) = add("shared", "34970112332");
         running.host.actions.send(action).await.expect("sent");
         let (commissioning, _) = running.server.next("commission_with_code").await;
 
@@ -1416,8 +1478,7 @@ mod tests {
         );
 
         // And a second code meanwhile waits its turn.
-        let (second, refused) =
-            host::incoming_action_with_input(ADD_DEVICE.to_owned(), Some("34971112335".to_owned()));
+        let (second, refused) = add("shared", "34971112335");
         running.host.actions.send(second).await.expect("sent");
         let refused = refused.await.expect("answered");
         assert!(
@@ -1441,8 +1502,7 @@ mod tests {
     async fn a_code_that_isnt_one_is_refused_without_asking_the_network() {
         let running = running(vec![]).await;
         // The last digit is off by one.
-        let (action, answer) =
-            host::incoming_action_with_input(ADD_DEVICE.to_owned(), Some("34970112333".to_owned()));
+        let (action, answer) = add("shared", "34970112333");
         running.host.actions.send(action).await.expect("sent");
         let answered = answer.await.expect("answered");
         assert!(
@@ -1455,8 +1515,7 @@ mod tests {
     #[tokio::test]
     async fn a_development_device_needs_test_devices_allowed() {
         let mut running = running(vec![]).await;
-        let (action, answer) =
-            host::incoming_action_with_input(ADD_DEVICE.to_owned(), Some("34970112332".to_owned()));
+        let (action, answer) = add("shared", "34970112332");
         running.host.actions.send(action).await.expect("sent");
         let (id, _) = running.server.next("commission_with_code").await;
         running.server.refuse(
@@ -1759,14 +1818,82 @@ mod tests {
         running.server.refuse(&id, 0, None, "not a dataset");
         running.told.until("actions add_device").await;
 
-        // With Bluetooth on, a code is looked for over Bluetooth too.
-        let (action, _answer) = host::incoming_action_with_input(
-            ADD_DEVICE.to_owned(),
-            Some("3497-011-2332".to_owned()),
-        );
+        // With Bluetooth on, a new device's code is looked for over Bluetooth too.
+        let (action, _answer) = add("new", "3497-011-2332");
         running.host.actions.send(action).await.expect("sent");
         let (_, args) = running.server.next("commission_with_code").await;
         assert_eq!(args["network_only"], false);
+    }
+
+    #[tokio::test]
+    async fn a_shared_device_is_looked_for_on_the_network_only() {
+        let mut running = connected(settings(json!({"bluetooth": true}))).await;
+        let (id, _) = running.server.next("start_listening").await;
+        running.server.answer(&id, json!([]));
+        running.told.until("actions add_device").await;
+        let (action, _answer) = add("shared", "3497-011-2332");
+        running.host.actions.send(action).await.expect("sent");
+        let (_, args) = running.server.next("commission_with_code").await;
+        assert_eq!(args["network_only"], true, "it's on the network already");
+    }
+
+    #[tokio::test]
+    async fn bluetooth_the_server_cant_use_is_said_before_trying() {
+        let server = FakeServer::start_saying(json!({"bluetooth_enabled": false})).await;
+        let mut running = connected_to(server, settings(json!({"bluetooth": true}))).await;
+        let (id, _) = running.server.next("start_listening").await;
+        running.server.answer(&id, json!([]));
+        running.told.until("actions add_device").await;
+
+        let (action, answer) = add("new", "3497-011-2332");
+        running.host.actions.send(action).await.expect("sent");
+        let refused = answer.await.expect("answered").expect_err("no adapter");
+        assert!(refused.contains("Bluetooth adapter"), "{refused}");
+
+        // A shared device doesn't need Bluetooth.
+        let (action, _answer) = add("shared", "3497-011-2332");
+        running.host.actions.send(action).await.expect("sent");
+        running.server.next("commission_with_code").await;
+    }
+
+    #[tokio::test]
+    async fn a_device_with_no_network_to_join_says_which_to_give() {
+        let mut running = running(vec![]).await;
+        let (action, answer) = add("new", "34970112332");
+        running.host.actions.send(action).await.expect("sent");
+        let (id, _) = running.server.next("commission_with_code").await;
+        running.server.refuse(
+            &id,
+            1,
+            None,
+            "Commission failed: No Wi-Fi/Thread network credentials are configured for \
+             commissioning",
+        );
+        let refused = answer.await.expect("answered").expect_err("no network");
+        assert!(
+            refused.contains("Wi-Fi network's name and password"),
+            "{refused}"
+        );
+        assert!(refused.contains("Thread"), "{refused}");
+    }
+
+    #[test]
+    fn every_setting_a_way_changes_is_one_of_the_settings() {
+        let manifest =
+            irori_protocol::parse_manifest(include_str!("../irori-extension.toml")).expect("valid");
+        let schema: Value =
+            serde_json::from_str(include_str!("../config.schema.json")).expect("JSON");
+        let ways = &manifest.contributes.protocol[0].actions[0].ways;
+        assert_eq!(ways.len(), 2);
+        for way in ways {
+            for setting in &way.settings {
+                assert!(
+                    schema["properties"].get(setting).is_some(),
+                    "`{}` changes `{setting}`, which isn't a setting",
+                    way.id
+                );
+            }
+        }
     }
 
     #[tokio::test]

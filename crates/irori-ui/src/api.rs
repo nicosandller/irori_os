@@ -250,19 +250,10 @@ pub struct ProtocolActionInfo {
     pub label: String,
     #[serde(default)]
     pub seconds: Option<u32>,
-    /// The field to fill in before it runs (Matter's pairing code), for one that has one.
+    /// The ways it can be done, each a small form (Matter's "It's set up in another app" and
+    /// "It's new, or reset"). Empty for a plain button.
     #[serde(default)]
-    pub input: Option<ActionInputInfo>,
-}
-
-/// The field an action asks for (`docs/specs/protocols.md` §5.1).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct ActionInputInfo {
-    pub label: String,
-    #[serde(default)]
-    pub hint: Option<String>,
-    #[serde(default)]
-    pub placeholder: Option<String>,
+    pub ways: Vec<irori_types::ActionWay>,
 }
 
 /// The header only Irori's own page sends. Once somebody has a password, every change has to
@@ -1063,15 +1054,25 @@ pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<
     checked(response).await
 }
 
-/// The same for an action with a field (Matter's pairing code): what was typed goes with it.
-/// Waits as long as the extension takes, which for adding a device can be a minute or two.
+/// What an action's form sends: the way picked, what was typed into its fields, and the
+/// settings it changed (`docs/specs/protocols.md` §5.1).
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionRequest {
+    pub way: String,
+    pub fields: BTreeMap<String, String>,
+    pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The same for an action with ways (Matter's "Add with a pairing code"). Waits as long as the
+/// extension takes, which for adding a device can be a minute or two, plus a restart when the
+/// form changed its settings.
 pub async fn trigger_action_with(
     extension: &ExtensionId,
     action_id: &str,
-    input: &str,
+    request: &ActionRequest,
 ) -> Result<(), String> {
     let response = post(&format!("/api/extensions/{extension}/actions/{action_id}"))
-        .json(&serde_json::json!({ "input": input }))
+        .json(request)
         .map_err(|e| e.to_string())?
         .send()
         .await

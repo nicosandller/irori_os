@@ -83,6 +83,9 @@ pub struct ServerInfo {
     /// integers, it only looks rounded once a JavaScript client parses it.
     pub compressed_fabric_id: u64,
     pub sdk_version: String,
+    /// Whether the server has Bluetooth working, when it says: `false` when it was asked for
+    /// Bluetooth and couldn't open the adapter.
+    pub bluetooth_enabled: Option<bool>,
 }
 
 impl ServerInfo {
@@ -97,6 +100,7 @@ impl ServerInfo {
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_owned(),
+            bluetooth_enabled: value.get("bluetooth_enabled").and_then(Value::as_bool),
         })
     }
 }
@@ -571,7 +575,7 @@ mod tests {
         // As matter-server 1.4.0 sends it: past JavaScript's safe integers, but written whole.
         let info: Value = serde_json::from_str(
             r#"{"fabric_id":1,"compressed_fabric_id":10256683378676567378,
-                "sdk_version":"matter-server/1.4.0 (matter.js/0.17.9)"}"#,
+                "sdk_version":"matter-server/1.4.0 (matter.js/0.17.9)","bluetooth_enabled":false}"#,
         )
         .expect("JSON");
         assert_eq!(
@@ -579,6 +583,7 @@ mod tests {
             Ok(ServerInfo {
                 compressed_fabric_id: 10_256_683_378_676_567_378,
                 sdk_version: "matter-server/1.4.0 (matter.js/0.17.9)".to_owned(),
+                bluetooth_enabled: Some(false),
             })
         );
         assert!(ServerInfo::from_json(&json!({"fabric_id": 1})).is_err());
