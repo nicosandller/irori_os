@@ -1273,7 +1273,7 @@ fn ProtocolActions(
     }
     let (usable, waiting_on): (Vec<_>, Vec<_>) =
         extension.actions.iter().cloned().partition(|action| {
-            extension.available_actions.contains(&action.id) || forms.sending(&action.id)
+            extension.available_actions.contains(&action.id) || forms.holding(&action.id)
         });
 
     let not_yet = (!waiting_on.is_empty()).then(|| {
@@ -1578,13 +1578,14 @@ impl ActionForms {
         state
     }
 
-    /// Whether this action's form is waiting for its answer: it stays on screen meanwhile,
-    /// even while the extension restarts and doesn't offer the action.
-    fn sending(&self, action_id: &str) -> bool {
+    /// Whether this action's form has something to show even when the extension doesn't offer
+    /// the action: it's waiting for its answer, through the extension's restart, or the answer
+    /// was why it failed (the extension stopped with the new settings, say).
+    fn holding(&self, action_id: &str) -> bool {
         self.forms.with_value(|forms| {
-            forms
-                .get(action_id)
-                .is_some_and(|state| state.sending.get_untracked())
+            forms.get(action_id).is_some_and(|state| {
+                state.sending.get_untracked() || state.trouble.with_untracked(Option::is_some)
+            })
         })
     }
 }

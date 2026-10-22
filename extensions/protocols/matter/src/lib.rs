@@ -1023,6 +1023,15 @@ fn commission_failed(error: &CommandError, bluetooth: bool) -> String {
                 .to_owned()
         };
     }
+    // Devices with that code's short discriminator answered, and refused the passcode.
+    if error.details.contains("No device could be commissioned")
+        && !error.details.contains(", 0 discovered")
+    {
+        return "A Matter device answered, but not to this code. Check it's typed right and \
+                current: a shared code lasts about 15 minutes. A device that's set up in \
+                another app needs a code shared from that app, not the one printed on it."
+            .to_owned();
+    }
     if error.details.contains("test/development certificate") {
         return "This device uses a development certificate, not one from its maker. If you \
                 made it or trust it, turn on \"Allow test devices\" in Matter's settings and \
@@ -1940,6 +1949,16 @@ mod tests {
         assert_eq!(
             refused(Some(1), None, "Commission failed: PASE failed"),
             "The Matter server couldn't add it: Commission failed: PASE failed"
+        );
+        // As matter-server 1.4.0 says it when devices answer and refuse the passcode.
+        assert!(
+            refused(
+                Some(2),
+                None,
+                "Commission failed: discovery of node with discriminator 15 failed: No device \
+                 could be commissioned (2 of 2 started attempt(s) failed, 2 discovered)"
+            )
+            .contains("answered, but not to this code")
         );
     }
 
