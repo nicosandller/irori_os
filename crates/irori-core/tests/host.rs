@@ -1605,3 +1605,91 @@ async fn an_offer_is_refused_unless_the_extension_is_waiting() {
 
     host.shutdown().await;
 }
+
+/// One package is worked on by one thing at a time: a second Install, or an Uninstall while
+/// it's being installed, is told what's underway. The claim ends when it's dropped.
+#[tokio::test]
+async fn a_package_being_installed_is_claimed_until_the_work_ends() {
+    use irori_core::PackageWork;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    let lamp = ExtensionId::try_from("lamp").expect("valid");
+    let other = ExtensionId::try_from("other").expect("valid");
+
+    let claim = host
+        .claim(&lamp, PackageWork::Installing)
+        .expect("nothing else is underway");
+    assert_eq!(
+        host.work(),
+        BTreeMap::from([(lamp.clone(), PackageWork::Installing)])
+    );
+    let again = host
+        .claim(&lamp, PackageWork::Uninstalling)
+        .expect_err("already installing");
+    assert!(again.contains("`lamp` is already installing"), "{again}");
+    // Another extension isn't held up by it.
+    let other_claim = host
+        .claim(&other, PackageWork::Updating)
+        .expect("a different package");
+    drop(other_claim);
+
+    drop(claim);
+    assert!(host.work().is_empty());
+    let _claim = host
+        .claim(&lamp, PackageWork::Uninstalling)
+        .expect("free once the install is over");
+
+    // Every stage is a new folder, never one that's there.
+    let first = host.new_stage();
+    std::fs::create_dir_all(&first).expect("made it");
+    assert_ne!(host.new_stage(), first);
+    host.shutdown().await;
+}
+
+/// Irori stopping in the middle of an install leaves its download behind, and in the middle of
+/// an update it can leave the old package moved aside with nothing in its place. The next start
+/// deletes the one and puts the other back.
+#[tokio::test]
+async fn what_a_stopped_install_left_is_cleared_and_a_stopped_update_is_undone() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    // A download that never got installed.
+    write_manifest(&dir.join("download-1"), LAMP_MANIFEST);
+    // An update that moved the old package aside and stopped before the new one took its place.
+    write_manifest(&dir.join("download-2.old"), INBOUND_MANIFEST);
+    // An update that finished, but stopped before deleting the old package.
+    write_manifest(&dir.join("lamp"), LAMP_MANIFEST);
+    write_manifest(&dir.join("download-3.old"), LAMP_MANIFEST);
+    // Not Irori's to touch.
+    std::fs::create_dir_all(dir.join("notes")).expect("made it");
+
+    let host = ExtensionHost::start_with_packages(&core, vec![], Timing::default(), dir.into())
+        .expect("starts");
+
+    let mut left: Vec<String> = std::fs::read_dir(dir)
+        .expect("reads")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    left.sort();
+    assert_eq!(left, ["bridge", "lamp", "notes"]);
+    assert!(
+        dir.join("bridge/irori-extension.toml").is_file(),
+        "the old package is back where it lives"
+    );
+    host.shutdown().await;
+}

@@ -87,7 +87,54 @@ struct HostInner {
     running: std::sync::Mutex<BTreeMap<ExtensionId, Running>>,
     /// Inbound extensions, keyed by id. Empty for a process Irori starts itself.
     inbound: std::sync::Mutex<BTreeMap<ExtensionId, Door>>,
+    /// The packages being installed, updated or uninstalled right now, each held by a
+    /// [`PackageClaim`].
+    work: std::sync::Mutex<BTreeMap<ExtensionId, PackageWork>>,
 }
+
+/// What is being done to an extension's package. Fetching one can take minutes (a checkout
+/// builds it), so whoever asks again, from another tab or after a reload, is told it's underway
+/// instead of starting a second copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageWork {
+    Installing,
+    Updating,
+    Uninstalling,
+}
+
+impl PackageWork {
+    /// How the catalog says it: `installing`, `updating` or `uninstalling`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Installing => "installing",
+            Self::Updating => "updating",
+            Self::Uninstalling => "uninstalling",
+        }
+    }
+}
+
+/// Held for as long as one extension's package is being installed, updated or uninstalled.
+/// Dropping it, however the work ended, says it's over.
+#[derive(Debug)]
+#[must_use = "the claim ends when it's dropped"]
+pub struct PackageClaim {
+    inner: Arc<HostInner>,
+    id: ExtensionId,
+}
+
+impl Drop for PackageClaim {
+    fn drop(&mut self) {
+        self.inner
+            .work
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
+}
+
+/// What every staging folder's name starts with: a package being fetched, or the old one an
+/// update moved aside. Neither is an id, so neither is ever started as a package.
+const STAGING: &str = "download-";
 
 /// One program's connection, in place of the child process Irori would otherwise start.
 #[derive(Debug)]
@@ -221,6 +268,7 @@ impl ExtensionHost {
                 packages_dir: packages_dir.clone(),
                 running: std::sync::Mutex::default(),
                 inbound: std::sync::Mutex::default(),
+                work: std::sync::Mutex::default(),
             }),
         };
         for builtin in builtins {
@@ -235,6 +283,7 @@ impl ExtensionHost {
             host.remember(id, removed, task);
         }
         if packages_dir.is_dir() {
+            clear_staging(&packages_dir);
             for package in installed_packages(&packages_dir)? {
                 // A package already on disk is never a reason to refuse to start: an id that
                 // collided with a builtin because it used to be a package (helpers, before D45)
@@ -394,6 +443,55 @@ impl ExtensionHost {
 
     pub fn packages_dir(&self) -> &Path {
         &self.inner.packages_dir
+    }
+
+    /// A new, unused folder under `packages_dir` to fetch a package into, out of the way of any
+    /// live one until [`Self::install_package`] or [`Self::update_package`] moves it into place.
+    pub fn new_stage(&self) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let mut stage = self.inner.packages_dir.join(format!("{STAGING}{nanos}"));
+        let mut n = 0;
+        while stage.exists() {
+            n += 1;
+            stage = self
+                .inner
+                .packages_dir
+                .join(format!("{STAGING}{nanos}-{n}"));
+        }
+        stage
+    }
+
+    /// Claims `id`'s package for `work` until the claim is dropped. Refused while anything else
+    /// is being done to it, so the same package is never fetched twice at once, nor removed
+    /// while it's being put in place.
+    pub fn claim(&self, id: &ExtensionId, work: PackageWork) -> Result<PackageClaim, String> {
+        let mut busy = self
+            .inner
+            .work
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(underway) = busy.get(id) {
+            return Err(format!(
+                "`{id}` is already {}; that takes a moment",
+                underway.as_str()
+            ));
+        }
+        busy.insert(id.clone(), work);
+        Ok(PackageClaim {
+            inner: self.inner.clone(),
+            id: id.clone(),
+        })
+    }
+
+    /// What is being done to each package right now.
+    pub fn work(&self) -> BTreeMap<ExtensionId, PackageWork> {
+        self.inner
+            .work
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Whether a token may be issued for `id`: the package is installed and connects in.
@@ -1042,6 +1140,52 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
         .map(|s| (*s).to_owned())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "panicked".into())
+}
+
+/// What a stop in the middle of fetching or updating left in `dir`. A package being fetched is
+/// deleted: nothing was installed from it. The old package an update moved aside is put back
+/// when the new one never took its place, and deleted when it did.
+fn clear_staging(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with(STAGING) || !path.is_dir() {
+            continue;
+        }
+        if name.ends_with(".old")
+            && let Ok(manifest) = read_package_manifest(&path)
+        {
+            let home = dir.join(manifest.extension.id.as_str());
+            if !home.exists() {
+                match std::fs::rename(&path, &home) {
+                    Ok(()) => tracing::warn!(
+                        extension = %manifest.extension.id,
+                        "an update stopped halfway; the version it was replacing is back"
+                    ),
+                    Err(error) => tracing::warn!(
+                        extension = %manifest.extension.id,
+                        %error,
+                        "an update stopped halfway, and the version it was replacing couldn't be put back"
+                    ),
+                }
+                continue;
+            }
+        }
+        match std::fs::remove_dir_all(&path) {
+            Ok(()) => tracing::info!(
+                folder = %path.display(),
+                "removed what an install that stopped halfway left behind"
+            ),
+            Err(error) => {
+                tracing::warn!(folder = %path.display(), %error, "couldn't remove a stale download")
+            }
+        }
+    }
 }
 
 fn installed_packages(dir: &Path) -> Result<Vec<PathBuf>, String> {

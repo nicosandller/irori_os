@@ -62,6 +62,16 @@ the old package had that the new one doesn't (what it downloaded for itself) is 
 Updating Irori doesn't update installed extensions. A third-party tarball URL uses the same machinery
 (`POST /api/extensions/install`); how those URLs are discovered is later.
 
+One extension is installed, updated or uninstalled by one request at a time, and the work
+finishes even if the page that asked is closed. While it's underway the catalog
+(`GET /api/catalog`) gives that extension `"busy": "installing"`, `"updating"` or
+`"uninstalling"`, so every page shows it. A second Install, Update or Uninstall is refused with
+409 and "`<id>` is already installing". A third-party URL is claimed only once its package is
+downloaded and its id is known, so it isn't shown as busy while downloading. A package is fetched
+into `$DATA/extensions/download-<n>/`. If Irori stops in the middle, the next start deletes that
+folder, and an update that had moved the old package aside without putting the new one in its
+place puts the old one back.
+
 How packages are signed is still Phase 3 (ROADMAP §8.1).
 
 ## 4. Example

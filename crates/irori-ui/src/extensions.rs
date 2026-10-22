@@ -43,8 +43,18 @@ pub fn Extensions() -> impl IntoView {
         spawn_local(async move {
             match api::fetch_catalog().await {
                 Ok(entries) => {
+                    // Something already underway, asked for before a reload or from another
+                    // tab, is followed until it's done, as if it had been asked for here.
+                    let underway: Vec<String> = entries
+                        .iter()
+                        .filter(|entry| entry.busy.is_some())
+                        .map(|entry| entry.id.clone())
+                        .collect();
                     catalog.set(entries);
                     trouble.set(None);
+                    for id in underway {
+                        spawn_local(async move { settle(&id, catalog, trouble).await });
+                    }
                 }
                 Err(why) => trouble.set(Some(why)),
             }
@@ -117,7 +127,8 @@ pub fn Extensions() -> impl IntoView {
             "Irori itself doesn't talk to devices or run automations. Those arrive as "
             "extensions: official ones live in this repo and are not compiled into the core. "
             "Install downloads (or, in a checkout, builds) a package; uninstall deletes it "
-            "and anything it brought in."
+            "and anything it brought in. Building takes a few minutes, and leaving this page "
+            "doesn't stop it."
         </p>
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
@@ -414,14 +425,24 @@ fn card(
             cleared.with(|cleared| troubled(&id_marked, reason.as_deref(), errors, cleared))
         })
     };
-    // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from the
-    // button's `disabled`, its progress bar, and its label without cloning the id three times.
-    let is_busy = Memo::new(move |_| busy.get().as_deref() == Some(id_busy.as_str()));
+    // What's being done to it: asked for on this page, or underway on the server whoever asked.
+    // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from each
+    // button's `disabled`, its progress bar, and its label.
     let updating = expect_context::<Updating>();
-    let id_updating = id.clone();
-    let is_updating = Memo::new(move |_| {
-        is_busy.get() && updating.0.get().as_deref() == Some(id_updating.as_str())
+    let underway = entry.busy.as_deref().and_then(Do::from_busy);
+    let work = Memo::new(move |_| {
+        if busy.get().as_deref() != Some(id_busy.as_str()) {
+            underway
+        } else if updating.0.get().as_deref() == Some(id_busy.as_str()) {
+            Some(Do::Update)
+        } else if installed {
+            Some(Do::Uninstall)
+        } else {
+            Some(Do::Install)
+        }
     });
+    let is_busy = Memo::new(move |_| work.get().is_some());
+    let doing = move |what| work.get() == Some(what);
 
     view! {
         <section class="ext-card">
@@ -461,9 +482,9 @@ fn card(
                             disabled=move || is_busy.get()
                             on:click=move |_| act(id_click.clone(), Do::Uninstall, busy, catalog, trouble, false, updating)
                         >
-                            {move || (is_busy.get() && !is_updating.get()).then(|| view! { <span class="bar" aria-hidden="true"></span> })}
+                            {move || doing(Do::Uninstall).then(|| view! { <span class="bar" aria-hidden="true"></span> })}
                             <span class="label">
-                                {move || if is_busy.get() && !is_updating.get() { "Uninstalling…" } else { "Uninstall" }}
+                                {move || if doing(Do::Uninstall) { "Uninstalling…" } else { "Uninstall" }}
                             </span>
                         </button>
                     }
@@ -482,9 +503,9 @@ fn card(
                                 }
                             }
                         >
-                            {move || is_busy.get().then(|| view! { <span class="bar" aria-hidden="true"></span> })}
+                            {move || doing(Do::Install).then(|| view! { <span class="bar" aria-hidden="true"></span> })}
                             <span class="label">
-                                {move || if is_busy.get() { "Installing…" } else { "Install" }}
+                                {move || if doing(Do::Install) { "Installing…" } else { "Install" }}
                             </span>
                         </button>
                     }
@@ -506,9 +527,9 @@ fn card(
                                 }
                             }
                         >
-                            {move || is_updating.get().then(|| view! { <span class="bar" aria-hidden="true"></span> })}
+                            {move || doing(Do::Update).then(|| view! { <span class="bar" aria-hidden="true"></span> })}
                             <span class="label">
-                                {move || if is_updating.get() { "Updating…" } else { "Update" }}
+                                {move || if doing(Do::Update) { "Updating…" } else { "Update" }}
                             </span>
                         </button>
                     }
@@ -628,6 +649,18 @@ enum Do {
     Uninstall,
 }
 
+impl Do {
+    /// What the catalog's `busy` says the server is doing.
+    fn from_busy(busy: &str) -> Option<Self> {
+        match busy {
+            "installing" => Some(Self::Install),
+            "updating" => Some(Self::Update),
+            "uninstalling" => Some(Self::Uninstall),
+            _ => None,
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn act(
     id: String,
@@ -653,13 +686,22 @@ fn act(
                 trouble.set(None);
                 settle(&id, catalog, trouble).await;
             }
-            Err(why) => trouble.set(Some(why)),
+            // Refused because it's already underway, from another tab or before a reload: not
+            // something to put right, so it's followed like this page's own.
+            Err(why) => match api::fetch_catalog().await {
+                Ok(entries) if entries.iter().any(|e| e.id == id && e.busy.is_some()) => {
+                    catalog.set(entries);
+                    settle(&id, catalog, trouble).await;
+                }
+                _ => trouble.set(Some(why)),
+            },
         }
         busy.set(None);
     });
 }
 
-/// Keeps refreshing the catalog until this extension's own action has visibly finished, instead
+/// Keeps refreshing the catalog while the server is still installing, updating or uninstalling
+/// it, and then until this extension's own action has visibly finished, instead
 /// of clearing `busy` — and so the button — the instant the HTTP request returns. "Installed"
 /// (`entry.installed`, which decides Install vs. Uninstall) turns true as soon as the package is
 /// on disk and supervised; for most extensions that's also when they're ready, but Zigbee
@@ -676,16 +718,19 @@ async fn settle(id: &str, catalog: RwSignal<Vec<CatalogEntry>>, trouble: RwSigna
                 return;
             }
         };
-        let still_settling = entries
-            .iter()
-            .find(|entry| entry.id == id)
+        let entry = entries.iter().find(|entry| entry.id == id);
+        // The server says when it's done fetching or removing it, however long a build takes.
+        let underway = entry.is_some_and(|entry| entry.busy.is_some());
+        let still_settling = entry
             .is_some_and(|entry| matches!(entry.state.as_deref(), Some("starting" | "degraded")));
         catalog.set(entries);
-        if !still_settling || waited >= SETTLE_TIMEOUT {
+        if !underway && (!still_settling || waited >= SETTLE_TIMEOUT) {
             return;
         }
         gloo_timers::future::sleep(SETTLE_POLL).await;
-        waited += SETTLE_POLL;
+        if !underway {
+            waited += SETTLE_POLL;
+        }
     }
 }
 

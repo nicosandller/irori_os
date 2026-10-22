@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
@@ -1917,6 +1917,7 @@ async fn give_secret(
 /// Official catalog plus whether each one is installed in this instance.
 async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
     let running = state.0.core.extensions();
+    let work = state.0.host.work();
     // What each installed extension is configured with right now, so its settings form opens
     // showing it. Read before the loop because reading takes the config lock, and the loop is a
     // plain `map`; only for installed extensions, since nothing else has a file.
@@ -1938,6 +1939,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                 // contribution never gets described at all (host.rs). Either way, this says
                 // whether `extension_icon` actually has bytes right now.
                 let icon = state.0.core.has_extension_icon(&item.id);
+                let busy = work.get(&item.id).map(|work| work.as_str());
                 // Secrets never come back out (§3.4). They live in `secrets.toml` and so aren't
                 // in this file at all, but a hand-written one could still name a `writeOnly`
                 // field, and it would be this response that leaked it.
@@ -1967,6 +1969,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     official: true,
                     full_access: item.full_access,
                     installed: overview.is_some(),
+                    busy,
                     installed_version: overview
                         .and_then(|o| o.info.as_ref())
                         .map(|info| info.version.to_string()),
@@ -2025,6 +2028,9 @@ struct CatalogEntry {
     /// access to this machine" and install is refused until that is approved.
     full_access: bool,
     installed: bool,
+    /// `installing`, `updating` or `uninstalling` while that is underway, whoever asked for it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    busy: Option<&'static str>,
     /// The version that's running, which `version` (the one Install would fetch) can be ahead
     /// of: nothing updates an installed extension when Irori itself is updated.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2073,51 +2079,69 @@ async fn install_official(
     if item.full_access && !approved {
         return refused(StatusCode::CONFLICT, full_access_refusal(&id));
     }
-    // Stage out of any live package's way and let `install_package` decide where it lands, so a
-    // double-click or a race can't overwrite files while a copy is running. A leftover staging
-    // dir is never read as a package again (its name isn't a slug, and `installed_packages`
-    // skips those).
-    let stage = state.0.host.packages_dir().join(staging_dir());
-    if let Err(why) = tokio::task::spawn_blocking({
-        let stage = stage.clone();
-        move || crate::packages::install_official(&item, &stage)
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
-    {
-        let _ = std::fs::remove_dir_all(&stage);
-        return refused(StatusCode::BAD_GATEWAY, why);
-    }
-    // The catalog said what this extension is supposed to be. The files just staged are what
-    // would actually run, and a release asset or a package beside the binary can disagree with
-    // the catalog. The manifest's own id and its permissions decide.
-    if let Err((status, why)) = unapproved_full_access(&stage, Some(&id), approved) {
-        let _ = std::fs::remove_dir_all(&stage);
-        return refused(status, why);
-    }
-    // An update replaces what's installed and starts it again; a plain install still refuses
-    // one that's already there, which is what makes a double-click harmless.
-    let placed = if update {
-        state.0.host.update_package(stage.clone()).await
-    } else {
-        state.0.host.install_package(stage.clone())
-    };
-    match placed {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(why) => {
-            let _ = std::fs::remove_dir_all(&stage);
-            refused(StatusCode::CONFLICT, why)
-        }
+    match place_official(state.0.host.clone(), item, approved, update).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err((status, why)) => refused(status, why),
     }
 }
 
-/// A unique directory name under the packages dir for a download in flight.
-pub(crate) fn staging_dir() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("the clock is after 1970")
-        .as_nanos();
-    format!("download-{nanos}")
+/// Fetches an official extension and installs it, or replaces the installed one with it
+/// (`update`). Refused while its package is being worked on already: a second tab, a reload or
+/// Irori's own update entity is told it's underway rather than fetching a second copy.
+///
+/// The work runs in a task of its own, holding the package's claim to the end. The request that
+/// asked can be gone (a page closed or reloaded) and it still finishes, or cleans up after
+/// itself, instead of stopping wherever the request was dropped.
+pub(crate) async fn place_official(
+    host: irori_core::ExtensionHost,
+    item: crate::packages::Official,
+    approved: bool,
+    update: bool,
+) -> Result<(), (StatusCode, String)> {
+    let work = if update {
+        irori_core::PackageWork::Updating
+    } else {
+        irori_core::PackageWork::Installing
+    };
+    let claim = host
+        .claim(&item.id, work)
+        .map_err(|why| (StatusCode::CONFLICT, why))?;
+    tokio::spawn(async move {
+        let _claim = claim;
+        let id = item.id.clone();
+        // Staged out of any live package's way; `install_package` or `update_package` decides
+        // where it lands. A stage left by a stop halfway is cleared at the next start.
+        let stage = host.new_stage();
+        let placed = async {
+            tokio::task::spawn_blocking({
+                let stage = stage.clone();
+                move || crate::packages::install_official(&item, &stage)
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+            .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
+            // The catalog said what this extension is supposed to be. The files just staged
+            // are what would actually run, and a release asset or a package beside the binary
+            // can disagree with the catalog. The manifest's own id and its permissions decide.
+            unapproved_full_access(&stage, Some(&id), approved)?;
+            // An update replaces what's installed and starts it again; a plain install still
+            // refuses one that's already there.
+            if update {
+                host.update_package(stage.clone()).await
+            } else {
+                host.install_package(stage.clone())
+            }
+            .map(|_| ())
+            .map_err(|why| (StatusCode::CONFLICT, why))
+        }
+        .await;
+        if placed.is_err() {
+            let _ = std::fs::remove_dir_all(&stage);
+        }
+        placed
+    })
+    .await
+    .unwrap_or_else(|e| Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())))
 }
 
 #[derive(Debug, Deserialize)]
@@ -2181,49 +2205,86 @@ async fn install_url(State(state): State<AppState>, Json(body): Json<InstallUrl>
             "only http:// and https:// URLs are allowed".into(),
         );
     }
-    let dest = state.0.host.packages_dir().join(staging_dir());
-    if let Err(why) = tokio::task::spawn_blocking({
-        let dest = dest.clone();
-        let url = url.to_owned();
-        move || crate::packages::install_url(&url, &dest)
+    let host = state.0.host.clone();
+    let url = url.to_owned();
+    // In a task of its own, so a page that closes mid-download doesn't leave the download
+    // behind. Its id isn't known until the package is in, so it's claimed only from then on.
+    let placed = tokio::spawn(async move {
+        let dest = host.new_stage();
+        let placed = async {
+            tokio::task::spawn_blocking({
+                let dest = dest.clone();
+                move || crate::packages::install_url(&url, &dest)
+            })
+            .await
+            .unwrap_or_else(|e| Err(e.to_string()))
+            .map_err(|why| (StatusCode::BAD_GATEWAY, why))?;
+            unapproved_full_access(&dest, None, body.approve_full_access)?;
+            let id = staged_id(&dest)?;
+            let _claim = host
+                .claim(&id, irori_core::PackageWork::Installing)
+                .map_err(|why| (StatusCode::CONFLICT, why))?;
+            host.install_package(dest.clone())
+                .map(|_| ())
+                .map_err(|why| (StatusCode::BAD_REQUEST, why))
+        }
+        .await;
+        if placed.is_err() {
+            let _ = std::fs::remove_dir_all(&dest);
+        }
+        placed
     })
     .await
-    .unwrap_or_else(|e| Err(e.to_string()))
-    {
-        let _ = std::fs::remove_dir_all(&dest);
-        return refused(StatusCode::BAD_GATEWAY, why);
+    .unwrap_or_else(|e| Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())));
+    match placed {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err((status, why)) => refused(status, why),
     }
-    if let Err((status, why)) = unapproved_full_access(&dest, None, body.approve_full_access) {
-        let _ = std::fs::remove_dir_all(&dest);
-        return refused(status, why);
-    }
-    match state.0.host.install_package(dest.clone()) {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(why) => {
-            let _ = std::fs::remove_dir_all(&dest);
-            refused(StatusCode::BAD_REQUEST, why)
-        }
-    }
+}
+
+/// The id a staged package's manifest gives itself.
+fn staged_id(dir: &std::path::Path) -> Result<ExtensionId, (StatusCode, String)> {
+    let path = dir.join("irori-extension.toml");
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{}: {e}", path.display())))?;
+    irori_protocol::parse_manifest(&text)
+        .map(|manifest| manifest.extension.id)
+        .map_err(|why| (StatusCode::BAD_REQUEST, why))
 }
 
 /// Uninstalls an extension, and removes every device it brought in with it: installing it again
 /// starts from nothing in the home, with everything it finds listed under "+ Add device".
 async fn uninstall(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
-    if let Err(why) = state.0.host.uninstall(&id).await {
-        return refused(StatusCode::BAD_REQUEST, why);
-    }
-    let Ok(protocol) = irori_types::ProtocolId::try_from(id.as_str()) else {
-        return StatusCode::NO_CONTENT.into_response();
-    };
-    match state
+    let claim = match state
         .0
-        .config
-        .forget_protocol(&state.0.core, &protocol)
-        .await
+        .host
+        .claim(&id, irori_core::PackageWork::Uninstalling)
     {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => edit_failed(e),
-    }
+        Ok(claim) => claim,
+        Err(why) => return refused(StatusCode::CONFLICT, why),
+    };
+    // To the end in a task of its own, so a page that closes doesn't leave the extension
+    // stopped but its devices still in the home.
+    tokio::spawn(async move {
+        let _claim = claim;
+        if let Err(why) = state.0.host.uninstall(&id).await {
+            return refused(StatusCode::BAD_REQUEST, why);
+        }
+        let Ok(protocol) = irori_types::ProtocolId::try_from(id.as_str()) else {
+            return StatusCode::NO_CONTENT.into_response();
+        };
+        match state
+            .0
+            .config
+            .forget_protocol(&state.0.core, &protocol)
+            .await
+        {
+            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Err(e) => edit_failed(e),
+        }
+    })
+    .await
+    .unwrap_or_else(|e| refused(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
 /// An edit that couldn't be made says why; one that couldn't be written says that instead, because
@@ -2537,6 +2598,11 @@ mod tests {
                 irori_core::Timing::default(),
             )
             .map_err(anyhow::Error::msg)?;
+            self.app_with(host)
+        }
+
+        /// The app over a host the test holds on to.
+        fn app_with(&self, host: irori_core::ExtensionHost) -> anyhow::Result<Router> {
             Ok(router(AppState::new(
                 crate::db::open(self.dir.path())?,
                 self.core.clone(),
@@ -3232,6 +3298,71 @@ mod tests {
             "zigbee downloads and runs other programs; the page has to be able to say so: {catalog}"
         );
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Installing can take minutes. While it's underway the catalog says so, to every page that
+    /// asks, and a second Install or an Uninstall is told it's underway instead of starting
+    /// another copy. Once it's over, the extension is free again.
+    #[tokio::test]
+    async fn an_extension_being_installed_says_so_and_isnt_installed_twice() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let host = irori_core::ExtensionHost::start(
+            &server.core,
+            Vec::new(),
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let app = server.app_with(host.clone())?;
+        let call = |method: &str, path: &str| {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from("{}"));
+            let app = app.clone();
+            async move {
+                let res = app.oneshot(request?).await?;
+                let status = res.status();
+                let bytes = res.into_body().collect().await?.to_bytes();
+                anyhow::Ok((
+                    status,
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .unwrap_or(serde_json::Value::Null),
+                ))
+            }
+        };
+        let demo_busy = |catalog: &serde_json::Value| {
+            catalog
+                .as_array()
+                .and_then(|all| all.iter().find(|entry| entry["id"] == "demo"))
+                .map(|entry| entry["busy"].clone())
+        };
+
+        let demo = ExtensionId::try_from("demo")?;
+        let claim = host
+            .claim(&demo, irori_core::PackageWork::Installing)
+            .map_err(anyhow::Error::msg)?;
+        let (_, catalog) = call("GET", "/api/catalog").await?;
+        assert_eq!(demo_busy(&catalog), Some(serde_json::json!("installing")));
+        for (method, path) in [
+            ("POST", "/api/extensions/demo/install"),
+            ("DELETE", "/api/extensions/demo"),
+        ] {
+            let (status, body) = call(method, path).await?;
+            assert_eq!(status, StatusCode::CONFLICT, "{method} {path}: {body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|error| error.contains("`demo` is already installing")),
+                "{body}"
+            );
+        }
+
+        drop(claim);
+        let (_, catalog) = call("GET", "/api/catalog").await?;
+        assert_eq!(demo_busy(&catalog), Some(serde_json::Value::Null));
         host.shutdown().await;
         Ok(())
     }

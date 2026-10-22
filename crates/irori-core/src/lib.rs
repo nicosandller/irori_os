@@ -30,7 +30,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
-pub use host::{ExtensionHost, InboundLink, Timing};
+pub use host::{ExtensionHost, InboundLink, PackageClaim, PackageWork, Timing};
 pub use services::{CallError, Command};
 
 pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};

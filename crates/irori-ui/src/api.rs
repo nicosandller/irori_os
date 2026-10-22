@@ -901,6 +901,10 @@ pub struct CatalogEntry {
     #[serde(default)]
     pub full_access: bool,
     pub installed: bool,
+    /// `installing`, `updating` or `uninstalling` while the server is doing that, whoever asked:
+    /// another tab, this page before a reload, or Irori's own update entity.
+    #[serde(default)]
+    pub busy: Option<String>,
     /// The version that's running, when it's installed. `version` is the one Install fetches.
     #[serde(default)]
     pub installed_version: Option<String>,

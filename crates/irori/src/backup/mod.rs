@@ -931,21 +931,12 @@ pub async fn reinstall_extensions(host: irori_core::ExtensionHost, data: PathBuf
             done.awaiting_approval.push(name);
             continue;
         }
-        let stage = host.packages_dir().join(crate::server::staging_dir());
-        let fetched = tokio::task::spawn_blocking({
-            let stage = stage.clone();
-            let item = item.clone();
-            move || crate::packages::install_official(&item, &stage)
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()))
-        .and_then(|()| host.install_package(stage.clone()).map(|_| ()));
+        let fetched = crate::server::place_official(host.clone(), item.clone(), false, false)
+            .await
+            .map_err(|(_, why)| why);
         match fetched {
             Ok(()) => done.reinstalled.push(name),
-            Err(why) => {
-                let _ = fs::remove_dir_all(&stage);
-                done.reinstall_failed.push(format!("{name}: {why}"));
-            }
+            Err(why) => done.reinstall_failed.push(format!("{name}: {why}")),
         }
     }
     done.extensions_handled = true;
