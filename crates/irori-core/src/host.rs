@@ -1154,7 +1154,12 @@ fn clear_staging(dir: &Path) {
         let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
             continue;
         };
-        if !name.starts_with(STAGING) || !path.is_dir() {
+        // An installed package's folder is named by its id, which is never one of these: ids
+        // have no `-`. Checked anyway, so this can't delete an installed package.
+        if !name.starts_with(STAGING)
+            || ExtensionId::try_from(name.as_str()).is_ok()
+            || !path.is_dir()
+        {
             continue;
         }
         if name.ends_with(".old")

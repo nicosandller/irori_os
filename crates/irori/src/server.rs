@@ -2106,6 +2106,13 @@ pub(crate) async fn place_official(
     let claim = host
         .claim(&item.id, work)
         .map_err(|why| (StatusCode::CONFLICT, why))?;
+    // Said before fetching anything, not after a download or a build of minutes.
+    if !update && host.packages_dir().join(item.id.as_str()).exists() {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("`{}` is already installed", item.id),
+        ));
+    }
     tokio::spawn(async move {
         let _claim = claim;
         let id = item.id.clone();
