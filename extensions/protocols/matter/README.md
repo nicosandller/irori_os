@@ -15,6 +15,8 @@ many homes. [Why not `rs-matter`](#why-wrap-a-server-instead-of-rs-matter) is be
 - **Runs the server on loopback only** (`127.0.0.1`, port 15580 by default). Its WebSocket API
   has no authentication, so nothing off this machine may reach it. Port 15580, not the server's
   usual 5580, so it doesn't collide with a Home Assistant Matter server on the same machine.
+  Anything running *on* this machine can still reach it: see
+  [Who can control your devices](#who-can-control-your-devices).
 - **Adds a device from a pairing code**, with the extension's "Add with a pairing code" action:
   over the network, or, with Bluetooth turned on, a new device fresh out of its box (see below).
 - **Shows each device and its readings**, kept up to date as the device reports them, and
@@ -140,6 +142,24 @@ Matter runs over IPv6 on the local network and finds devices with mDNS.
   doesn't run one. On Linux the machine has to accept the routes the border router announces:
   set `net.ipv6.conf.<interface>.accept_ra_rt_info_max_plen = 64` (and `accept_ra = 1`),
   otherwise Thread devices are found but can't be reached.
+
+## Who can control your devices
+
+The Matter server's WebSocket API has no password, and the server offers no way to set one.
+Listening on loopback keeps other machines out, but **any program running on this machine can
+connect to port 15580 and do anything Irori can**: unlock a lock, open a blind, add a device or
+remove one. That includes every other Irori extension, since Irori doesn't yet enforce which
+addresses an extension may reach (`docs/specs/extensions.md`, "Enforcement").
+
+Home Assistant's Matter server works the same way. In practice:
+
+- Run Irori on a machine of its own (a Pi, say), not one shared with people or programs you
+  don't trust.
+- Install only extensions you trust while Matter devices that matter, like locks, are on it.
+- Don't forward port 15580 to another machine.
+
+If the extension finds something already listening on its port when it starts, it refuses to
+start rather than talk to it: see [Settings](#settings) for `port`.
 
 ## Where things live
 

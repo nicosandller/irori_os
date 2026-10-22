@@ -1,7 +1,7 @@
 [extension]
 id = "matter"
 name = "Matter"
-version = "0.2.0"
+version = "0.2.1"
 irori = ">=1.5.0"
 # 1.5.0 is the first core whose actions take a line of text (the pairing code) and can say how
 # long they take to answer.

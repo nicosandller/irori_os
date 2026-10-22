@@ -110,6 +110,14 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         .await
         .map_err(|e| ProtocolError::new(format!("couldn't create {}: {e}", storage.display())))?;
     let entry = absolute(server::entry_point().map_err(ProtocolError::new)?);
+    if server::port_in_use(settings.port).await {
+        return Err(ProtocolError::new(format!(
+            "something is already listening on 127.0.0.1:{port}, so the Matter server can't start \
+             there. It may be a Matter server left running from before: stop it, or restart this \
+             machine. Or choose another `port` in Matter's settings.",
+            port = settings.port
+        )));
+    }
     let mut spawned = server::spawn(
         &irori_node_runtime::install::node_binary(),
         &entry,

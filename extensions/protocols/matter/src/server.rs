@@ -129,6 +129,21 @@ pub fn arguments(settings: &Settings, storage: &Path) -> Vec<std::ffi::OsString>
     args
 }
 
+/// Whether something already answers on loopback at `port`. Checked before the server starts:
+/// a Matter server left running from before (Irori killed outright can leave one) keeps the
+/// port, so the new one couldn't start, and the extension would talk to a server it doesn't
+/// run. So would anything else that took the port.
+pub async fn port_in_use(port: u16) -> bool {
+    matches!(
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            tokio::net::TcpStream::connect(("127.0.0.1", port)),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
 /// Starts the server.
 pub fn spawn(node: &Path, entry: &Path, args: Vec<std::ffi::OsString>) -> Result<Spawned, String> {
     let mut command = Command::new(node);
@@ -302,6 +317,17 @@ mod tests {
         assert!(below_error("    at Object.<anonymous> (/x/bin.js:1:1)"));
         assert!(below_error("Node.js v24.21.0"));
         assert!(!below_error("Error: Cannot find module 'x'"));
+    }
+
+    #[tokio::test]
+    async fn a_port_something_listens_on_is_in_use_and_a_free_one_isnt() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a free port");
+        let port = listener.local_addr().expect("bound").port();
+        assert!(port_in_use(port).await);
+        drop(listener);
+        assert!(!port_in_use(port).await);
     }
 
     #[tokio::test]
