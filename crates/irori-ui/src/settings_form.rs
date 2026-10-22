@@ -67,7 +67,11 @@ fn fields_from_schema(schema: &serde_json::Value) -> Vec<Field> {
         .map(|(key, field_schema)| {
             let kind = classify(field_schema, schema);
             Field {
-                label: label_from_key(key),
+                // The schema's own `title` when it has one ("Wi-Fi network"), else the key.
+                label: field_schema
+                    .get("title")
+                    .and_then(serde_json::Value::as_str)
+                    .map_or_else(|| label_from_key(key), str::to_owned),
                 help: help_text(field_schema),
                 // A secret is never folded away, however optional the schema says it is: a
                 // credential is usually the reason someone opened this form at all.

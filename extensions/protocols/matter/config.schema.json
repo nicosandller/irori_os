@@ -60,6 +60,7 @@
       ]
     },
     "wifi_password": {
+      "title": "Wi-Fi password",
       "description": "That Wi-Fi network's password.",
       "anyOf": [
         {
@@ -71,6 +72,7 @@
       ]
     },
     "wifi_ssid": {
+      "title": "Wi-Fi network",
       "description": "The Wi-Fi network a new Wi-Fi device joins when it's added over Bluetooth. 2.4 GHz: most\nMatter devices can't join a 5 GHz network.",
       "type": [
         "string",

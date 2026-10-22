@@ -563,7 +563,9 @@
                             color: var(--fg); background: var(--bg); border: 1px solid var(--line);
                             border-radius: .4rem; }
     .settings-field input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
-    .settings-field-checkbox { flex-direction: row; align-items: center; gap: .5rem; }
+    .settings-field-checkbox { flex-direction: row; align-items: flex-start; gap: .5rem; }
+    .settings-field-checkbox input { margin-top: .2rem; }
+    .settings-field-checkbox .settings-help { display: block; margin-top: .15rem; }
     .settings-field-checkbox input { width: auto; }
     .settings-form-actions { display: flex; gap: .5rem; justify-content: flex-end; }
     .settings-form-actions button { padding: .35rem .7rem; font: inherit; font-size: .85rem;

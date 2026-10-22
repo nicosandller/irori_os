@@ -724,6 +724,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
         })
     };
     let closing = closing_times(live, id.clone());
+    let forms = ActionForms::new();
     // Whether it opens its network for a while to find devices (Zigbee's permit join), rather
     // than hearing them announce themselves all the time. Only the first kind has a moment
     // when it's listening and a moment when it isn't.
@@ -896,7 +897,12 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                 }))}
             </div>
             {move || extension.get().map(|extension| view! {
-                <ProtocolActions id=for_actions.clone() extension=extension closing=closing />
+                <ProtocolActions
+                    id=for_actions.clone()
+                    extension=extension
+                    closing=closing
+                    forms=forms.clone()
+                />
             })}
             {move || unpairing.get().map(|device| view! {
                 <crate::removal::RemoveDevice
@@ -1255,6 +1261,8 @@ fn ProtocolActions(
     extension: crate::api::Extension,
     /// When each open action closes (`closing_times`).
     closing: RwSignal<BTreeMap<String, f64>>,
+    /// What its forms hold, kept across redraws.
+    forms: ActionForms,
 ) -> impl IntoView {
     let sending = RwSignal::new(None::<String>);
     let trouble = RwSignal::new(None::<String>);
@@ -1263,11 +1271,10 @@ fn ProtocolActions(
     if extension.actions.is_empty() {
         return ().into_any();
     }
-    let (usable, waiting_on): (Vec<_>, Vec<_>) = extension
-        .actions
-        .iter()
-        .cloned()
-        .partition(|action| extension.available_actions.contains(&action.id));
+    let (usable, waiting_on): (Vec<_>, Vec<_>) =
+        extension.actions.iter().cloned().partition(|action| {
+            extension.available_actions.contains(&action.id) || forms.sending(&action.id)
+        });
 
     let not_yet = (!waiting_on.is_empty()).then(|| {
         let names = waiting_on
@@ -1313,7 +1320,10 @@ fn ProtocolActions(
         .partition(|action| !action.ways.is_empty());
     let fields = with_ways
         .into_iter()
-        .map(|action| view! { <ActionForm id=id.clone() action=action /> })
+        .map(|action| {
+            let state = forms.of(&id, &action);
+            view! { <ActionForm id=id.clone() action=action state=state /> }
+        })
         .collect_view();
 
     view! {
@@ -1477,6 +1487,108 @@ fn ProtocolActions(
         .into_any()
 }
 
+/// What an action's form holds: the way picked, what's typed, whether it's waiting, and how it
+/// went. Kept by the add-device screen rather than by the form, which is drawn again whenever
+/// its extension changes; and a way that changes settings restarts the extension, so the answer
+/// comes back to a form drawn after the one that asked.
+#[derive(Debug, Clone)]
+struct FormState {
+    chosen: RwSignal<String>,
+    /// One box per field id, shared by the ways that ask for it: switching ways keeps the code.
+    typed: BTreeMap<String, RwSignal<String>>,
+    sending: RwSignal<bool>,
+    trouble: RwSignal<Option<String>>,
+    done: RwSignal<bool>,
+    /// The settings its ways change, once read from the catalog.
+    rows: RwSignal<Option<crate::settings_form::SettingRows>>,
+}
+
+impl FormState {
+    fn new(id: &ExtensionId, action: &crate::api::ProtocolActionInfo) -> Self {
+        let ways = &action.ways;
+        let state = Self {
+            chosen: RwSignal::new(ways.first().map(|way| way.id.clone()).unwrap_or_default()),
+            typed: ways
+                .iter()
+                .flat_map(|way| way.fields.iter())
+                .map(|field| (field.id.clone(), RwSignal::new(String::new())))
+                .collect(),
+            sending: RwSignal::new(false),
+            trouble: RwSignal::new(None),
+            done: RwSignal::new(false),
+            rows: RwSignal::new(None),
+        };
+        // The settings a way changes come from the catalog, which has the schema and what's
+        // saved.
+        if ways.iter().any(|way| !way.settings.is_empty()) {
+            let wanted = id.to_string();
+            let keys: Vec<String> = ways
+                .iter()
+                .flat_map(|way| way.settings.iter().cloned())
+                .collect();
+            let (rows, trouble) = (state.rows, state.trouble);
+            spawn_local(async move {
+                match crate::api::fetch_catalog().await {
+                    Ok(catalog) => {
+                        if let Some(entry) = catalog.into_iter().find(|entry| entry.id == wanted)
+                            && let Some(schema) = entry.config_schema
+                        {
+                            rows.set(Some(crate::settings_form::SettingRows::new(
+                                &schema,
+                                &entry.settings,
+                                &keys,
+                            )));
+                        }
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+            });
+        }
+        state
+    }
+}
+
+/// The add-device screen's action forms, by action id, made under the screen's own owner so
+/// they last as long as it does.
+#[derive(Debug, Clone)]
+struct ActionForms {
+    owner: Owner,
+    forms: StoredValue<BTreeMap<String, FormState>>,
+}
+
+impl ActionForms {
+    fn new() -> Self {
+        Self {
+            owner: Owner::current().unwrap_or_default(),
+            forms: StoredValue::new(BTreeMap::new()),
+        }
+    }
+
+    fn of(&self, id: &ExtensionId, action: &crate::api::ProtocolActionInfo) -> FormState {
+        if let Some(state) = self
+            .forms
+            .with_value(|forms| forms.get(&action.id).cloned())
+        {
+            return state;
+        }
+        let state = self.owner.with(|| FormState::new(id, action));
+        self.forms.update_value(|forms| {
+            forms.insert(action.id.clone(), state.clone());
+        });
+        state
+    }
+
+    /// Whether this action's form is waiting for its answer: it stays on screen meanwhile,
+    /// even while the extension restarts and doesn't offer the action.
+    fn sending(&self, action_id: &str) -> bool {
+        self.forms.with_value(|forms| {
+            forms
+                .get(action_id)
+                .is_some_and(|state| state.sending.get_untracked())
+        })
+    }
+}
+
 /// An action with ways — Matter's "Add with a pairing code". A choice of way when there's more
 /// than one, the settings that way changes (Bluetooth and Wi-Fi for a new device), its fields,
 /// and the button. The press saves the settings, waits for the extension to start again with
@@ -1484,45 +1596,22 @@ fn ProtocolActions(
 /// under the form and what was typed is kept so it can be corrected; success clears the fields
 /// and reads the home again, which is where the new device shows up.
 #[component]
-fn ActionForm(id: ExtensionId, action: crate::api::ProtocolActionInfo) -> impl IntoView {
+fn ActionForm(
+    id: ExtensionId,
+    action: crate::api::ProtocolActionInfo,
+    /// What's in it, kept by the screen (`ActionForms`).
+    state: FormState,
+) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let ways = action.ways.clone();
-    let chosen = RwSignal::new(ways.first().map(|way| way.id.clone()).unwrap_or_default());
-    // One box per field id, shared by the ways that ask for it: switching ways keeps the code.
-    let typed: BTreeMap<String, RwSignal<String>> = ways
-        .iter()
-        .flat_map(|way| way.fields.iter())
-        .map(|field| (field.id.clone(), RwSignal::new(String::new())))
-        .collect();
-    let sending = RwSignal::new(false);
-    let trouble = RwSignal::new(None::<String>);
-    let done = RwSignal::new(false);
-
-    // The settings a way changes come from the catalog, which has the schema and what's saved.
-    let rows = RwSignal::new(None::<crate::settings_form::SettingRows>);
-    if ways.iter().any(|way| !way.settings.is_empty()) {
-        let wanted = id.to_string();
-        let keys: Vec<String> = ways
-            .iter()
-            .flat_map(|way| way.settings.iter().cloned())
-            .collect();
-        spawn_local(async move {
-            match crate::api::fetch_catalog().await {
-                Ok(catalog) => {
-                    if let Some(entry) = catalog.into_iter().find(|entry| entry.id == wanted)
-                        && let Some(schema) = entry.config_schema
-                    {
-                        rows.set(Some(crate::settings_form::SettingRows::new(
-                            &schema,
-                            &entry.settings,
-                            &keys,
-                        )));
-                    }
-                }
-                Err(why) => trouble.set(Some(why)),
-            }
-        });
-    }
+    let FormState {
+        chosen,
+        typed,
+        sending,
+        trouble,
+        done,
+        rows,
+    } = state;
 
     let way_of = {
         let ways = ways.clone();

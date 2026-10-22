@@ -47,9 +47,11 @@ pub struct Settings {
     /// The Wi-Fi network a new Wi-Fi device joins when it's added over Bluetooth. 2.4 GHz: most
     /// Matter devices can't join a 5 GHz network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(title = "Wi-Fi network")]
     pub wifi_ssid: Option<String>,
     /// That Wi-Fi network's password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(title = "Wi-Fi password")]
     pub wifi_password: Option<Secret>,
     /// The Thread network a new Thread device joins when it's added over Bluetooth: the
     /// operational dataset, as hex, from the border router's app (Home Assistant's Thread
