@@ -731,6 +731,7 @@ mod tests {
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
                     | host::Op::SetUnmodeled(_)
+                    | host::Op::SetNetwork(_)
                     | host::Op::SetActionOpen(_, _)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {

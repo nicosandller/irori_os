@@ -18,6 +18,7 @@ pub mod format;
 mod home;
 mod kind;
 mod kinds;
+mod network;
 mod num;
 mod protocol;
 mod registry;
@@ -103,6 +104,10 @@ pub use kinds::water_heater::{
     WaterHeaterState,
 };
 pub use kinds::{Field, Typed, ValueShape, mode_to_turn_on};
+pub use network::{
+    LinkQuality, MAX_NETWORK_LINKS, MAX_NETWORK_NODES, Network, NetworkLink, NetworkMedium,
+    NetworkNode, NetworkRole,
+};
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
     StateReport, Unmodeled, Waiting,
