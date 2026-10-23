@@ -49,6 +49,9 @@ Without an account, each device found is listed as waiting for one. A device tha
 account is listed the same way and tried again every ten minutes, so a wrong password doesn't
 flood it.
 
+A device with no account set on it (reset, or never added in the app) still answers TP-Link's
+setup login or a blank one; those are tried when the account doesn't match, as python-kasa does.
+
 ## Tested on
 
 Tapo metering plugs and power strips on current firmware, read alongside Home Assistant's
