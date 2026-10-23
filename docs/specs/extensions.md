@@ -76,7 +76,8 @@ stops in the middle, the next start deletes that folder. An update that had move
 aside (`download-<n>.old`) without putting the new one in its place puts the old one back; one
 that had, but hadn't finished carrying over what the old package fetched for itself, finishes
 that before deleting the old one. An old package that can't be read is left where it is, with a
-warning: it may be the only copy.
+warning: it may be the only copy. Uninstalling an extension also deletes any old package of its that
+an update kept, so a restart can't put it back.
 
 How packages are signed is still Phase 3 (ROADMAP §8.1).
 

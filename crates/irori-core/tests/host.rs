@@ -1757,6 +1757,52 @@ async fn a_package_being_installed_is_claimed_until_the_work_ends() {
     host.shutdown().await;
 }
 
+/// An old version an update kept (it couldn't carry everything over) is that extension's too:
+/// uninstalling deletes it, so the next start doesn't put back what was just uninstalled.
+/// Another extension's old version, and one that can't be read, aren't touched.
+#[tokio::test]
+async fn uninstalling_deletes_the_old_versions_an_update_kept() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path().to_path_buf();
+    let host = ExtensionHost::start_with_packages(&core, vec![], Timing::default(), dir.clone())
+        .expect("starts");
+    // As an update that couldn't move everything would leave it, after the start's cleanup.
+    write_manifest(&dir.join("lamp"), LAMP_MANIFEST);
+    write_manifest(&dir.join("download-1.old"), LAMP_MANIFEST);
+    write_manifest(&dir.join("download-2.old"), INBOUND_MANIFEST);
+    std::fs::create_dir_all(dir.join("download-3.old")).expect("made it");
+    std::fs::write(
+        dir.join("download-3.old/irori-extension.toml"),
+        "not a manifest",
+    )
+    .expect("written");
+
+    host.uninstall(&ExtensionId::try_from("lamp").expect("valid"))
+        .await
+        .expect("uninstalled");
+
+    let mut left: Vec<String> = std::fs::read_dir(&dir)
+        .expect("reads")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    left.sort();
+    assert_eq!(left, ["download-2.old", "download-3.old"]);
+    host.shutdown().await;
+
+    // And the next start has no lamp to put back.
+    let again = ExtensionHost::start_with_packages(&core, vec![], Timing::default(), dir.clone())
+        .expect("starts again");
+    assert!(!dir.join("lamp").exists());
+    again.shutdown().await;
+}
+
 /// Irori stopping in the middle of an install leaves its download behind, and in the middle of
 /// an update it can leave the old package moved aside with nothing in its place. The next start
 /// deletes the one and puts the other back.

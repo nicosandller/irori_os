@@ -462,7 +462,10 @@ impl ExtensionHost {
             std::fs::remove_dir_all(&dir)
                 .map_err(|e| format!("couldn't delete {}: {e}", dir.display()))?;
         }
-        Ok(())
+        // An old version an update kept because it couldn't carry everything over would be
+        // put back at the next start, as if that update had stopped halfway: the extension
+        // just uninstalled would come back. It goes too.
+        remove_old_versions(&self.inner.packages_dir, id)
     }
 
     pub fn packages_dir(&self) -> &Path {
@@ -1210,6 +1213,29 @@ fn clear_staging(dir: &Path) {
             }
         }
     }
+}
+
+/// Deletes every old version of `id` an update moved aside (`download-<n>.old`). One that
+/// can't be read isn't known to be `id`'s, so it stays.
+fn remove_old_versions(dir: &Path, id: &ExtensionId) -> Result<(), String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    for entry in entries.filter_map(Result::ok) {
+        let path = entry.path();
+        let is_old = entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with(STAGING) && name.ends_with(".old"));
+        if is_old
+            && path.is_dir()
+            && read_package_manifest(&path).is_ok_and(|manifest| &manifest.extension.id == id)
+        {
+            std::fs::remove_dir_all(&path)
+                .map_err(|e| format!("couldn't delete {}: {e}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// The old package an update moved aside to `old`, after Irori stopped in the middle of it.
