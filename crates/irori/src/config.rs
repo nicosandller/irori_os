@@ -244,6 +244,25 @@ impl Config {
         store.extension_file(extension)
     }
 
+    /// Which of one extension's settings `secrets.toml` holds a value for: the keys only, never
+    /// what they hold, so a form can say a password is saved without showing it.
+    pub async fn secrets_set(&self, extension: &irori_types::ExtensionId) -> Vec<String> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store
+            .secrets()
+            .tables()
+            .get(extension)
+            .map(|table| {
+                table
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     /// Changes one extension's `extensions/<id>.toml`, writes it, and tells the core — which
     /// restarts that extension with it.
     pub async fn edit_extension<T>(

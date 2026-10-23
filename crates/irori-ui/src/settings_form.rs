@@ -27,11 +27,17 @@ struct Field {
     required: bool,
     /// Whether this belongs under "Advanced" rather than in the form's own body; see `advanced`.
     advanced: bool,
+    /// The section it's drawn in with the others that name the same one: the schema's
+    /// `x-irori-group` ("Wi-Fi"). A section folds away once something in it is saved.
+    group: Option<String>,
     /// The schema marks this `"format": "serial-port"` — offered as a live-updated list of
     /// what's actually plugged into the machine running Irori, alongside the plain text box a
     /// device path always was (which stays typeable: a `tcp://` adapter address, say, is never
     /// something this list would find).
     serial_port: bool,
+    /// The schema marks this `"format": "hex"`, like a Thread network's dataset: checked here,
+    /// so a bad paste is caught before it's saved and the extension can't start with it.
+    hex: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +53,147 @@ enum FieldKind {
     /// A fixed set of values, from the schema's `enum` — a list to pick from, not a text box
     /// where a typo becomes a settings error nobody can read.
     Choice(Vec<String>),
+}
+
+/// The schema keyword that puts a field in a section with others: `"x-irori-group": "Wi-Fi"`.
+const GROUP: &str = "x-irori-group";
+
+/// One row of a form: the field, what's in it, whether it was changed, and whether it has a value
+/// saved (for a secret, which never comes back, whether one is saved at all).
+#[derive(Debug, Clone)]
+struct Row {
+    field: Field,
+    value: RwSignal<String>,
+    touched: RwSignal<bool>,
+    saved: bool,
+}
+
+impl Row {
+    /// What's saved, else the schema's default, else blank. A field that shows what it already
+    /// holds is the difference between editing settings and re-entering them.
+    fn new(
+        field: Field,
+        current: &serde_json::Map<String, serde_json::Value>,
+        secrets_set: &[String],
+    ) -> Self {
+        let saved = if field.kind == FieldKind::Secret {
+            secrets_set.contains(&field.key)
+        } else {
+            current
+                .get(&field.key)
+                .is_some_and(|value| !value.is_null() && value != &serde_json::Value::Bool(false))
+        };
+        let initial = current_value(current, &field)
+            .or_else(|| field.default.clone())
+            .unwrap_or_default();
+        Self {
+            field,
+            value: RwSignal::new(initial),
+            touched: RwSignal::new(false),
+            saved,
+        }
+    }
+
+    fn view(&self) -> AnyView {
+        field_row(self.field.clone(), self.value, self.touched, self.saved).into_any()
+    }
+}
+
+/// Rows in order, then each section's in a fold of its own, in the order they first appear.
+fn rows_view(rows: &[Row]) -> impl IntoView + use<> {
+    let mut sections: Vec<(String, Vec<Row>)> = Vec::new();
+    for row in rows {
+        if let Some(name) = &row.field.group {
+            match sections.iter_mut().find(|(section, _)| section == name) {
+                Some((_, members)) => members.push(row.clone()),
+                None => sections.push((name.clone(), vec![row.clone()])),
+            }
+        }
+    }
+    view! {
+        {rows
+            .iter()
+            .filter(|row| row.field.group.is_none())
+            .map(Row::view)
+            .collect_view()}
+        {sections
+            .into_iter()
+            .map(|(name, members)| group_view(name, members))
+            .collect_view()}
+    }
+}
+
+/// One section: what to turn on first, then what to type, then its secrets ("Wi-Fi network",
+/// then its password). It opens when nothing in it is saved yet, and stays folded once
+/// something is, saying in a word what it holds.
+fn group_view(name: String, mut members: Vec<Row>) -> impl IntoView {
+    members.sort_by_key(|row| match row.field.kind {
+        FieldKind::Bool => 0,
+        FieldKind::Secret => 2,
+        _ => 1,
+    });
+    let set = members.iter().any(|row| row.saved);
+    let open = RwSignal::new(!set);
+    let status = {
+        let members = members.clone();
+        move || {
+            let words = group_status(&members);
+            let quiet = words == "Not set" || words == "Off";
+            view! { <span class:set=!quiet>{words}</span> }
+        }
+    };
+    let body = view! {
+        <div class="settings-group-body">{members.iter().map(Row::view).collect_view()}</div>
+    }
+    .into_any();
+    view! {
+        <div class="settings-group">
+            {crate::fold::fold(
+                None,
+                crate::fold::Head {
+                    icon: None,
+                    title: view! { {name} }.into_any(),
+                    state: Some(status.into_any()),
+                    actions: None,
+                },
+                open.into(),
+                move || open.update(|open| *open = !*open),
+                body,
+            )}
+        </div>
+    }
+}
+
+/// A section's state in a word, as its rows now stand: a switch says On or Off, otherwise the
+/// first thing typed in it, else that a secret is saved.
+fn group_status(members: &[Row]) -> String {
+    if let Some(switch) = members.iter().find(|row| row.field.kind == FieldKind::Bool) {
+        return if switch.value.get() == "true" {
+            "On"
+        } else {
+            "Off"
+        }
+        .to_owned();
+    }
+    let typed = members.iter().find_map(|row| {
+        let text = row.value.get();
+        (row.field.kind != FieldKind::Secret && !text.trim().is_empty()).then_some(text)
+    });
+    if let Some(text) = typed {
+        return text;
+    }
+    let secrets = || {
+        members
+            .iter()
+            .filter(|row| row.field.kind == FieldKind::Secret)
+    };
+    if secrets().any(|row| !row.value.get().is_empty()) {
+        return "Entered".to_owned();
+    }
+    if secrets().any(|row| row.saved) {
+        return "Saved".to_owned();
+    }
+    "Not set".to_owned()
 }
 
 /// One field per schema property, required ones first, alphabetical within each group.
@@ -76,12 +223,20 @@ fn fields_from_schema(schema: &serde_json::Value) -> Vec<Field> {
                 // A secret is never folded away, however optional the schema says it is: a
                 // credential is usually the reason someone opened this form at all.
                 advanced: kind != FieldKind::Secret && advanced(field_schema),
+                group: field_schema
+                    .get(GROUP)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 default: default_value(field_schema),
                 required: required.contains(&key.as_str()),
                 serial_port: field_schema
                     .get("format")
                     .and_then(serde_json::Value::as_str)
                     == Some("serial-port"),
+                hex: field_schema
+                    .get("format")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("hex"),
                 kind,
                 key: key.clone(),
             }
@@ -202,6 +357,19 @@ fn resolve_ref<'a>(
 /// integer/number distinction, since a schema `"type": "integer"` field (a port, a channel) has
 /// a Rust settings type like `u16`/`u8` that refuses a JSON float, even one with a trailing
 /// `.0`: `Integer` parses and emits a whole number, not `Number`'s `f64`.
+/// What a row sends, from its text: `parse_field`, after a hex field is checked and the spaces
+/// and line breaks a paste brings with it are taken out.
+fn parse_row(field: &Field, text: &str) -> Result<serde_json::Value, String> {
+    if field.hex {
+        let hex: String = text.split_whitespace().collect();
+        if !hex.len().is_multiple_of(2) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err("should be hex: pairs of 0-9 and a-f, like 0e08000000…".to_owned());
+        }
+        return parse_field(&field.kind, &hex);
+    }
+    parse_field(&field.kind, text)
+}
+
 fn parse_field(kind: &FieldKind, text: &str) -> Result<serde_json::Value, String> {
     match kind {
         FieldKind::Bool => Ok(serde_json::Value::Bool(text == "true")),
@@ -254,13 +422,15 @@ fn current_value(
 /// way that changes them on the way through, like Matter's Bluetooth and Wi-Fi for a new device.
 /// Drawn and read the same as the settings form's own rows, prefilled the same way.
 #[derive(Debug, Clone)]
-pub struct SettingRows(Vec<(Field, RwSignal<String>, RwSignal<bool>)>);
+pub struct SettingRows(Vec<Row>);
 
 impl SettingRows {
-    /// A row for each of `keys` the schema has, in the order given.
+    /// A row for each of `keys` the schema has, in the order given. `secrets_set`: the secrets
+    /// that have a value saved, by name.
     pub fn new(
         schema: &serde_json::Value,
         current: &serde_json::Map<String, serde_json::Value>,
+        secrets_set: &[String],
         keys: &[String],
     ) -> Self {
         let mut fields = fields_from_schema(schema);
@@ -268,22 +438,20 @@ impl SettingRows {
             .iter()
             .filter_map(|key| {
                 let at = fields.iter().position(|field| &field.key == key)?;
-                let field = fields.remove(at);
-                let initial = current_value(current, &field)
-                    .or_else(|| field.default.clone())
-                    .unwrap_or_default();
-                Some((field, RwSignal::new(initial), RwSignal::new(false)))
+                Some(Row::new(fields.remove(at), current, secrets_set))
             })
             .collect();
         Self(rows)
     }
 
-    /// The rows for `keys`, in that order.
+    /// The rows for `keys`, in that order, in their sections.
     pub fn view(&self, keys: &[String]) -> impl IntoView + use<> {
-        keys.iter()
-            .filter_map(|key| self.0.iter().find(|(field, _, _)| &field.key == key))
-            .map(|(field, value, touched)| field_row(field.clone(), *value, *touched))
-            .collect_view()
+        let rows: Vec<Row> = keys
+            .iter()
+            .filter_map(|key| self.0.iter().find(|row| &row.field.key == key))
+            .cloned()
+            .collect();
+        rows_view(&rows)
     }
 
     /// What was changed among `keys`, ready to send; a changed row that's blank is left out, as
@@ -293,7 +461,13 @@ impl SettingRows {
         keys: &[String],
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
         let mut changed = serde_json::Map::new();
-        for (field, value, touched) in &self.0 {
+        for Row {
+            field,
+            value,
+            touched,
+            ..
+        } in &self.0
+        {
             if !keys.contains(&field.key) || !touched.get_untracked() {
                 continue;
             }
@@ -301,8 +475,8 @@ impl SettingRows {
             if text.trim().is_empty() {
                 continue;
             }
-            let parsed = parse_field(&field.kind, &text)
-                .map_err(|why| format!("\"{}\" {why}", field.label))?;
+            let parsed =
+                parse_row(field, &text).map_err(|why| format!("\"{}\" {why}", field.label))?;
             changed.insert(field.key.clone(), parsed);
         }
         Ok(changed)
@@ -311,7 +485,13 @@ impl SettingRows {
     /// After they were saved: nothing is changed any more, and a secret goes back to blank,
     /// which keeps what was saved.
     pub fn saved(&self) {
-        for (field, value, touched) in &self.0 {
+        for Row {
+            field,
+            value,
+            touched,
+            ..
+        } in &self.0
+        {
             touched.set(false);
             if field.kind == FieldKind::Secret {
                 value.set(String::new());
@@ -327,19 +507,14 @@ pub fn SettingsForm(
     schema: serde_json::Value,
     /// What the extension is configured with now, secrets excluded — see `current_value`.
     current: serde_json::Map<String, serde_json::Value>,
+    /// The secrets that have a value saved, by name only.
+    #[prop(optional)]
+    secrets_set: Vec<String>,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
-    let fields = fields_from_schema(&schema);
-    let rows: Vec<(Field, RwSignal<String>, RwSignal<bool>)> = fields
+    let rows: Vec<Row> = fields_from_schema(&schema)
         .into_iter()
-        .map(|field| {
-            // What's saved, else the schema's default, else blank. A field that shows what it
-            // already holds is the difference between editing settings and re-entering them.
-            let initial = current_value(&current, &field)
-                .or_else(|| field.default.clone())
-                .unwrap_or_default();
-            (field, RwSignal::new(initial), RwSignal::new(false))
-        })
+        .map(|field| Row::new(field, &current, &secrets_set))
         .collect();
     let saving = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
@@ -351,14 +526,20 @@ pub fn SettingsForm(
             // Checked before anything is sent, and regardless of `touched`: a required field
             // left blank must refuse the save, not silently omit the key and report success —
             // the extension would stay unconfigured with no sign anything went wrong.
-            for (field, value, _touched) in &rows {
+            for Row { field, value, .. } in &rows {
                 if field.required && value.get_untracked().trim().is_empty() {
                     trouble.set(Some(format!("\"{}\" is required", field.label)));
                     return;
                 }
             }
             let mut body = serde_json::Map::new();
-            for (field, value, touched) in &rows {
+            for Row {
+                field,
+                value,
+                touched,
+                ..
+            } in &rows
+            {
                 if !touched.get_untracked() {
                     continue;
                 }
@@ -366,7 +547,7 @@ pub fn SettingsForm(
                 if text.trim().is_empty() {
                     continue;
                 }
-                let parsed = match parse_field(&field.kind, &text) {
+                let parsed = match parse_row(field, &text) {
                     Ok(value) => value,
                     Err(why) => {
                         trouble.set(Some(format!("\"{}\" {why}", field.label)));
@@ -390,36 +571,48 @@ pub fn SettingsForm(
         }
     };
 
-    let (plain, folded): (Vec<_>, Vec<_>) = rows
+    // A field in a section is drawn in it, however optional: the section is what folds it.
+    let (plain, folded): (Vec<Row>, Vec<Row>) = rows
         .clone()
         .into_iter()
-        .partition(|(field, _, _)| !field.advanced);
+        .partition(|row| row.field.group.is_some() || !row.field.advanced);
 
     view! {
         <form class="settings-form" on:submit=submit>
             {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-            {
-                plain
-                    .into_iter()
-                    .map(|(field, value, touched)| field_row(field, value, touched))
-                    .collect_view()
-            }
+            {rows_view(&plain)}
             // Settings the extension is happy to decide for itself, out of the way of the ones
             // that actually need answering — a Zigbee dongle's port has to be given; which
             // Zigbee2MQTT release to pin to is a thing almost nobody ever sets.
             {(!folded.is_empty())
-                .then(|| view! {
-                    <details class="settings-advanced">
-                        <summary>"Advanced"</summary>
-                        <p class="muted small">
-                            "Everything here has a sensible default. Leave it blank unless you "
-                            "have a reason not to."
-                        </p>
-                        {folded
-                            .into_iter()
-                            .map(|(field, value, touched)| field_row(field, value, touched))
-                            .collect_view()}
-                    </details>
+                .then(|| {
+                    let open = RwSignal::new(false);
+                    let body = view! {
+                        <div class="settings-group-body">
+                            <p class="muted small">
+                                "Everything here has a sensible default. Leave it blank unless "
+                                "you have a reason not to."
+                            </p>
+                            {folded.iter().map(Row::view).collect_view()}
+                        </div>
+                    }
+                    .into_any();
+                    view! {
+                        <div class="settings-group settings-advanced">
+                            {crate::fold::fold(
+                                None,
+                                crate::fold::Head {
+                                    icon: None,
+                                    title: view! { "Advanced" }.into_any(),
+                                    state: None,
+                                    actions: None,
+                                },
+                                open.into(),
+                                move || open.update(|open| *open = !*open),
+                                body,
+                            )}
+                        </div>
+                    }
                 })}
             <div class="settings-form-actions">
                 <button type="submit" class="add" disabled=move || saving.get()>
@@ -442,27 +635,45 @@ fn help(field: &Field) -> Option<impl IntoView + use<>> {
         .map(|text| view! { <span class="settings-help">{text}</span> })
 }
 
-fn field_row(field: Field, value: RwSignal<String>, touched: RwSignal<bool>) -> impl IntoView {
+fn field_row(
+    field: Field,
+    value: RwSignal<String>,
+    touched: RwSignal<bool>,
+    saved: bool,
+) -> impl IntoView {
     let label = field.label.clone();
     let required = field
         .required
         .then(|| view! { <span class="settings-required">"Required"</span> });
     let note = help(&field);
     match field.kind.clone() {
-        FieldKind::Bool => view! {
-            <label class="settings-field settings-field-checkbox">
-                <input
-                    type="checkbox"
-                    prop:checked=move || value.get() == "true"
-                    on:change:target=move |ev| {
-                        value.set(if ev.target().checked() { "true" } else { "false" }.to_owned());
-                        touched.set(true);
-                    }
-                />
-                <span>{label}{required}{note}</span>
-            </label>
+        FieldKind::Bool => {
+            // Irori's own switch, not the browser's checkbox. A button, so inside a form it
+            // has to say it isn't the one that submits it; the words beside it flip it too.
+            let flip = move || {
+                value.update(|on| *on = if on == "true" { "false" } else { "true" }.to_owned());
+                touched.set(true);
+            };
+            let name = label.clone();
+            view! {
+                <div class="settings-field settings-field-toggle">
+                    <span class="settings-toggle-words" on:click=move |_| flip()>
+                        <span>{label}{required}</span>
+                        {note}
+                    </span>
+                    <button
+                        type="button"
+                        class="toggle"
+                        aria-label=name
+                        aria-pressed=move || (value.get() == "true").to_string()
+                        on:click=move |_| flip()
+                    >
+                        <span class="knob"></span>
+                    </button>
+                </div>
+            }
+            .into_any()
         }
-        .into_any(),
         FieldKind::Secret => view! {
             <label class="settings-field">
                 <span>{label}{required}</span>
@@ -470,6 +681,7 @@ fn field_row(field: Field, value: RwSignal<String>, touched: RwSignal<bool>) -> 
                     type="password"
                     autocomplete="off"
                     spellcheck="false"
+                    placeholder=saved.then_some("Saved. Leave blank to keep it.")
                     prop:value=value
                     on:input:target=move |ev| {
                         value.set(ev.target().value());
@@ -819,6 +1031,35 @@ mod tests {
     #[test]
     fn a_blank_or_non_numeric_field_is_a_named_error() {
         assert!(parse_field(&FieldKind::Integer, "abc").is_err());
+    }
+
+    #[test]
+    fn a_section_and_a_hex_format_come_from_the_schema() {
+        let schema = serde_json::json!({
+            "properties": {
+                "wifi_ssid": {"type": ["string", "null"], "x-irori-group": "Wi-Fi"},
+                "dataset": {
+                    "anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}],
+                    "format": "hex",
+                    "x-irori-group": "Thread"
+                },
+                "port": {"type": "integer"}
+            },
+            "$defs": {"Secret": {"type": "string", "writeOnly": true}}
+        });
+        let fields = fields_from_schema(&schema);
+        let field = |key: &str| fields.iter().find(|f| f.key == key).expect("a field");
+        assert_eq!(field("wifi_ssid").group.as_deref(), Some("Wi-Fi"));
+        assert_eq!(field("port").group, None);
+        let dataset = field("dataset");
+        assert!(dataset.hex && dataset.kind == FieldKind::Secret);
+        // A paste's spaces and line breaks go; anything else that isn't hex is refused.
+        assert_eq!(
+            parse_row(dataset, "0e08 0000\n0000"),
+            Ok(serde_json::json!("0e0800000000"))
+        );
+        assert!(parse_row(dataset, "0e0").is_err());
+        assert!(parse_row(dataset, "not hex!").is_err());
         assert!(parse_field(&FieldKind::Number, "abc").is_err());
     }
 }

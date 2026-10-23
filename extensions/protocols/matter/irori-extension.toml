@@ -36,8 +36,8 @@ fields = [{ id = "code", label = "Pairing code", hint = "The app's code lasts ab
 [[contributes.protocol.actions.ways]]
 id = "new"
 label = "It's new, or reset"
-hint = "Use the code printed on the device or its box. A device that isn't on a network yet joins over Bluetooth, so turn Bluetooth on and give the Wi-Fi network for it to join. A wired device needs neither."
-settings = ["bluetooth", "wifi_ssid", "wifi_password"]
+hint = "Use the code printed on the device or its box. A device that isn't on a network yet joins over Bluetooth, so turn Bluetooth on and give the network for it to join: Wi-Fi, or for a Thread device, the Thread network's dataset. A wired device needs neither."
+settings = ["bluetooth", "wifi_ssid", "wifi_password", "thread_dataset"]
 fields = [{ id = "code", label = "Pairing code", hint = "11 digits, or the text under the QR code.", placeholder = "3497-011-2332" }]
 
 # This extension downloads a Node.js runtime and installs the Matter server (an npm package) the

@@ -1536,6 +1536,7 @@ impl FormState {
                             rows.set(Some(crate::settings_form::SettingRows::new(
                                 &schema,
                                 &entry.settings,
+                                &entry.secrets_set,
                                 &keys,
                             )));
                         }

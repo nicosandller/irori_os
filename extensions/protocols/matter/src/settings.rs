@@ -40,24 +40,31 @@ pub struct Settings {
     /// needs `cap_net_raw` and `cap_net_admin` to reach the adapter; on a Mac, Bluetooth
     /// permission for the app Irori runs in.
     #[serde(default)]
+    #[schemars(title = "Add over Bluetooth", extend("x-irori-group" = "Bluetooth"))]
     pub bluetooth: bool,
     /// Which Bluetooth adapter, on Linux: 0 for `hci0`. A Mac has one, and ignores this.
     #[serde(default)]
+    #[schemars(extend("x-irori-group" = "Bluetooth"))]
     pub bluetooth_adapter: u8,
     /// The Wi-Fi network a new Wi-Fi device joins when it's added over Bluetooth. 2.4 GHz: most
     /// Matter devices can't join a 5 GHz network.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(title = "Wi-Fi network")]
+    #[schemars(title = "Wi-Fi network", extend("x-irori-group" = "Wi-Fi"))]
     pub wifi_ssid: Option<String>,
     /// That Wi-Fi network's password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(title = "Wi-Fi password")]
+    #[schemars(title = "Wi-Fi password", extend("x-irori-group" = "Wi-Fi"))]
     pub wifi_password: Option<Secret>,
-    /// The Thread network a new Thread device joins when it's added over Bluetooth: the
-    /// operational dataset, as hex, from the border router's app (Home Assistant's Thread
-    /// settings, or `ot-ctl dataset active -x`). Apple's and Google's border routers keep theirs
-    /// to themselves; add their Thread devices in their own apps first, then share them.
+    /// The Thread network a new Thread device joins when it's added over Bluetooth: its active
+    /// operational dataset, as hex, which holds the network's key. Home Assistant shows it in
+    /// its Thread settings (the network's ⓘ, "Thread dataset TLV"); an OpenThread border router
+    /// prints it with `ot-ctl dataset active -x`. Apple's and Google's border routers keep theirs
+    /// to themselves: add their Thread devices in their own apps first, then share them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(
+        title = "Thread dataset",
+        extend("x-irori-group" = "Thread", "format" = "hex")
+    )]
     pub thread_dataset: Option<Secret>,
 }
 

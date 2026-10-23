@@ -999,9 +999,10 @@ const NO_NETWORK: &str = "No Wi-Fi/Thread network credentials are configured";
 fn commission_failed(error: &CommandError, bluetooth: bool) -> String {
     if error.details.contains(NO_NETWORK) {
         return "This device needs a network to join, and Irori has none to give it. For a Wi-Fi \
-                device, fill in the Wi-Fi network's name and password and try again. A Thread \
-                device can't be added this way yet: set it up in Google Home or Apple Home \
-                first, then share it with Irori."
+                device, fill in the Wi-Fi network's name and password and try again. For a \
+                Thread device, give the Thread network's dataset; if its border router is \
+                Apple's or Google's, which don't share theirs, set the device up in Apple Home \
+                or Google Home first, then share it with Irori."
             .to_owned();
     }
     // Either the server gave up looking, or it was still looking when the wait ran out.
@@ -1011,9 +1012,7 @@ fn commission_failed(error: &CommandError, bluetooth: bool) -> String {
     ) {
         return if bluetooth {
             "No Matter device answered to that code, on the network or over Bluetooth. Check \
-             that it's close to Irori and in pairing mode, and that the code is the one on it. \
-             A device that joins Thread rather than Wi-Fi can't be added this way yet: set it \
-             up in Google Home or Apple Home first, then share it with Irori."
+             that it's close to Irori and in pairing mode, and that the code is the one on it."
                 .to_owned()
         } else {
             "No Matter device on this network answered to that code. Check that it's on the \

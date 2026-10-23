@@ -563,10 +563,22 @@
                             color: var(--fg); background: var(--bg); border: 1px solid var(--line);
                             border-radius: .4rem; }
     .settings-field input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
-    .settings-field-checkbox { flex-direction: row; align-items: flex-start; gap: .5rem; }
-    .settings-field-checkbox input { margin-top: .2rem; }
-    .settings-field-checkbox .settings-help { display: block; margin-top: .15rem; }
-    .settings-field-checkbox input { width: auto; }
+    /* A yes-or-no setting: Irori's switch at the end of the row, its words before it (and
+       they flip it too, as a label would). */
+    .settings-field-toggle { flex-direction: row; align-items: center; gap: .75rem;
+                             justify-content: space-between; }
+    .settings-toggle-words { display: flex; flex-direction: column; gap: .15rem; cursor: pointer;
+                             min-width: 0; }
+    /* Settings that go together (Matter's Wi-Fi network and its password), in a section that
+       folds away once something in it is saved, saying in a word what it holds. */
+    .settings-group { border: 1px solid var(--line); border-radius: .5rem; background: var(--card); }
+    .settings-group .fold-toggle { padding: .5rem .75rem; border-radius: .5rem; }
+    .settings-group .fold-toggle:hover { background: var(--sunk); }
+    .settings-group .fold-title { font-size: .9rem; }
+    .settings-group .fold-state { margin-left: auto; max-width: 50%; overflow: hidden;
+                                  text-overflow: ellipsis; white-space: nowrap; }
+    .settings-group-body { display: flex; flex-direction: column; gap: .6rem;
+                           padding: .15rem .75rem .75rem; }
     .settings-form-actions { display: flex; gap: .5rem; justify-content: flex-end; }
     .settings-form-actions button { padding: .35rem .7rem; font: inherit; font-size: .85rem;
                                     color: var(--fg); background: var(--card);
@@ -2568,11 +2580,8 @@
     .settings-required { margin-left: .4rem; color: var(--ember); font: .65rem var(--mono);
                          letter-spacing: .08em; text-transform: uppercase; }
     .settings-field .choices { margin-top: .15rem; }
-    .settings-advanced { border: 1px solid var(--line); border-radius: .4rem;
-                         padding: .5rem .75rem; }
-    .settings-advanced summary { cursor: pointer; font-size: .85rem; color: var(--muted); }
-    .settings-advanced[open] summary { margin-bottom: .5rem; color: var(--fg); }
-    .settings-advanced .settings-field { margin-top: .6rem; }
+    .settings-advanced .fold-title { color: var(--muted); font-weight: 400; }
+    .settings-advanced .open .fold-title { color: var(--fg); }
 
     /* Not a failure: it's waiting on a person, and the way out is the button beside it. */
     .state.wants-setup { color: var(--ember); }

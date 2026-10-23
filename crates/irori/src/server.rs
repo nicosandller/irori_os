@@ -1981,6 +1981,21 @@ async fn stop_extension_action(
     }
 }
 
+/// Of the keys `secrets.toml` has for an extension, those its schema declares as secrets. A key
+/// the schema doesn't know, or calls an ordinary setting, isn't named.
+fn saved_secrets(saved: &[String], schema: &serde_json::Value) -> Vec<String> {
+    saved
+        .iter()
+        .filter(|key| {
+            schema
+                .get("properties")
+                .and_then(|properties| properties.get(key.as_str()))
+                .is_some_and(|field| is_write_only(field, schema))
+        })
+        .cloned()
+        .collect()
+}
+
 /// Whether a JSON Schema node is (or, through `$ref`/`anyOf`/`oneOf`/`allOf`, resolves to
 /// including) a `writeOnly` field — schemars' shape for `Option<Secret>` is
 /// `{"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]}`, so a direct check on `field_schema`
@@ -2085,8 +2100,11 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
         ExtensionId,
         serde_json::Map<String, serde_json::Value>,
     > = std::collections::BTreeMap::new();
+    let mut secrets: std::collections::BTreeMap<ExtensionId, Vec<String>> =
+        std::collections::BTreeMap::new();
     for id in running.keys() {
         configured.insert(id.clone(), state.0.config.extension_settings(id).await);
+        secrets.insert(id.clone(), state.0.config.secrets_set(id).await);
     }
     Json(
         crate::packages::official()
@@ -2119,6 +2137,13 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         .map(|(key, value)| (key.clone(), value.clone()))
                         .collect()
                 });
+                let secrets_set = overview
+                    .and_then(|o| o.info.as_ref())
+                    .and_then(|info| info.config_schema.as_ref())
+                    .map(|schema| {
+                        saved_secrets(secrets.get(&item.id).map_or(&[][..], Vec::as_slice), schema)
+                    })
+                    .unwrap_or_default();
                 CatalogEntry {
                     id: item.id,
                     name: item.name.to_string(),
@@ -2154,6 +2179,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         .and_then(|o| o.info.as_ref())
                         .and_then(|info| info.config_schema.clone()),
                     settings,
+                    secrets_set,
                 }
             })
             .collect(),
@@ -2200,6 +2226,10 @@ struct CatalogEntry {
     /// What it's configured with now, secrets excluded — so its form can open showing it.
     #[serde(skip_serializing_if = "Option::is_none")]
     settings: Option<serde_json::Map<String, serde_json::Value>>,
+    /// The secret settings that have a value saved, by name only: the form says a password is
+    /// saved, and folds a section of them away, without the value ever leaving `secrets.toml`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    secrets_set: Vec<String>,
 }
 
 /// What the Extensions page sends when the person has read the full-access warning and chosen
@@ -4875,6 +4905,21 @@ mod tests {
 
         host.shutdown().await;
         Ok(())
+    }
+
+    /// The catalog names a saved secret so its form can say so, and names nothing the schema
+    /// doesn't call a secret: a stray key in `secrets.toml` isn't vouched for.
+    #[test]
+    fn only_the_schemas_own_secrets_are_named_as_saved() {
+        let schema = serde_json::json!({
+            "properties": {
+                "password": {"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]},
+                "name": {"type": "string"}
+            },
+            "$defs": {"Secret": {"type": "string", "writeOnly": true}}
+        });
+        let saved = ["password", "name", "stray"].map(str::to_owned);
+        assert_eq!(saved_secrets(&saved, &schema), ["password".to_owned()]);
     }
 
     /// A bad secret value is caught before the non-secret half of the same request is written —

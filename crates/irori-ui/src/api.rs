@@ -919,6 +919,9 @@ pub struct CatalogEntry {
     /// so changing one field doesn't mean retyping the others.
     #[serde(default)]
     pub settings: serde_json::Map<String, serde_json::Value>,
+    /// The secret settings that have a value saved, by name only (never what they hold).
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {

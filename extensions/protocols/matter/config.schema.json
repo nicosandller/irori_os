@@ -9,9 +9,11 @@
       "default": false
     },
     "bluetooth": {
+      "title": "Add over Bluetooth",
       "description": "Add new devices over Bluetooth: one fresh out of its box that isn't on a network yet.\nIrori hands it the Wi-Fi or Thread network below. On Linux the Matter server's Node.js\nneeds `cap_net_raw` and `cap_net_admin` to reach the adapter; on a Mac, Bluetooth\npermission for the app Irori runs in.",
       "type": "boolean",
-      "default": false
+      "default": false,
+      "x-irori-group": "Bluetooth"
     },
     "bluetooth_adapter": {
       "description": "Which Bluetooth adapter, on Linux: 0 for `hci0`. A Mac has one, and ignores this.",
@@ -19,7 +21,8 @@
       "format": "uint8",
       "default": 0,
       "maximum": 255,
-      "minimum": 0
+      "minimum": 0,
+      "x-irori-group": "Bluetooth"
     },
     "firmware_updates": {
       "description": "Offer each device's firmware updates, from the Matter DCL (the CSA's register of devices\nand their firmware). An update is only installed when someone installs it.",
@@ -49,7 +52,9 @@
       ]
     },
     "thread_dataset": {
-      "description": "The Thread network a new Thread device joins when it's added over Bluetooth: the\noperational dataset, as hex, from the border router's app (Home Assistant's Thread\nsettings, or `ot-ctl dataset active -x`). Apple's and Google's border routers keep theirs\nto themselves; add their Thread devices in their own apps first, then share them.",
+      "title": "Thread dataset",
+      "description": "The Thread network a new Thread device joins when it's added over Bluetooth: its active\noperational dataset, as hex, which holds the network's key. Home Assistant shows it in\nits Thread settings (the network's ⓘ, \"Thread dataset TLV\"); an OpenThread border router\nprints it with `ot-ctl dataset active -x`. Apple's and Google's border routers keep theirs\nto themselves: add their Thread devices in their own apps first, then share them.",
+      "format": "hex",
       "anyOf": [
         {
           "$ref": "#/$defs/Secret"
@@ -57,7 +62,8 @@
         {
           "type": "null"
         }
-      ]
+      ],
+      "x-irori-group": "Thread"
     },
     "wifi_password": {
       "title": "Wi-Fi password",
@@ -69,7 +75,8 @@
         {
           "type": "null"
         }
-      ]
+      ],
+      "x-irori-group": "Wi-Fi"
     },
     "wifi_ssid": {
       "title": "Wi-Fi network",
@@ -77,7 +84,8 @@
       "type": [
         "string",
         "null"
-      ]
+      ],
+      "x-irori-group": "Wi-Fi"
     }
   },
   "additionalProperties": false,

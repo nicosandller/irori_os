@@ -67,15 +67,19 @@ caught at once: the last digit is a check digit.
   - Google Home: the device → Settings → Linked Matter apps & services → Link apps & services.
   - Apple Home: the device → Settings → Turn On Pairing Mode.
   - Home Assistant: the device → Share device.
-- **It's new, or reset**: the code printed on it or its box. The form also shows Bluetooth and
-  the Wi-Fi network, the same settings as behind the gear icon, so they can be set right there:
+- **It's new, or reset**: the code printed on it or its box. The form also shows Bluetooth, the
+  Wi-Fi network and the Thread network, the same settings as behind the gear icon, so they can be
+  set right there. Each is a section that folds away once it's set:
   - A wired device, or one already on the network, needs neither.
   - A device that isn't on a network yet joins over Bluetooth, which is most new Wi-Fi devices:
     turn Bluetooth on and give the Wi-Fi network's name and password (see
     [Bluetooth](#adding-over-bluetooth)). Changing them restarts the Matter server first, which
     takes a few seconds.
-  - A new Thread device can't be added this way yet ([#86](https://github.com/nicosandller/irori_os/issues/86)):
-    set it up in Google Home or Apple Home first, then share it.
+  - A new Thread device joins over Bluetooth too, and needs the Thread network's dataset, which
+    holds its key. That takes a border router that gives its dataset out, such as Home
+    Assistant's. Apple's and Google's don't: set the device up in Apple Home or Google Home
+    first, then share it. Irori running a border router of its own is
+    [#86](https://github.com/nicosandller/irori_os/issues/86).
 
 Adding takes a few seconds once the device is found. If nothing answers to the code within two
 minutes (about five over Bluetooth), the action says so. The device then waits under "+ Add device" on the
@@ -90,7 +94,8 @@ off Irori.
 ## Settings
 
 Behind the gear icon on the Extensions page, from [`config.schema.json`](config.schema.json).
-Everything has a default.
+Everything has a default. Bluetooth, Wi-Fi and Thread are sections there (`x-irori-group`), which
+fold away once something in them is saved.
 
 | Field | Default | Notes |
 |---|---|---|
