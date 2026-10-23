@@ -3,13 +3,14 @@
 //!
 //! Each running protocol says what's on its networks and who reaches whom; this joins them. Every
 //! network's controller is Irori, so they meet in the middle, and an access point named the same
-//! by two (the home's Wi-Fi, for Matter and ESPHome) is one. A node that's one of Irori's devices
-//! carries its room, model, battery and whether it's answering, from the home.
+//! by two (the home's Wi-Fi, for Matter and ESPHome) is one. Only the home's devices are drawn,
+//! with whatever carries their messages to Irori. A node that's one of Irori's devices carries its
+//! room, model, battery and whether it's answering, from the home.
 //!
-//! The drawing itself is `network_map.js`: the devices hold still and the links move, a message a
-//! device sends runs along its path to Irori as it arrives, and the backdrop bends under it. A
-//! device can be dragged somewhere else, and stays there in this browser. This side is the
-//! toolbar, the side panel and the data.
+//! The drawing itself is `network_map.js`: the devices hold still and the links move, a device's
+//! messages run along its path to Irori (now and then, not every one), and the backdrop bends
+//! under them. A device can be dragged somewhere else, and stays there in this browser. This side
+//! is the toolbar, the side panel and the data.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
@@ -234,13 +235,34 @@ pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
     let mut links: BTreeMap<(String, String), Link> = BTreeMap::new();
 
     let all = drawn;
-    for (index, drawn) in all.iter().enumerate() {
+    let in_home = |extension: &str, unique: Option<&irori_types::UniqueId>| {
+        unique.and_then(|unique| {
+            home.devices
+                .iter()
+                .find(|device| device.protocol.as_str() == extension && &device.unique_id == unique)
+                .map(|device| device.id.clone())
+        })
+    };
+    // Which extension each network came from, by name, to tell two of the same name apart.
+    let mut owners: Vec<String> = Vec::new();
+    for (position, drawn) in all.iter().enumerate() {
         let network = &drawn.network;
-        let name = network.name.clone().unwrap_or_else(|| {
-            home.extensions
-                .get(&drawn.extension)
-                .map_or_else(|| drawn.extension.to_string(), |e| e.name.clone())
-        });
+        // A network with none of the home's devices on it isn't drawn: a protocol that's found
+        // devices nobody has added yet (the Demo's, say) has nothing of the home's to show.
+        if !network
+            .nodes
+            .iter()
+            .any(|node| in_home(drawn.extension.as_str(), node.device_unique_id.as_ref()).is_some())
+        {
+            continue;
+        }
+        let index = joined.networks.len();
+        let owner = home
+            .extensions
+            .get(&drawn.extension)
+            .map_or_else(|| drawn.extension.to_string(), |e| e.name.clone());
+        let name = network.name.clone().unwrap_or_else(|| owner.clone());
+        owners.push(owner);
         joined.networks.push(Net {
             tone: tone(&name, &mut spare),
             name,
@@ -251,7 +273,7 @@ pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
         // The ids a network uses for its own nodes, on the joined map: its extension's, and which
         // of that extension's networks it is, before its own. The same from one visit to the
         // next, so a device dragged somewhere is found there again.
-        let within = all[..index]
+        let within = all[..position]
             .iter()
             .filter(|earlier| earlier.extension == drawn.extension)
             .count();
@@ -270,15 +292,7 @@ pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
                 }
                 continue;
             }
-            let device = node.device_unique_id.as_ref().and_then(|unique| {
-                home.devices
-                    .iter()
-                    .find(|device| {
-                        device.protocol.as_str() == drawn.extension.as_str()
-                            && &device.unique_id == unique
-                    })
-                    .map(|device| device.id.clone())
-            });
+            let device = in_home(drawn.extension.as_str(), node.device_unique_id.as_ref());
             let named = device
                 .as_ref()
                 .and_then(|id| home.devices.iter().find(|device| &device.id == id))
@@ -381,6 +395,31 @@ pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
     for link in &mut joined.links {
         if parent.get(&link.a) == Some(&link.b) {
             std::mem::swap(&mut link.a, &mut link.b);
+        }
+    }
+
+    // Only the home's devices are drawn, with the ways into each network, and whatever else
+    // carries a device's messages to Irori: a router nobody added still passes them on.
+    let mut keep: BTreeSet<String> = BTreeSet::from([HUB.to_owned()]);
+    for node in &joined.nodes {
+        if node.kind == Kind::Coord {
+            keep.insert(node.id.clone());
+        }
+        if node.device.is_some() {
+            keep.extend(joined.route(&node.id));
+        }
+    }
+    joined.nodes.retain(|node| keep.contains(&node.id));
+    joined
+        .links
+        .retain(|link| keep.contains(&link.a) && keep.contains(&link.b));
+
+    // Two networks of one name (the Demo's Matter and Matter's own) say whose each is.
+    let names: Vec<String> = joined.networks.iter().map(|net| net.name.clone()).collect();
+    for (net, owner) in joined.networks.iter_mut().zip(&owners) {
+        let clash = names.iter().filter(|name| **name == net.name).count() > 1;
+        if clash && !net.name.eq_ignore_ascii_case(owner) {
+            net.name = format!("{} ({owner})", net.name);
         }
     }
     joined
@@ -907,7 +946,7 @@ pub fn NetworkMap() -> impl IntoView {
                 {move || joined.with(|joined| joined.networks.is_empty()).then(|| view! {
                     <p class="muted small">
                         "No network is drawn yet. Zigbee, Matter, ESPHome and the Demo draw theirs \
-                         once they're running."
+                         once they're running and their devices are added (+ Add device)."
                     </p>
                 })}
                 <div class="nm-legend">
@@ -1268,6 +1307,14 @@ mod tests {
         }
     }
 
+    /// A node that's one of the home's devices, by the same id.
+    fn mine(id: &str, role: NetworkRole) -> NetworkNode {
+        NetworkNode {
+            device_unique_id: Some(id.parse().expect("valid")),
+            ..node(id, role)
+        }
+    }
+
     fn link(from: &str, to: &str, quality: Option<LinkQuality>) -> NetworkLink {
         NetworkLink {
             from: from.to_owned(),
@@ -1304,8 +1351,8 @@ mod tests {
             vec![
                 node("irori", NetworkRole::Controller),
                 node("zc", NetworkRole::Coordinator),
-                node("lamp", NetworkRole::Router),
-                node("motion", NetworkRole::SleepyEndDevice),
+                mine("lamp", NetworkRole::Router),
+                mine("motion", NetworkRole::SleepyEndDevice),
             ],
             vec![
                 link("zc", "irori", None),
@@ -1320,7 +1367,7 @@ mod tests {
             vec![
                 node("irori", NetworkRole::Controller),
                 node("wifi", NetworkRole::AccessPoint),
-                node("plug", NetworkRole::Device),
+                mine("plug", NetworkRole::Device),
             ],
             vec![
                 link("wifi", "irori", None),
@@ -1333,11 +1380,20 @@ mod tests {
             vec![
                 node("irori", NetworkRole::Controller),
                 node("wifi", NetworkRole::AccessPoint),
-                node("door", NetworkRole::Device),
+                mine("door", NetworkRole::Device),
             ],
             vec![link("wifi", "irori", None), link("door", "wifi", None)],
         );
-        let joined = join(&[zigbee, matter, esphome], &Home::default());
+        let home = Home {
+            devices: vec![
+                thing("lamp"),
+                thing("motion"),
+                thing_of("matter", "plug"),
+                thing_of("esphome", "door"),
+            ],
+            ..Home::default()
+        };
+        let joined = join(&[zigbee, matter, esphome], &home);
         assert_eq!(
             joined.nodes.iter().filter(|n| n.kind == Kind::Hub).count(),
             1
@@ -1369,9 +1425,13 @@ mod tests {
     }
 
     fn thing(id: &str) -> irori_types::Device {
+        thing_of("zigbee", id)
+    }
+
+    fn thing_of(protocol: &str, id: &str) -> irori_types::Device {
         irori_types::Device {
             id: id.parse().expect("valid"),
-            protocol: "zigbee".parse().expect("valid"),
+            protocol: protocol.parse().expect("valid"),
             unique_id: id.parse().expect("valid"),
             name: id.parse().expect("valid"),
             description: None,
@@ -1516,6 +1576,98 @@ mod tests {
         assert_eq!(ago(26_000.0), "26s ago");
         assert_eq!(ago(26.0 * 60_000.0), "26m ago");
         assert_eq!(ago(3.0 * 3_600_000.0), "3h ago");
+    }
+
+    /// What nobody has added stays off the map: a device found but not added, and a network
+    /// with none of the home's devices on it. A router nobody added stays when it carries an
+    /// added device's messages. Two networks named alike say whose each is.
+    #[test]
+    fn only_the_homes_devices_are_drawn_and_networks_named_alike_say_whose() {
+        let zigbee = drawn(
+            "zigbee",
+            "Zigbee",
+            vec![
+                node("irori", NetworkRole::Controller),
+                node("zc", NetworkRole::Coordinator),
+                node("relay", NetworkRole::Router),
+                mine("sensor", NetworkRole::EndDevice),
+                node("stranger", NetworkRole::EndDevice),
+            ],
+            vec![
+                link("zc", "irori", None),
+                link("relay", "zc", Some(LinkQuality::Good)),
+                link("sensor", "relay", Some(LinkQuality::Good)),
+                link("stranger", "zc", Some(LinkQuality::Good)),
+            ],
+        );
+        let demo_matter = drawn(
+            "demo",
+            "Matter",
+            vec![
+                node("irori", NetworkRole::Controller),
+                node("br", NetworkRole::BorderRouter),
+                mine("lamp", NetworkRole::Router),
+            ],
+            vec![link("br", "irori", None), link("lamp", "br", None)],
+        );
+        let demo_esphome = drawn(
+            "demo",
+            "ESPHome",
+            vec![
+                node("irori", NetworkRole::Controller),
+                node("wifi", NetworkRole::AccessPoint),
+                mine("garage", NetworkRole::Device),
+            ],
+            vec![link("wifi", "irori", None), link("garage", "wifi", None)],
+        );
+        let matter = drawn(
+            "matter",
+            "Matter",
+            vec![
+                node("irori", NetworkRole::Controller),
+                node("br", NetworkRole::BorderRouter),
+                mine("plug", NetworkRole::Router),
+            ],
+            vec![link("br", "irori", None), link("plug", "br", None)],
+        );
+        let home = Home {
+            devices: vec![
+                thing("sensor"),
+                thing_of("demo", "lamp"),
+                thing_of("matter", "plug"),
+            ],
+            ..Home::default()
+        };
+        let joined = join(&[zigbee, demo_matter, demo_esphome, matter], &home);
+
+        let names: Vec<&str> = joined.networks.iter().map(|n| n.name.as_str()).collect();
+        assert_eq!(names, vec!["Zigbee", "Matter (demo)", "Matter"]);
+        assert!(
+            joined.node("zigbee#0:relay").is_some(),
+            "it carries the sensor"
+        );
+        assert!(
+            joined.node("zigbee#0:stranger").is_none(),
+            "nobody added it"
+        );
+        assert!(
+            joined.node("ap:wifi").is_none(),
+            "its network had nothing of the home's"
+        );
+        assert!(
+            joined
+                .links
+                .iter()
+                .all(|l| joined.node(&l.a).is_some() && joined.node(&l.b).is_some())
+        );
+        assert_eq!(
+            joined.route("zigbee#0:sensor"),
+            vec!["zigbee#0:sensor", "zigbee#0:relay", "zigbee#0:zc", "irori"]
+        );
+        // Its ids hold whichever of the Demo's networks were left out, so a place it was
+        // dragged to is found again.
+        assert_eq!(joined.node("demo#0:lamp").map(|n| n.net), Some(1));
+        assert_eq!(joined.node("matter#0:plug").map(|n| n.net), Some(2));
     }
 
     #[test]

@@ -4,7 +4,8 @@
 // space around them. A link hums faster the more is passing along it, and a shockwave rattles
 // every link it crosses. Behind it all is a backdrop: a grid of dots that bends under the
 // shockwaves and leans toward the pointer, or a field of where each network's signal reaches,
-// with the dead zones tinted. Each message can be a note, pitched by its network.
+// with the dead zones tinted. Each spark can be a note, pitched by its network. Not every message
+// is a spark: each device shows one now and then, folding in the rest (`report`).
 //
 // The page (Rust) owns the data and the side panel. This owns the drawing: it lays the devices
 // out, as a mesh or in rings by hop count, and draws them in SVG over a canvas. With motion off
@@ -188,7 +189,7 @@
         active: true, sel: null, hover: null, mouse: null, t: 0, last: 0, raf: 0, gone: false,
         pos: {}, base: {}, tween: null, layouts: null, idle: options.idle !== false,
         packets: [], sparks: [], ripples: [], sweeps: [], heat: {}, hum: {}, twang: {}, pop: {}, vis: {},
-        hubPulse: 0, idleAcc: 0, beatAcc: 0, timers: new Set(), covTick: 0, cov: null, covKey: '', theme: null, ac: null,
+        hubPulse: 0, idleAcc: 0, idleNext: 1.2, beatAcc: 0, calm: {}, queue: [], sentAt: 0, timers: new Set(), covTick: 0, cov: null, covKey: '', theme: null, ac: null,
         edgeEls: {}, nodeEls: {}, labelEls: {}, dirty: true,
         // Where devices were dragged to, per layout, kept by this browser; and a drag under way.
         places: loadPlaces(), drag: null, dragged: false, client: null,
@@ -516,12 +517,43 @@
         wake();
       }
 
-      // A device's state arrived: a spark from it to Irori. One a command caused goes out from
-      // Irori first and comes back.
+      // Not every message is drawn. A busy home says something every moment, and a spark for each
+      // would be a storm, many leaving together. A device shows at most one in a while, folding
+      // in the rest, a moment after it spoke and at a moment of its own; and the map lets
+      // sparks out one at a time.
+      const CALM_MS = 10000, CALM_SPREAD_MS = 8000, DELAY_MS = 2500, SPACING_MS = 350;
+
+      // A device's state arrived: in a while, a spark from it to Irori. One a command caused goes
+      // out from Irori at once, and comes back: someone is watching for it.
       function report(id, commanded) {
         const n = s.d && s.d.byId[id];
         if (!n || !live()) return;
-        s.heardAt = performance.now();
+        const now = performance.now();
+        s.heardAt = now;
+        if (!commanded) {
+          if ((s.calm[id] || 0) > now) return;
+          const at = now + Math.random() * DELAY_MS;
+          s.calm[id] = at + CALM_MS + Math.random() * CALM_SPREAD_MS;
+          s.queue.push({ id, at });
+          return;
+        }
+        spark(id, true);
+      }
+
+      // Lets out the next spark that's due, if the last left long enough ago.
+      function release() {
+        const now = performance.now();
+        if (!s.queue.length || now - s.sentAt < SPACING_MS) return;
+        const i = s.queue.findIndex((q) => q.at <= now);
+        if (i < 0) return;
+        const [q] = s.queue.splice(i, 1);
+        s.sentAt = now;
+        spark(q.id, false);
+      }
+
+      function spark(id, commanded) {
+        const n = s.d && s.d.byId[id];
+        if (!n || !live()) return;
         const net = netOf(n), color = toneOf(net), up = routeOf(id);
         if (commanded) {
           send(up.slice().reverse(), s.theme.cmd, {
@@ -583,10 +615,12 @@
         const d = s.d;
         // Between real messages, the mesh talks among itself: a device now and then, a sleepy
         // one waking, a router's beat. Only in a quiet spell: a home that's talking shows that.
+        release();
         if (s.idle && live() && performance.now() - (s.heardAt || 0) > 4000) {
           s.idleAcc += dt;
-          if (s.idleAcc > 0.7) {
+          if (s.idleAcc > s.idleNext) {
             s.idleAcc = 0;
+            s.idleNext = 1.2 + Math.random() * 2;
             const pool = d.nodes.filter((n) => !n.offline && n.parent && n.kind !== 'coord' && visibleNet(n));
             const n = pool[Math.floor(Math.random() * pool.length)];
             if (n) {
@@ -921,7 +955,7 @@
           if (s.sound && !s.ac) { const AC = window.AudioContext || window.webkitAudioContext; if (AC) s.ac = new AC(); }
           if (s.ac && s.sound) s.ac.resume();
         },
-        setMotion(on) { s.motion = !!on; if (!s.motion) { s.packets = []; s.sparks = []; s.ripples = []; s.sweeps = []; s.tween = null; } paint(); },
+        setMotion(on) { s.motion = !!on; if (!s.motion) { s.packets = []; s.sparks = []; s.ripples = []; s.sweeps = []; s.queue = []; s.tween = null; } paint(); },
         setActive(on) { s.active = !!on; if (!s.active) { cancelAnimationFrame(s.raf); s.raf = 0; } paint(); },
         report(id, commanded) { report(id, !!commanded); },
         scan() { scan(); },

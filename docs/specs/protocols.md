@@ -333,7 +333,11 @@ between, and its devices, with what reaches what. The Devices page's **Network m
 every protocol's maps as one home: each map's `controller` is Irori, so they all meet in the
 middle, and an `access_point` with the same id in two maps (the home's Wi-Fi, for Matter and
 ESPHome; `access_point_id` makes it from the access point's MAC address, or `wifi` when that isn't
-known) is one. A device's messages travel along its path to Irori as its states arrive. A device can be dragged
+known) is one. Only the home's own devices are drawn: a node whose `device_unique_id` isn't a
+device in the home is left out, unless an added device's way to Irori runs through it, and a map
+with none of the home's devices on it isn't drawn at all. Two maps of the same name say whose each
+is ("Matter (Demo)"). A device's messages travel along its path to Irori, at most one spark a
+device every 10-18 s, each a little after its message and one at a time. A device can be dragged
 somewhere else on the map, and that browser keeps it there (node ids on the joined map are the
 extension's id and which of its maps, then the node's own, so they hold from one visit to the next).
 
