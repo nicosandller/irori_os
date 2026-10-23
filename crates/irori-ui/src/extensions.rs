@@ -198,22 +198,31 @@ pub fn Extensions() -> impl IntoView {
         {move || {
             let id = settings_open.get()?;
             let entry = catalog.get().into_iter().find(|entry| entry.id == id)?;
-            let schema = entry.config_schema.clone()?;
+            if entry.config_schema.is_none() && !entry.network {
+                return None;
+            }
+            let form = entry.config_schema.clone().map(|schema| view! {
+                <SettingsForm
+                    id=id.clone()
+                    schema=schema
+                    current=entry.settings.clone()
+                    secrets_set=entry.secrets_set.clone()
+                    on_close=move || {
+                        settings_open.set(None);
+                        reload();
+                    }
+                />
+            });
+            let map = entry
+                .network
+                .then(|| view! { <crate::network_map::NetworkMap id=id.clone() /> });
             Some(view! {
                 <crate::modal::Modal
                     title=format!("{} settings", entry.name)
                     on_close=move || settings_open.set(None)
                 >
-                    <SettingsForm
-                        id=id.clone()
-                        schema=schema
-                        current=entry.settings.clone()
-                        secrets_set=entry.secrets_set.clone()
-                        on_close=move || {
-                            settings_open.set(None);
-                            reload();
-                        }
-                    />
+                    {map}
+                    {form}
                 </crate::modal::Modal>
             })
         }}
@@ -407,6 +416,7 @@ fn card(
     let waiting = entry.state.as_deref() == Some("waiting");
     let waiting_for = if waiting { entry.reason.clone() } else { None };
     let schema = entry.config_schema.clone();
+    let network = entry.network;
     // Irori's own word that something went wrong, or an error in what the extension wrote —
     // unless that very trouble has been read and cleared.
     let reason = if waiting { None } else { entry.reason.clone() };
@@ -514,7 +524,7 @@ fn card(
                         </button>
                     }
                 })}
-                {(installed && schema.is_some()).then(|| {
+                {(installed && (schema.is_some() || network)).then(|| {
                     // An extension that can't start until someone fills a setting in says so
                     // in words: a gear next to "needs setup" is a puzzle, not an instruction.
                     view! {
