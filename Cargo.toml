@@ -12,11 +12,13 @@ members = [
     "crates/irori-client",
     "crates/irori-helpers",
     "crates/irori-ha-discovery",
+    "crates/irori-node-runtime",
     "crates/irori",
     "extensions/demo",
     "extensions/automations",
     "extensions/protocols/cast",
     "extensions/protocols/esphome",
+    "extensions/protocols/matter",
     "extensions/protocols/mqtt",
     "extensions/protocols/zigbee",
     "extras/irori-assist",
@@ -49,11 +51,13 @@ irori-config = { path = "crates/irori-config" }
 irori-client = { path = "crates/irori-client" }
 irori-helpers = { path = "crates/irori-helpers" }
 irori-ha-discovery = { path = "crates/irori-ha-discovery" }
+irori-node-runtime = { path = "crates/irori-node-runtime" }
 irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
 irori-protocol-demo = { path = "extensions/demo" }
 irori-protocol-cast = { path = "extensions/protocols/cast" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
 irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
+irori-protocol-matter = { path = "extensions/protocols/matter" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
@@ -67,6 +71,11 @@ clap = { version = "4.6.7", features = ["derive", "env"] }
 # Pinned to one API version on purpose (the crate generates one per ESPHome release).
 esphome-client = { version = "0.2.1", features = ["discovery", "api-1-15"] }
 http-body-util = "0.1.5"
+# Only the `matter` protocol's WebSocket client needs these (the Matter server's API, on
+# loopback). The same tungstenite Irori's own web server (`axum`) already brings in;
+# no TLS, since the server never leaves this machine.
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 getrandom = "0.4.3"
 # The MQTT client: broker connection, TLS, and the wire protocol. `mqtt` and `zigbee` (its own
 # embedded broker's client side) both depend on it directly; xtask/src/deps.rs keeps it out of

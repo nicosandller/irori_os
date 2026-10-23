@@ -245,6 +245,29 @@ impl Config {
         store.extension_file(extension)
     }
 
+    /// Which settings `secrets.toml` holds a value for, by extension: the keys only, never what
+    /// they hold, so a form can say a password is saved without showing it. One read for every
+    /// extension, so a page listing them all doesn't read the file once each.
+    pub async fn secrets_set(
+        &self,
+    ) -> std::collections::BTreeMap<irori_types::ExtensionId, Vec<String>> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store
+            .secrets()
+            .tables()
+            .iter()
+            .map(|(extension, table)| {
+                let keys = table
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                (extension.clone(), keys)
+            })
+            .collect()
+    }
+
     /// Changes one extension's `extensions/<id>.toml`, writes it, and tells the core — which
     /// restarts that extension with it.
     pub async fn edit_extension<T>(

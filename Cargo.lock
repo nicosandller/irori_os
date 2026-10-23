@@ -1705,6 +1705,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-node-runtime"
+version = "0.0.0"
+dependencies = [
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
@@ -1767,6 +1778,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-protocol-matter"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "futures-util",
+ "irori-node-runtime",
+ "irori-protocol",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.29.0",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "irori-protocol-mqtt"
 version = "0.0.0"
 dependencies = [
@@ -1786,6 +1816,7 @@ name = "irori-protocol-zigbee"
 version = "0.0.0"
 dependencies = [
  "irori-ha-discovery",
+ "irori-node-runtime",
  "irori-protocol",
  "irori-types",
  "rumqttc",
@@ -1793,7 +1824,6 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
- "sha2 0.11.0",
  "tempfile",
  "tokio",
  "tracing",
@@ -4589,6 +4619,7 @@ dependencies = [
  "anyhow",
  "irori-flow-types",
  "irori-protocol-cast",
+ "irori-protocol-matter",
  "irori-protocol-mqtt",
  "irori-protocol-zigbee",
  "irori-rules",

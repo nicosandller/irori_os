@@ -146,6 +146,24 @@ shown as a button on the extension's "+ Add device" screen.
   page. The protocol reports what's true however it came about: Zigbee2MQTT's own "Permit join"
   switch opens the same network, and that shows as the same countdown.
 - An open action can be **stopped** early. The protocol receives the same action with `stop` set.
+- An action can have **ways**, each a small form: `[[...actions.ways]]` with `id`, `label`, an
+  optional `hint`, `fields = [{ id, label, hint?, placeholder? }]` (lines of text) and
+  `settings = [...]` (names from the extension's `config_schema`). At most 4 ways, 4 fields and 8
+  settings each. Matter's "Add device" has two: *It's set up in another app* (a pairing code) and
+  *It's new, or reset* (a pairing code, plus Bluetooth and the Wi-Fi network to join).
+  - The page shows a choice of way when there's more than one, then that way's settings,
+    prefilled the way the settings form is, then its fields.
+  - The call carries the way and every one of its fields, trimmed, not empty and at most 512 bytes.
+    The API refuses a missing way when there's more than one, a blank or unknown field, a setting
+    the way doesn't list, and anything at all for an action without ways.
+  - The settings that came with it are saved first. When that changed what the extension runs
+    with, the API waits, up to a minute, for it to start again and offer the action again, and
+    then calls it. So the action always runs on the settings in the form. The API answers with
+    why when the extension stopped instead.
+- An action that does its work before answering says how long it may take with
+  `answer_within_seconds` (1 to 300). The core waits that long for it instead of the usual ten
+  seconds. Adding a Matter device takes up to two minutes, about five over Bluetooth. While it waits, the protocol keeps
+  serving everything else: it answers the action from a task of its own.
 
 A protocol whose devices are paired to a network it keeps declares `unpairs = true`. Removing one
 of its devices then asks the protocol to unpair it first ([config.md](config.md) §3.2):
@@ -156,9 +174,10 @@ of its devices then asks the protocol to unpair it first ([config.md](config.md)
   still paired and still in the home.
 - With `force`, the protocol drops the device from the network's records without waiting for the
   device to agree. This is for a device that is asleep, broken or gone.
-- A protocol refuses what can't be unpaired. Zigbee refuses its own controller.
+- A protocol refuses what can't be unpaired. Zigbee refuses its own controller. Matter refuses a
+  device it reaches through a bridge: that one leaves through the bridge's own app.
 
-On the wire these are `action_call { id, action_id, stop }` and
+On the wire these are `action_call { id, action_id, stop, way, fields }` and
 `unpair_device { id, unique_id, force }`, both answered with `action_result { id, error }`, and
 `set_action_open { action_id, closes_in_ms }` from the protocol.
 
@@ -192,7 +211,7 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 |---|---|---|---|
 | `unique_id` | `UniqueId` | yes | |
 | `name` | `Name` | yes | Updated each time the device is described. Once people can rename devices (config spec, M0.7), a name they set wins |
-| `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | Informational, updated every time |
+| `manufacturer`, `model`, `sw_version`, `hw_version`, `serial_number` | string | no | Informational, updated every time |
 | `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
 | `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
 

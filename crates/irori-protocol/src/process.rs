@@ -197,6 +197,12 @@ pub enum ToExt {
         /// End the action's open window early instead of starting it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stop: bool,
+        /// Which of the action's ways the person picked, and what they typed into its fields.
+        /// Absent for a plain button, so older extensions read the message unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        way: Option<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        fields: std::collections::BTreeMap<String, String>,
     },
     /// Take a device off the protocol's network. Only sent to a protocol whose manifest says
     /// `unpairs`. Answered with `action_result`.
@@ -619,11 +625,13 @@ fn handle_host_line(
             id,
             action_id,
             stop,
+            way,
+            fields,
         } => {
             let (incoming, result) = if stop {
                 host::incoming_stop(action_id)
             } else {
-                host::incoming_action(action_id)
+                host::incoming_action_with(action_id, crate::Filled { way, fields })
             };
             if !queue_action(id, incoming, result, actions, out, runtime) {
                 return ReadControl::Stop;

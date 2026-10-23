@@ -71,7 +71,9 @@ COPY crates/irori-rules crates/irori-rules
 COPY crates/irori-flow-types crates/irori-flow-types
 COPY crates/irori-protocol crates/irori-protocol
 COPY crates/irori-ha-discovery crates/irori-ha-discovery
+COPY crates/irori-node-runtime crates/irori-node-runtime
 COPY extensions/protocols/cast extensions/protocols/cast
+COPY extensions/protocols/matter extensions/protocols/matter
 COPY extensions/protocols/mqtt extensions/protocols/mqtt
 COPY extensions/protocols/zigbee extensions/protocols/zigbee
 COPY crates/irori-ui crates/irori-ui
@@ -150,10 +152,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
          cargo build --locked --release \
            -p irori \
            -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-cast \
-           -p irori-protocol-mqtt -p irori-protocol-zigbee -p irori-engine-automations \
+           -p irori-protocol-mqtt -p irori-protocol-zigbee -p irori-protocol-matter \
+           -p irori-engine-automations \
          && cp /target/release/irori /irori \
          && mkdir -p /official/demo/bin /official/esphome/bin /official/cast/bin /official/mqtt/bin \
-           /official/zigbee/bin /official/automations/bin \
+           /official/zigbee/bin /official/matter/bin /official/automations/bin \
          && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
          && cp /target/release/irori-ext-demo /official/demo/bin/ \
          && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
@@ -165,6 +168,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
          && cp /target/release/irori-ext-mqtt /official/mqtt/bin/ \
          && cp extensions/protocols/zigbee/irori-extension.toml extensions/protocols/zigbee/config.schema.json /official/zigbee/ \
          && cp /target/release/irori-ext-zigbee /official/zigbee/bin/ \
+         && cp extensions/protocols/matter/irori-extension.toml extensions/protocols/matter/config.schema.json \
+              extensions/protocols/matter/icon.svg /official/matter/ \
+         && cp /target/release/irori-ext-matter /official/matter/bin/ \
          && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
          && cp /target/release/irori-ext-automations /official/automations/bin/ \
          && if [ -f extensions/automations/app/dist/index.html ]; then \
@@ -181,6 +187,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM debian:${DEBIAN_RELEASE}-slim AS pi
 ARG LAB=0
+ARG TARGETARCH
+# The lab's Matter devices are matter.js programs (dev/lab/matter), so a lab image carries a
+# Node.js of its own, checked against nodejs.org's published checksums. The same version the
+# extensions install for themselves (irori-node-runtime).
+ARG LAB_NODE_VERSION=24.21.0
 # python3 is only there for the lab coordinator. setpriv (util-linux) drops to the
 # irori user in every mode. zstd is what tar needs to unpack Ollama's release, when the
 # assistant is asked to install it.
@@ -189,6 +200,21 @@ RUN apt-get update \
     && if [ "$LAB" = "1" ]; then packages="$packages python3"; fi \
     && apt-get install -y --no-install-recommends $packages \
     && rm -rf /var/lib/apt/lists/*
+RUN if [ "$LAB" = "1" ]; then \
+      case "$TARGETARCH" in \
+        arm64) arch=arm64 ;; \
+        amd64) arch=x64 ;; \
+        *) echo "no Node.js for $TARGETARCH" >&2; exit 1 ;; \
+      esac \
+      && tarball="node-v${LAB_NODE_VERSION}-linux-${arch}.tar.gz" \
+      && cd /tmp \
+      && curl -fsSLO "https://nodejs.org/dist/v${LAB_NODE_VERSION}/${tarball}" \
+      && curl -fsSLO "https://nodejs.org/dist/v${LAB_NODE_VERSION}/SHASUMS256.txt" \
+      && grep " ${tarball}\$" SHASUMS256.txt | sha256sum -c - \
+      && mkdir -p /opt/lab-node \
+      && tar -xzf "$tarball" -C /opt/lab-node --strip-components=1 \
+      && rm -rf "$tarball" SHASUMS256.txt /opt/lab-node/include /opt/lab-node/share ; \
+    fi
 # Run unprivileged, the way the systemd unit will (M1.7).
 RUN useradd --system --home-dir /var/lib/irori --create-home --shell /usr/sbin/nologin irori
 COPY --from=build /irori /usr/local/bin/irori
@@ -201,7 +227,12 @@ RUN if [ -f /tmp/lab-out/irori-lab-esphome ]; then \
 COPY --from=build /official /usr/share/irori/extensions
 COPY dev/lab /usr/share/irori/lab
 COPY dev/lab/entrypoint.sh /usr/local/bin/irori-lab-entrypoint
-RUN chmod 755 /usr/local/bin/irori-lab-entrypoint /usr/share/irori/lab/matter/run.sh
+RUN chmod 755 /usr/local/bin/irori-lab-entrypoint /usr/share/irori/lab/matter/run.sh \
+    && if [ "$LAB" = "1" ]; then \
+         cd /usr/share/irori/lab/matter \
+         && PATH="/opt/lab-node/bin:$PATH" npm ci --omit=dev --no-audit --no-fund \
+         && rm -rf /var/lib/irori/.npm /root/.npm ; \
+       fi
 # Fails the build if the binary isn't really static (it was built against musl, this is glibc).
 RUN irori version
 # Root only so the lab entrypoint can create /dev/zigbee0 and refresh installed

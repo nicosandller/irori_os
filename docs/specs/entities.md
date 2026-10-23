@@ -104,7 +104,7 @@ A physical or virtual thing a protocol talks to. It has one or more entities.
 | `unique_id` | `UniqueId` | yes | Unique within `protocol` |
 | `name` | `Name` | yes | Its one name: a person's, else what the protocol reports. Never two side by side |
 | `description` | `Description` | no | What it's for, in a person's words |
-| `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | As reported; informational only |
+| `manufacturer`, `model`, `sw_version`, `hw_version`, `serial_number` | string | no | As reported; informational only |
 | `area_id` | `AreaId` | no | |
 | `suggested_area` | `Name` | no | The room the device says it's in; used only while no one has placed it ([config.md](config.md) §5) |
 | `via_device_id` | `DeviceId` | no | The bridge or coordinator it's reached through |

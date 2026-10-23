@@ -40,7 +40,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C32 | Entity kinds | Every Home Assistant device kind: 29 in (covers, locks, fans, climate, media players, updates, alarm panels, dates and times, vacuums, mowers, scenes, trackers, timers, schedules…), `entity_format` so older engines keep working, unsupported parts of a device listed instead of dropped. Automations read a kind's other values by name (a blind's position), and temperatures are °C throughout. `remote` isn't planned: no protocol here reports one | ✅ | C2 |
 | C33 | Helpers | Values Irori keeps itself, built into the core (`extensions/helpers.toml`): toggles, numbers, counters, choices, texts, buttons, dates and times, timers and schedules, and values worked out from other entities (groups, thresholds, trends, meters, integrals, derivatives, statistics, history). Each is an ordinary entity, made from the Helpers tab, the CLI or the file. Any number can be counted up and down. Built-ins read the home in-process within their API scopes | ✅ | C5 |
 | C34 | Irori as a device | The machine Irori runs on is a device in its own home, with CPU, memory and disk meters | ✅ | C5 |
-| C35 | Dev container & device lab | `dev/pi`: a Raspberry Pi-like container to try a PR; `dev/lab`: emulated ESPHome and Zigbee devices. Matter nodes need binaries that aren't there | 🟠 | C8 |
+| C35 | Dev container & device lab | `dev/pi`: a Raspberry Pi-like container to try a PR; `dev/lab`: emulated ESPHome, Zigbee and Matter devices | ✅ | C8 |
 
 ## Extensions
 
@@ -62,7 +62,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X14 | HA backend adapter | Visualizer and AI features against an existing HA instance | - | X19 |
 | X15 | HA automation importer | HA YAML → Irori flows, with a report of what didn't convert | - | X19 |
 | X16 | Z-Wave | Via `zwave-js-server` | - | C17 |
-| X17 | Matter | Via `rs-matter` | - | C6 |
+| X17 | Matter | Via the Open Home Foundation Matter Server (matter.js), installed and run the way Zigbee runs Zigbee2MQTT (#82). Adds a device from its pairing code, over the network or Bluetooth (handing it the Wi-Fi or Thread network), or one shared from Google Home, Apple Home or Home Assistant. Lights, plugs, switches, locks, covers, thermostats, fans, sensors and bridged devices, read and commanded; firmware updates as the `update` kind. Tried on emulated devices; real devices and Bluetooth hardware next. Buttons, valves and smoke alarms not yet. `rs-matter` stays open for a single binary later | 🟠 | C6 |
 | X18 | Vendor cloud connector | e.g. SwitchBot: proves cloud polling/push and secrets | - | C6 |
 | X19 | Automations (flows) | Freeform flow engine + canvas editor: live validation, traces on the canvas, near-misses, live runs, test and dry runs, 24h backtest, versions, every entity kind (`docs/specs/flows.md`). Time and sun triggers are in (armed from the home's time zone and location). Still open: a lock or alarm code comes from `secrets.toml` and never sits in the flow file or a trace | 🟠 | C9, C30, C31 |
 | X20 | Google Cast | Chromecasts, speakers and speaker groups on the local network, as media players | ✅ | C6, C32 |

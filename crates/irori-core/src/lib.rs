@@ -240,6 +240,10 @@ pub struct ExtensionOverview {
     /// when each closes.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub open_actions: BTreeMap<String, OpenAction>,
+    /// How many times it has been started since Irori started: the first start, and every
+    /// restart after a failure or a change to its settings. Something that changed its settings
+    /// and waits for it to be back watches this go up.
+    pub starts: u64,
 }
 
 /// A timed action that's open: Zigbee's network accepting new devices.
@@ -426,7 +430,8 @@ pub enum CallActionError {
     NotRunning(ExtensionId),
     /// The extension says the action failed.
     Failed(String),
-    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`].
+    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`], or the action's own
+    /// `answer_within_seconds`.
     Timeout,
 }
 
@@ -435,7 +440,7 @@ impl fmt::Display for CallActionError {
         match self {
             Self::NotRunning(extension) => write!(f, "`{extension}` isn't running"),
             Self::Failed(why) => f.write_str(why),
-            Self::Timeout => f.write_str("the action didn't finish within 10 seconds"),
+            Self::Timeout => f.write_str("the extension didn't answer in time"),
         }
     }
 }
@@ -667,6 +672,13 @@ impl Core {
     /// Where the home is and its time zone, as last said.
     pub fn place(&self) -> irori_types::HomeSettings {
         read(&self.0.place).clone()
+    }
+
+    /// What `extension` is started with now: its settings and its secrets, as one table. Compared
+    /// before and after a change, it says whether the change restarts it, by the same rule the
+    /// host uses. Never logged or sent anywhere: it holds secrets.
+    pub fn extension_settings_of(&self, extension: &ExtensionId) -> serde_json::Value {
+        self.0.extension_settings.borrow().of(extension)
     }
 
     /// Replaces every extension's settings. An extension whose own settings changed is restarted
@@ -1167,16 +1179,35 @@ impl Core {
     }
 
     /// Triggers one of an extension's declared actions — the Zigbee `zigbee` protocol's
-    /// `permit_join`, say — and waits for its answer (at most [`SERVICE_CALL_TIMEOUT`]).
+    /// `permit_join`, say — and waits for its answer: at most [`SERVICE_CALL_TIMEOUT`], or the
+    /// action's own `answer_within_seconds` when it declares one (Matter's adding a device).
     /// Unlike a service call, there's no entity to resolve through: the extension id is all
-    /// that's needed.
+    /// that's needed. `filled` is the way the person picked and what they typed into its fields,
+    /// for an action with ways; empty for a plain button.
     pub async fn call_action(
         &self,
         extension: &ExtensionId,
         action_id: &str,
+        filled: irori_protocol::Filled,
     ) -> Result<(), CallActionError> {
-        let asked = irori_protocol::host::incoming_action(action_id.to_owned());
-        self.ask(extension, asked, SERVICE_CALL_TIMEOUT).await
+        let wait = self.action_wait(extension, action_id);
+        let asked = irori_protocol::host::incoming_action_with(action_id.to_owned(), filled);
+        self.ask(extension, asked, wait).await
+    }
+
+    /// How long to wait for an action's answer: what its manifest says, or the usual.
+    fn action_wait(&self, extension: &ExtensionId, action_id: &str) -> Duration {
+        read(&self.0.extensions)
+            .get(extension)
+            .and_then(|overview| overview.info.as_ref())
+            .and_then(|info| info.actions.iter().find(|action| action.id == action_id))
+            .and_then(|action| action.answer_within_seconds)
+            .map(|seconds| {
+                Duration::from_secs(u64::from(
+                    seconds.min(irori_types::MAX_ACTION_ANSWER_SECONDS),
+                ))
+            })
+            .unwrap_or(SERVICE_CALL_TIMEOUT)
     }
 
     /// Asks an extension to end early an action it said is open: close Zigbee's network
@@ -1543,6 +1574,7 @@ impl Core {
                         unmodeled: Vec::new(),
                         available_actions: Vec::new(),
                         open_actions: BTreeMap::new(),
+                        starts: 0,
                     },
                 );
             }
@@ -1660,10 +1692,18 @@ impl Core {
         let changed = {
             let mut extensions = write(&self.0.extensions);
             match extensions.get_mut(extension) {
-                Some(overview) if overview.status == status => false,
                 Some(overview) => {
-                    overview.status = status.clone();
-                    true
+                    // Every start counts, even one straight after another.
+                    let starting = status == ExtensionStatus::Starting;
+                    if starting {
+                        overview.starts += 1;
+                    }
+                    if overview.status == status {
+                        starting
+                    } else {
+                        overview.status = status.clone();
+                        true
+                    }
                 }
                 None => {
                     extensions.insert(
@@ -1677,6 +1717,7 @@ impl Core {
                             unmodeled: Vec::new(),
                             available_actions: Vec::new(),
                             open_actions: BTreeMap::new(),
+                            starts: u64::from(status == ExtensionStatus::Starting),
                         },
                     );
                     true

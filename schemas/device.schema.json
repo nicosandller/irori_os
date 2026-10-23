@@ -56,6 +56,13 @@
       "description": "The protocol that provides this device.",
       "$ref": "#/$defs/ProtocolId"
     },
+    "serial_number": {
+      "description": "The serial number its protocol reports.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "suggested_area": {
       "description": "The area the device says it's in, e.g. ESPHome's `area:`. Only a hint: it names an area\nrather than pointing at one, and it is used only while placement is still unsaid\n(`docs/specs/config.md` §5).",
       "anyOf": [

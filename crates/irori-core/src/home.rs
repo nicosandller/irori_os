@@ -507,6 +507,7 @@ impl Home {
             device.model = description.model;
             device.sw_version = description.sw_version;
             device.hw_version = description.hw_version;
+            device.serial_number = description.serial_number;
             device.suggested_area = description.suggested_area;
             device.area_id = area_id;
             device.via_device_id = via;
@@ -576,6 +577,7 @@ impl Home {
             model: description.model,
             sw_version: description.sw_version,
             hw_version: description.hw_version,
+            serial_number: description.serial_number,
             area_id,
             suggested_area: description.suggested_area,
             via_device_id: via,
@@ -1468,6 +1470,7 @@ mod tests {
             model: None,
             sw_version: None,
             hw_version: None,
+            serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
         }
@@ -1958,12 +1961,14 @@ mod tests {
 
         let mut again = device("lamp", "Desk lamp");
         again.sw_version = Some("2026.9.0".to_owned());
+        again.serial_number = Some("SN-0042".to_owned());
         let events = home.describe_device(&protocol(), again).expect("again");
 
         assert_eq!(device_named(&home, "demo_lamp"), "Reading lamp");
+        let lamp = &home.devices[&DeviceId::try_from("demo_lamp").expect("valid")];
         assert_eq!(
-            home.devices[&DeviceId::try_from("demo_lamp").expect("valid")].sw_version,
-            Some("2026.9.0".to_owned()),
+            (lamp.sw_version.as_deref(), lamp.serial_number.as_deref()),
+            (Some("2026.9.0"), Some("SN-0042")),
             "what the protocol is entitled to say still lands"
         );
         assert_eq!(events.len(), 1, "only the device changed: {events:?}");

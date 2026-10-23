@@ -95,7 +95,7 @@ More, valid and invalid, in `fixtures/types/extension-manifest/`.
 | `version` | version, see below | yes | |
 | `irori` | requirement, see below | yes | Which versions of Irori it works with |
 | `description` | 1–500 chars, one line | no | |
-| `config_schema` | package path | no | JSON Schema (draft 2020-12) for its settings. External extensions only: a built-in extension's schema is generated from its Rust config type |
+| `config_schema` | package path | no | JSON Schema (draft 2020-12) for its settings. External extensions only: a built-in extension's schema is generated from its Rust config type. The settings form also reads a few keywords of its own: `writeOnly` (a secret: kept in `secrets.toml`, never sent back; the page is told only that one is saved), `format: "serial-port"` (offer the ports plugged in), `format: "hex"` (checked as hex before saving, spaces taken out), and `x-irori-group: "<name>"` (drawn with the other fields naming the same section, which folds away once something in it is saved) |
 | `icon` | package path | no | A square SVG shown beside the extension and its devices. Always displayed as an image (`<img>`, served with a no-script content policy), never inlined into a page. A built-in extension embeds the same file (`Protocol::ICON`), and the two must agree |
 | `entity_format` | integer ≥ 1 | no | The entity format it reads through the API (registry, states, history, events, its page's bridge). Default 1, the first. Irori sends it entities and states in that format, leaving out kinds and fields added since: see below |
 | `inbound` | bool | no | The program connects to Irori instead of Irori starting it (`docs/specs/api.md` §6). No `run` command. Only a protocol or an automation engine. Default false |
@@ -164,7 +164,7 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 
 | Kind | Status | What it is |
 |---|---|---|
-| `protocol` | **Phase 1**, specified below and in [protocols.md](protocols.md) | Brings in devices and entities — MQTT, ESPHome, Zigbee, or a vendor API |
+| `protocol` | **Phase 1**, specified below and in [protocols.md](protocols.md) | Brings in devices and entities — MQTT, ESPHome, Zigbee, Matter, or a vendor API |
 | `dashboard` | Reserved for Phase 2c (ROADMAP §6.4) | A pre-built view that binds to matching devices |
 | `card` | Reserved for Phase 2c | A visualization used inside dashboards |
 | `app` | **Specified** in [automations.md](automations.md) §B1, §B3 | A page of its own in the sidebar, served from the package |
@@ -177,6 +177,8 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 | `iot_class` | `local_push` \| `local_polling` \| `cloud_push` \| `cloud_polling` | yes | Shown as a badge; `cloud_*` means it needs the internet (D24) |
 | `entity_kinds` | list of entity kinds, at least one, no repeats | yes | The kinds it creates. It must handle the standard services of each ([protocols.md](protocols.md) §6) |
 | `run` | `{ command = <package path>, args = [<string>…] }` | external only | How the core starts it. Built-in extensions leave it out |
+| `unpairs` | bool | no | Removing one of its devices takes it off the protocol's network too ([protocols.md](protocols.md) §5.1) |
+| `actions` | list of `{ id, label, seconds?, ways?, answer_within_seconds? }` | no | Buttons on its "+ Add device" screen. `ways = [{ id, label, hint?, fields?, settings? }]` makes it a form: a choice of way, the settings that way changes, and lines of text (`fields = [{ id, label, hint?, placeholder? }]`); `answer_within_seconds` (1–300) is how long the core waits for the answer ([protocols.md](protocols.md) §5.1) |
 
 **At most one protocol per extension** in this version (D25). The protocol's id is the
 extension id.

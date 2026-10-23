@@ -153,6 +153,9 @@ pub struct DeviceDescription {
     pub sw_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hw_version: Option<String>,
+    /// The serial number the device reports for itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
     /// An area name the device reports for itself, e.g. ESPHome's `area`. The core uses it only
     /// when the device is new and the user hasn't assigned an area.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +179,8 @@ struct RawDeviceDescription {
     #[serde(default)]
     hw_version: Option<String>,
     #[serde(default)]
+    serial_number: Option<String>,
+    #[serde(default)]
     suggested_area: Option<Name>,
     #[serde(default)]
     via_device_unique_id: Option<UniqueId>,
@@ -191,6 +196,7 @@ impl<'de> Deserialize<'de> for DeviceDescription {
             model: raw.model,
             sw_version: raw.sw_version,
             hw_version: raw.hw_version,
+            serial_number: raw.serial_number,
             suggested_area: raw.suggested_area,
             via_device_unique_id: raw.via_device_unique_id,
         };

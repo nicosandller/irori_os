@@ -1645,6 +1645,8 @@ fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
             id,
             action_id: incoming.action_id.clone(),
             stop: incoming.stop,
+            way: incoming.way.clone(),
+            fields: incoming.fields.clone(),
         },
     }
 }

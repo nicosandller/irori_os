@@ -262,6 +262,10 @@ pub struct ProtocolActionInfo {
     pub label: String,
     #[serde(default)]
     pub seconds: Option<u32>,
+    /// The ways it can be done, each a small form (Matter's "It's set up in another app" and
+    /// "It's new, or reset"). Empty for a plain button.
+    #[serde(default)]
+    pub ways: Vec<irori_types::ActionWay>,
 }
 
 /// The header only Irori's own page sends. Once somebody has a password, every change has to
@@ -927,6 +931,9 @@ pub struct CatalogEntry {
     /// so changing one field doesn't mean retyping the others.
     #[serde(default)]
     pub settings: serde_json::Map<String, serde_json::Value>,
+    /// The secret settings that have a value saved, by name only (never what they hold).
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
@@ -1082,6 +1089,32 @@ pub async fn give_secret(
 /// `permit_join`, say — from the "+ Add device" flow.
 pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
     let response = post(&format!("/api/extensions/{extension}/actions/{action_id}"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// What an action's form sends: the way picked, what was typed into its fields, and the
+/// settings it changed (`docs/specs/protocols.md` §5.1).
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionRequest {
+    pub way: String,
+    pub fields: BTreeMap<String, String>,
+    pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The same for an action with ways (Matter's "Add with a pairing code"). Waits as long as the
+/// extension takes, which for adding a device can be a minute or two, plus a restart when the
+/// form changed its settings.
+pub async fn trigger_action_with(
+    extension: &ExtensionId,
+    action_id: &str,
+    request: &ActionRequest,
+) -> Result<(), String> {
+    let response = post(&format!("/api/extensions/{extension}/actions/{action_id}"))
+        .json(request)
+        .map_err(|e| e.to_string())?
         .send()
         .await
         .map_err(unreachable)?;
