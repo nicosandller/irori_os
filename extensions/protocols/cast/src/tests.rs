@@ -117,6 +117,7 @@ fn receiver(addr: std::net::SocketAddr) -> Found {
         version: "1".to_owned(),
         address: addr,
         known_host: None,
+        host: None,
     }
 }
 

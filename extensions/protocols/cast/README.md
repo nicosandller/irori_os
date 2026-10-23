@@ -16,6 +16,12 @@ whatever it is asked to play.
   Chromecast stick ask the TV to switch to its input.
 - **Keeps the player** when the socket drops, marks it unavailable, and connects again (1 s,
   doubling up to a minute).
+- **Draws its receivers on the network map** (Devices → Network map): each on the Wi-Fi access
+  point it says it's on, or wired, with its Wi-Fi signal. That comes from the same
+  `eureka_info`, asked 15 s after starting and every 5 minutes. Not every receiver says: a Google
+  Home speaker gives its access point and signal, a Nest Hub and a Chromecast with Google TV
+  neither. Each carries its mDNS host, so a Nest Hub that Matter hears as a Thread border router
+  is drawn once, as this device. Speaker groups aren't on the map.
 
 ## Settings
 

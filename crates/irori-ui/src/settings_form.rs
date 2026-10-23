@@ -28,7 +28,7 @@ struct Field {
     /// Whether this belongs under "Advanced" rather than in the form's own body; see `advanced`.
     advanced: bool,
     /// The section it's drawn in with the others that name the same one: the schema's
-    /// `x-irori-group` ("Wi-Fi"). A section folds away once something in it is saved.
+    /// `x-irori-group` ("Wi-Fi"). On the settings page a section starts folded.
     group: Option<String>,
     /// The schema marks this `"format": "serial-port"` — offered as a live-updated list of
     /// what's actually plugged into the machine running Irori, alongside the plain text box a
@@ -100,8 +100,18 @@ impl Row {
     }
 }
 
+/// How a section starts out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opening {
+    /// Folded: the settings page, where a person looks for the one section they came for.
+    Folded,
+    /// Open while nothing in it is saved: a form that asks for exactly these fields (adding a
+    /// device over Bluetooth asks for the Wi-Fi network).
+    UntilSaved,
+}
+
 /// Rows in order, then each section's in a fold of its own, in the order they first appear.
-fn rows_view(rows: &[Row]) -> impl IntoView + use<> {
+fn rows_view(rows: &[Row], opening: Opening) -> impl IntoView + use<> {
     let mut sections: Vec<(String, Vec<Row>)> = Vec::new();
     for row in rows {
         if let Some(name) = &row.field.group {
@@ -119,22 +129,21 @@ fn rows_view(rows: &[Row]) -> impl IntoView + use<> {
             .collect_view()}
         {sections
             .into_iter()
-            .map(|(name, members)| group_view(name, members))
+            .map(|(name, members)| group_view(name, members, opening))
             .collect_view()}
     }
 }
 
 /// One section: what to turn on first, then what to type, then its secrets ("Wi-Fi network",
-/// then its password). It opens when nothing in it is saved yet, and stays folded once
-/// something is, saying in a word what it holds.
-fn group_view(name: String, mut members: Vec<Row>) -> impl IntoView {
+/// then its password). Folded, it says in a word what it holds.
+fn group_view(name: String, mut members: Vec<Row>, opening: Opening) -> impl IntoView {
     members.sort_by_key(|row| match row.field.kind {
         FieldKind::Bool => 0,
         FieldKind::Secret => 2,
         _ => 1,
     });
     let set = members.iter().any(|row| row.saved.get_untracked());
-    let open = RwSignal::new(!set);
+    let open = RwSignal::new(opening == Opening::UntilSaved && !set);
     let status = {
         let members = members.clone();
         move || {
@@ -452,7 +461,7 @@ impl SettingRows {
             .filter_map(|key| self.0.iter().find(|row| &row.field.key == key))
             .cloned()
             .collect();
-        rows_view(&rows)
+        rows_view(&rows, Opening::UntilSaved)
     }
 
     /// What was changed among `keys`, ready to send; a changed row that's blank is left out, as
@@ -584,7 +593,7 @@ pub fn SettingsForm(
     view! {
         <form class="settings-form" on:submit=submit>
             {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
-            {rows_view(&plain)}
+            {rows_view(&plain, Opening::Folded)}
             // Settings the extension is happy to decide for itself, out of the way of the ones
             // that actually need answering — a Zigbee dongle's port has to be given; which
             // Zigbee2MQTT release to pin to is a thing almost nobody ever sets.

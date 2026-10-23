@@ -245,6 +245,7 @@ pub fn draw(known: &Known) -> Network {
             medium: None,
             device_unique_id: None,
             detail: Some("Runs Zigbee2MQTT".to_owned()),
+            host: None,
         },
         NetworkNode {
             id: coordinator.clone(),
@@ -259,6 +260,7 @@ pub fn draw(known: &Known) -> Network {
                 .adapter
                 .as_ref()
                 .map(|adapter| cut(&format!("{adapter} radio"), 200)),
+            host: None,
         },
     ];
     let mut links = vec![NetworkLink {
@@ -287,6 +289,7 @@ pub fn draw(known: &Known) -> Network {
             device_unique_id: UniqueId::try_from(bridge::device_identifier(&device.ieee, false))
                 .ok(),
             detail: device.model.as_ref().map(|model| cut(model, 200)),
+            host: None,
         });
     }
 

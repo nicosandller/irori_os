@@ -357,6 +357,7 @@ reads them, every few seconds (`GET /api/network`, [api.md](api.md) §3).
 | `nodes[].medium` | `thread`, `wifi`, `ethernet`, `zigbee`, `bluetooth`, `ip`, `serial` | no | How it's connected |
 | `nodes[].device_unique_id` | `UniqueId` | no | The device it is, when it's one of the protocol's |
 | `nodes[].detail` | string, ≤ 200 | no | "Thread router, channel 25" |
+| `nodes[].host` | lowercase host name, ≤ 253, no trailing dot | no | Its mDNS host (`fuchsia-dce5-5ba4-40db.local`; `host_name` makes it). Nodes in different maps with one host are one node on the joined map: a Nest Hub is a Cast device and a Thread border router, and is drawn once, as the device, the way into Thread |
 | `links[].from`, `links[].to` | node ids | yes | `from` is the end further from the controller, when known |
 | `links[].medium` | as above | no | A `serial` or `ethernet` link without a quality is drawn as a cable |
 | `links[].quality` | `poor`, `fair`, `good`, `excellent` | no | Steps, not a raw signal strength: a map that changes on every report isn't one anyone can read. `LinkQuality::from_rssi` and `from_lqi` make them |

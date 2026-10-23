@@ -33,6 +33,8 @@ pub const MAX_NETWORK_NAME: usize = 100;
 pub const MAX_NETWORK_DETAIL: usize = 200;
 /// Longest a link's reading is: it's drawn on the link, in a small box.
 pub const MAX_NETWORK_READING: usize = 16;
+/// The longest [`NetworkNode::host`]: a DNS name's.
+pub const MAX_NETWORK_HOST: usize = 253;
 
 /// One network a protocol reaches its devices over.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -71,6 +73,19 @@ pub struct NetworkNode {
     /// A few words more: "Router, channel 25", "Google Nest Hub".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Its host name on the home's network, as mDNS gives it (`fuchsia-dce5-5ba4-40db.local`),
+    /// when the protocol knows. Two protocols that see the same box (a Nest Hub is a Cast device
+    /// and a Thread border router) name it the same, and the map draws it once. [`host_name`]
+    /// makes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+}
+
+/// A host name as [`NetworkNode::host`] keeps it: lowercase, without the trailing dot mDNS
+/// gives it. `None` for one that's empty or too long to be a host name.
+pub fn host_name(name: &str) -> Option<String> {
+    let name = name.trim().trim_end_matches('.').to_ascii_lowercase();
+    (!name.is_empty() && name.len() <= MAX_NETWORK_HOST).then_some(name)
 }
 
 /// What a node does on the network.
@@ -248,6 +263,17 @@ impl Network {
                     node.id
                 ));
             }
+            if node
+                .host
+                .as_deref()
+                .is_some_and(|host| host_name(host).as_deref() != Some(host))
+            {
+                return fail(format!(
+                    "node {:?}'s host must be a lowercase host name of 1-{MAX_NETWORK_HOST} \
+                     characters, without a trailing dot",
+                    node.id
+                ));
+            }
         }
         for link in &self.links {
             for end in [&link.from, &link.to] {
@@ -296,6 +322,7 @@ mod tests {
             medium: None,
             device_unique_id: None,
             detail: None,
+            host: None,
         }
     }
 
@@ -352,6 +379,16 @@ mod tests {
         let mut unnamed = good.clone();
         unnamed.name = Some("  ".to_owned());
         assert!(unnamed.validate().is_err());
+
+        let mut hosted = good.clone();
+        hosted.nodes[1].host = host_name("Fuchsia-DCE5-5ba4-40db.local.");
+        assert_eq!(
+            hosted.nodes[1].host.as_deref(),
+            Some("fuchsia-dce5-5ba4-40db.local")
+        );
+        assert_eq!(hosted.validate(), Ok(()));
+        hosted.nodes[1].host = Some("Fuchsia.local.".to_owned());
+        assert!(hosted.validate().is_err(), "only as host_name makes it");
 
         assert!(Network::validate_all(&vec![good; MAX_NETWORKS + 1]).is_err());
     }

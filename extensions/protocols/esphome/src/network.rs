@@ -36,6 +36,7 @@ pub fn draw(members: &[Member]) -> Network {
             medium: None,
             device_unique_id: None,
             detail: None,
+            host: None,
         },
         NetworkNode {
             id: wifi.clone(),
@@ -44,6 +45,7 @@ pub fn draw(members: &[Member]) -> Network {
             medium: Some(NetworkMedium::Wifi),
             device_unique_id: None,
             detail: Some("The home's Wi-Fi".to_owned()),
+            host: None,
         },
     ];
     let mut links = vec![NetworkLink {
@@ -72,6 +74,7 @@ pub fn draw(members: &[Member]) -> Network {
             medium: Some(NetworkMedium::Wifi),
             device_unique_id: Some(member.device.clone()),
             detail: (!detail.is_empty()).then(|| cut(&detail, 200)),
+            host: None,
         });
         links.push(NetworkLink {
             from: id,

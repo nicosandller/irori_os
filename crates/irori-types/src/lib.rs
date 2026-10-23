@@ -108,7 +108,7 @@ pub use kinds::water_heater::{
 pub use kinds::{Field, Typed, ValueShape, mode_to_turn_on};
 pub use network::{
     LinkQuality, MAX_NETWORK_LINKS, MAX_NETWORK_NODES, MAX_NETWORK_READING, MAX_NETWORKS, Network,
-    NetworkLink, NetworkMedium, NetworkNode, NetworkRole, access_point_id,
+    NetworkLink, NetworkMedium, NetworkNode, NetworkRole, access_point_id, host_name,
 };
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,

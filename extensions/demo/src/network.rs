@@ -221,6 +221,7 @@ pub fn draw(scan: u32, scanned_at: Option<Timestamp>) -> Vec<Network> {
         medium: None,
         device_unique_id: None,
         detail: None,
+        host: None,
     };
     let wifi = || NetworkNode {
         id: access_point_id(None),
@@ -229,6 +230,7 @@ pub fn draw(scan: u32, scanned_at: Option<Timestamp>) -> Vec<Network> {
         medium: Some(NetworkMedium::Wifi),
         device_unique_id: None,
         detail: Some("The house's Wi-Fi".to_owned()),
+        host: None,
     };
     let wired = |from: &str, medium, reading: &str| NetworkLink {
         from: from.to_owned(),
@@ -252,6 +254,7 @@ pub fn draw(scan: u32, scanned_at: Option<Timestamp>) -> Vec<Network> {
                 medium: Some(NetworkMedium::Zigbee),
                 device_unique_id: None,
                 detail: Some("Virtual USB dongle".to_owned()),
+                host: None,
             },
         ],
         links: vec![wired(COORDINATOR, NetworkMedium::Serial, "USB")],
@@ -269,6 +272,7 @@ pub fn draw(scan: u32, scanned_at: Option<Timestamp>) -> Vec<Network> {
                 medium: Some(NetworkMedium::Thread),
                 device_unique_id: None,
                 detail: Some("Thread border router, network irori-demo".to_owned()),
+                host: None,
             },
             wifi(),
         ],
@@ -338,6 +342,7 @@ fn node(device: &Placed, role: NetworkRole, medium: NetworkMedium) -> NetworkNod
         medium: Some(medium),
         device_unique_id: UniqueId::try_from(device.unique_id).ok(),
         detail: Some(format!("{}, {}", capitalised(device.model), device.room)),
+        host: None,
     }
 }
 

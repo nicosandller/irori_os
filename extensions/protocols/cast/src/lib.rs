@@ -5,6 +5,7 @@
 
 mod discover;
 mod map;
+mod network;
 mod proto;
 mod session;
 pub mod settings;
@@ -15,13 +16,16 @@ mod fake;
 mod tests;
 
 use std::collections::BTreeMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
+use std::time::Duration;
 
 use irori_protocol::{
     AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
     ServiceError,
 };
-use irori_types::{Availability, ContextId, MediaPlayerState, State, StateReport, UniqueId};
+use irori_types::{
+    Availability, ContextId, MediaPlayerState, Network, State, StateReport, UniqueId,
+};
 use tokio::sync::mpsc;
 
 use crate::discover::{Discovery, Found};
@@ -49,6 +53,11 @@ impl Protocol for Cast {
 
 const COMMANDS: usize = 8;
 const EVENTS: usize = 64;
+/// When the receivers are first asked how they're connected, for the network map: once
+/// discovery has had a moment to find them.
+const WIFI_FIRST: Duration = Duration::from_secs(15);
+/// How often they're asked again. A signal moves a little all day; nobody reads it to the second.
+const WIFI_EVERY: Duration = Duration::from_secs(5 * 60);
 
 struct Device {
     generation: u64,
@@ -57,6 +66,9 @@ struct Device {
     model: String,
     version: String,
     known_host: Option<String>,
+    host: Option<String>,
+    /// How it last said it's connected; `None` until it's answered.
+    wifi: Option<network::Wifi>,
     online: bool,
     entity: UniqueId,
     commands: mpsc::Sender<IncomingCall>,
@@ -77,6 +89,35 @@ struct Devices {
     /// Known hosts that have never introduced themselves.
     failed_hosts: BTreeMap<String, ()>,
     generations: u64,
+    /// The network map last sent, so an unchanged one isn't sent again.
+    drawn: Option<Network>,
+}
+
+/// A speaker group: on no network of its own, so not on the map, and not asked about its Wi-Fi.
+fn is_group(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("group")
+}
+
+impl Devices {
+    /// The map of every receiver, as they now stand.
+    fn map(&self) -> Network {
+        let members: Vec<network::Member> = self
+            .by_uuid
+            .iter()
+            .filter(|(_, device)| !is_group(&device.model))
+            .filter_map(|(uuid, device)| {
+                Some(network::Member {
+                    device: UniqueId::try_from(uuid.as_str()).ok()?,
+                    name: device.name.clone(),
+                    model: device.model.clone(),
+                    online: device.online,
+                    host: device.host.clone(),
+                    wifi: device.wifi,
+                })
+            })
+            .collect();
+        network::draw(&members)
+    }
 }
 
 impl Devices {
@@ -107,9 +148,14 @@ pub(crate) async fn drive(
         by_uuid: BTreeMap::new(),
         failed_hosts: BTreeMap::new(),
         generations: 0,
+        drawn: None,
     };
     let mut reported = Health::Running;
     ctx.set_health(reported.clone()).await;
+    let (wifi_tx, mut wifi_rx) = mpsc::channel::<(String, Option<network::Wifi>)>(16);
+    let mut wifi_poll =
+        tokio::time::interval_at(tokio::time::Instant::now() + WIFI_FIRST, WIFI_EVERY);
+    wifi_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let outcome = loop {
         tokio::select! {
@@ -133,6 +179,30 @@ pub(crate) async fn drive(
                     None => break Ok(()),
                 }
             }
+            _ = wifi_poll.tick() => {
+                let asks: Vec<(String, IpAddr)> = devices
+                    .by_uuid
+                    .iter()
+                    .filter(|(_, device)| !is_group(&device.model))
+                    .map(|(uuid, device)| (uuid.clone(), device.address.ip()))
+                    .collect();
+                let answers = wifi_tx.clone();
+                // One at a time, off this loop: a receiver that doesn't answer takes seconds.
+                tokio::spawn(async move {
+                    for (uuid, ip) in asks {
+                        let wifi = discover::fetch_wifi(ip).await;
+                        if answers.send((uuid, wifi)).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+            Some((uuid, wifi)) = wifi_rx.recv() => {
+                // One that didn't answer this time keeps what it said last.
+                if let (Some(device), Some(wifi)) = (devices.by_uuid.get_mut(&uuid), wifi) {
+                    device.wifi = Some(wifi);
+                }
+            }
             event = events.recv() => {
                 match event {
                     Some(SessionEvent::Status { generation, uuid, state, caused_by }) => {
@@ -149,6 +219,11 @@ pub(crate) async fn drive(
         if health != reported {
             ctx.set_health(health.clone()).await;
             reported = health;
+        }
+        let map = devices.map();
+        if devices.drawn.as_ref() != Some(&map) {
+            ctx.set_network(map.clone()).await;
+            devices.drawn = Some(map);
         }
     };
 
@@ -217,6 +292,9 @@ async fn adopt(
             device.version = found.version;
             device.model = found.model;
             device.known_host = found.known_host;
+            if found.host.is_some() {
+                device.host = found.host;
+            }
         }
         return;
     }
@@ -237,8 +315,12 @@ async fn adopt(
 
     devices.generations += 1;
     let generation = devices.generations;
+    let mut wifi = None;
+    let mut host = found.host.clone();
     if let Some(old) = devices.by_uuid.remove(&found.uuid) {
         old.handle.abort();
+        wifi = old.wifi;
+        host = host.or(old.host);
     }
     let (commands, incoming) = mpsc::channel(COMMANDS);
     let handle = session::spawn(
@@ -257,6 +339,8 @@ async fn adopt(
             model: found.model,
             version: found.version,
             known_host: found.known_host,
+            host,
+            wifi,
             online: false,
             entity: entity_id,
             commands,

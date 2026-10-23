@@ -3527,7 +3527,7 @@
     .network-map {
         --nm-zigbee: #c4552b; --nm-matter: #3f6f9f; --nm-esphome: #5f8a3c; --nm-thread: #3f6f9f;
         --nm-wifi: #8a7f76; --nm-other-1: #8a5fa8; --nm-other-2: #2f8a80; --nm-other-3: #a8792a;
-        --nm-other-4: #a8456b;
+        --nm-other-4: #a8456b; --nm-cast: #2f8a80;
         --nm-ink: #1c1714; --nm-dim: #8a8079; --nm-grid: #b5aaa1; --nm-weak: #b06f00;
         --nm-poor: #c23b2b; --nm-off: #c4bab2; --nm-cmd: #c4552b; --nm-lit: #e3a33f;
         --nm-core: #fffdfb; --nm-glow: #c4552b; --nm-blend: source-over;
@@ -3539,7 +3539,7 @@
       .network-map {
           --nm-zigbee: #e07a52; --nm-matter: #8fb3d9; --nm-esphome: #a9c48f; --nm-thread: #8fb3d9;
           --nm-wifi: #c9beb5; --nm-other-1: #c3a6dc; --nm-other-2: #8fd0c6; --nm-other-3: #e3c27a;
-          --nm-other-4: #e59ab6;
+          --nm-other-4: #e59ab6; --nm-cast: #8fd0c6;
           --nm-ink: #f1ebe6; --nm-dim: #a39990; --nm-grid: #c9beb5; --nm-weak: #d9a24a;
           --nm-poor: #e0594a; --nm-off: #5a504a; --nm-cmd: #ffe0c2; --nm-lit: #f2c88a;
           --nm-core: #fff6ea; --nm-glow: #e07a52; --nm-blend: lighter;
@@ -3582,12 +3582,14 @@
     .nm-dot[data-tone="thread"], .nm-eyebrow[data-tone="thread"] { --tone: var(--nm-thread); }
     .nm-dot[data-tone="esphome"], .nm-eyebrow[data-tone="esphome"] { --tone: var(--nm-esphome); }
     .nm-dot[data-tone="wifi"], .nm-eyebrow[data-tone="wifi"] { --tone: var(--nm-wifi); }
+    .nm-dot[data-tone="cast"], .nm-eyebrow[data-tone="cast"] { --tone: var(--nm-cast); }
     .nm-dot[data-tone="other-1"], .nm-eyebrow[data-tone="other-1"] { --tone: var(--nm-other-1); }
     .nm-dot[data-tone="other-2"], .nm-eyebrow[data-tone="other-2"] { --tone: var(--nm-other-2); }
     .nm-dot[data-tone="other-3"], .nm-eyebrow[data-tone="other-3"] { --tone: var(--nm-other-3); }
     .nm-dot[data-tone="other-4"], .nm-eyebrow[data-tone="other-4"] { --tone: var(--nm-other-4); }
     .nm-dot[data-tone^="zigbee"], .nm-dot[data-tone^="matter"], .nm-dot[data-tone^="thread"],
-    .nm-dot[data-tone^="esphome"], .nm-dot[data-tone^="wifi"], .nm-dot[data-tone^="other"] {
+    .nm-dot[data-tone^="esphome"], .nm-dot[data-tone^="wifi"], .nm-dot[data-tone^="cast"],
+    .nm-dot[data-tone^="other"] {
         background: var(--tone); }
     /* The map: always the design's shape, 1000 by 640, and as wide as its column. */
     .nm-stage { position: relative; width: 100%; aspect-ratio: 1000 / 640; overflow: hidden;

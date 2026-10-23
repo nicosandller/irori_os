@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use base64::Engine as _;
 use irori_types::{
-    LinkQuality, Network, NetworkLink, NetworkMedium, NetworkNode, NetworkRole, UniqueId,
+    LinkQuality, Network, NetworkLink, NetworkMedium, NetworkNode, NetworkRole, UniqueId, host_name,
 };
 use serde_json::Value;
 
@@ -42,6 +42,9 @@ pub struct BorderRouter {
     pub ext_address: Option<u64>,
     /// Its Thread network's extended PAN id (`xp`).
     pub ext_pan_id: Option<u64>,
+    /// The host it announces from (`fuchsia-dce5-5ba4-40db.local`), as [`host_name`] keeps it.
+    /// A Nest Hub is a Cast device too, from the same host, so the network map draws it once.
+    pub host: Option<String>,
 }
 
 impl BorderRouter {
@@ -66,6 +69,7 @@ impl BorderRouter {
             network_name: text("nn"),
             ext_address: eight("xa"),
             ext_pan_id: eight("xp"),
+            host: None,
         }
     }
 
@@ -133,9 +137,10 @@ pub fn listen_for_border_routers() -> (
                         .strip_suffix(&format!(".{MESHCOP}"))
                         .unwrap_or(&name)
                         .replace("\\032", " ");
-                    let router = BorderRouter::from_txt(&instance, |key| {
+                    let mut router = BorderRouter::from_txt(&instance, |key| {
                         service.get_property_val(key).flatten()
                     });
+                    router.host = host_name(service.get_hostname());
                     Heard::Seen(name, router)
                 }
                 mdns_sd::ServiceEvent::ServiceRemoved(_, name) => Heard::Gone(name),
@@ -174,8 +179,11 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
         medium: None,
         device_unique_id: None,
         detail: Some("Matter controller".to_owned()),
+        host: None,
     }];
     let mut links: BTreeMap<(String, String), NetworkLink> = BTreeMap::new();
+    // Wi-Fi links without a signal, and why: a device without Wi-Fi diagnostics never says.
+    let mut unmeasured: Vec<(String, String, &'static str)> = Vec::new();
     let mut add_link =
         |from: &str, to: &str, medium, quality: Option<LinkQuality>, reading: Option<String>| {
             let key = if from < to {
@@ -221,6 +229,7 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
                 },
                 200,
             )),
+            host: router.host.clone(),
         });
         add_link(&id, IRORI, NetworkMedium::Ip, None, None);
     }
@@ -273,6 +282,7 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
             }),
             device_unique_id: Some(member.device.clone()),
             detail: (!detail.is_empty()).then(|| cut(&capitalised(&detail.join(", ")), 200)),
+            host: None,
         });
         match link {
             Link::Wifi => {
@@ -301,6 +311,14 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
                     rssi.map(LinkQuality::from_rssi),
                     rssi.map(dbm),
                 );
+                if rssi.is_none() {
+                    let why = if node.has_cluster(0, WIFI_DIAGNOSTICS) {
+                        "It hasn't reported its Wi-Fi signal yet"
+                    } else {
+                        "It doesn't report its Wi-Fi signal over Matter"
+                    };
+                    unmeasured.push((id.clone(), access_point.clone(), why));
+                }
             }
             Link::Ethernet => add_link(
                 &id,
@@ -350,6 +368,7 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
             medium: Some(NetworkMedium::Thread),
             device_unique_id: None,
             detail: Some("On the Thread network, not one of Irori's devices".to_owned()),
+            host: None,
         });
     }
     for access_point in &access_points {
@@ -372,6 +391,7 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
             medium: Some(NetworkMedium::Wifi),
             device_unique_id: None,
             detail,
+            host: None,
         });
         add_link(access_point, IRORI, NetworkMedium::Ip, None, None);
     }
@@ -396,6 +416,12 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
             200,
         )),
     };
+    for (from, to, why) in unmeasured {
+        let key = if from < to { (from, to) } else { (to, from) };
+        if let Some(link) = links.get_mut(&key).filter(|link| link.quality.is_none()) {
+            link.detail = Some(why.to_owned());
+        }
+    }
     let mut network = Network {
         name: Some("Matter".to_owned()),
         detail,
@@ -419,6 +445,7 @@ pub fn map(members: &[Member<'_>], routers: &[BorderRouter]) -> Network {
             detail: Some(
                 "Thread devices reach Irori through one; it isn't announcing itself".to_owned(),
             ),
+            host: None,
         });
         network.links.push(NetworkLink {
             from: unseen.clone(),
@@ -710,6 +737,26 @@ mod tests {
             Some("LAN")
         );
         assert_eq!(network.name.as_deref(), Some("Matter"));
+        assert_eq!(to_ap.detail, None, "its signal is there");
+
+        // A plug without Wi-Fi diagnostics (a Tapo) is on the Wi-Fi, and the map says why its
+        // link has no signal.
+        let mut tapo = fixture("mock_dimmable_light");
+        tapo.id = 10;
+        tapo.attributes
+            .retain(|path, _| path.cluster != WIFI_DIAGNOSTICS);
+        let network = map(&[member(&tapo, "Tapo")], &[]);
+        let to_wifi = network
+            .links
+            .iter()
+            .find(|link| link.from == "node-a")
+            .expect("on the Wi-Fi");
+        assert_eq!(to_wifi.to, "wifi");
+        assert_eq!(to_wifi.quality, None);
+        assert_eq!(
+            to_wifi.detail.as_deref(),
+            Some("It doesn't report its Wi-Fi signal over Matter")
+        );
     }
 
     #[test]
@@ -726,6 +773,7 @@ mod tests {
             network_name: Some("MyHome23".to_owned()),
             ext_address: Some(neighbours[1].address),
             ext_pan_id: None,
+            host: host_name("fuchsia-dce5-5ba4-40db.local."),
         };
         let network = map(&[member(&eve, "Eve Energy")], std::slice::from_ref(&router));
         assert_eq!(network.validate(), Ok(()));
@@ -735,6 +783,7 @@ mod tests {
         let border = find(&network, &router.id());
         assert_eq!(border.name, "Google Nest Hub");
         assert_eq!(border.role, NetworkRole::BorderRouter);
+        assert_eq!(border.host.as_deref(), Some("fuchsia-dce5-5ba4-40db.local"));
         let heard = linked(&network, &node.id, &border.id).expect("the router hears it");
         assert!(
             heard

@@ -64,7 +64,8 @@ impl Kind {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Net {
     pub name: String,
-    /// Which colour it's drawn in: `zigbee`, `matter`, `esphome`, `thread`, `wifi`, `other-N`.
+    /// Which colour it's drawn in: `zigbee`, `matter`, `esphome`, `thread`, `cast`, `wifi`,
+    /// `other-N`.
     pub tone: String,
     pub extension: String,
     pub detail: Option<String>,
@@ -201,7 +202,7 @@ impl Joined {
 /// anything else takes the next of the spare ones.
 fn tone(name: &str, spare: &mut usize) -> String {
     let name = name.to_lowercase();
-    for known in ["zigbee", "matter", "esphome", "thread"] {
+    for known in ["zigbee", "matter", "esphome", "thread", "cast"] {
         if name.contains(known) {
             return known.to_owned();
         }
@@ -213,12 +214,28 @@ fn tone(name: &str, spare: &mut usize) -> String {
     format!("other-{}", (*spare - 1) % 4 + 1)
 }
 
+/// How a node with `role` is drawn.
+fn kind_of(role: NetworkRole) -> Kind {
+    match role {
+        NetworkRole::Controller => Kind::Hub,
+        NetworkRole::Coordinator | NetworkRole::BorderRouter | NetworkRole::AccessPoint => {
+            Kind::Coord
+        }
+        NetworkRole::Router => Kind::Router,
+        NetworkRole::EndDevice => Kind::End,
+        NetworkRole::SleepyEndDevice => Kind::Sleepy,
+        NetworkRole::Device => Kind::Device,
+    }
+}
+
 /// Joins every protocol's networks into one, around one Irori. `home` says which device each
 /// node is.
 pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
     let mut joined = Joined::default();
     let mut spare = 0;
     let mut at: BTreeMap<String, usize> = BTreeMap::new();
+    // Where each host is on the joined map.
+    let mut hosts: BTreeMap<String, usize> = BTreeMap::new();
     joined.nodes.push(Node {
         id: HUB.to_owned(),
         name: "Irori".to_owned(),
@@ -280,6 +297,38 @@ pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
         let prefix = format!("{}#{within}", drawn.extension);
         let mut ids: BTreeMap<&str, String> = BTreeMap::new();
         for node in &network.nodes {
+            let device = in_home(drawn.extension.as_str(), node.device_unique_id.as_ref());
+            let named = device
+                .as_ref()
+                .and_then(|id| home.devices.iter().find(|device| &device.id == id))
+                .map(|device| device.name.to_string());
+            let kind = kind_of(node.role);
+            // A box another network already drew, by its host: a Nest Hub that Cast has as a
+            // device and Matter hears as a border router is one node, both.
+            let same_box = node
+                .host
+                .as_ref()
+                .filter(|_| node.role != NetworkRole::Controller)
+                .and_then(|host| hosts.get(host))
+                .copied();
+            if let Some(place) = same_box {
+                let kept = &mut joined.nodes[place];
+                ids.insert(&node.id, kept.id.clone());
+                if !kept.nets.contains(&index) {
+                    kept.nets.push(index);
+                }
+                if kept.device.is_none() && device.is_some() {
+                    kept.device = device;
+                    kept.name = named.unwrap_or_else(|| node.name.clone());
+                }
+                if kind == Kind::Coord && kept.kind != Kind::Coord {
+                    kept.kind = kind;
+                    kept.role = node.role;
+                    kept.net = index;
+                    kept.detail = node.detail.clone().or(kept.detail.take());
+                }
+                continue;
+            }
             let id = match node.role {
                 NetworkRole::Controller => HUB.to_owned(),
                 NetworkRole::AccessPoint => format!("ap:{}", node.id),
@@ -292,25 +341,14 @@ pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
                 }
                 continue;
             }
-            let device = in_home(drawn.extension.as_str(), node.device_unique_id.as_ref());
-            let named = device
-                .as_ref()
-                .and_then(|id| home.devices.iter().find(|device| &device.id == id))
-                .map(|device| device.name.to_string());
             at.insert(id.clone(), joined.nodes.len());
+            if let Some(host) = node.host.clone() {
+                hosts.insert(host, joined.nodes.len());
+            }
             joined.nodes.push(Node {
                 id,
                 name: named.unwrap_or_else(|| node.name.clone()),
-                kind: match node.role {
-                    NetworkRole::Controller => Kind::Hub,
-                    NetworkRole::Coordinator
-                    | NetworkRole::BorderRouter
-                    | NetworkRole::AccessPoint => Kind::Coord,
-                    NetworkRole::Router => Kind::Router,
-                    NetworkRole::EndDevice => Kind::End,
-                    NetworkRole::SleepyEndDevice => Kind::Sleepy,
-                    NetworkRole::Device => Kind::Device,
-                },
+                kind,
                 role: node.role,
                 medium: node.medium,
                 net: index,
@@ -777,14 +815,17 @@ pub fn NetworkMap() -> impl IntoView {
         });
     });
 
-    // What's drawn follows the home and its networks; everything else follows its control.
+    // What's drawn follows the home and its networks; everything else follows its control. The
+    // drawing is only what the map shows (who's offline, which lights are on), so a message that
+    // changes none of it, which is nearly every one, doesn't redraw the map.
+    let drawn = Memo::new(move |_| joined.with(|joined| standing.with(|all| drawing(joined, all))));
     Effect::new(move |_| {
         // Nothing until the networks have been asked for: Irori alone, and then everything
         // arriving around it, would be a flash of an empty home.
         if networks.with(Option::is_none) {
             return;
         }
-        let json = joined.with(|joined| standing.with(|all| drawing(joined, all)));
+        let json = drawn.get();
         if frame.get().is_some() {
             call("setDrawing", vec![json.into()]);
         }
@@ -1029,7 +1070,10 @@ fn overview(
     heard_at: RwSignal<Vec<f64>>,
     clock_now: RwSignal<f64>,
 ) -> impl IntoView {
-    let cards = move || {
+    // What the panel shows is worked out first and only drawn again when it changes: nearly
+    // every message changes nothing here, and drawing the panel afresh on each made the browser
+    // lay the page out again several times a second.
+    let card_rows = Memo::new(move |_| {
         standing.with(|all| {
             joined.with(|joined| {
                 joined
@@ -1037,25 +1081,35 @@ fn overview(
                     .iter()
                     .enumerate()
                     .map(|(i, net)| {
-                        let tone = net.tone.clone();
-                        let name = net.name.clone();
-                        let detail = net.detail.clone().unwrap_or_default();
-                        let counted = counts(joined, i, all);
-                        view! {
-                            <div class="nm-card">
-                                <div class="nm-card-head">
-                                    <span class="nm-dot" data-tone=tone></span>
-                                    <strong>{name}</strong>
-                                    <span class="nm-gap"></span>
-                                    <span class="nm-mono">{detail}</span>
-                                </div>
-                                <div class="muted small">{counted}</div>
-                            </div>
-                        }
+                        (
+                            net.tone.clone(),
+                            net.name.clone(),
+                            net.detail.clone().unwrap_or_default(),
+                            counts(joined, i, all),
+                        )
                     })
-                    .collect_view()
+                    .collect::<Vec<_>>()
             })
         })
+    });
+    let cards = move || {
+        card_rows
+            .get()
+            .into_iter()
+            .map(|(tone, name, detail, counted)| {
+                view! {
+                    <div class="nm-card">
+                        <div class="nm-card-head">
+                            <span class="nm-dot" data-tone=tone></span>
+                            <strong>{name}</strong>
+                            <span class="nm-gap"></span>
+                            <span class="nm-mono">{detail}</span>
+                        </div>
+                        <div class="muted small">{counted}</div>
+                    </div>
+                }
+            })
+            .collect_view()
     };
     let last_scan = move || {
         joined.with(|joined| {
@@ -1067,7 +1121,7 @@ fn overview(
                 .map(|at| ago(clock_now.get() - at as f64 * 1000.0))
         })
     };
-    let attention = move || {
+    let attention = Memo::new(move |_| {
         standing.with(|all| {
             joined.with(|joined| {
                 let mut rows: Vec<(String, String, String, &'static str)> = Vec::new();
@@ -1117,7 +1171,7 @@ fn overview(
                 rows
             })
         })
-    };
+    });
     view! {
         <div>
         <div class="nm-block">{cards}</div>
@@ -1134,7 +1188,7 @@ fn overview(
         <div class="nm-block">
             <h4 class="nm-eyebrow">"Needs attention"</h4>
             {move || {
-                let rows = attention();
+                let rows = attention.get();
                 if rows.is_empty() {
                     view! { <p class="muted small">"Nothing: every device answers, and every link is good."</p> }.into_any()
                 } else {
@@ -1304,6 +1358,7 @@ mod tests {
             medium: None,
             device_unique_id: None,
             detail: None,
+            host: None,
         }
     }
 
@@ -1668,6 +1723,59 @@ mod tests {
         // dragged to is found again.
         assert_eq!(joined.node("demo#0:lamp").map(|n| n.net), Some(1));
         assert_eq!(joined.node("matter#0:plug").map(|n| n.net), Some(2));
+    }
+
+    /// A Nest Hub is a Cast device and a Thread border router, on one host: one node, the
+    /// home's device, drawn as the way into Thread.
+    #[test]
+    fn one_box_two_protocols_see_is_one_node() {
+        let host = irori_types::host_name("fuchsia-dce5-5ba4-40db.local.");
+        let cast = drawn(
+            "cast",
+            "Wi-Fi",
+            vec![
+                node("irori", NetworkRole::Controller),
+                node("wifi", NetworkRole::AccessPoint),
+                NetworkNode {
+                    host: host.clone(),
+                    ..mine("hub", NetworkRole::Device)
+                },
+            ],
+            vec![link("wifi", "irori", None), link("hub", "wifi", None)],
+        );
+        let matter = drawn(
+            "matter",
+            "Matter",
+            vec![
+                node("irori", NetworkRole::Controller),
+                NetworkNode {
+                    host,
+                    ..node("br-1", NetworkRole::BorderRouter)
+                },
+                mine("lock", NetworkRole::SleepyEndDevice),
+            ],
+            vec![
+                link("br-1", "irori", None),
+                link("lock", "br-1", Some(LinkQuality::Good)),
+            ],
+        );
+        let mut hub = thing_of("cast", "hub");
+        hub.name = "Kitchen Display".parse().expect("valid");
+        let home = Home {
+            devices: vec![hub, thing_of("matter", "lock")],
+            ..Home::default()
+        };
+        let joined = join(&[cast, matter], &home);
+        assert!(joined.node("matter#0:br-1").is_none(), "drawn once");
+        let both = joined.node("cast#0:hub").expect("the hub");
+        assert_eq!(both.kind, Kind::Coord);
+        assert_eq!(both.name, "Kitchen Display");
+        assert_eq!(both.device, Some("hub".parse().expect("valid")));
+        assert_eq!(both.nets, vec![0, 1]);
+        assert_eq!(
+            joined.route("matter#0:lock"),
+            vec!["matter#0:lock", "cast#0:hub", "irori"]
+        );
     }
 
     #[test]

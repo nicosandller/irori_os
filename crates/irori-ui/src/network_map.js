@@ -225,7 +225,7 @@
         const css = getComputedStyle(root);
         const get = (name, fallback) => (css.getPropertyValue(name) || '').trim() || fallback;
         const tones = {};
-        for (const tone of ['zigbee', 'matter', 'esphome', 'thread', 'wifi', 'other-1', 'other-2', 'other-3', 'other-4']) {
+        for (const tone of ['zigbee', 'matter', 'esphome', 'thread', 'wifi', 'cast', 'other-1', 'other-2', 'other-3', 'other-4']) {
           tones[tone] = get('--nm-' + tone, '#a39990');
         }
         const t = {
@@ -683,8 +683,10 @@
             if (k < 1 && s.pos[r.id]) rs.push({ c: s.pos[r.id], R: 8 + r.maxR * (1 - Math.pow(1 - k, 3)), a: (1 - k) * Math.min(1, r.alpha * 1.6) });
           }
           // Each dot goes in one of a few piles by how bright it is, and each pile is one fill:
-          // a dozen draws a frame rather than one per dot.
-          const piles = [];
+          // a dozen draws a frame rather than one per dot. The piles are kept from frame to
+          // frame: new ones every frame were garbage the browser stopped to sweep up.
+          const piles = s.piles || (s.piles = []);
+          for (const dots of piles) if (dots) dots.length = 0;
           for (let gx = 11; gx < W; gx += 22) for (let gy = 10; gy < H; gy += 22) {
             let x = gx, y = gy, glow = 0;
             if (moving) for (const r of rs) {
@@ -699,10 +701,14 @@
             (piles[pile] || (piles[pile] = [])).push(x, y);
           }
           piles.forEach((dots, pile) => {
+            if (!dots || !dots.length) return;
             const glow = pile / 10, rad = 0.9 + glow * 0.9;
             ctx.globalAlpha = Math.min(0.8, 0.12 + glow * 0.6);
             ctx.beginPath();
-            for (let i = 0; i < dots.length; i += 2) { ctx.moveTo(dots[i] + rad, dots[i + 1]); ctx.arc(dots[i], dots[i + 1], rad, 0, TAU); }
+            // The faint ones, nearly all of them, are a couple of pixels across: a square reads
+            // as the same dot there, and costs the browser far less than a circle.
+            if (pile < 2) { const w = rad * 2; for (let i = 0; i < dots.length; i += 2) ctx.rect(dots[i] - rad, dots[i + 1] - rad, w, w); }
+            else for (let i = 0; i < dots.length; i += 2) { ctx.moveTo(dots[i] + rad, dots[i + 1]); ctx.arc(dots[i], dots[i + 1], rad, 0, TAU); }
             ctx.fill();
           });
         } else {
@@ -866,9 +872,11 @@
       }
 
       function frame(ts) {
-        s.raf = 0;
-        if (s.gone || !s.d) return;
-        if (!live()) { paint(); return; }
+        // Still running while it draws: a message sent from inside the frame mustn't start a
+        // second loop beside this one, which a map left open would pile up one message at a time.
+        s.raf = -1;
+        if (s.gone || !s.d) { s.raf = 0; return; }
+        if (!live()) { s.raf = 0; paint(); return; }
         const dt = Math.min(0.05, (ts - (s.last || ts)) / 1000);
         s.last = ts;
         readPointer();
@@ -876,7 +884,7 @@
         computePos(ts);
         drawCanvas(ts);
         drawScene();
-        s.raf = requestAnimationFrame(frame);
+        s.raf = live() && !s.gone ? requestAnimationFrame(frame) : 0;
       }
       function wake() {
         if (!s.raf && !s.gone && live()) { s.last = performance.now(); s.raf = requestAnimationFrame(frame); }

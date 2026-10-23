@@ -1,7 +1,7 @@
 [extension]
 id = "matter"
 name = "Matter"
-version = "0.2.5"
+version = "0.2.6"
 irori = ">=1.5.0"
 # 1.5.0 is the first core whose actions have ways with fields and settings (the pairing code,
 # and Wi-Fi for a new device) and can say how long they take to answer, and the first whose

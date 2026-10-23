@@ -4469,6 +4469,7 @@ mod tests {
                 medium: None,
                 device_unique_id: None,
                 detail: None,
+                host: None,
             };
             let link = |from: &str, to: &str| irori_types::NetworkLink {
                 from: from.to_owned(),
