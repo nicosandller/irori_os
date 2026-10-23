@@ -375,6 +375,39 @@ async fn an_expired_session_logs_in_again_without_going_offline() {
 }
 
 #[tokio::test]
+async fn a_fresh_session_that_is_refused_waits_before_logging_in_again() {
+    let fake = fake::start(Kind::Plug, auth()).await;
+    fake.state.lock().expect("state").refuse_requests = true;
+    let world = world(settings(true)).await;
+    world.see(&fake, "02:00:00:00:00:01", "PP1(EU)").await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    // A miss, a second's wait, a miss, two seconds' wait: not a login per round trip.
+    assert!(fake.state.lock().expect("state").handshakes <= 3);
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn one_bad_meter_reading_doesnt_stop_metering() {
+    let fake = fake::start(Kind::Plug, auth()).await;
+    let world = world(settings(true)).await;
+    world.see(&fake, "02:00:00:00:00:01", "PP1(EU)").await;
+    world.states(&["02:00:00:00:00:01-power"]).await;
+    {
+        let mut state = fake.state.lock().expect("state");
+        state.meter_misses = 1;
+        state.power_mw = 2_000;
+    }
+    world
+        .until("a new power reading", |_| {
+            fake.state.lock().expect("state").meter_misses == 0
+        })
+        .await;
+    let states = world.states(&["02:00:00:00:00:01-power"]).await;
+    assert_eq!(number(&states["02:00:00:00:00:01-power"]), 2.0);
+    world.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_device_that_stops_answering_goes_unavailable_and_comes_back() {
     let fake = fake::start(Kind::Plug, auth()).await;
     let world = world(settings(true)).await;

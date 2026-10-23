@@ -1,5 +1,5 @@
-//! What the TP-Link extension can be told. The whole table lives in `secrets.toml`, because the
-//! account password is in it; no refusal ever repeats a value.
+//! What the TP-Link extension can be told. The account goes in `secrets.toml`; the rest can go in
+//! `extensions/tplink.toml`. No refusal ever repeats a value.
 //!
 //! Left without known hosts, discovery is a broadcast on this network only. Plugs on another
 //! network (an IoT VLAN) answer when asked by address, so they go in `known_hosts`.
@@ -136,7 +136,7 @@ fn lan_ip(text: &str) -> Result<String, String> {
     }
 }
 
-fn is_lan_ip(ip: IpAddr) -> bool {
+pub(crate) fn is_lan_ip(ip: IpAddr) -> bool {
     let ip = match ip {
         IpAddr::V6(v6) => v6
             .to_ipv4_mapped()

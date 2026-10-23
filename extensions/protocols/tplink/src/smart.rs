@@ -18,6 +18,9 @@ pub const CHILD_LIST: &str = "get_child_device_list";
 pub const COMPONENTS: &str = "component_nego";
 pub const CHILD_COMPONENTS: &str = "get_child_device_component_list";
 
+/// The error code a device gives for a method it doesn't have.
+pub const UNKNOWN_METHOD: i64 = -1002;
+
 pub fn request(method: &str, params: Value) -> Value {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -138,9 +141,10 @@ pub fn nickname(info: &Value) -> Option<String> {
         .decode(encoded)
         .ok()?;
     let text = String::from_utf8(bytes).ok()?;
-    let text: String = text.chars().filter(|c| !c.is_control()).collect();
+    // Cut to a name's 100 characters before trimming, so the cut can't leave a space at the end.
+    let text: String = text.chars().filter(|c| !c.is_control()).take(100).collect();
     let text = text.trim();
-    (!text.is_empty()).then(|| text.chars().take(100).collect())
+    (!text.is_empty()).then(|| text.to_owned())
 }
 
 /// What a device says about itself (`get_device_info`), or an outlet in a strip's child list.
@@ -289,6 +293,13 @@ mod tests {
             Some("Reading Lamp")
         );
         assert_eq!(nickname(&json!({ "nickname": "" })), None);
+        // The 100-character cut lands just after a space.
+        let long = format!("{} {}", "a".repeat(99), "b".repeat(20));
+        let encoded = base64::engine::general_purpose::STANDARD.encode(long);
+        assert_eq!(
+            nickname(&json!({ "nickname": encoded })),
+            Some("a".repeat(99))
+        );
     }
 
     #[test]

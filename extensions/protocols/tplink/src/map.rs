@@ -95,8 +95,11 @@ fn id(text: String) -> Result<UniqueId, String> {
     UniqueId::try_from(text).map_err(|error| error.to_string())
 }
 
+/// A name from any text: cut to a name's 100 characters, then trimmed, so a long strip name
+/// with " outlet 3" on the end still fits.
 fn name(text: &str) -> Result<Name, String> {
-    Name::try_from(text).map_err(|error| error.to_string())
+    let cut: String = text.chars().take(100).collect();
+    Name::try_from(cut.trim()).map_err(|error| error.to_string())
 }
 
 /// The model without its region, `PS4(EU)` → `PS4`.
@@ -352,6 +355,23 @@ mod tests {
                 "02:00:00:00:00:03-outlet2-energy_today",
                 "02:00:00:00:00:03-outlet1-switch",
             ]
+        );
+    }
+
+    #[test]
+    fn a_long_strip_name_still_names_its_outlets() {
+        let mut snapshot = strip();
+        snapshot.info.name = Some(format!("{} x", "a".repeat(98)));
+        let described = describe("02:00:00:00:00:03", &snapshot).expect("valid");
+        let unnamed = described.devices[2].name.as_str();
+        assert_eq!(unnamed.chars().count(), 100);
+        assert_eq!(
+            unnamed,
+            format!("{} x outlet", "a".repeat(98))
+                .chars()
+                .take(100)
+                .collect::<String>()
+                .trim()
         );
     }
 

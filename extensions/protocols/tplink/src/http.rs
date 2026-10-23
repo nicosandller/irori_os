@@ -162,11 +162,14 @@ fn dechunk(mut rest: &[u8]) -> io::Result<Vec<u8>> {
         if size == 0 {
             return Ok(body);
         }
-        if rest.len() < size + 2 {
-            return Err(invalid("the device's answer was cut short"));
+        if size > RESPONSE_CAP {
+            return Err(invalid("the device's answer is too large"));
         }
+        let Some(next) = size.checked_add(2).filter(|next| *next <= rest.len()) else {
+            return Err(invalid("the device's answer was cut short"));
+        };
         body.extend_from_slice(&rest[..size]);
-        rest = &rest[size + 2..];
+        rest = &rest[next..];
     }
 }
 
@@ -188,6 +191,16 @@ mod tests {
     fn reads_a_chunked_body() {
         let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n2\r\nde\r\n0\r\n\r\n";
         assert_eq!(parse(raw).expect("valid").body, b"abcde");
+    }
+
+    #[test]
+    fn a_huge_chunk_size_is_an_error_not_a_panic() {
+        let raw =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nffffffffffffffff\r\nabc\r\n";
+        assert!(parse(raw).is_err());
+        let raw =
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nfffffffffffffffe\r\nabc\r\n";
+        assert!(parse(raw).is_err());
     }
 
     #[test]

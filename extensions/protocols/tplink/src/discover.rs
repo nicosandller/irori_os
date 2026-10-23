@@ -13,7 +13,7 @@ use serde_json::Value;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 use crate::smart;
 
 pub const PORT: u16 = 20002;
@@ -104,6 +104,10 @@ async fn round(hosts: &[String]) -> std::io::Result<Vec<Discovery>> {
         let Ok((length, from)) = received else {
             continue;
         };
+        // Only a device on this network is read; anything else could claim a real plug's MAC.
+        if !settings::is_lan_ip(from.ip()) {
+            continue;
+        }
         if let Some(mut found) = parse(&buffer[..length], from.ip()) {
             found.known_host = asked.get(&from.ip()).cloned();
             seen.insert(from.ip(), found);

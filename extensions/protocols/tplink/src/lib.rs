@@ -20,7 +20,7 @@ mod fake;
 #[cfg(test)]
 mod tests;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use irori_protocol::{
     AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
@@ -63,7 +63,7 @@ struct Device {
     found: Found,
     handle: tokio::task::JoinHandle<()>,
     online: bool,
-    /// Missed readings in a row; not set before the first try.
+    /// Missed two readings in a row and hasn't answered since.
     offline: bool,
     refused: bool,
     described: Option<Described>,
@@ -78,7 +78,7 @@ struct Devices {
     /// Found, but they speak something this doesn't read yet. Logged once each.
     unsupported: BTreeMap<String, Found>,
     /// Known hosts that haven't answered.
-    failed_hosts: BTreeMap<String, ()>,
+    failed_hosts: BTreeSet<String>,
     generations: u64,
 }
 
@@ -169,10 +169,11 @@ pub(crate) async fn drive(
                         device.found.known_host.as_deref() == Some(host.as_str())
                     });
                     if !known {
-                        devices.failed_hosts.insert(host, ());
+                        devices.failed_hosts.insert(host);
                     }
                 }
-                None => break Ok(()),
+                // Discovery only ends if its task does: let the host restart the extension.
+                None => break Err(ProtocolError::new("stopped finding TP-Link devices")),
             },
             event = events.recv() => match event {
                 Some(event) => apply(&ctx, &mut devices, event).await,

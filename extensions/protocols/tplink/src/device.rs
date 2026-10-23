@@ -22,6 +22,8 @@ const MAX_BACKOFF: Duration = Duration::from_secs(120);
 const REFUSED_RETRY: Duration = Duration::from_secs(600);
 /// A strip with more outlets than this isn't a strip.
 const MAX_CHILDREN: usize = 32;
+/// Polls in a row with no meter reading before a device is taken not to meter.
+const EMPTY_METERS: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
@@ -61,6 +63,8 @@ struct Plan {
     led: bool,
     children: bool,
     child_energy: BTreeSet<String>,
+    /// Polls in a row where neither meter method answered.
+    empty_meters: u32,
 }
 
 pub fn spawn(
@@ -75,6 +79,9 @@ pub fn spawn(
         let mut session: Option<(Session, Plan)> = None;
         let mut misses = 0u32;
         loop {
+            // Only a session from an earlier poll can have expired; a fresh one that's refused is
+            // a miss like any other, so it waits instead of logging in again at once.
+            let reused = session.is_some();
             let outcome = match session.as_mut() {
                 Some((session, plan)) => read(session, plan).await,
                 None => match Session::connect(found.address, &auth).await {
@@ -101,7 +108,7 @@ pub fn spawn(
                     }
                     tokio::time::sleep(poll).await;
                 }
-                Err(KlapError::Expired) if session.is_some() => {
+                Err(KlapError::Expired) if reused => {
                     // A session ends after a day; log in again straight away.
                     session = None;
                 }
@@ -169,15 +176,34 @@ async fn learn(session: &mut Session) -> Result<Plan, KlapError> {
         led: has("led"),
         children,
         child_energy: BTreeSet::new(),
+        empty_meters: 0,
     };
     if plan.children {
-        let request = smart::multiple(&[(smart::CHILD_COMPONENTS, json!({ "start_index": 0 }))]);
-        if let Some(Ok(list)) = call(session, &request).await?.get(smart::CHILD_COMPONENTS) {
-            plan.child_energy = smart::child_component_ids(list)
-                .into_iter()
-                .filter(|(_, ids)| ids.contains("energy_monitoring"))
-                .map(|(id, _)| id)
-                .collect();
+        // Paged like the child list itself.
+        let mut seen = 0;
+        while seen < MAX_CHILDREN {
+            let request =
+                smart::multiple(&[(smart::CHILD_COMPONENTS, json!({ "start_index": seen }))]);
+            let Some(Ok(list)) = call(session, &request)
+                .await?
+                .remove(smart::CHILD_COMPONENTS)
+            else {
+                break;
+            };
+            let page = smart::child_component_ids(&list);
+            if page.is_empty() {
+                break;
+            }
+            seen += page.len();
+            plan.child_energy.extend(
+                page.into_iter()
+                    .filter(|(_, ids)| ids.contains("energy_monitoring"))
+                    .map(|(id, _)| id),
+            );
+            let total = list.get("sum").and_then(Value::as_u64).unwrap_or(0) as usize;
+            if seen >= total {
+                break;
+            }
         }
     }
     Ok(plan)
@@ -213,9 +239,20 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
     } else {
         None
     };
-    if plan.energy && meter.is_none() {
-        // Neither method answered: stop asking.
-        plan.energy = false;
+    if plan.energy {
+        if meter.is_some() {
+            plan.empty_meters = 0;
+        } else {
+            // Stop asking once the device says it has neither method, or neither answers for a
+            // few polls in a row; one bad reading isn't enough.
+            plan.empty_meters += 1;
+            let unknown = [smart::EMETER_DATA, smart::ENERGY_USAGE]
+                .iter()
+                .all(|method| answers.get(*method) == Some(&Err(smart::UNKNOWN_METHOD)));
+            if unknown || plan.empty_meters >= EMPTY_METERS {
+                plan.energy = false;
+            }
+        }
     }
     let led = answers
         .get(smart::LED_INFO)

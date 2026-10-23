@@ -35,6 +35,10 @@ pub struct State {
     pub expire_next: bool,
     /// Every connection is closed unanswered, as an unplugged device's fails.
     pub gone: bool,
+    /// Both handshakes and the component list pass, but every reading is answered 403.
+    pub refuse_requests: bool,
+    /// This many readings answer neither meter method.
+    pub meter_misses: u32,
     pub handshakes: u32,
 }
 
@@ -78,6 +82,8 @@ pub async fn start(kind: Kind, auth: AuthHash) -> Fake {
         ],
         expire_next: false,
         gone: false,
+        refuse_requests: false,
+        meter_misses: 0,
         handshakes: 0,
     }));
     let shared = Arc::clone(&state);
@@ -165,7 +171,18 @@ fn respond(
     };
     let plain = keys.open(seq, body).expect("a request this session sealed");
     let request: Value = serde_json::from_slice(&plain).expect("json");
+    let learning = request["params"]["requests"][0]["method"] == "component_nego";
+    if state.refuse_requests && !learning {
+        session.keys = None;
+        return (403, false, Vec::new());
+    }
     let response = handle(kind, &request, &state);
+    let reads_meter = request["params"]["requests"]
+        .as_array()
+        .is_some_and(|requests| requests.iter().any(|r| r["method"] == "get_emeter_data"));
+    if reads_meter && state.meter_misses > 0 {
+        state.meter_misses -= 1;
+    }
     let plain = serde_json::to_vec(&response).expect("json");
     (200, false, keys.seal_at(seq, &plain))
 }
@@ -272,6 +289,9 @@ fn answer(
             "rssi": -61, "mac": "02-00-00-00-00-03",
             "fw_ver": "1.0.0", "hw_ver": "1.0"
         })),
+        (Kind::Plug, None, "get_energy_usage" | "get_emeter_data") if state.meter_misses > 0 => {
+            Err(-1)
+        }
         (Kind::Plug, None, "get_energy_usage") => Ok(json!({
             "today_energy": 1500, "month_energy": 30000, "current_power": state.power_mw
         })),
@@ -300,12 +320,25 @@ fn answer(
                 "child_device_list": page, "start_index": start, "sum": state.outlets.len()
             }))
         }
-        (Kind::Strip, None, "get_child_device_component_list") => Ok(json!({
-            "child_component_list": state.outlets.iter().map(|outlet| json!({
-                "device_id": outlet.id,
-                "component_list": [{ "id": "energy_monitoring", "ver_code": 2 }]
-            })).collect::<Vec<_>>()
-        })),
+        (Kind::Strip, None, "get_child_device_component_list") => {
+            // Paged one outlet at a time too.
+            let start = params["start_index"].as_u64().unwrap_or(0) as usize;
+            let page: Vec<Value> = state
+                .outlets
+                .iter()
+                .skip(start)
+                .take(1)
+                .map(|outlet| {
+                    json!({
+                        "device_id": outlet.id,
+                        "component_list": [{ "id": "energy_monitoring", "ver_code": 2 }]
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "child_component_list": page, "start_index": start, "sum": state.outlets.len()
+            }))
+        }
         // An outlet here meters through `get_energy_usage` only.
         (Kind::Strip, Some(_), "get_energy_usage") => Ok(json!({
             "today_energy": 400, "current_power": 2_900_000
