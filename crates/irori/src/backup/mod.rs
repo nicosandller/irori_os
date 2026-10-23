@@ -1062,12 +1062,22 @@ pub async fn reinstall_extensions(host: irori_core::ExtensionHost, data: PathBuf
             done.awaiting_approval.push(name);
             continue;
         }
-        let fetched = crate::server::place_official(host.clone(), item.clone(), false, false)
-            .await
-            .map_err(|(_, why)| why);
-        match fetched {
+        // One somebody is installing right now (the Extensions page, the CLI), or has just
+        // installed, isn't a failure: it's on its way, by a different hand.
+        match crate::server::place_official(host.clone(), item.clone(), false, false).await {
             Ok(()) => done.reinstalled.push(name),
-            Err(why) => done.reinstall_failed.push(format!("{name}: {why}")),
+            Err(crate::server::NotPlaced::Underway(underway)) => done.warnings.push(format!(
+                "{name} was already being {} at the same time, and was left to finish that",
+                match underway.work {
+                    irori_core::PackageWork::Installing => "installed",
+                    irori_core::PackageWork::Updating => "updated",
+                    irori_core::PackageWork::Uninstalling => "uninstalled",
+                }
+            )),
+            Err(crate::server::NotPlaced::Installed(_)) => done
+                .warnings
+                .push(format!("{name} was installed meanwhile")),
+            Err(why) => done.reinstall_failed.push(format!("{name}: {}", why.why())),
         }
     }
     done.extensions_handled = true;

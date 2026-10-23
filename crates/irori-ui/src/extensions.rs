@@ -39,28 +39,50 @@ pub fn Extensions() -> impl IntoView {
         crate::devices::remember(CLEARED_KEY, &saved);
     });
 
+    let watch = Watch {
+        catalog,
+        trouble,
+        lost: StoredValue::new(None),
+    };
     let reload = move || {
         spawn_local(async move {
             match api::fetch_catalog().await {
                 Ok(entries) => {
-                    // Something already underway, asked for before a reload or from another
-                    // tab, is followed until it's done, as if it had been asked for here.
-                    let underway: Vec<String> = entries
-                        .iter()
-                        .filter(|entry| entry.busy.is_some())
-                        .map(|entry| entry.id.clone())
-                        .collect();
-                    catalog.set(entries);
+                    watch.show(entries);
                     trouble.set(None);
-                    for id in underway {
-                        spawn_local(async move { settle(&id, catalog, trouble).await });
-                    }
                 }
                 Err(why) => trouble.set(Some(why)),
             }
         });
     };
     reload();
+
+    // The catalog is read again for as long as the page is open, so an install started
+    // anywhere (another tab, before a reload, the CLI, Irori's own update entity) shows here,
+    // and its end too. Every second while something is underway, and now and then otherwise.
+    // One answer at a time; a failed one is tried again on the next round.
+    let asking = StoredValue::new(false);
+    let rounds = StoredValue::new(0u32);
+    let tick = move || {
+        let underway = busy.get_untracked().is_some()
+            || catalog.with_untracked(|entries| entries.iter().any(|entry| entry.busy.is_some()));
+        rounds.update_value(|n| *n += 1);
+        if asking.get_value() || (!underway && rounds.get_value() < IDLE_ROUNDS) {
+            return;
+        }
+        rounds.set_value(0);
+        asking.set_value(true);
+        spawn_local(async move {
+            watch.refresh().await;
+            let _ = asking.try_set_value(false);
+        });
+    };
+    let ticking = set_interval_with_handle(tick, SETTLE_POLL).ok();
+    on_cleanup(move || {
+        if let Some(ticking) = ticking {
+            ticking.clear();
+        }
+    });
 
     // Looked for when the page opens and whenever what's installed changes — not with every
     // refresh of the catalog, which while something installs is once a second.
@@ -185,7 +207,7 @@ pub fn Extensions() -> impl IntoView {
                                     card(
                                         entry,
                                         busy,
-                                        catalog,
+                                        watch,
                                         trouble,
                                         settings_open,
                                         log_open,
@@ -206,9 +228,12 @@ pub fn Extensions() -> impl IntoView {
         // The open settings form, over the page rather than inside the card that opened it: a
         // form that grows its own card reflows the whole grid around it. Looked up from the
         // catalog by id so the card itself doesn't have to hold it.
+        // Read untracked: the catalog is refreshed every second while something installs, and
+        // drawing the form again each time would throw away what's being typed into it.
         {move || {
             let id = settings_open.get()?;
-            let entry = catalog.get().into_iter().find(|entry| entry.id == id)?;
+            let entry = catalog
+                .with_untracked(|entries| entries.iter().find(|entry| entry.id == id).cloned())?;
             let schema = entry.config_schema.clone()?;
             Some(view! {
                 <crate::modal::Modal
@@ -371,7 +396,7 @@ pub fn Extensions() -> impl IntoView {
                             class="add solid"
                             on:click=move |_| {
                                 confirm_install.set(None);
-                                act(id_install.clone(), what, busy, catalog, trouble, true, updating);
+                                act(id_install.clone(), what, busy, watch, trouble, true, updating);
                             }
                         >
                             {verb}
@@ -390,7 +415,7 @@ pub fn Extensions() -> impl IntoView {
 fn card(
     entry: CatalogEntry,
     busy: RwSignal<Option<String>>,
-    catalog: RwSignal<Vec<CatalogEntry>>,
+    watch: Watch,
     trouble: RwSignal<Option<String>>,
     settings_open: RwSignal<Option<String>>,
     log_open: RwSignal<Option<String>>,
@@ -426,13 +451,15 @@ fn card(
             cleared.with(|cleared| troubled(&id_marked, reason.as_deref(), errors, cleared))
         })
     };
-    // What's being done to it: asked for on this page, or underway on the server whoever asked.
+    // What's being done to it: what the server says is underway, whoever asked, and otherwise
+    // what this page asked for and the server hasn't said yet. The server's word comes first: a
+    // click refused because another tab is updating it is shown as that update.
     // A `Memo` rather than a plain closure: it's `Copy`, so the same check can be read from each
     // button's `disabled`, its progress bar, and its label.
     let updating = expect_context::<Updating>();
     let underway = entry.busy.as_deref().and_then(Do::from_busy);
     let work = Memo::new(move |_| {
-        if busy.get().as_deref() != Some(id_busy.as_str()) {
+        if underway.is_some() || busy.get().as_deref() != Some(id_busy.as_str()) {
             underway
         } else if updating.0.get().as_deref() == Some(id_busy.as_str()) {
             Some(Do::Update)
@@ -481,7 +508,7 @@ fn card(
                             type="button"
                             class="danger ext-btn"
                             disabled=move || is_busy.get()
-                            on:click=move |_| act(id_click.clone(), Do::Uninstall, busy, catalog, trouble, false, updating)
+                            on:click=move |_| act(id_click.clone(), Do::Uninstall, busy, watch, trouble, false, updating)
                         >
                             {move || doing(Do::Uninstall).then(|| view! { <span class="bar" aria-hidden="true"></span> })}
                             <span class="label">
@@ -500,7 +527,7 @@ fn card(
                                 if full_access {
                                     confirm_install.set(Some(id.clone()));
                                 } else {
-                                    act(id.clone(), Do::Install, busy, catalog, trouble, false, updating);
+                                    act(id.clone(), Do::Install, busy, watch, trouble, false, updating);
                                 }
                             }
                         >
@@ -524,7 +551,7 @@ fn card(
                                 if full_access {
                                     confirm_install.set(Some(id.clone()));
                                 } else {
-                                    act(id.clone(), Do::Update, busy, catalog, trouble, false, updating);
+                                    act(id.clone(), Do::Update, busy, watch, trouble, false, updating);
                                 }
                             }
                         >
@@ -629,8 +656,11 @@ fn category_label(category: &str) -> String {
     }
 }
 
-/// How often to re-check the catalog while an install is still settling.
+/// How often to re-check the catalog while an install is underway or still settling.
 const SETTLE_POLL: Duration = Duration::from_secs(1);
+/// And otherwise, in rounds of `SETTLE_POLL`: often enough that an install started in another
+/// tab shows here within a few seconds.
+const IDLE_ROUNDS: u32 = 5;
 /// How long to keep polling before giving up and clearing the busy state regardless — long
 /// enough for a real first-time provisioning step (Zigbee downloads Node.js and installs
 /// Zigbee2MQTT the first time it runs), not so long that a genuinely stuck extension spins the
@@ -662,12 +692,57 @@ impl Do {
     }
 }
 
+/// The page's copy of the catalog, and how it's kept fresh.
+#[derive(Debug, Clone, Copy)]
+struct Watch {
+    catalog: RwSignal<Vec<CatalogEntry>>,
+    trouble: RwSignal<Option<String>>,
+    /// What the last failed refresh said, while it's the trouble shown. Only that is cleared
+    /// once the server answers again; an Install's own failure stays until it's dealt with.
+    lost: StoredValue<Option<String>>,
+}
+
+impl Watch {
+    /// Reads the catalog again. A failure keeps the last one, and says so.
+    async fn refresh(self) {
+        match api::fetch_catalog().await {
+            Ok(entries) => {
+                self.show(entries);
+                if let Some(lost) = self.lost.try_get_value().flatten() {
+                    let _ = self.lost.try_set_value(None);
+                    let _ = self.trouble.try_update(|shown| {
+                        if shown.as_deref() == Some(lost.as_str()) {
+                            *shown = None;
+                        }
+                    });
+                }
+            }
+            Err(why) => {
+                let _ = self.lost.try_set_value(Some(why.clone()));
+                let _ = self.trouble.try_set(Some(why));
+            }
+        }
+    }
+
+    /// The same catalog again draws nothing again: a settings form open over the page keeps
+    /// what's typed in it, and a card its focus.
+    fn show(self, entries: Vec<CatalogEntry>) {
+        let same = self
+            .catalog
+            .try_with_untracked(|shown| *shown == entries)
+            .unwrap_or(true);
+        if !same {
+            let _ = self.catalog.try_set(entries);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn act(
     id: String,
     what: Do,
     busy: RwSignal<Option<String>>,
-    catalog: RwSignal<Vec<CatalogEntry>>,
+    watch: Watch,
     trouble: RwSignal<Option<String>>,
     approve_full_access: bool,
     updating: Updating,
@@ -685,53 +760,48 @@ fn act(
         match result {
             Ok(()) => {
                 trouble.set(None);
-                settle(&id, catalog, trouble).await;
+                watch.refresh().await;
+                settle(&id, watch.catalog).await;
             }
-            // Refused because it's already underway, from another tab or before a reload: not
-            // something to put right, so it's followed like this page's own.
-            Err(why) => match api::fetch_catalog().await {
-                Ok(entries) if entries.iter().any(|e| e.id == id && e.busy.is_some()) => {
-                    catalog.set(entries);
-                    settle(&id, catalog, trouble).await;
-                }
-                _ => trouble.set(Some(why)),
-            },
+            // Refused only because it's underway already, from another tab, before a reload or
+            // by Irori's own update entity: nothing to put right. The card shows that work
+            // from the catalog, which the page keeps reading until it's done.
+            Err(refused) if refused.underway.is_some() => watch.refresh().await,
+            Err(refused) => trouble.set(Some(refused.error)),
         }
-        busy.set(None);
+        let _ = busy.try_set(None);
     });
 }
 
-/// Keeps refreshing the catalog while the server is still installing, updating or uninstalling
-/// it, and then until this extension's own action has visibly finished, instead
-/// of clearing `busy` — and so the button — the instant the HTTP request returns. "Installed"
+/// Keeps this page's own action showing as underway until it has visibly finished, instead of
+/// clearing `busy` — and so the button — the instant the HTTP request returns. "Installed"
 /// (`entry.installed`, which decides Install vs. Uninstall) turns true as soon as the package is
 /// on disk and supervised; for most extensions that's also when they're ready, but Zigbee
 /// downloads Node.js and installs Zigbee2MQTT the first time it runs, entirely after that point
 /// — `state` stays `starting`/`degraded` while that's happening. Showing a plain, clickable
 /// "Uninstall" before that settles reads as the extension being ready when it isn't.
-async fn settle(id: &str, catalog: RwSignal<Vec<CatalogEntry>>, trouble: RwSignal<Option<String>>) {
+///
+/// It reads the page's catalog, which is read again every second while this is waiting, and
+/// gives up after `SETTLE_TIMEOUT`. What the server is still doing shows on the card anyway.
+async fn settle(id: &str, catalog: RwSignal<Vec<CatalogEntry>>) {
     let mut waited = Duration::ZERO;
-    loop {
-        let entries = match api::fetch_catalog().await {
-            Ok(entries) => entries,
-            Err(why) => {
-                trouble.set(Some(why));
-                return;
-            }
+    while waited < SETTLE_TIMEOUT {
+        let Some(settling) = catalog.try_with_untracked(|entries| {
+            entries
+                .iter()
+                .find(|entry| entry.id == id)
+                .is_some_and(|entry| {
+                    entry.busy.is_some()
+                        || matches!(entry.state.as_deref(), Some("starting" | "degraded"))
+                })
+        }) else {
+            return;
         };
-        let entry = entries.iter().find(|entry| entry.id == id);
-        // The server says when it's done fetching or removing it, however long a build takes.
-        let underway = entry.is_some_and(|entry| entry.busy.is_some());
-        let still_settling = entry
-            .is_some_and(|entry| matches!(entry.state.as_deref(), Some("starting" | "degraded")));
-        catalog.set(entries);
-        if !underway && (!still_settling || waited >= SETTLE_TIMEOUT) {
+        if !settling {
             return;
         }
         gloo_timers::future::sleep(SETTLE_POLL).await;
-        if !underway {
-            waited += SETTLE_POLL;
-        }
+        waited += SETTLE_POLL;
     }
 }
 

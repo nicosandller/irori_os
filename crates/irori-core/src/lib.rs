@@ -33,7 +33,7 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
-pub use host::{ExtensionHost, InboundLink, PackageClaim, PackageWork, Timing};
+pub use host::{ExtensionHost, InboundLink, PackageClaim, PackageWork, Timing, Underway};
 pub use people::{NOTE_ACTIONS, Notes, Person};
 pub use reach::{Reach, Rooms, Seen};
 pub use services::{CallError, Command};

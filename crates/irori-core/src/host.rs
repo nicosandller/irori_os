@@ -132,6 +132,27 @@ impl Drop for PackageClaim {
     }
 }
 
+/// Why a claim was refused: something else is being done to that package already.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Underway {
+    pub id: ExtensionId,
+    /// What that is.
+    pub work: PackageWork,
+}
+
+impl std::fmt::Display for Underway {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` is already {}; that takes a moment",
+            self.id,
+            self.work.as_str()
+        )
+    }
+}
+
+impl std::error::Error for Underway {}
+
 /// What every staging folder's name starts with: a package being fetched, or the old one an
 /// update moved aside. Neither is an id, so neither is ever started as a package.
 const STAGING: &str = "download-";
@@ -399,15 +420,18 @@ impl ExtensionHost {
             let _ = self.spawn_package(home);
             return Err(format!("couldn't move {dir:?} into place: {e}"));
         }
-        if let Ok(entries) = std::fs::read_dir(&old) {
-            for entry in entries.filter_map(Result::ok) {
-                let kept = home.join(entry.file_name());
-                if !kept.exists() {
-                    let _ = std::fs::rename(entry.path(), kept);
-                }
+        // Kept for the next start to finish when something couldn't be moved, rather than
+        // deleted with it still inside.
+        match carry_over(&old, &home) {
+            Ok(()) => {
+                let _ = std::fs::remove_dir_all(&old);
             }
+            Err(error) => tracing::warn!(
+                extension = %id,
+                %error,
+                "couldn't carry everything over from the old version; trying again at the next start"
+            ),
         }
-        let _ = std::fs::remove_dir_all(&old);
         self.spawn_package(home)?;
         Ok(id)
     }
@@ -445,38 +469,45 @@ impl ExtensionHost {
         &self.inner.packages_dir
     }
 
-    /// A new, unused folder under `packages_dir` to fetch a package into, out of the way of any
+    /// A new, empty folder under `packages_dir` to fetch a package into, out of the way of any
     /// live one until [`Self::install_package`] or [`Self::update_package`] moves it into place.
-    pub fn new_stage(&self) -> PathBuf {
+    /// It's made here, so two fetches started at the same moment never get the same one.
+    pub fn new_stage(&self) -> Result<PathBuf, String> {
+        let dir = &self.inner.packages_dir;
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |since| since.as_nanos());
-        let mut stage = self.inner.packages_dir.join(format!("{STAGING}{nanos}"));
-        let mut n = 0;
-        while stage.exists() {
-            n += 1;
-            stage = self
-                .inner
-                .packages_dir
-                .join(format!("{STAGING}{nanos}-{n}"));
+        for n in 0u32.. {
+            let name = if n == 0 {
+                format!("{STAGING}{nanos}")
+            } else {
+                format!("{STAGING}{nanos}-{n}")
+            };
+            let stage = dir.join(name);
+            match std::fs::create_dir(&stage) {
+                Ok(()) => return Ok(stage),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("{}: {e}", stage.display())),
+            }
         }
-        stage
+        Err(format!("no free folder to fetch into in {}", dir.display()))
     }
 
     /// Claims `id`'s package for `work` until the claim is dropped. Refused while anything else
     /// is being done to it, so the same package is never fetched twice at once, nor removed
     /// while it's being put in place.
-    pub fn claim(&self, id: &ExtensionId, work: PackageWork) -> Result<PackageClaim, String> {
+    pub fn claim(&self, id: &ExtensionId, work: PackageWork) -> Result<PackageClaim, Underway> {
         let mut busy = self
             .inner
             .work
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(underway) = busy.get(id) {
-            return Err(format!(
-                "`{id}` is already {}; that takes a moment",
-                underway.as_str()
-            ));
+        if let Some(&underway) = busy.get(id) {
+            return Err(Underway {
+                id: id.clone(),
+                work: underway,
+            });
         }
         busy.insert(id.clone(), work);
         Ok(PackageClaim {
@@ -1145,7 +1176,9 @@ fn panic_message(payload: Box<dyn Any + Send>) -> String {
 
 /// What a stop in the middle of fetching or updating left in `dir`. A package being fetched is
 /// deleted: nothing was installed from it. The old package an update moved aside is put back
-/// when the new one never took its place, and deleted when it did.
+/// when the new one never took its place. When it did, what the old one had and the new one
+/// doesn't is carried over first, as the update would have; the old one is deleted only once
+/// that's done. One that can't be read is left alone: it may be the only copy of a package.
 fn clear_staging(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -1163,24 +1196,9 @@ fn clear_staging(dir: &Path) {
         {
             continue;
         }
-        if name.ends_with(".old")
-            && let Ok(manifest) = read_package_manifest(&path)
-        {
-            let home = dir.join(manifest.extension.id.as_str());
-            if !home.exists() {
-                match std::fs::rename(&path, &home) {
-                    Ok(()) => tracing::warn!(
-                        extension = %manifest.extension.id,
-                        "an update stopped halfway; the version it was replacing is back"
-                    ),
-                    Err(error) => tracing::warn!(
-                        extension = %manifest.extension.id,
-                        %error,
-                        "an update stopped halfway, and the version it was replacing couldn't be put back"
-                    ),
-                }
-                continue;
-            }
+        if name.ends_with(".old") {
+            finish_update(dir, &path);
+            continue;
         }
         match std::fs::remove_dir_all(&path) {
             Ok(()) => tracing::info!(
@@ -1192,6 +1210,69 @@ fn clear_staging(dir: &Path) {
             }
         }
     }
+}
+
+/// The old package an update moved aside to `old`, after Irori stopped in the middle of it.
+fn finish_update(dir: &Path, old: &Path) {
+    let manifest = match read_package_manifest(old) {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            tracing::warn!(
+                folder = %old.display(),
+                %error,
+                "an update stopped halfway, and the version it was replacing can't be read; left where it is"
+            );
+            return;
+        }
+    };
+    let id = &manifest.extension.id;
+    let home = dir.join(id.as_str());
+    if !home.exists() {
+        match std::fs::rename(old, &home) {
+            Ok(()) => tracing::warn!(
+                extension = %id,
+                "an update stopped halfway; the version it was replacing is back"
+            ),
+            Err(error) => tracing::warn!(
+                extension = %id,
+                %error,
+                "an update stopped halfway, and the version it was replacing couldn't be put back"
+            ),
+        }
+        return;
+    }
+    if let Err(error) = carry_over(old, &home) {
+        tracing::warn!(
+            extension = %id,
+            %error,
+            "an update stopped halfway, and what the old version had couldn't all be carried over; kept until the next start"
+        );
+        return;
+    }
+    match std::fs::remove_dir_all(old) {
+        Ok(()) => tracing::info!(extension = %id, "removed the version an update replaced"),
+        Err(error) => tracing::warn!(
+            extension = %id,
+            %error,
+            "couldn't remove the version an update replaced"
+        ),
+    }
+}
+
+/// Moves into `home` whatever `old` has that `home` doesn't: what an extension fetched for
+/// itself once it ran (Zigbee's Node.js and Zigbee2MQTT), which a new package doesn't bring.
+/// Done again after a stop halfway, it moves what's left. Says if anything couldn't be moved.
+fn carry_over(old: &Path, home: &Path) -> Result<(), String> {
+    let entries = std::fs::read_dir(old).map_err(|e| format!("{}: {e}", old.display()))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{}: {e}", old.display()))?;
+        let kept = home.join(entry.file_name());
+        if !kept.exists() {
+            std::fs::rename(entry.path(), &kept)
+                .map_err(|e| format!("{}: {e}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn installed_packages(dir: &Path) -> Result<Vec<PathBuf>, String> {

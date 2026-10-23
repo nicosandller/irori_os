@@ -166,10 +166,19 @@ pub fn install_url(url: &str, dest: &Path) -> Result<(), String> {
     }
     fs::create_dir_all(dest).map_err(|e| e.to_string())?;
     let archive = dest.join("download.tar.gz");
+    // A download that stalls gives up instead of hanging: the install holds its extension's
+    // claim until it ends, so a hang would refuse every Install, Update and Uninstall of it
+    // until Irori restarts. Slow is fine; under 1 kB/s for a whole minute isn't.
     run(
         "curl",
         &[
             "-fsSL",
+            "--connect-timeout",
+            "30",
+            "--speed-limit",
+            "1024",
+            "--speed-time",
+            "60",
             "--output",
             archive.to_str().ok_or("package path is not UTF-8")?,
             url,

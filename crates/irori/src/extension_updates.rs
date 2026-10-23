@@ -71,7 +71,7 @@ pub async fn update(id: &ExtensionId) -> Result<(), String> {
     // What was fetched is what would run. If it asks for full access, a person approves that.
     crate::server::place_official(host.clone(), item, false, true)
         .await
-        .map_err(|(_, why)| why)
+        .map_err(|why| why.why())
 }
 
 #[cfg(test)]

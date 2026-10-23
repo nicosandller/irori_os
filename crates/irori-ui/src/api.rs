@@ -1068,11 +1068,49 @@ pub async fn fetch_serial_ports() -> Result<Vec<String>, String> {
 
 /// Installs an extension, or with `update` replaces the version that's installed, keeping its
 /// devices, settings and data.
+/// Why an Install, Update or Uninstall was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageRefused {
+    pub error: String,
+    /// Set when it was refused only because the server is already doing something to that
+    /// extension (`installing`, `updating`, `uninstalling`), whoever asked for it.
+    pub underway: Option<String>,
+}
+
+impl From<String> for PackageRefused {
+    fn from(error: String) -> Self {
+        Self {
+            error,
+            underway: None,
+        }
+    }
+}
+
+async fn package_checked(response: gloo_net::http::Response) -> Result<(), PackageRefused> {
+    #[derive(Deserialize)]
+    struct Refused {
+        error: String,
+        #[serde(default)]
+        underway: Option<String>,
+    }
+    if response.ok() {
+        return Ok(());
+    }
+    let status = response.status();
+    Err(match response.json::<Refused>().await {
+        Ok(refused) => PackageRefused {
+            error: refused.error,
+            underway: refused.underway,
+        },
+        Err(_) => format!("Irori refused that ({status})").into(),
+    })
+}
+
 pub async fn install_extension(
     id: &str,
     approve_full_access: bool,
     update: bool,
-) -> Result<(), String> {
+) -> Result<(), PackageRefused> {
     let response = post(&format!("/api/extensions/{id}/install"))
         .json(&serde_json::json!({
             "approve_full_access": approve_full_access,
@@ -1082,15 +1120,15 @@ pub async fn install_extension(
         .send()
         .await
         .map_err(unreachable)?;
-    checked(response).await
+    package_checked(response).await
 }
 
-pub async fn uninstall_extension(id: &str) -> Result<(), String> {
+pub async fn uninstall_extension(id: &str) -> Result<(), PackageRefused> {
     let response = delete(&format!("/api/extensions/{id}"))
         .send()
         .await
         .map_err(unreachable)?;
-    checked(response).await
+    package_checked(response).await
 }
 
 /// One extension's settings, as a JSON object matching its own `config_schema` — the generic
