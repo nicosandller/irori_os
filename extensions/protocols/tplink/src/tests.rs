@@ -196,6 +196,20 @@ async fn a_session_reads_the_device_over_klap() {
 }
 
 #[tokio::test]
+async fn a_device_with_no_account_set_is_read_with_its_setup_or_blank_login() {
+    for (username, password) in [("test@tp-link.net", "test"), ("", "")] {
+        let fake = fake::start(Kind::Plug, AuthHash::new(username, password)).await;
+        let mut session = Session::connect(fake.address, &auth())
+            .await
+            .expect("logged in with the fallback");
+        let request =
+            crate::smart::multiple(&[(crate::smart::DEVICE_INFO, serde_json::Value::Null)]);
+        let response = session.request(&request).await.expect("answered");
+        assert!(crate::smart::answers(&response).expect("ok")[crate::smart::DEVICE_INFO].is_ok());
+    }
+}
+
+#[tokio::test]
 async fn a_wrong_account_is_told_apart_from_an_unreachable_device() {
     let fake = fake::start(Kind::Plug, auth()).await;
     let wrong = AuthHash::new(USER, "wrong");

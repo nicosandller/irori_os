@@ -35,6 +35,15 @@ impl AuthHash {
     }
 }
 
+/// Logins a device holds when no account has been set on it: TP-Link's published setup logins
+/// for Kasa and Tapo, then a blank one. Tried, as python-kasa's `KlapTransport` does, only when the
+/// device doesn't prove it knows the account, so a reset or never-registered plug is still read.
+const FALLBACKS: [(&str, &str, &str); 3] = [
+    ("Kasa setup", "kasa@tp-link.net", "kasaSetup"),
+    ("Tapo setup", "test@tp-link.net", "test"),
+    ("blank", "", ""),
+];
+
 #[derive(Debug)]
 pub enum KlapError {
     /// The device couldn't be reached, or stopped answering.
@@ -223,9 +232,21 @@ impl Session {
         }
         let mut remote = [0u8; 16];
         remote.copy_from_slice(&first.body[..16]);
-        if first.body[16..] != server_proof(&local, &remote, auth) {
-            return Err(KlapError::Account);
-        }
+        let proven = |auth: &AuthHash| first.body[16..] == server_proof(&local, &remote, auth);
+        let auth = if proven(auth) {
+            *auth
+        } else {
+            let (label, fallback) = FALLBACKS
+                .iter()
+                .map(|(label, username, password)| (label, AuthHash::new(username, password)))
+                .find(|(_, fallback)| proven(fallback))
+                .ok_or(KlapError::Account)?;
+            tracing::debug!(
+                "a TP-Link device has no account set; logging in with its {label} login"
+            );
+            fallback
+        };
+        let auth = &auth;
         let cookie = first
             .session
             .ok_or_else(|| KlapError::Device("the device didn't start a session".into()))?;
@@ -312,6 +333,24 @@ mod tests {
         let last = sealed.len() - 1;
         sealed[last] ^= 1;
         assert!(keys.open(seq, &sealed).is_err());
+    }
+
+    #[test]
+    fn the_fallback_logins_match_python_kasa() {
+        // python-kasa keeps them base64-encoded in `kasa/credentials.py`.
+        use base64::Engine as _;
+        let decode = |text: &str| {
+            String::from_utf8(
+                base64::engine::general_purpose::STANDARD
+                    .decode(text)
+                    .expect("base64"),
+            )
+            .expect("utf-8")
+        };
+        assert_eq!(FALLBACKS[0].1, decode("a2FzYUB0cC1saW5rLm5ldA=="));
+        assert_eq!(FALLBACKS[0].2, decode("a2FzYVNldHVw"));
+        assert_eq!(FALLBACKS[1].1, decode("dGVzdEB0cC1saW5rLm5ldA=="));
+        assert_eq!(FALLBACKS[1].2, decode("dGVzdA=="));
     }
 
     #[test]
