@@ -975,15 +975,18 @@
         if (event.pointerType === 'touch') {
           s.touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
           if (s.touches.size === 2) {
-            // A second finger: whatever the first was doing, this is a pinch now.
-            s.drag = null; s.pan = null;
-            root.classList.remove('nm-dragging', 'nm-panning');
+            // A second finger: whatever the first was doing, this is a pinch now. A device the
+            // first had moved stays where it got to, as if let go there.
+            if (s.drag) finishDrag();
+            s.pan = null;
+            root.classList.remove('nm-panning');
             const [a, b] = [...s.touches.values()];
             s.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
             return;
           }
         }
-        if (event.button !== 0 || s.drag || (event.target.closest && event.target.closest('.nm-node'))) return;
+        // The whole map showing, there's nowhere to move it.
+        if (event.button !== 0 || s.drag || s.view.k <= 1.001 || (event.target.closest && event.target.closest('.nm-node'))) return;
         s.pan = { pointer: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
       }
       function onPanMove(event) {
@@ -1024,7 +1027,8 @@
       // Dragging a device: it goes where it's put and stays there, in this layout, in this
       // browser. A press that doesn't travel a few pixels is still a click.
       function startDrag(event, id) {
-        if (event.button !== 0 || !s.pos[id]) return;
+        // One device at a time: a second finger on another is the start of a pinch.
+        if (event.button !== 0 || !s.pos[id] || s.drag) return;
         s.drag = { id, pointer: event.pointerId, x0: event.clientX, y0: event.clientY, rect: root.getBoundingClientRect(), from: { x: s.pos[id].x, y: s.pos[id].y }, moved: false };
       }
       function onDragMove(event) {
@@ -1043,6 +1047,11 @@
       function onDragEnd(event) {
         const d = s.drag;
         if (!d || event.pointerId !== d.pointer) return;
+        finishDrag();
+      }
+      // Ends the drag under way; a device that moved stays there, kept by this browser.
+      function finishDrag() {
+        const d = s.drag;
         s.drag = null;
         if (!d.moved) return;
         root.classList.remove('nm-dragging');
