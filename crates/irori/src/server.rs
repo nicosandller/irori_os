@@ -2100,12 +2100,10 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
         ExtensionId,
         serde_json::Map<String, serde_json::Value>,
     > = std::collections::BTreeMap::new();
-    let mut secrets: std::collections::BTreeMap<ExtensionId, Vec<String>> =
-        std::collections::BTreeMap::new();
     for id in running.keys() {
         configured.insert(id.clone(), state.0.config.extension_settings(id).await);
-        secrets.insert(id.clone(), state.0.config.secrets_set(id).await);
     }
+    let secrets = state.0.config.secrets_set().await;
     Json(
         crate::packages::official()
             .into_iter()

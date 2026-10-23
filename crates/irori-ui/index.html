@@ -563,12 +563,12 @@
                             color: var(--fg); background: var(--bg); border: 1px solid var(--line);
                             border-radius: .4rem; }
     .settings-field input:focus { outline: 2px solid var(--ember); outline-offset: -1px; }
-    /* A yes-or-no setting: Irori's switch at the end of the row, its words before it (and
-       they flip it too, as a label would). */
+    /* A yes-or-no setting: Irori's switch at the end of the row, its words before it (its
+       label flips it too, as a checkbox's would). */
     .settings-field-toggle { flex-direction: row; align-items: center; gap: .75rem;
                              justify-content: space-between; }
-    .settings-toggle-words { display: flex; flex-direction: column; gap: .15rem; cursor: pointer;
-                             min-width: 0; }
+    .settings-toggle-words { display: flex; flex-direction: column; gap: .15rem; min-width: 0; }
+    .settings-toggle-label { cursor: pointer; }
     /* Settings that go together (Matter's Wi-Fi network and its password), in a section that
        folds away once something in it is saved, saying in a word what it holds. */
     .settings-group { border: 1px solid var(--line); border-radius: .5rem; background: var(--card); }

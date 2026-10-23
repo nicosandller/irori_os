@@ -2,8 +2,9 @@
 id = "zigbee"
 name = "Zigbee"
 version = "0.5.1"
-irori = ">=1.4.0"
-# 1.4.0 has the `update` kind: firmware a device can be told to install.
+irori = ">=1.5.0"
+# 1.4.0 has the `update` kind: firmware a device can be told to install. 1.5.0 is the first
+# core that takes a device's serial number, which Zigbee2MQTT's discovery can carry.
 description = "Zigbee devices through a USB dongle. Brings its own Zigbee2MQTT and broker: the MQTT extension isn't needed."
 config_schema = "config.schema.json"
 

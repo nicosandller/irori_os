@@ -65,7 +65,8 @@ struct Row {
     field: Field,
     value: RwSignal<String>,
     touched: RwSignal<bool>,
-    saved: bool,
+    /// A signal, since saving from the add-device form saves it without the form being made again.
+    saved: RwSignal<bool>,
 }
 
 impl Row {
@@ -90,7 +91,7 @@ impl Row {
             field,
             value: RwSignal::new(initial),
             touched: RwSignal::new(false),
-            saved,
+            saved: RwSignal::new(saved),
         }
     }
 
@@ -132,7 +133,7 @@ fn group_view(name: String, mut members: Vec<Row>) -> impl IntoView {
         FieldKind::Secret => 2,
         _ => 1,
     });
-    let set = members.iter().any(|row| row.saved);
+    let set = members.iter().any(|row| row.saved.get_untracked());
     let open = RwSignal::new(!set);
     let status = {
         let members = members.clone();
@@ -190,7 +191,7 @@ fn group_status(members: &[Row]) -> String {
     if secrets().any(|row| !row.value.get().is_empty()) {
         return "Entered".to_owned();
     }
-    if secrets().any(|row| row.saved) {
+    if secrets().any(|row| row.saved.get()) {
         return "Saved".to_owned();
     }
     "Not set".to_owned()
@@ -353,10 +354,6 @@ fn resolve_ref<'a>(
         .and_then(|name| root.get("$defs")?.get(name))
 }
 
-/// Parses one field's raw text into the JSON value to submit — honoring the schema's
-/// integer/number distinction, since a schema `"type": "integer"` field (a port, a channel) has
-/// a Rust settings type like `u16`/`u8` that refuses a JSON float, even one with a trailing
-/// `.0`: `Integer` parses and emits a whole number, not `Number`'s `f64`.
 /// What a row sends, from its text: `parse_field`, after a hex field is checked and the spaces
 /// and line breaks a paste brings with it are taken out.
 fn parse_row(field: &Field, text: &str) -> Result<serde_json::Value, String> {
@@ -370,6 +367,10 @@ fn parse_row(field: &Field, text: &str) -> Result<serde_json::Value, String> {
     parse_field(&field.kind, text)
 }
 
+/// Parses one field's raw text into the JSON value to submit — honoring the schema's
+/// integer/number distinction, since a schema `"type": "integer"` field (a port, a channel) has
+/// a Rust settings type like `u16`/`u8` that refuses a JSON float, even one with a trailing
+/// `.0`: `Integer` parses and emits a whole number, not `Number`'s `f64`.
 fn parse_field(kind: &FieldKind, text: &str) -> Result<serde_json::Value, String> {
     match kind {
         FieldKind::Bool => Ok(serde_json::Value::Bool(text == "true")),
@@ -482,16 +483,19 @@ impl SettingRows {
         Ok(changed)
     }
 
-    /// After they were saved: nothing is changed any more, and a secret goes back to blank,
-    /// which keeps what was saved.
+    /// After they were saved: nothing is changed any more, what was filled in is saved, and a
+    /// secret goes back to blank, which keeps what was saved.
     pub fn saved(&self) {
         for Row {
             field,
             value,
             touched,
-            ..
+            saved,
         } in &self.0
         {
+            if touched.get_untracked() && !value.get_untracked().trim().is_empty() {
+                saved.set(true);
+            }
             touched.set(false);
             if field.kind == FieldKind::Secret {
                 value.set(String::new());
@@ -639,7 +643,7 @@ fn field_row(
     field: Field,
     value: RwSignal<String>,
     touched: RwSignal<bool>,
-    saved: bool,
+    saved: RwSignal<bool>,
 ) -> impl IntoView {
     let label = field.label.clone();
     let required = field
@@ -649,7 +653,8 @@ fn field_row(
     match field.kind.clone() {
         FieldKind::Bool => {
             // Irori's own switch, not the browser's checkbox. A button, so inside a form it
-            // has to say it isn't the one that submits it; the words beside it flip it too.
+            // has to say it isn't the one that submits it. Its label flips it too, as a
+            // checkbox's would; its help doesn't, so selecting that text leaves it alone.
             let flip = move || {
                 value.update(|on| *on = if on == "true" { "false" } else { "true" }.to_owned());
                 touched.set(true);
@@ -657,8 +662,10 @@ fn field_row(
             let name = label.clone();
             view! {
                 <div class="settings-field settings-field-toggle">
-                    <span class="settings-toggle-words" on:click=move |_| flip()>
-                        <span>{label}{required}</span>
+                    <span class="settings-toggle-words">
+                        <span class="settings-toggle-label" on:click=move |_| flip()>
+                            {label}{required}
+                        </span>
                         {note}
                     </span>
                     <button
@@ -681,7 +688,7 @@ fn field_row(
                     type="password"
                     autocomplete="off"
                     spellcheck="false"
-                    placeholder=saved.then_some("Saved. Leave blank to keep it.")
+                    placeholder=move || saved.get().then_some("Saved. Leave blank to keep it.")
                     prop:value=value
                     on:input:target=move |ev| {
                         value.set(ev.target().value());
@@ -1031,6 +1038,30 @@ mod tests {
     #[test]
     fn a_blank_or_non_numeric_field_is_a_named_error() {
         assert!(parse_field(&FieldKind::Integer, "abc").is_err());
+        assert!(parse_field(&FieldKind::Number, "abc").is_err());
+    }
+
+    #[test]
+    fn a_secret_saved_from_the_add_device_form_reads_as_saved_after() {
+        let schema = serde_json::json!({
+            "properties": {
+                "dataset": {
+                    "anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}],
+                    "x-irori-group": "Thread"
+                }
+            },
+            "$defs": {"Secret": {"type": "string", "writeOnly": true}}
+        });
+        let keys = ["dataset".to_owned()];
+        let rows = SettingRows::new(&schema, &serde_json::Map::new(), &[], &keys);
+        assert_eq!(group_status(&rows.0), "Not set");
+        rows.0[0].value.set("0e08".to_owned());
+        rows.0[0].touched.set(true);
+        assert_eq!(group_status(&rows.0), "Entered");
+        rows.saved();
+        // The box is blank again, which keeps it, and the section says it's there.
+        assert_eq!(rows.0[0].value.get_untracked(), "");
+        assert_eq!(group_status(&rows.0), "Saved");
     }
 
     #[test]
@@ -1060,6 +1091,5 @@ mod tests {
         );
         assert!(parse_row(dataset, "0e0").is_err());
         assert!(parse_row(dataset, "not hex!").is_err());
-        assert!(parse_field(&FieldKind::Number, "abc").is_err());
     }
 }
