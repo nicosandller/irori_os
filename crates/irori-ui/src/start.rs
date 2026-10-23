@@ -9,12 +9,16 @@
 use leptos::prelude::*;
 use leptos_router::components::A;
 
-use crate::Live;
+use crate::{Live, Session};
 
 /// The wordmark and the counts. `children` are the page's own actions, drawn beside the name.
 #[component]
 pub fn Hero(children: Children) -> impl IntoView {
     let live = expect_context::<Live>();
+    let Session(session) = expect_context::<Session>();
+    // What the extensions are doing is the owner's to look at; a regular user is told nothing
+    // of them (`docs/specs/access.md` §2).
+    let owner = move || session.with(|session| session.as_ref().is_none_or(|s| s.owner));
 
     let counts = move || {
         let home = live.home.get();
@@ -61,16 +65,18 @@ pub fn Hero(children: Children) -> impl IntoView {
                     </span>
                     <span class="label">"entities"</span>
                 </A>
-                <A href="/extensions" attr:class="tile" on:click=crate::transition::expand attr:style="--i: 2">
-                    <span class="count">
-                        {move || {
-                            let (_, _, running, total) = counts();
-                            if running == total { running.to_string() }
-                            else { format!("{running}/{total}") }
-                        }}
-                    </span>
-                    <span class="label">"extensions running"</span>
-                </A>
+                <Show when=owner>
+                    <A href="/extensions" attr:class="tile" on:click=crate::transition::expand attr:style="--i: 2">
+                        <span class="count">
+                            {move || {
+                                let (_, _, running, total) = counts();
+                                if running == total { running.to_string() }
+                                else { format!("{running}/{total}") }
+                            }}
+                        </span>
+                        <span class="label">"extensions running"</span>
+                    </A>
+                </Show>
             </div>
         </section>
     }

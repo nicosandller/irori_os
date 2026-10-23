@@ -219,6 +219,7 @@ pub fn Extensions() -> impl IntoView {
                         id=id.clone()
                         schema=schema
                         current=entry.settings.clone()
+                        secrets_set=entry.secrets_set.clone()
                         on_close=move || {
                             settings_open.set(None);
                             reload();

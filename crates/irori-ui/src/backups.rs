@@ -313,6 +313,8 @@ fn parts_default(entry: &BackupEntry) -> BackupParts {
         extensions: true,
         state: true,
         history: entry.manifest.as_ref().is_none_or(|m| m.history),
+        // Left as it is by default: the record of who changed the home isn't wound back with it.
+        activity: false,
     }
 }
 
@@ -450,6 +452,7 @@ fn RestoreForm(entry: BackupEntry) -> impl IntoView {
     });
     let sealed = entry.encrypted;
     let has_history = entry.manifest.as_ref().is_none_or(|m| m.history);
+    let has_activity = entry.manifest.as_ref().is_some_and(|m| m.activity);
     let name = entry.name.clone();
     let (check_name, restore_name) = (name.clone(), name);
 
@@ -476,7 +479,12 @@ fn RestoreForm(entry: BackupEntry) -> impl IntoView {
             return;
         }
         let chosen = parts.get_untracked();
-        if !(chosen.settings || chosen.extensions || chosen.state || chosen.history) {
+        if !(chosen.settings
+            || chosen.extensions
+            || chosen.state
+            || chosen.history
+            || chosen.activity)
+        {
             trouble.set(Some("Choose something to put back.".to_owned()));
             return;
         }
@@ -556,6 +564,12 @@ fn RestoreForm(entry: BackupEntry) -> impl IntoView {
                     if has_history { "Sensor readings and state changes. Turn off to keep the history Irori has now." }
                     else { "This backup was made without history." },
                     |p| p.history, |p| &mut p.history, has_history,
+                )}
+                {pick(
+                    "Activity log",
+                    if has_activity { "Who changed what, as the backup had it. Turn on only to wind the record back too; off keeps the one Irori has now." }
+                    else { "This backup has no activity log." },
+                    |p| p.activity, |p| &mut p.activity, has_activity,
                 )}
             </div>
             {move || checked.get().map(|v| view! {

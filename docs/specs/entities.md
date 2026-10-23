@@ -104,7 +104,7 @@ A physical or virtual thing a protocol talks to. It has one or more entities.
 | `unique_id` | `UniqueId` | yes | Unique within `protocol` |
 | `name` | `Name` | yes | Its one name: a person's, else what the protocol reports. Never two side by side |
 | `description` | `Description` | no | What it's for, in a person's words |
-| `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | As reported; informational only |
+| `manufacturer`, `model`, `sw_version`, `hw_version`, `serial_number` | string | no | As reported; informational only |
 | `area_id` | `AreaId` | no | |
 | `suggested_area` | `Name` | no | The room the device says it's in; used only while no one has placed it ([config.md](config.md) §5) |
 | `via_device_id` | `DeviceId` | no | The bridge or coordinator it's reached through |
@@ -460,6 +460,10 @@ the motion sensor reported at 22:04:12").
 | `automation` | `extension`, `run_id` (ULID) | An installed automation engine's run. The engine (not the core) owns what a "rule" is. |
 | `api` | `token_id` | An API client with an access token |
 | `system` | — | Irori itself: restoring state at startup, reloading config |
+
+A command sent from the page or with a token leaves a row in the activity log with its call's
+context (`access.md` §3.1). The state change it causes carries that context as its `parent_id`,
+and `GET /api/history/<entity_id>` joins the two to say who sent it.
 
 ## 7. Validation
 

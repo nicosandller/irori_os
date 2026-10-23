@@ -45,9 +45,32 @@ fn Frame(id: String) -> impl IntoView {
     let navigate = use_navigate();
     let location = use_location();
 
+    let crate::Apps(theirs) = expect_context::<crate::Apps>();
+    let crate::Session(session) = expect_context::<crate::Session>();
     let app = {
         let id = id.clone();
         Memo::new(move |_| {
+            // A regular user's home says nothing of extensions: the page they may open comes
+            // from the list the server gives them.
+            if session.with(|s| s.as_ref().is_some_and(|s| !s.owner)) {
+                return theirs.with(|entries| {
+                    entries
+                        .iter()
+                        .flatten()
+                        .find(|entry| entry.extension == id)
+                        .map(|entry| {
+                            (
+                                api::AppInfo {
+                                    label: entry.label.clone(),
+                                    api: entry.api.clone(),
+                                    entity_format: entry.entity_format,
+                                },
+                                "running".to_owned(),
+                                entry.has_engine,
+                            )
+                        })
+                });
+            }
             live.home.with(|home| {
                 home.extensions
                     .iter()
@@ -268,6 +291,18 @@ fn Frame(id: String) -> impl IntoView {
                 // The sandboxed editor can't draw outside its frame, so it says where its
                 // Ask button is and the shell opens the chat under it.
                 "assistant" => {
+                    // Setting the assistant up is the owner's: where there is none to ask, the
+                    // button does nothing for anybody else rather than leading to a page they
+                    // can't use (`docs/specs/access.md` §2).
+                    let ready = assistant
+                        .0
+                        .get_untracked()
+                        .is_some_and(|status| status.ready);
+                    let owner = session.with_untracked(|s| s.as_ref().is_none_or(|s| s.owner));
+                    if !(ready || owner) {
+                        post(&Reply::answer(request.id, Ok(serde_json::Value::Null)));
+                        return;
+                    }
                     let flow = request.args["id"].as_str().unwrap_or_default().trim();
                     // A flow that is not saved yet has no id; it is asked about as a new one.
                     let scope = if request.args["new"].as_bool() == Some(true) {

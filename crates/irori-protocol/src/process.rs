@@ -61,6 +61,9 @@ pub enum FromExt {
     SetUnmodeled {
         unmodeled: Vec<Unmodeled>,
     },
+    SetNetworks {
+        networks: Vec<irori_types::Network>,
+    },
     SetAvailableActions {
         actions: Vec<String>,
     },
@@ -116,6 +119,20 @@ pub enum FromExt {
         id: u64,
         entities: Vec<EntityId>,
         since: Timestamp,
+    },
+    /// What a person can see and may do now, for checking a flow of theirs. Only an extension
+    /// whose manifest says `users = true` is answered (`docs/specs/access.md` §4.1).
+    GetReach {
+        id: u64,
+        user: irori_types::UserId,
+    },
+    /// Something the engine did to the home, for the activity log. No answer. The core takes
+    /// only `flow_turned_off` and `flow_handed_over`, and only from an extension that limits
+    /// what people can do.
+    Note {
+        action: String,
+        target: String,
+        detail: String,
     },
     /// Start receiving `state_changed` and/or `registry_changed`. `events:read`.
     Subscribe {
@@ -183,6 +200,12 @@ pub enum ToExt {
         /// End the action's open window early instead of starting it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stop: bool,
+        /// Which of the action's ways the person picked, and what they typed into its fields.
+        /// Absent for a plain button, so older extensions read the message unchanged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        way: Option<String>,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+        fields: std::collections::BTreeMap<String, String>,
     },
     /// Take a device off the protocol's network. Only sent to a protocol whose manifest says
     /// `unpairs`. Answered with `action_result`.
@@ -223,6 +246,9 @@ pub enum ToExt {
         method: String,
         #[serde(default)]
         params: serde_json::Value,
+        /// Who asked, put there by the core. Left out for the home's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<crate::engine::Caller>,
     },
 }
 
@@ -602,11 +628,13 @@ fn handle_host_line(
             id,
             action_id,
             stop,
+            way,
+            fields,
         } => {
             let (incoming, result) = if stop {
                 host::incoming_stop(action_id)
             } else {
-                host::incoming_action(action_id)
+                host::incoming_action_with(action_id, crate::Filled { way, fields })
             };
             if !queue_action(id, incoming, result, actions, out, runtime) {
                 return ReadControl::Stop;
@@ -737,6 +765,7 @@ impl Pending {
             Op::SetHealth(health) => Some(FromExt::SetHealth { health }),
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
             Op::SetUnmodeled(unmodeled) => Some(FromExt::SetUnmodeled { unmodeled }),
+            Op::SetNetworks(networks) => Some(FromExt::SetNetworks { networks }),
             Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
             Op::SetActionOpen(action_id, remaining) => Some(FromExt::SetActionOpen {
                 action_id,

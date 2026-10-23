@@ -1,0 +1,20 @@
+[package]
+name = "irori-node-runtime"
+description = "A managed Node.js for protocols that wrap a Node program (Zigbee2MQTT, the Matter server): download it, install an npm package beside it, and run that as a supervised child."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

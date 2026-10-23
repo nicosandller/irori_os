@@ -6,10 +6,11 @@
 //! next timer, for a call's answer, and every couple of seconds to notice edited flow files.
 
 pub mod brief;
+pub mod people;
 pub mod rpc;
 pub mod store;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -19,9 +20,10 @@ use irori_protocol::WireCommand;
 use irori_protocol::engine::{EngineClient, Incoming, Registry};
 use irori_rules::clock::Place;
 use irori_rules::{CallData, MapRegistry, RuleService};
-use irori_types::{ContextId, Timestamp};
+use irori_types::{ContextId, RuleId, Timestamp, UserId};
 use tokio::sync::mpsc;
 
+use crate::people::{Standing, View};
 use crate::store::Store;
 
 /// How often flow files are checked for edits made outside the page.
@@ -51,17 +53,61 @@ pub struct Service {
     pub engine: Engine,
     pub store: Store,
     pub registry: MapRegistry,
+    /// Which reading of the home `registry` is: a person's standing is built on one.
+    home_was: u64,
+    /// Where each person who has a flow, or has asked, stands now (`docs/specs/access.md` §4).
+    pub people: BTreeMap<UserId, Standing>,
+    /// Whether the flows have been armed once already: before that, what each flow was doing is
+    /// not known, and a change made while Irori was stopped is the one to find.
+    started: bool,
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
 }
 
 impl Service {
+    /// What a flow of `owner`'s is checked against: the home itself for the home's own, else
+    /// the home as that person has it. Why not, when it can't be told.
+    pub fn view(&self, owner: Option<&UserId>) -> Result<View<'_>, String> {
+        let Some(user) = owner else {
+            return Ok(View {
+                owner: true,
+                registry: &self.registry,
+                seen: None,
+            });
+        };
+        match self.people.get(user) {
+            Some(standing) if standing.here => Ok(View {
+                owner: standing.owner,
+                registry: &standing.registry,
+                seen: standing.seen.as_ref(),
+            }),
+            Some(_) => Err(format!(
+                "{user} is not in the home any more, so what their flow may touch can't be told"
+            )),
+            None => Err("what the owner of this flow can reach could not be told yet".to_owned()),
+        }
+    }
+
     /// Everything wrong with `flow`, errors first: what the checker finds, and a warning
-    /// wherever it compares a number with a sensor Irori converts to °C.
+    /// wherever it compares a number with a sensor Irori converts to °C. Checked as its owner:
+    /// against the rooms they have and what they may send (`docs/specs/access.md` §4).
     pub fn problems(&self, flow: &irori_flow_types::Flow) -> Vec<irori_flow_types::api::Problem> {
+        let view = match self.view(flow.owner.as_ref()) {
+            Ok(view) => view,
+            Err(why) => {
+                return vec![irori_flow_types::api::Problem {
+                    severity: irori_flow_types::api::Severity::Error,
+                    node: None,
+                    wire: None,
+                    field: None,
+                    message: why,
+                }];
+            }
+        };
         let native: BTreeMap<_, _> = self
             .engine
             .states()
             .into_iter()
+            .filter(|state| view.sees(&state.entity_id))
             .filter_map(|state| {
                 let unit = state
                     .attributes
@@ -71,8 +117,20 @@ impl Service {
                 Some((state.entity_id, unit))
             })
             .collect();
-        let mut problems = validate::check(flow, &self.registry);
-        problems.extend(validate::converted(flow, &self.registry, &native));
+        let mut problems = validate::check_for(flow, view.registry, view.owner);
+        problems.extend(validate::converted(flow, view.registry, &native));
+        if flow.owner.is_some() {
+            // A person's flow is checked against their rooms, and says so: what is outside them
+            // reads as no entity at all, which is the same thing whether it is hidden or gone.
+            for problem in &mut problems {
+                if problem.message.contains("no such entity") {
+                    problem.message = problem.message.replace(
+                        " — check the entity id",
+                        " in your rooms — check the entity id",
+                    );
+                }
+            }
+        }
         problems
     }
 }
@@ -157,23 +215,108 @@ impl Service {
             engine,
             store,
             registry,
+            home_was: 0,
+            people: BTreeMap::new(),
+            started: false,
             calls,
         };
+        service.refresh_people().await;
         service.arm();
+        service.started = true;
         service.engine.start(now());
         service.apply_effects();
         Ok((service, answers))
     }
 
+    /// Asks the core where each person who owns a flow stands now, and takes into account the
+    /// people it has not been asked about. Called whenever the home or the people changed, before
+    /// the flows are checked again. A flow whose owner is no longer in the home is kept, turned
+    /// off, and handed to the owner of the home.
+    pub async fn refresh_people(&mut self) {
+        let owners: BTreeSet<UserId> = self
+            .store
+            .flows()
+            .filter_map(|flow| flow.owner.clone())
+            .chain(self.people.keys().cloned())
+            .collect();
+        for user in owners {
+            self.learn(&user).await;
+        }
+        self.hand_over_the_gone();
+    }
+
+    /// Asks the core where this person stands, and keeps the answer. When the core can't say,
+    /// nothing is known of them: what they could reach before might be more than they can now,
+    /// so their flows wait to be checked until the core answers.
+    pub async fn learn(&mut self, user: &UserId) {
+        match self.client.get_reach(user.clone()).await {
+            Ok(reach) => {
+                // The same answer about the same home is what is already known.
+                if self
+                    .people
+                    .get(user)
+                    .is_some_and(|known| known.told == reach && known.home_was == self.home_was)
+                {
+                    return;
+                }
+                let standing = Standing::of(reach, &self.registry, self.home_was);
+                self.people.insert(user.clone(), standing);
+            }
+            Err(error) => {
+                tracing::warn!(%user, %error, "couldn't ask what this person can reach");
+                self.people.remove(user);
+            }
+        }
+    }
+
+    /// A removed person's flows are kept, turned off, and the home's own: nothing they made is
+    /// lost, and nothing keeps running on a person who is not there to answer for it.
+    fn hand_over_the_gone(&mut self) {
+        let gone: Vec<(RuleId, UserId)> = self
+            .store
+            .flows()
+            .filter_map(|flow| {
+                let owner = flow.owner.as_ref()?;
+                let standing = self.people.get(owner)?;
+                (!standing.here).then(|| (flow.id.clone(), owner.clone()))
+            })
+            .collect();
+        for (id, owner) in gone {
+            let Some(mut flow) = self.store.flow(&id).cloned() else {
+                continue;
+            };
+            flow.owner = None;
+            flow.enabled = false;
+            match self.store.save(&flow, now(), None) {
+                Ok(()) => self.client.note(
+                    "flow_handed_over",
+                    id.as_str(),
+                    &format!("{owner} was removed; it is kept, turned off, and the home's own"),
+                ),
+                Err(error) => {
+                    tracing::warn!(flow = %id, %error, "couldn't hand over a removed person's flow");
+                }
+            }
+        }
+    }
+
     /// Checks every flow against the home and hands them to the engine. A definition not seen
     /// before — a hand edit, say — is kept as a version, so its runs can be drawn on it.
+    ///
+    /// A person's flow that is running and has lost what it needs of their rooms or their role
+    /// is turned off, for good: it does not start again by itself when the room comes back
+    /// (`docs/specs/access.md` §4). The reason is said once, to the activity log. Done here and
+    /// not only when a flow was seen running, so a change made while Irori was stopped counts.
+    /// A flow whose owner could not be asked about is left as it is, until they can be.
     pub fn arm(&mut self) {
         let at = now();
         for flow in self.store.flows() {
-            if let Err(error) = self.store.keep_version(flow, at) {
+            if let Err(error) = self.store.keep_version(flow, at, None) {
                 tracing::warn!(flow = %flow.id, %error, "couldn't keep this version");
             }
         }
+        let before = self.engine.armed();
+        self.turn_off_what_lost_access(at, &before);
         let arms: Vec<Arm> = self
             .store
             .flows()
@@ -184,6 +327,55 @@ impl Service {
             .collect();
         self.engine.set_flows(arms, now());
         self.apply_effects();
+    }
+
+    /// Turns off the flows of people that are on and can't be, for want of what their owner
+    /// has now: what is wrong with them would not be, were the owner the home's. A flow that is
+    /// wrong for its own reasons (an entity the home doesn't have) is left to arm again when
+    /// the home does.
+    fn turn_off_what_lost_access(
+        &mut self,
+        at: Timestamp,
+        before: &BTreeMap<RuleId, (irori_flow_types::api::Armed, String)>,
+    ) {
+        let lost: Vec<(Flow, String)> = self
+            .store
+            .flows()
+            .filter(|flow| flow.enabled && flow.owner.is_some())
+            // One that was running, or any at all when starting: a flow just written that can't
+            // run never did, and is told so by the save.
+            .filter(|flow| {
+                !self.started
+                    || matches!(
+                        before.get(&flow.id),
+                        Some((irori_flow_types::api::Armed::Armed, _))
+                    )
+            })
+            .filter_map(|flow| {
+                // Only when they could be asked: a person not told yet is not a person who lost.
+                self.view(flow.owner.as_ref()).ok()?;
+                let reason = self
+                    .problems(flow)
+                    .into_iter()
+                    .find(|problem| problem.is_error())?
+                    .message;
+                let wrong_anyway = validate::check_for(flow, &self.registry, true)
+                    .iter()
+                    .any(irori_flow_types::api::Problem::is_error);
+                (!wrong_anyway).then(|| (flow.clone(), reason))
+            })
+            .collect();
+        for (mut flow, reason) in lost {
+            flow.enabled = false;
+            match self.store.save(&flow, at, None) {
+                Ok(()) => self
+                    .client
+                    .note("flow_turned_off", flow.id.as_str(), &reason),
+                Err(error) => {
+                    tracing::warn!(flow = %flow.id, %error, "couldn't turn off a flow that can't run");
+                }
+            }
+        }
     }
 
     /// Does what the engine asked: makes its calls, keeps its records.
@@ -244,7 +436,11 @@ impl Service {
                     Ok(registry) => {
                         let (registry, place) = registry_view(registry);
                         self.registry = registry;
+                        self.home_was += 1;
                         self.engine.set_place(place, now());
+                        // The people may have changed with the home: their rooms, their role,
+                        // whether they are still here.
+                        self.refresh_people().await;
                         self.arm();
                         // A time that was due as the home changed has just fired.
                         self.apply_effects();
@@ -260,7 +456,13 @@ impl Service {
                 }
             }
             Incoming::App(request) => {
-                let result = rpc::handle(self, &request.method, request.params.clone()).await;
+                let result = rpc::handle(
+                    self,
+                    &request.caller,
+                    &request.method,
+                    request.params.clone(),
+                )
+                .await;
                 request.answer(result);
             }
             Incoming::Stop => return false,
@@ -342,6 +544,7 @@ pub async fn run() -> Result<(), String> {
                     for problem in service.store.problems() {
                         tracing::warn!(file = %problem.file, "{}", problem.reason);
                     }
+                    service.refresh_people().await;
                     service.arm();
                 }
             }
@@ -377,8 +580,12 @@ pub(crate) async fn history(
     flow: &Flow,
     since: Timestamp,
 ) -> Result<BTreeMap<irori_types::EntityId, Vec<irori_types::EntityState>>, String> {
-    let entities: Vec<_> = validate::watched(flow, &service.registry)
+    // What a person's flow reads is what they have: the history of anything else is not theirs
+    // to ask for, whatever a draft says.
+    let view = service.view(flow.owner.as_ref())?;
+    let entities: Vec<_> = validate::watched(flow, view.registry)
         .into_iter()
+        .filter(|entity| view.sees(entity))
         .collect();
     if entities.is_empty() {
         return Ok(BTreeMap::new());

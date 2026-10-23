@@ -4,7 +4,7 @@ use irori_client::{Health, Recorder, System};
 use irori_types::{ApiScope, Role};
 use serde_json::json;
 
-use super::args::{LoginArgs, PlaceCmd, RecorderCmd, Remote, TokenCmd, UsersCmd};
+use super::args::{AuditCmd, LoginArgs, PlaceCmd, RecorderCmd, Remote, TokenCmd, UsersCmd};
 use super::connect::{self, seg};
 use super::output::{self, explain};
 use super::prompt;
@@ -205,10 +205,11 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             output::show(link.json, &users, || {
                 for user in &users {
                     println!(
-                        "{}\t{}\t{}",
+                        "{}\t{}\t{}\t{}",
                         user.user.id,
                         user.user.name.as_str(),
-                        user.user.role.label()
+                        user.user.role.label(),
+                        rooms_of(&user.user)
                     );
                 }
             })
@@ -216,11 +217,18 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
         UsersCmd::Add {
             name,
             role,
+            areas,
+            no_rooms,
             password_stdin,
         } => {
             let role = parse_role(&role)?;
             let password = prompt::password("Password: ", password_stdin)?;
-            let body = json!({ "name": name, "role": role, "password": password });
+            let mut body = json!({ "name": name, "role": role, "password": password });
+            if no_rooms {
+                body["areas"] = json!([]);
+            } else if !areas.is_empty() {
+                body["areas"] = json!(areas);
+            }
             let users = link
                 .client
                 .post::<Vec<irori_client::UserRow>>("/api/users", &body)
@@ -232,6 +240,9 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             id,
             name,
             role,
+            areas,
+            no_rooms,
+            whole_home,
             password_stdin,
             current_password_stdin,
         } => {
@@ -242,6 +253,13 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
             if let Some(role) = role {
                 body["role"] = json!(parse_role(&role)?);
             }
+            if whole_home {
+                body["areas"] = serde_json::Value::Null;
+            } else if no_rooms {
+                body["areas"] = json!([]);
+            } else if !areas.is_empty() {
+                body["areas"] = json!(areas);
+            }
             if password_stdin {
                 body["password"] = json!(prompt::password("New password: ", true)?);
             }
@@ -249,7 +267,10 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
                 body["current_password"] = json!(prompt::password("Current password: ", true)?);
             }
             if body.as_object().is_some_and(|object| object.is_empty()) {
-                return Err("pass --name, --role, or --password-stdin".to_owned());
+                return Err(
+                    "pass --name, --role, --areas, --no-rooms, --whole-home or --password-stdin"
+                        .to_owned(),
+                );
             }
             let users = link
                 .client
@@ -276,6 +297,19 @@ pub async fn users(remote: &Remote, cmd: UsersCmd) -> Result<(), String> {
                 .map_err(err)?;
             output::done(link.json, &format!("removed {id}"))
         }
+    }
+}
+
+/// A person's rooms, as one cell of the list: the whole home, none, or the ids.
+fn rooms_of(user: &irori_types::User) -> String {
+    match &user.areas {
+        None => "whole home".to_owned(),
+        Some(rooms) if rooms.is_empty() => "no rooms".to_owned(),
+        Some(rooms) => rooms
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
     }
 }
 
@@ -387,6 +421,81 @@ pub async fn logs(remote: &Remote) -> Result<(), String> {
     }
 }
 
+/// A time, or how far back from `now`: `12h`, `7d`, `30m`.
+fn since_from(text: &str, now: jiff::Timestamp) -> Result<irori_types::Timestamp, String> {
+    let text = text.trim();
+    let span = text.char_indices().last().and_then(|(at, unit)| {
+        let n = text[..at].parse::<i64>().ok()?;
+        let seconds = match unit {
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            _ => return None,
+        };
+        n.checked_mul(seconds)
+    });
+    match span {
+        Some(seconds) => now
+            .checked_sub(jiff::SignedDuration::from_secs(seconds))
+            .map(irori_types::Timestamp::from_jiff)
+            .map_err(|_| format!("`{text}` reaches back further than there is a clock for")),
+        None => text.parse::<irori_types::Timestamp>().map_err(|_| {
+            format!("`{text}` isn't a time like 2026-10-19T08:00:00Z, or a span like 12h or 7d")
+        }),
+    }
+}
+
+pub async fn audit(remote: &Remote, cmd: AuditCmd) -> Result<(), String> {
+    let AuditCmd::List {
+        user,
+        kind,
+        outcome,
+        since,
+        limit,
+    } = cmd;
+    let link = connect::connect(remote)?;
+    let mut query = vec![format!("limit={limit}")];
+    for (name, value) in [("user", user), ("action", kind), ("outcome", outcome)] {
+        if let Some(value) = value {
+            query.push(format!("{name}={}", connect::encode(&value)));
+        }
+    }
+    if let Some(since) = since {
+        let at = since_from(&since, jiff::Timestamp::now())?;
+        query.push(format!("since={}", connect::encode(&at.to_string())));
+    }
+    let page = link
+        .client
+        .get::<irori_types::AuditPage>(&format!("/api/audit?{}", query.join("&")))
+        .await
+        .map_err(err)?;
+    output::show(link.json, &page, || {
+        for row in &page.entries {
+            // One row a line, whatever was typed into it: rows written before the log cleaned
+            // them may hold line breaks, tabs and escape sequences.
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                row.at,
+                row.outcome,
+                plain(&row.actor.to_string()),
+                plain(&row.action),
+                plain(row.target.as_deref().unwrap_or("-")),
+                plain(row.detail.as_deref().unwrap_or(""))
+            );
+        }
+        if page.older.is_some() {
+            eprintln!("(older rows exist: raise --limit, or narrow it)");
+        }
+    })
+}
+
+/// `text` with each control character (a line break, a tab, an escape) shown as a space.
+fn plain(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 pub async fn restart(remote: &Remote) -> Result<(), String> {
     let link = connect::connect(remote)?;
     if !prompt::confirm(
@@ -412,5 +521,29 @@ pub async fn restart(remote: &Remote) -> Result<(), String> {
     {
         Ok(()) => output::done(link.json, "restarting"),
         Err(error) => Err(err(error)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_span_goes_back_from_now_and_a_time_is_a_time() {
+        let now: jiff::Timestamp = "2026-10-19T12:00:00Z".parse().expect("a time");
+        assert_eq!(
+            since_from("12h", now).map(|t| t.to_string()),
+            Ok("2026-10-19T00:00:00Z".to_owned())
+        );
+        assert_eq!(
+            since_from("7d", now).map(|t| t.to_string()),
+            Ok("2026-10-12T12:00:00Z".to_owned())
+        );
+        assert_eq!(
+            since_from("2026-01-02T03:04:05Z", now).map(|t| t.to_string()),
+            Ok("2026-01-02T03:04:05Z".to_owned())
+        );
+        assert!(since_from("yesterday", now).is_err());
+        assert!(since_from("h", now).is_err());
     }
 }

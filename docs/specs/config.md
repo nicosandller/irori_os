@@ -121,9 +121,10 @@ to adding them by hand.
 entities' rows, and its spot on the floorplan. The device goes back to being found, listed under
 **+ Add device**.
 
-A device whose protocol keeps a network of its own is different (Zigbee;
+A device whose protocol keeps a network of its own is different (Zigbee, Matter;
 [protocols.md](protocols.md) §5.1). Leaving it paired would leave it on the network, still
-talking, and offered again as if it were new. So removing it unpairs it first:
+talking, and offered again as if it were new. So removing it unpairs it first. A Matter device
+can belong to several apps at once; unpairing takes only Irori off it, and the others keep it.
 
 - If the network lets it go, it is gone altogether. It has to be paired again to come back.
 - If the device doesn't answer, nothing is removed and the page says why. A battery device is
@@ -234,6 +235,10 @@ disabled = ["demo"]
 retain_days = 10          # detailed history, in days; at least 1
 # summary_days = 365      # hourly summaries; leave out to keep them
 
+[audit]
+retain_days = 90          # the activity log, in days; at least 1
+max_rows = 100000         # oldest rows go first; at least 1000
+
 [updates]
 check = true              # look for a newer Irori without being asked
 
@@ -263,6 +268,12 @@ in Settings writes it, and an edit of the file is picked up within a couple of s
   changes they came from are still there. The week, month, and year on a sensor's history are
   drawn from these hours. A measurement is the average for the hour. A counter is how much it
   changed. A `total_increasing` sensor treats a drop as a reset.
+
+`[audit]` is how long the activity log is kept and how large it may grow
+(`docs/specs/access.md` §3). It applies while Irori runs; the page does not write it. A row
+is kept `retain_days` days, but never fewer than `[recorder] retain_days`: history is read back
+to say who did what, so the log outlasts it. When the log is over `max_rows`, the oldest rows
+go first and a row says so, with the program that wrote most of what was kept.
 
 If `bind` is already in use when Irori starts, it listens on `bind_fallback` instead (or, if none
 is set, on the first free port just above `bind`, up to nine ports higher) and logs a warning with
@@ -667,6 +678,11 @@ role = "owner"        # "owner" or "user"
 [users.guest]
 name = "A guest"
 role = "user"
+
+[users.leo]
+name = "Leo"
+role = "user"
+areas = ["leos_room", "hall"]   # only these rooms; left out, the whole home
 ```
 
 Keyed by the person's id, which is made from their name when they are added and is what a
@@ -675,7 +691,16 @@ command they send is attributed to (`Origin::User`).
 | Role | May |
 |---|---|
 | `owner` | Everything, including who else is let in. |
-| `user` | See everything and control devices; ask the assistant; change their own name and password. Nothing that changes how the home is set up. |
+| `user` | See the home (or only their `areas`, below) and control devices; ask the assistant; change their own name and password. Nothing that changes how the home is set up: no updates (`update` entities take no command from a user), no logs, no tokens, no backups. May be given only some rooms (`areas`, `docs/specs/access.md`). |
+
+**`areas`** is the list of room ids (`areas.toml`) a user has. Left out, they have the whole home;
+`[]` is a person with no rooms, who is let in and sees nothing; an owner has none, and a file that
+gives one is rejected whole. The page and the API refuse a room that isn't there; in a hand-edited
+file an unknown room is kept and warned of once, and means nothing until a room with that id exists.
+Removing a room from the page, the CLI or the API takes it off everybody's list in the same breath,
+so a room made again under the same name is a new room to them; **a room deleted by editing
+`areas.toml` has to be taken out of `users.toml` by hand too**. What having rooms means is
+`docs/specs/access.md`.
 
 **Passwords are not here.** This file is meant for git. Each person's password is kept as an
 argon2id hash in `secrets.toml`, under `[users.passwords]`, with everything that makes that file
@@ -792,8 +817,9 @@ flat and boring.
 
 Named here so the layout has room for them, specified when they are built:
 
-- **More about people** — per-area permissions and an audit log (ROADMAP C28). Tokens for
-  programs that aren't the page are `docs/specs/api.md`.
+- **More about people** — rooms for a person, an activity log and a user's own automations are
+  `docs/specs/access.md` (ROADMAP C28). Tokens for programs that aren't the page are
+  `docs/specs/api.md`.
 - **Approved permissions** in `extensions/<id>.toml`, and validating it against the extension's
   `config_schema` before it starts (`docs/specs/extensions.md`). Today the extension's own config
   type checks it, and an extension with invalid settings waits for valid ones.

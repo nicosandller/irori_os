@@ -206,17 +206,18 @@ fn parts_from(keep_history: bool, only: &[String]) -> Result<Parts, String> {
     if keep_history {
         return Ok(Parts {
             history: false,
-            ..Parts::ALL
+            ..Parts::USUAL
         });
     }
     if only.is_empty() {
-        return Ok(Parts::ALL);
+        return Ok(Parts::USUAL);
     }
     let mut parts = Parts {
         settings: false,
         extensions: false,
         state: false,
         history: false,
+        activity: false,
     };
     for name in only {
         match name.trim() {
@@ -224,9 +225,11 @@ fn parts_from(keep_history: bool, only: &[String]) -> Result<Parts, String> {
             "extensions" => parts.extensions = true,
             "state" => parts.state = true,
             "history" => parts.history = true,
+            "activity" => parts.activity = true,
             other => {
                 return Err(format!(
-                    "`{other}` isn't something to restore: choose from settings, extensions, state, history"
+                    "`{other}` isn't something to restore: choose from settings, extensions, \
+                     state, history, activity"
                 ));
             }
         }

@@ -174,6 +174,7 @@ async fn run(mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         model: Some("Home hub".into()),
         sw_version: Some(env!("CARGO_PKG_VERSION").into()),
         hw_version: None,
+        serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
     })

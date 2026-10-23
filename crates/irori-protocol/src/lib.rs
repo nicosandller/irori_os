@@ -296,6 +296,14 @@ enum ActionReply {
     Picture(oneshot::Sender<Result<Picture, String>>),
 }
 
+/// What a person filled in for an action with ways: which way, and its fields by id. Empty for a
+/// plain button.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Filled {
+    pub way: Option<String>,
+    pub fields: BTreeMap<String, String>,
+}
+
 /// A UI-triggered action waiting for its result (`docs/specs/protocols.md` §5, the manifest's
 /// `contributes.protocol.actions`). Reply exactly once; dropping it without replying reports a
 /// failure.
@@ -305,6 +313,12 @@ pub struct IncomingAction {
     /// Asked to end early an action it said is open (`set_action_open`): close the window
     /// rather than open it.
     pub stop: bool,
+    /// Which of the action's ways the person picked (its manifest's `ways`), e.g. `new`.
+    /// `None` for a plain button.
+    pub way: Option<String>,
+    /// What the person typed into that way's fields, by field id: `code`, say. Every field the
+    /// way declares is here, trimmed and not empty; nothing else is.
+    pub fields: BTreeMap<String, String>,
     /// Set when this isn't an action at all but an unpair, which travels the same way.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Unpair`].
     unpair: Option<(UniqueId, bool)>,
@@ -315,6 +329,11 @@ pub struct IncomingAction {
 }
 
 impl IncomingAction {
+    /// What was typed into one of the way's fields.
+    pub fn field(&self, id: &str) -> Option<&str> {
+        self.fields.get(id).map(String::as_str)
+    }
+
     pub fn reply(self, result: Result<(), String>) {
         match self.reply {
             ActionReply::Done(reply) => {
@@ -364,6 +383,8 @@ impl IncomingAction {
             (unpair, picture, reply) => Incoming::Action(Self {
                 action_id: self.action_id,
                 stop: self.stop,
+                way: self.way,
+                fields: self.fields,
                 unpair,
                 picture,
                 reply,
@@ -529,6 +550,21 @@ impl ProtocolContext {
     /// Like waiting, send it when it changes.
     pub async fn set_unmodeled(&self, unmodeled: Vec<Unmodeled>) {
         let _ = self.ops.send(host::Op::SetUnmodeled(unmodeled)).await;
+    }
+
+    /// Draws its network (spec §6.8): what's on it and what reaches what, replacing the last
+    /// map. The Devices page's network map draws it beside every other protocol's.
+    ///
+    /// Send it when the picture changes, not on every report: links in steps of quality, not raw
+    /// signal strengths, keep it from changing all the time.
+    pub async fn set_network(&self, network: irori_types::Network) {
+        self.set_networks(vec![network]).await;
+    }
+
+    /// Draws each of its networks, for a protocol that runs more than one; replaces them all.
+    /// An empty list says it has none to draw.
+    pub async fn set_networks(&self, networks: Vec<irori_types::Network>) {
+        let _ = self.ops.send(host::Op::SetNetworks(networks)).await;
     }
 
     /// Says which of its manifest-declared actions are usable right now, replacing the last
@@ -903,6 +939,7 @@ pub mod host {
         SetHealth(Health),
         SetWaiting(Vec<Waiting>),
         SetUnmodeled(Vec<Unmodeled>),
+        SetNetworks(Vec<irori_types::Network>),
         SetAvailableActions(Vec<String>),
         /// An action's window: open for this much longer, or `None` once closed.
         SetActionOpen(String, Option<std::time::Duration>),
@@ -1008,10 +1045,23 @@ pub mod host {
         let incoming = IncomingAction {
             action_id,
             stop: false,
+            way: None,
+            fields: BTreeMap::new(),
             unpair: None,
             picture: None,
             reply: ActionReply::Done(reply),
         };
+        (incoming, result)
+    }
+
+    /// The same, carrying the way the person picked and what they typed into its fields.
+    pub fn incoming_action_with(
+        action_id: String,
+        filled: Filled,
+    ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
+        let (mut incoming, result) = incoming_action(action_id);
+        incoming.way = filled.way;
+        incoming.fields = filled.fields;
         (incoming, result)
     }
 
@@ -1044,6 +1094,8 @@ pub mod host {
         let incoming = IncomingAction {
             action_id: String::new(),
             stop: false,
+            way: None,
+            fields: BTreeMap::new(),
             unpair: None,
             picture: Some(unique_id),
             reply: ActionReply::Picture(reply),

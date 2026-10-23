@@ -108,6 +108,10 @@ pub fn execute(command: Command) -> anyhow::Result<()> {
             args.remote.json,
             runtime.block_on(setup::logs(&args.remote)),
         ),
+        Cmd::Audit(args) => output::finish(
+            args.remote.json,
+            runtime.block_on(setup::audit(&args.remote, args.cmd)),
+        ),
         Cmd::Restart(args) => output::finish(
             args.remote.json,
             runtime.block_on(setup::restart(&args.remote)),

@@ -15,9 +15,10 @@ export LOGNAME=irori
 # Refresh each one from the image. Its settings, and Zigbee's network key, live
 # under extension-data/ and are not touched.
 #
-# Node and Zigbee2MQTT live in the package directory (`runtime/` and `z2m/`).
-# Deleting that directory on every start made the next start download Node and
-# run pnpm again. Park those two directories beside the package — same volume,
+# Node, Zigbee2MQTT and the Matter server live in the package directory
+# (`runtime/`, `z2m/`, `matter/`). Deleting that directory on every start made the
+# next start download Node and run pnpm again. Park those directories beside the
+# package — same volume,
 # so the move is a rename — and put them back after every chown. A recursive
 # chown of that tree is slower than the healthcheck's start window, and `mv`
 # already keeps the irori uid. A settings change still reinstalls: the
@@ -42,7 +43,7 @@ if [ -d "$data/extensions" ]; then
     # Keep whatever is already parked; do not delete it first.
     hold="$data/.package-refresh/$id"
     mkdir -p "$hold"
-    for keep in runtime z2m; do
+    for keep in runtime z2m matter; do
       if [ -d "$installed/$keep" ]; then
         rm -rf "$hold/$keep"
         mv "$installed/$keep" "$hold/$keep"
@@ -87,7 +88,7 @@ if [ -d "$data/.package-refresh" ]; then
       cp -r "$bundled" "$dest"
       chown -R irori:irori "$dest"
     fi
-    for keep in runtime z2m; do
+    for keep in runtime z2m matter; do
       if [ -d "$hold/$keep" ]; then
         rm -rf "$dest/$keep"
         mv "$hold/$keep" "$dest/$keep"

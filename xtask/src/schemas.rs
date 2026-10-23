@@ -67,6 +67,10 @@ fn extension_config_schemas() -> Vec<(&'static str, schemars::Schema)> {
             schemars::schema_for!(irori_protocol_cast::settings::Settings),
         ),
         (
+            "extensions/protocols/matter",
+            schemars::schema_for!(irori_protocol_matter::settings::Settings),
+        ),
+        (
             "extensions/protocols/mqtt",
             schemars::schema_for!(irori_protocol_mqtt::settings::Settings),
         ),

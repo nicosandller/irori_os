@@ -19,13 +19,38 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use crate::assistant::{self, ChatEvent, Turn};
 
+use super::auth::Actor;
 use super::{AppState, refused};
 
-pub async fn get(State(state): State<AppState>) -> Json<assistant::Status> {
-    Json(assistant::read_status(turn(&state), data_dir(&state)).await)
+/// Whether a model is ready. The owner is told how it is set up; anybody else is told whether
+/// they can ask, and whether what they ask leaves the house.
+pub async fn get(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<Actor>,
+) -> Json<assistant::Status> {
+    if who.owner {
+        return Json(assistant::read_status(turn(&state), data_dir(&state)).await);
+    }
+    Json(state.0.readiness.of(turn(&state), data_dir(&state)).await)
+}
+
+/// Where `scope` is kept for whoever is asking, or why they have no such conversation. Settings
+/// and the helper builder are how the home is set up, and belong to an owner. Anybody else's
+/// chats are their own.
+fn conversation(who: &Actor, scope: &str) -> Result<String, String> {
+    assistant::check_scope(scope)?;
+    if !who.owner && matches!(scope, "settings" | "helpers") {
+        return Err("that conversation doesn't exist".to_owned());
+    }
+    Ok(assistant::remembered_in(
+        scope,
+        !who.owner,
+        who.user.as_ref().map(|user| &user.id),
+    ))
 }
 
 pub async fn put(State(state): State<AppState>, Json(body): Json<serde_json::Value>) -> Response {
+    state.0.readiness.forget();
     match assistant::save(&state.0.config, &state.0.core, data_dir(&state), &body).await {
         Ok(_) => Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response(),
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
@@ -62,11 +87,14 @@ pub const MOST_ASKED: usize = 14 * 1024 * 1024;
 /// page leaving stops the stream, not the answer.
 pub async fn turns(
     State(state): State<AppState>,
-    axum::Extension(who): axum::Extension<super::auth::Actor>,
+    axum::Extension(who): axum::Extension<Actor>,
+    axum::Extension(reach): axum::Extension<irori_core::Reach>,
     Json(ask): Json<Ask>,
 ) -> impl IntoResponse {
-    let pending = match state.0.turns.begin(&ask.scope, &ask.message) {
-        Ok(pending) => pending,
+    let pending = conversation(&who, &ask.scope)
+        .and_then(|key| Ok((state.0.turns.begin(&key, &ask.message)?, key)));
+    let (pending, key) = match pending {
+        Ok(begun) => begun,
         Err(error) => {
             let (tx, rx) = mpsc::channel(1);
             let _ = tx.try_send(ChatEvent::Error(error));
@@ -79,10 +107,12 @@ pub async fn turns(
         state
             .0
             .turns
-            .run(&scope, pending, |tx| {
+            .run(&key, pending, |tx| {
                 assistant::take_turn(
                     Turn {
                         owner: who.owner,
+                        user: who.user.as_ref().map(|user| user.id.clone()),
+                        reach,
                         ..turn(&state)
                     },
                     scope.clone(),
@@ -99,8 +129,15 @@ pub async fn turns(
 
 /// The answer `scope` is in the middle of, from its first word, for a page that wasn't there
 /// when it was asked. Ends at once when nothing is being answered.
-pub async fn follow(State(state): State<AppState>, Path(scope): Path<String>) -> impl IntoResponse {
-    match state.0.turns.pending(&scope) {
+pub async fn follow(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<Actor>,
+    Path(scope): Path<String>,
+) -> impl IntoResponse {
+    let pending = conversation(&who, &scope)
+        .ok()
+        .and_then(|key| state.0.turns.pending(&key));
+    match pending {
         Some(pending) => events(pending.follow()),
         None => {
             let (tx, rx) = mpsc::channel(1);
@@ -111,8 +148,14 @@ pub async fn follow(State(state): State<AppState>, Path(scope): Path<String>) ->
 }
 
 /// Stops the answer `scope` is in the middle of. Neither it nor its question is kept.
-pub async fn stop(State(state): State<AppState>, Path(scope): Path<String>) -> StatusCode {
-    state.0.turns.stop(&scope);
+pub async fn stop(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<Actor>,
+    Path(scope): Path<String>,
+) -> StatusCode {
+    if let Ok(key) = conversation(&who, &scope) {
+        state.0.turns.stop(&key);
+    }
     StatusCode::NO_CONTENT
 }
 
@@ -142,6 +185,7 @@ pub async fn install(State(state): State<AppState>) -> impl IntoResponse {
 
 /// Deletes one downloaded model. A body, not a path: a tag has colons and slashes in it.
 pub async fn forget(State(state): State<AppState>, Json(body): Json<Pull>) -> Response {
+    state.0.readiness.forget();
     match assistant::forget(&state.0.config, &body.tag).await {
         Ok(()) => {
             Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response()
@@ -159,6 +203,7 @@ pub async fn unload(State(state): State<AppState>, Json(body): Json<Pull>) -> Re
 }
 
 async fn hold(state: &AppState, tag: &str, load: bool) -> Response {
+    state.0.readiness.forget();
     // Loading a model is choosing it: it becomes the one in use, in place of a cloud model
     // or another local one. Unloading leaves the choice alone.
     let done = if load {
@@ -179,6 +224,7 @@ pub async fn model_log(State(state): State<AppState>) -> Response {
 }
 
 pub async fn uninstall(State(state): State<AppState>) -> Response {
+    state.0.readiness.forget();
     match assistant::uninstall(&state.0.config, data_dir(&state)).await {
         Ok(()) => {
             Json(assistant::read_status(turn(&state), data_dir(&state)).await).into_response()
@@ -187,8 +233,24 @@ pub async fn uninstall(State(state): State<AppState>) -> Response {
     }
 }
 
-pub async fn transcript(State(state): State<AppState>, Path(scope): Path<String>) -> Response {
-    match assistant::transcript(&state.0.db.path, &scope) {
+pub async fn transcript(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<Actor>,
+    axum::Extension(reach): axum::Extension<irori_core::Reach>,
+    Path(scope): Path<String>,
+) -> Response {
+    let key = match conversation(&who, &scope) {
+        Ok(key) => key,
+        Err(error) => return refused(StatusCode::BAD_REQUEST, error),
+    };
+    // What they were told in these chats may no longer be theirs to read.
+    if !who.owner
+        && let Some(user) = &who.user
+        && let Err(error) = assistant::keep_to_reach(&state.0.db.path, &user.id, &reach).map(drop)
+    {
+        return refused(StatusCode::INTERNAL_SERVER_ERROR, error);
+    }
+    match assistant::transcript(&state.0.db.path, &key) {
         Ok((turns, context)) => {
             let turns: Vec<Stored> = turns
                 .iter()
@@ -197,7 +259,7 @@ pub async fn transcript(State(state): State<AppState>, Path(scope): Path<String>
                     body: turn.body.clone(),
                 })
                 .collect();
-            let pending = state.0.turns.pending(&scope).map(|pending| pending.view());
+            let pending = state.0.turns.pending(&key).map(|pending| pending.view());
             Json(serde_json::json!({ "turns": turns, "pending": pending, "context": context }))
                 .into_response()
         }
@@ -205,9 +267,17 @@ pub async fn transcript(State(state): State<AppState>, Path(scope): Path<String>
     }
 }
 
-pub async fn clear(State(state): State<AppState>, Path(scope): Path<String>) -> Response {
-    state.0.turns.stop(&scope);
-    match assistant::clear(&state.0.db.path, &scope) {
+pub async fn clear(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<Actor>,
+    Path(scope): Path<String>,
+) -> Response {
+    let key = match conversation(&who, &scope) {
+        Ok(key) => key,
+        Err(error) => return refused(StatusCode::BAD_REQUEST, error),
+    };
+    state.0.turns.stop(&key);
+    match assistant::clear(&state.0.db.path, &key) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => refused(StatusCode::BAD_REQUEST, error),
     }
@@ -245,6 +315,8 @@ fn turn(state: &AppState) -> Turn<'_> {
         db: &state.0.db.path,
         log: &state.0.log,
         owner: false,
+        user: None,
+        reach: irori_core::Reach::nothing(),
     }
 }
 

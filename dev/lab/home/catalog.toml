@@ -227,3 +227,48 @@ role = "occupancy"
 discriminator = 3842
 passcode = 20202023
 port = 5542
+
+[[matter]]
+name = "Reading lamp"
+vendor = "Signify Netherlands B.V."
+model = "Hue color lamp"
+role = "light"
+discriminator = 2560
+passcode = 20202024
+port = 5543
+
+[[matter]]
+name = "Front door lock"
+vendor = "Nuki"
+model = "Smart Lock Pro"
+role = "lock"
+discriminator = 2816
+passcode = 20202025
+port = 5544
+
+[[matter]]
+name = "Bedroom blind"
+vendor = "IKEA of Sweden"
+model = "KADRILJ roller blind"
+role = "blind"
+discriminator = 3072
+passcode = 20202026
+port = 5545
+
+[[matter]]
+name = "Hallway thermostat"
+vendor = "Eve Systems"
+model = "Eve Thermo"
+role = "thermostat"
+discriminator = 3328
+passcode = 20202027
+port = 5546
+
+[[matter]]
+name = "Office fan"
+vendor = "Dreo"
+model = "Tower Fan"
+role = "fan"
+discriminator = 3584
+passcode = 20202028
+port = 5547

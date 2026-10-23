@@ -79,6 +79,7 @@ pub fn device(info: &DeviceInfoResponse) -> Result<DeviceDescription, ProtocolEr
         // What's running on the device, which is what a person wants when something misbehaves.
         sw_version: optional(&info.esphome_version),
         hw_version: None,
+        serial_number: None,
         // An area name the device suggests; ignored if it isn't a name Irori would accept.
         suggested_area: optional(&info.suggested_area).and_then(|a| Name::try_from(a).ok()),
         via_device_unique_id: None,

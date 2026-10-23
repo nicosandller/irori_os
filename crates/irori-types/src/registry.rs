@@ -85,6 +85,9 @@ pub struct Device {
     pub sw_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hw_version: Option<String>,
+    /// The serial number its protocol reports.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
     /// The resolved area for this device: a person's placement when they chose a room (or
     /// deliberately none), otherwise the room matching `suggested_area` while placement is still
     /// unsaid. Absent means it isn't in a room — either on purpose, or because no matching room

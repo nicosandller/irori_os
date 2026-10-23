@@ -68,6 +68,7 @@ async fn world(settings: Settings) -> World {
                 }
                 host::Op::SetWaiting(_)
                 | host::Op::SetUnmodeled(_)
+                | host::Op::SetNetworks(_)
                 | host::Op::SetActionOpen(_, _)
                 | host::Op::SetAvailableActions(_) => {}
                 host::Op::Load(_, reply) => {
@@ -116,6 +117,7 @@ fn receiver(addr: std::net::SocketAddr) -> Found {
         version: "1".to_owned(),
         address: addr,
         known_host: None,
+        host: None,
     }
 }
 

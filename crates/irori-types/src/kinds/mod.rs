@@ -186,6 +186,14 @@ impl EntityKind {
         matches!(self, Self::Event)
     }
 
+    /// Whether any command to an entity of this kind changes how the home is set up, so that
+    /// only an owner may send it: an update replaces the software and the firmware the home
+    /// runs on (`docs/specs/access.md` §2.1). The one place that says so, for a command sent
+    /// from the page and for a flow that is saved.
+    pub fn commands_need_owner(self) -> bool {
+        matches!(self, Self::Update)
+    }
+
     /// The standard services for this kind (`docs/specs/protocols.md` §7.1).
     pub fn services(self) -> impl Iterator<Item = ServiceName> {
         ServiceName::ALL

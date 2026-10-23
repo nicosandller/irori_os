@@ -114,6 +114,7 @@ pub fn descriptions(found: &Found) -> Result<(DeviceDescription, EntityDescripti
         model: blank_to_none(&found.model),
         sw_version: blank_to_none(&found.version),
         hw_version: None,
+        serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
     };

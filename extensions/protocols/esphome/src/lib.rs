@@ -13,6 +13,7 @@
 #[cfg(test)]
 mod fake_device;
 mod map;
+mod network;
 mod node;
 mod settings;
 
@@ -21,7 +22,8 @@ use std::net::SocketAddr;
 use std::time::Duration;
 
 use irori_protocol::types::{
-    Availability, Name, ObjectId, SecretRequest, UniqueId, Unmodeled, Waiting,
+    Availability, Capabilities, Name, ObjectId, SecretRequest, SensorClass, SensorState,
+    SensorValue, State, UniqueId, Unmodeled, Waiting,
 };
 use irori_protocol::{
     AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
@@ -86,6 +88,12 @@ struct Node {
     /// than queued: by the time it reconnects, the caller has long since timed out, and acting
     /// on a minutes-old command would be worse than not acting at all.
     online: bool,
+    /// What it's called and what it is, for the network map.
+    name: String,
+    model: Option<String>,
+    /// Its Wi-Fi signal sensor, if it has one, and what that last said in dBm.
+    signal: Option<UniqueId>,
+    rssi: Option<i64>,
 }
 
 /// Everything the run loop keeps track of.
@@ -151,6 +159,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     ctx.set_health(reported_health.clone()).await;
     let mut reported_waiting: Vec<Waiting> = Vec::new();
     let mut reported_unmodeled: Vec<Unmodeled> = Vec::new();
+    let mut reported_network: Option<Vec<network::Member>> = None;
 
     let outcome = loop {
         tokio::select! {
@@ -199,6 +208,11 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         if unmodeled != reported_unmodeled {
             ctx.set_unmodeled(unmodeled.clone()).await;
             reported_unmodeled = unmodeled;
+        }
+        let members = members(&devices);
+        if network::worth_sending(reported_network.as_deref(), &members) {
+            ctx.set_network(network::draw(&members)).await;
+            reported_network = Some(members);
         }
     };
 
@@ -371,6 +385,11 @@ async fn apply(
                     "ignoring an arrival from a connection that has already ended");
                 return Ok(());
             }
+            let (name, model) = (device.name.as_str().to_owned(), device.model.clone());
+            let signal = entities
+                .iter()
+                .find(|entity| is_wifi_signal(&entity.capabilities))
+                .map(|entity| entity.unique_id.clone());
             ctx.describe_device(*device).await?;
             let mut described = Vec::new();
             let mut unmodeled = unmodeled;
@@ -450,6 +469,11 @@ async fn apply(
                 ctx.set_availability(AvailabilityTarget::Device(id), Availability::Unavailable)
                     .await?;
             }
+            // A signal already heard stays until the sensor says otherwise.
+            let rssi = devices
+                .nodes
+                .get(&device_id)
+                .and_then(|previous| previous.rssi);
             // The task that introduced it is the one its commands go to.
             let commands = devices
                 .tasks
@@ -471,6 +495,10 @@ async fn apply(
                     entities: described,
                     unmodeled,
                     online: true,
+                    name,
+                    model,
+                    signal,
+                    rssi,
                 },
             );
         }
@@ -481,13 +509,20 @@ async fn apply(
         } => {
             // Only from the connection that speaks for the device now. A report queued by a
             // replaced connection is about a conversation that has already ended.
-            if devices
-                .nodes
-                .get(&device)
-                .is_none_or(|node| node.connection == connection)
-            {
-                ctx.report_state(*report);
+            if let Some(node) = devices.nodes.get_mut(&device) {
+                if node.connection != connection {
+                    return Ok(());
+                }
+                if node.signal.as_ref() == Some(&report.unique_id) {
+                    node.rssi = match &report.state {
+                        Some(State::Sensor(SensorState {
+                            value: SensorValue::Number(dbm),
+                        })) if dbm.is_finite() => Some(dbm.round() as i64),
+                        _ => None,
+                    };
+                }
             }
+            ctx.report_state(*report);
         }
         node::Event::Left {
             connection,
@@ -552,6 +587,31 @@ async fn apply(
         }
     }
     Ok(())
+}
+
+/// Every device connected to, as the network map draws it.
+fn members(devices: &Devices) -> Vec<network::Member> {
+    devices
+        .nodes
+        .iter()
+        .map(|(device, node)| network::Member {
+            device: device.clone(),
+            name: node.name.clone(),
+            model: node.model.clone(),
+            online: node.online,
+            rssi: node.rssi.filter(|_| node.online),
+        })
+        .collect()
+}
+
+/// A Wi-Fi signal sensor: a signal strength in dBm (ESPHome's `wifi_signal`).
+fn is_wifi_signal(capabilities: &Capabilities) -> bool {
+    matches!(
+        capabilities,
+        Capabilities::Sensor(sensor)
+            if sensor.device_class == Some(SensorClass::SignalStrength)
+                && sensor.unit.as_deref() == Some("dBm")
+    )
 }
 
 /// What the Extensions view says about this protocol.
@@ -830,6 +890,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SetNetworks(_)
                     | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
@@ -879,6 +940,7 @@ mod tests {
             model: None,
             sw_version: None,
             hw_version: None,
+            serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
         };
@@ -956,6 +1018,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SetNetworks(_)
                     | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
@@ -995,6 +1058,7 @@ mod tests {
                     model: None,
                     sw_version: None,
                     hw_version: None,
+                    serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
                 }),
@@ -1071,6 +1135,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SetNetworks(_)
                     | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
                     irori_protocol::host::Op::Load(_, reply) => {
@@ -1110,6 +1175,7 @@ mod tests {
                 model: None,
                 sw_version: None,
                 hw_version: None,
+                serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
             }),

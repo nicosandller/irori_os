@@ -136,7 +136,9 @@ is for a subprocess's own files, which Irori can't hold for it.
 Most protocols find devices by listening. Some have to be told to look: a Zigbee network takes a
 new device only while it's open to joining. That is an **action**, declared in the manifest
 (`[[contributes.protocol.actions]]`: `id`, `label`, and `seconds` for one that lasts a while) and
-shown as a button on the extension's "+ Add device" screen.
+shown as a button on the extension's "+ Add device" screen. One with `place = "network"` is a button
+on the network map instead (§6.8): Zigbee's **Scan network**. It is open while it runs, and that
+isn't the network listening for devices, so the "+ Add device" screen leaves it out.
 
 - The manifest says an action exists. The protocol says when it can be used (Zigbee's only once
   Zigbee2MQTT is up), and the button isn't offered before that.
@@ -146,6 +148,24 @@ shown as a button on the extension's "+ Add device" screen.
   page. The protocol reports what's true however it came about: Zigbee2MQTT's own "Permit join"
   switch opens the same network, and that shows as the same countdown.
 - An open action can be **stopped** early. The protocol receives the same action with `stop` set.
+- An action can have **ways**, each a small form: `[[...actions.ways]]` with `id`, `label`, an
+  optional `hint`, `fields = [{ id, label, hint?, placeholder? }]` (lines of text) and
+  `settings = [...]` (names from the extension's `config_schema`). At most 4 ways, 4 fields and 8
+  settings each. Matter's "Add device" has two: *It's set up in another app* (a pairing code) and
+  *It's new, or reset* (a pairing code, plus Bluetooth and the Wi-Fi network to join).
+  - The page shows a choice of way when there's more than one, then that way's settings,
+    prefilled the way the settings form is, then its fields.
+  - The call carries the way and every one of its fields, trimmed, not empty and at most 512 bytes.
+    The API refuses a missing way when there's more than one, a blank or unknown field, a setting
+    the way doesn't list, and anything at all for an action without ways.
+  - The settings that came with it are saved first. When that changed what the extension runs
+    with, the API waits, up to a minute, for it to start again and offer the action again, and
+    then calls it. So the action always runs on the settings in the form. The API answers with
+    why when the extension stopped instead.
+- An action that does its work before answering says how long it may take with
+  `answer_within_seconds` (1 to 300). The core waits that long for it instead of the usual ten
+  seconds. Adding a Matter device takes up to two minutes, about five over Bluetooth. While it waits, the protocol keeps
+  serving everything else: it answers the action from a task of its own.
 
 A protocol whose devices are paired to a network it keeps declares `unpairs = true`. Removing one
 of its devices then asks the protocol to unpair it first ([config.md](config.md) §3.2):
@@ -156,9 +176,10 @@ of its devices then asks the protocol to unpair it first ([config.md](config.md)
   still paired and still in the home.
 - With `force`, the protocol drops the device from the network's records without waiting for the
   device to agree. This is for a device that is asleep, broken or gone.
-- A protocol refuses what can't be unpaired. Zigbee refuses its own controller.
+- A protocol refuses what can't be unpaired. Zigbee refuses its own controller. Matter refuses a
+  device it reaches through a bridge: that one leaves through the bridge's own app.
 
-On the wire these are `action_call { id, action_id, stop }` and
+On the wire these are `action_call { id, action_id, stop, way, fields }` and
 `unpair_device { id, unique_id, force }`, both answered with `action_result { id, error }`, and
 `set_action_open { action_id, closes_in_ms }` from the protocol.
 
@@ -192,7 +213,7 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 |---|---|---|---|
 | `unique_id` | `UniqueId` | yes | |
 | `name` | `Name` | yes | Updated each time the device is described. Once people can rename devices (config spec, M0.7), a name they set wins |
-| `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | Informational, updated every time |
+| `manufacturer`, `model`, `sw_version`, `hw_version`, `serial_number` | string | no | Informational, updated every time |
 | `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
 | `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
 
@@ -303,6 +324,61 @@ that aren't on a device in the home. Nothing is made up for them, because a kind
 entity's id ([entities.md](entities.md) §3) and a placeholder kind would have to change, breaking
 every rule that named it. When Irori gains the kind, the protocol describes the thing as an
 entity and leaves it off this list.
+
+### 6.8 Network
+
+A map of the protocol's networks as it sees them (`set_networks`, or `set_network` for one):
+Irori or the controller it runs, the coordinators, border routers, access points and routers
+between, and its devices, with what reaches what. The Devices page's **Network map** tab draws
+every protocol's maps as one home: each map's `controller` is Irori, so they all meet in the
+middle, and an `access_point` with the same id in two maps (the home's Wi-Fi, for Matter and
+ESPHome; `access_point_id` makes it from the access point's MAC address, or `wifi` when that isn't
+known) is one. Only the home's own devices are drawn: a node whose `device_unique_id` isn't a
+device in the home is left out, unless an added device's way to Irori runs through it, and a map
+with none of the home's devices on it isn't drawn at all. Two maps of the same name say whose each
+is ("Matter (Demo)"). A device's messages travel along its path to Irori, at most one spark a
+device every 10-18 s, each a little after its message and one at a time. A device can be dragged
+somewhere else on the map, and that browser keeps it there (node ids on the joined map are the
+extension's id and which of its maps, then the node's own, so they hold from one visit to the next).
+
+The protocol sends **every map** whenever one changes, and the core keeps the last ones, in
+memory, until the protocol stops. An empty list takes them away. They aren't published to every
+page the way the rest of an extension's status is: they change often, and only the Network map tab
+reads them, every few seconds (`GET /api/network`, [api.md](api.md) §3).
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string, 1-100 | no | "Zigbee", "Matter": the network's name on the map, and which colour it's drawn in. Without one, the extension's name |
+| `detail` | string, ≤ 200 | no | "Channel 15, PAN 0x1a62", "Thread network home-42" |
+| `scanned_at` | RFC 3339 time | no | When its links were last measured, for a protocol that measures them now and then (Zigbee's scan) rather than all the time |
+| `nodes[].id` | 1-64 of letters, digits, `_.:-` | yes | Its id in this map, once each |
+| `nodes[].name` | string, 1-100 | yes | |
+| `nodes[].role` | `controller`, `coordinator`, `border_router`, `access_point`, `router`, `end_device`, `sleepy_end_device`, `device` | yes | `device` is one on the home's own network (Wi-Fi or Ethernet) |
+| `nodes[].medium` | `thread`, `wifi`, `ethernet`, `zigbee`, `bluetooth`, `ip`, `serial` | no | How it's connected |
+| `nodes[].device_unique_id` | `UniqueId` | no | The device it is, when it's one of the protocol's |
+| `nodes[].detail` | string, ≤ 200 | no | "Thread router, channel 25" |
+| `nodes[].host` | lowercase host name, ≤ 253, no trailing dot | no | Its mDNS host (`fuchsia-dce5-5ba4-40db.local`; `host_name` makes it). Nodes in different maps with one host are one node on the joined map: a Nest Hub is a Cast device and a Thread border router, and is drawn once, as the device, the way into Thread |
+| `links[].from`, `links[].to` | node ids | yes | `from` is the end further from the controller, when known |
+| `links[].medium` | as above | no | A `serial` or `ethernet` link without a quality is drawn as a cable |
+| `links[].quality` | `poor`, `fair`, `good`, `excellent` | no | Steps, not a raw signal strength: a map that changes on every report isn't one anyone can read. `LinkQuality::from_rssi` and `from_lqi` make them |
+| `links[].reading` | string, ≤ 16 | no | What was measured, for the link's label and the side panel: "-61 dBm", "LQI 148", "USB" |
+| `links[].detail` | string, ≤ 200 | no | |
+
+At most 8 maps per protocol, each with at most 512 nodes and 2048 links. A map with a link to a
+node it doesn't have, or an id used twice, is refused (and logged), and the last good ones stay.
+
+What draws a map today:
+
+- **Zigbee**: the coordinator and every device Zigbee2MQTT knows (`bridge/devices`), and the links
+  its network scan measured (`bridge/request/networkmap`, raw). The scan is slow and busy on the
+  radio, so it runs a minute after starting, then every 6 hours, and when someone presses **Scan
+  network** on the map (an action with `place = "network"`, §5.1). Until then the links are drawn
+  but not measured.
+- **Matter**: the Thread network, its border routers, and the Wi-Fi and Ethernet devices, from the
+  controller's own diagnostics.
+- **ESPHome**: every device on the home's Wi-Fi, each with its signal when it has a Wi-Fi signal
+  sensor.
+- **Demo**: all three, made up, so the map can be seen without hardware.
 
 ## 7. Service calls
 

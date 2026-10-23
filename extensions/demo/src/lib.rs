@@ -19,8 +19,13 @@
 //! Everything moves the way it would over a day, but a day lasts a minute (`world`): dark until
 //! dawn, the house waking up, everyone out, back in the evening. Batteries run down from full to
 //! empty over that minute, then start again.
+//!
+//! The house has networks too (`network`): a Zigbee mesh, Matter over Thread and Wi-Fi, and
+//! ESPHome on Wi-Fi, which the Devices page's network map draws. "Scan network" measures the
+//! Zigbee mesh again.
 
 mod gadgets;
+mod network;
 mod world;
 
 use std::collections::BTreeMap;
@@ -36,6 +41,11 @@ use crate::world::World;
 /// The demo protocol.
 #[derive(Debug)]
 pub struct Demo;
+
+/// The action that measures the demo's Zigbee mesh again (`irori-extension.toml`).
+const SCAN_NETWORK: &str = "scan_network";
+/// How long a scan takes, as a real one would take a while.
+const SCAN_TAKES: Duration = Duration::from_secs(4);
 
 /// Settings for the demo protocol.
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -90,10 +100,24 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
         ctx.report_state(report(entity, Some(state), None)?);
     }
 
+    ctx.set_networks(network::draw(0, Some(now()))).await;
+    ctx.set_available_actions(vec![SCAN_NETWORK.to_owned()])
+        .await;
+    let mut scans: u32 = 0;
+    let mut scanned = None::<tokio::time::Instant>;
+
     let mut readings = tokio::time::interval(Duration::from_secs(config.sensor_interval_secs));
     let mut tick: u64 = 0;
     loop {
         tokio::select! {
+            () = tokio::time::sleep_until(scanned.unwrap_or_else(tokio::time::Instant::now)),
+                if scanned.is_some() =>
+            {
+                scanned = None;
+                scans = scans.wrapping_add(1);
+                ctx.set_networks(network::draw(scans, Some(now()))).await;
+                ctx.set_action_open(SCAN_NETWORK, None).await;
+            }
             incoming = ctx.next() => {
                 match incoming {
                     None => return Ok(()), // told to stop
@@ -116,8 +140,20 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                         let picture = house.picture(asked.unique_id.as_str());
                         asked.reply(picture);
                     }
+                    Some(Incoming::Action(action)) if action.action_id == SCAN_NETWORK => {
+                        if action.stop {
+                            action.reply(Err("a scan can't be stopped once it's under way".into()));
+                        } else {
+                            action.reply(Ok(()));
+                            if scanned.is_none() {
+                                scanned = Some(tokio::time::Instant::now() + SCAN_TAKES);
+                                ctx.set_action_open(SCAN_NETWORK, Some(SCAN_TAKES)).await;
+                            }
+                        }
+                    }
                     Some(Incoming::Action(action)) => {
-                        action.reply(Err("the demo has no actions".into()));
+                        let id = action.action_id.clone();
+                        action.reply(Err(format!("the demo has no `{id}` action")));
                     }
                     Some(Incoming::Unpair(unpair)) => {
                         unpair.reply(Err("the demo's devices aren't paired".into()));
@@ -142,6 +178,15 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
     }
 }
 
+/// Now, for when the demo's networks were measured.
+fn now() -> irori_protocol::types::Timestamp {
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| i64::try_from(since.as_secs()).unwrap_or(0));
+    irori_protocol::types::Timestamp::from_second(seconds)
+        .unwrap_or_else(|| irori_protocol::types::Timestamp::from_second(0).expect("1970"))
+}
+
 fn id(unique_id: &str) -> Result<UniqueId, ProtocolError> {
     Ok(UniqueId::try_from(unique_id)?)
 }
@@ -163,6 +208,7 @@ fn device(
         model: Some(model.into()),
         sw_version: Some(env!("CARGO_PKG_VERSION").into()),
         hw_version: None,
+        serial_number: None,
         suggested_area: Some(Name::try_from(room)?),
         via_device_unique_id: None,
     })

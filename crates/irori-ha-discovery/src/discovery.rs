@@ -54,6 +54,7 @@ pub struct ParsedDevice {
     pub model: Option<String>,
     pub sw_version: Option<String>,
     pub hw_version: Option<String>,
+    pub serial_number: Option<String>,
     pub via_device_unique_id: Option<UniqueId>,
 }
 
@@ -298,6 +299,7 @@ pub(crate) fn parse_device(root: &serde_json::Value) -> Result<Option<ParsedDevi
         model: str_field(device, "model").map(str::to_owned),
         sw_version: str_field(device, "sw_version").map(str::to_owned),
         hw_version: str_field(device, "hw_version").map(str::to_owned),
+        serial_number: str_field(device, "serial_number").map(str::to_owned),
         via_device_unique_id,
     }))
 }

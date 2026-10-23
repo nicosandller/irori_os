@@ -16,7 +16,7 @@ handle the rest.
 
 - **Installs Node.js and Zigbee2MQTT** into its own package directory the first time it starts —
   never touching any Node.js already on the machine. Linux and macOS, x86_64 or arm64, with
-  glibc; see [`src/provision.rs`](src/provision.rs) for why a musl-only host (Alpine, say) isn't
+  glibc; see [`irori-node-runtime`](../../../crates/irori-node-runtime/src/install.rs) for why a musl-only host (Alpine, say) isn't
   supported.
 - **Runs its own embedded broker** (in-process, via `rumqttd`, loopback-only) purely so its own
   Zigbee2MQTT has somewhere to publish to. It's never reachable from the network and isn't a

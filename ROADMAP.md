@@ -33,14 +33,14 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size is enforced today: under 5 MB brotli) | 🟠 | C1 |
 | C25 | JSON Schemas & golden examples | Schemas generated from `irori-types`, checked fresh in CI, valid/invalid example tests (`fixtures/`) | ✅ | C2, C3, C4, C9 |
 | C26 | Extension signing & permissions | Signature verification, approve permissions on install/update. Only the "full access" approval exists; no signing | 🟠 | C7 |
-| C28 | Multi-user | Per-area permissions, an audit log, a regular user's own Automations view. Owner and user roles are C14 | - | C17 |
+| C28 | Multi-user | Per-area permissions, an audit log, a regular user's own Automations view. Owner and user roles are C14. A person has the rooms the owner gives them and, outside them, nothing in the home exists for them, on every surface (`docs/specs/access.md`); every change and every refusal is written to a log only an owner reads, which a backup holds as its own part; a regular user writes their own flows, checked against their rooms when saved and whenever the home changes. Follow-ups: rooms on tokens, a view-only role, guests who expire | ✅ | C17 |
 | C29 | Backup & restore | One-file backups of the config and the database, taken while running, sealed with a recovery key, on a schedule or before an update, copied to folders (mounted shares, USB), WebDAV and S3. Restore from the page, the terminal, or the first-run welcome, with parts chosen (history can be left as it is); a backup can be checked without restoring it (`docs/specs/backup.md`) | ✅ | C18 |
 | C30 | Engine API for extensions | Engines subscribe to state and registry, read history, call services as `Origin::Automation`; API scopes enforced (`docs/specs/automations.md` §B2) | ✅ | C6 |
 | C31 | App pages in the sidebar | Extensions add a sidebar page: static bundle, sandboxed frame, bridge, engine RPC (`docs/specs/automations.md` §B3–B4) | ✅ | C6, C12 |
 | C32 | Entity kinds | Every Home Assistant device kind: 29 in (covers, locks, fans, climate, media players, updates, alarm panels, dates and times, vacuums, mowers, scenes, trackers, timers, schedules…), `entity_format` so older engines keep working, unsupported parts of a device listed instead of dropped. Automations read a kind's other values by name (a blind's position), and temperatures are °C throughout. `remote` isn't planned: no protocol here reports one | ✅ | C2 |
 | C33 | Helpers | Values Irori keeps itself, built into the core (`extensions/helpers.toml`): toggles, numbers, counters, choices, texts, buttons, dates and times, timers and schedules, and values worked out from other entities (groups, thresholds, trends, meters, integrals, derivatives, statistics, history). Each is an ordinary entity, made from the Helpers tab, the CLI or the file. Any number can be counted up and down. Built-ins read the home in-process within their API scopes | ✅ | C5 |
 | C34 | Irori as a device | The machine Irori runs on is a device in its own home, with CPU, memory and disk meters | ✅ | C5 |
-| C35 | Dev container & device lab | `dev/pi`: a Raspberry Pi-like container to try a PR; `dev/lab`: emulated ESPHome and Zigbee devices. Matter nodes need binaries that aren't there | 🟠 | C8 |
+| C35 | Dev container & device lab | `dev/pi`: a Raspberry Pi-like container to try a PR; `dev/lab`: emulated ESPHome, Zigbee and Matter devices | ✅ | C8 |
 
 ## Extensions
 
@@ -62,7 +62,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X14 | HA backend adapter | Visualizer and AI features against an existing HA instance | - | X19 |
 | X15 | HA automation importer | HA YAML → Irori flows, with a report of what didn't convert | - | X19 |
 | X16 | Z-Wave | Via `zwave-js-server` | - | C17 |
-| X17 | Matter | Via `rs-matter` | - | C6 |
+| X17 | Matter | Via the Open Home Foundation Matter Server (matter.js), installed and run the way Zigbee runs Zigbee2MQTT (#82). Adds a device from its pairing code, over the network or Bluetooth (handing it the Wi-Fi or Thread network), or one shared from Google Home, Apple Home or Home Assistant. Lights, plugs, switches, locks, covers, thermostats, fans, sensors and bridged devices, read and commanded; firmware updates as the `update` kind. Tried on emulated devices; real devices and Bluetooth hardware next. Buttons, valves and smoke alarms not yet. `rs-matter` stays open for a single binary later | 🟠 | C6 |
 | X18 | Vendor cloud connector | e.g. SwitchBot: proves cloud polling/push and secrets | - | C6 |
 | X19 | Automations (flows) | Freeform flow engine + canvas editor: live validation, traces on the canvas, near-misses, live runs, test and dry runs, 24h backtest, versions, every entity kind (`docs/specs/flows.md`). Time and sun triggers are in (armed from the home's time zone and location). Still open: a lock or alarm code comes from `secrets.toml` and never sits in the flow file or a trace | 🟠 | C9, C30, C31 |
 | X20 | Google Cast | Chromecasts, speakers and speaker groups on the local network, as media players | ✅ | C6, C32 |

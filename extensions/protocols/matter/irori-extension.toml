@@ -1,0 +1,50 @@
+[extension]
+id = "matter"
+name = "Matter"
+version = "0.2.6"
+irori = ">=1.5.0"
+# 1.5.0 is the first core whose actions have ways with fields and settings (the pairing code,
+# and Wi-Fi for a new device) and can say how long they take to answer, and the first whose
+# devices have a serial number, and the first that draws a protocol's network map.
+description = "Matter devices on the local network, through the Open Home Foundation Matter Server it installs and runs: lights, plugs, locks, blinds, thermostats, fans and sensors, and their firmware."
+config_schema = "config.schema.json"
+icon = "icon.svg"
+
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "lock", "cover", "climate", "fan", "select", "update"]
+# Removing a Matter device takes Irori's fabric off it. Other controllers it belongs to keep it.
+unpairs = true
+run = { command = "bin/irori-ext-matter" }
+
+# Adding a device has two ways. One already set up with another controller (Google Home, Apple
+# Home, Home Assistant) is shared from there: its app gives a pairing code, and this takes it. A
+# new or reset device takes the code printed on it, and may need Bluetooth and the Wi-Fi network
+# it should join, which that way's form sets on the way through. Adding a device takes a while,
+# Bluetooth longest, so the core waits up to five minutes for the answer.
+[[contributes.protocol.actions]]
+id = "add_device"
+label = "Add device"
+answer_within_seconds = 300
+
+[[contributes.protocol.actions.ways]]
+id = "shared"
+label = "It's set up in another app"
+hint = "In the app it's set up in (Google Home, Apple Home, Home Assistant), share the device or turn on pairing mode for it, and paste the code the app shows. It stays in that app too."
+fields = [{ id = "code", label = "Pairing code", hint = "The app's code lasts about 15 minutes.", placeholder = "3497-011-2332" }]
+
+[[contributes.protocol.actions.ways]]
+id = "new"
+label = "It's new, or reset"
+hint = "Use the code printed on the device or its box. A device that isn't on a network yet joins over Bluetooth, so turn Bluetooth on and give the network for it to join: Wi-Fi, or for a Thread device, the Thread network's dataset. A wired device needs neither."
+settings = ["bluetooth", "wifi_ssid", "wifi_password", "thread_dataset"]
+fields = [{ id = "code", label = "Pairing code", hint = "11 digits, or the text under the QR code.", placeholder = "3497-011-2332" }]
+
+# This extension downloads a Node.js runtime and installs the Matter server (an npm package) the
+# first time it starts, then runs it as a supervised subprocess — full access to this machine,
+# the same as a terminal would have. That's the same trade the Zigbee extension makes: no Rust
+# Matter controller exists yet that does what this server does in a great many homes (#82).
+# The server listens on loopback only; devices are reached over the local network (`lan`).
+[permissions]
+host_shell = true
+lan = true

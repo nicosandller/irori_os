@@ -25,6 +25,13 @@
     "name": {
       "$ref": "#/$defs/Name"
     },
+    "serial_number": {
+      "description": "The serial number the device reports for itself.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "suggested_area": {
       "description": "An area name the device reports for itself, e.g. ESPHome's `area`. The core uses it only\nwhen the device is new and the user hasn't assigned an area.",
       "anyOf": [

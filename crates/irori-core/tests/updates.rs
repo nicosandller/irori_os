@@ -75,6 +75,7 @@ impl Protocol for Plugs {
                 model: None,
                 sw_version: None,
                 hw_version: None,
+                serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
             })

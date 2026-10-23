@@ -182,11 +182,23 @@ fn first_format() -> u32 {
     1
 }
 
-/// One entry of `/api/apps`: a running extension's page and whether its files are there.
+/// One entry of `/api/apps`: a running extension's page and whether its files are there. A
+/// regular user's sidebar and frame are made from these, since the home they are shown says
+/// nothing of extensions.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AppEntry {
     pub extension: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub has_icon: bool,
+    #[serde(default)]
+    pub api: Vec<String>,
+    #[serde(default)]
+    pub has_engine: bool,
     pub built: bool,
+    #[serde(default = "first_format")]
+    pub entity_format: u32,
 }
 
 pub async fn fetch_apps() -> Result<Vec<AppEntry>, String> {
@@ -250,6 +262,13 @@ pub struct ProtocolActionInfo {
     pub label: String,
     #[serde(default)]
     pub seconds: Option<u32>,
+    /// The ways it can be done, each a small form (Matter's "It's set up in another app" and
+    /// "It's new, or reset"). Empty for a plain button.
+    #[serde(default)]
+    pub ways: Vec<irori_types::ActionWay>,
+    /// Where its button is: "+ Add device", or the network map (Zigbee's scan).
+    #[serde(default)]
+    pub place: irori_types::ActionPlace,
 }
 
 /// The header only Irori's own page sends. Once somebody has a password, every change has to
@@ -919,6 +938,40 @@ pub struct CatalogEntry {
     /// so changing one field doesn't mean retyping the others.
     #[serde(default)]
     pub settings: serde_json::Map<String, serde_json::Value>,
+    /// The secret settings that have a value saved, by name only (never what they hold).
+    #[serde(default)]
+    pub secrets_set: Vec<String>,
+}
+
+/// One network as `/api/network` gives it: what an extension drew, and which extension.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DrawnNetwork {
+    pub extension: ExtensionId,
+    #[serde(flatten)]
+    pub network: irori_types::Network,
+}
+
+/// Every running protocol's networks, for the network map.
+pub async fn fetch_networks() -> Result<Vec<DrawnNetwork>, String> {
+    #[derive(Deserialize)]
+    struct Answer {
+        networks: Vec<DrawnNetwork>,
+    }
+    let response = Request::get("/api/network")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response
+        .json::<Answer>()
+        .await
+        .map(|answer| answer.networks)
+        .map_err(unreachable)
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {
@@ -943,6 +996,32 @@ pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
 
 /// Irori's own log, oldest line first: what this process has said since it started, which
 /// includes the lines an extension's output arrived as. The Settings page's log window shows it.
+/// A hundred rows of the activity log, newest first: of one person (by id) if asked, only what
+/// was `outcome` if asked, and the ones older than `before` when reading on.
+pub async fn fetch_audit(
+    user: Option<&str>,
+    outcome: Option<irori_types::Outcome>,
+    before: Option<u64>,
+) -> Result<irori_types::AuditPage, String> {
+    let mut query = vec!["limit=100".to_owned()];
+    if let Some(user) = user {
+        query.push(format!("user={user}"));
+    }
+    if let Some(outcome) = outcome {
+        query.push(format!("outcome={outcome}"));
+    }
+    if let Some(before) = before {
+        query.push(format!("before={before}"));
+    }
+    read(
+        Request::get(&format!("/api/audit?{}", query.join("&")))
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
 pub async fn fetch_system_log() -> Result<Vec<String>, String> {
     fetch_log("/api/system/log").await
 }
@@ -1054,6 +1133,32 @@ pub async fn trigger_action(extension: &ExtensionId, action_id: &str) -> Result<
     checked(response).await
 }
 
+/// What an action's form sends: the way picked, what was typed into its fields, and the
+/// settings it changed (`docs/specs/protocols.md` §5.1).
+#[derive(Debug, Clone, Serialize)]
+pub struct ActionRequest {
+    pub way: String,
+    pub fields: BTreeMap<String, String>,
+    pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// The same for an action with ways (Matter's "Add with a pairing code"). Waits as long as the
+/// extension takes, which for adding a device can be a minute or two, plus a restart when the
+/// form changed its settings.
+pub async fn trigger_action_with(
+    extension: &ExtensionId,
+    action_id: &str,
+    request: &ActionRequest,
+) -> Result<(), String> {
+    let response = post(&format!("/api/extensions/{extension}/actions/{action_id}"))
+        .json(request)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 /// Ends an action that's open before its time is up: closes Zigbee's network to new devices.
 pub async fn stop_action(extension: &ExtensionId, action_id: &str) -> Result<(), String> {
     let response = delete(&format!("/api/extensions/{extension}/actions/{action_id}"))
@@ -1131,6 +1236,9 @@ pub struct BackupManifest {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub history: bool,
+    /// Whether the activity log is in it (backups from before it existed have none).
+    #[serde(default)]
+    pub activity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1226,6 +1334,10 @@ pub struct BackupParts {
     pub extensions: bool,
     pub state: bool,
     pub history: bool,
+    /// The activity log. Off unless asked for: a restore is not a way to take what was done
+    /// since the backup out of the record.
+    #[serde(default)]
+    pub activity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -2121,6 +2233,13 @@ pub struct Session {
 }
 
 impl Session {
+    /// Signed in as somebody who has only some rooms of the home (`docs/specs/access.md` §1):
+    /// what the home answers them is already only theirs, and the pages for the home as a whole
+    /// are not offered.
+    pub fn limited(&self) -> bool {
+        !self.owner && self.user.as_ref().is_some_and(|user| user.areas.is_some())
+    }
+
     /// Locked, and this browser is nobody yet: nothing it asks for will be answered.
     pub fn shut_out(&self) -> bool {
         self.locked && self.user.is_none()
@@ -2202,6 +2321,9 @@ pub struct UserRow {
     pub id: irori_types::UserId,
     pub name: Name,
     pub role: irori_types::Role,
+    /// The rooms they have. Absent: the whole home (`docs/specs/access.md` §1).
+    #[serde(default)]
+    pub areas: Option<Vec<irori_types::AreaId>>,
     pub has_password: bool,
 }
 
@@ -2213,9 +2335,14 @@ pub async fn add_user(
     name: &Name,
     role: irori_types::Role,
     password: &str,
+    areas: Option<&[irori_types::AreaId]>,
 ) -> Result<Vec<UserRow>, String> {
+    let mut body = serde_json::json!({ "name": name, "role": role, "password": password });
+    if let Some(areas) = areas {
+        body["areas"] = serde_json::json!(areas);
+    }
     let response = post(USERS_URL)
-        .json(&serde_json::json!({ "name": name, "role": role, "password": password }))
+        .json(&body)
         .map_err(|e| e.to_string())?
         .send()
         .await
