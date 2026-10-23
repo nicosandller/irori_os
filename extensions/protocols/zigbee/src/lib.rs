@@ -17,6 +17,7 @@
 
 mod broker;
 mod config;
+mod network;
 mod provision;
 pub mod settings;
 mod supervisor;
@@ -56,8 +57,18 @@ fn data_dir() -> std::path::PathBuf {
         None => std::path::PathBuf::from("z2m-data"),
     }
 }
-/// The one action this protocol declares (`irori-extension.toml`).
+/// The action that opens the network to new devices (`irori-extension.toml`).
 const PERMIT_JOIN: &str = "permit_join";
+/// The action that asks every router who it hears, on the network map (`irori-extension.toml`).
+const SCAN_NETWORK: &str = "scan_network";
+/// How long a scan is given to answer before another may be asked for. Zigbee2MQTT asks each
+/// router in turn, and a sleepy mesh of a hundred devices takes a couple of minutes.
+const SCAN_LONGEST: Duration = Duration::from_secs(300);
+/// The first scan, once Zigbee2MQTT is up: long enough for routers to have found their
+/// neighbours again after a restart.
+const FIRST_SCAN: Duration = Duration::from_secs(60);
+/// Scans after that. A scan is busy on the radio, and links change slowly.
+const SCAN_EVERY: Duration = Duration::from_secs(6 * 3600);
 /// How long that action opens the network for, in seconds. The manifest says the same.
 const PERMIT_JOIN_SECONDS: u32 = 60;
 /// Zigbee2MQTT's own longest window, for when it says the network is open but not until when.
@@ -114,6 +125,14 @@ struct Registry {
     unpairs: BTreeMap<String, Unpairing>,
     /// Counts unpairs, so each has a transaction of its own.
     unpairs_sent: u64,
+    /// What the network map is drawn from.
+    network: network::Known,
+    /// The map last sent, so it's sent again only when it changes.
+    drawn: Option<irori_types::Network>,
+    /// When the scan under way was asked for, and the transaction its answer will carry.
+    scanning: Option<(std::time::Instant, String)>,
+    /// Counts scans, so each has a transaction of its own.
+    scans_sent: u64,
 }
 
 /// An unpair waiting on Zigbee2MQTT's answer.
@@ -187,8 +206,22 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         .subscribe(&bridge::remove_response_topic(BASE_TOPIC))
         .await
         .map_err(ProtocolError::new)?;
+    client
+        .subscribe(&bridge::devices_topic(BASE_TOPIC))
+        .await
+        .map_err(ProtocolError::new)?;
+    client
+        .subscribe(&bridge::network_map_response_topic(BASE_TOPIC))
+        .await
+        .map_err(ProtocolError::new)?;
 
-    let mut registry = Registry::default();
+    let mut registry = Registry {
+        network: network::Known::new(network::Cable::of(&settings.serial_port)),
+        ..Registry::default()
+    };
+    redraw(&mut registry, &ctx).await;
+    let mut scans = tokio::time::interval_at(tokio::time::Instant::now() + FIRST_SCAN, SCAN_EVERY);
+    scans.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ctx.set_health(Health::Degraded("starting Zigbee2MQTT".to_owned()))
         .await;
 
@@ -206,7 +239,7 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                         route(incoming, &registry, &client).await;
                     }
                     Some(irori_protocol::Incoming::Action(incoming)) => {
-                        handle_action(incoming, &client).await;
+                        act(incoming, &mut registry, &client, &ctx).await;
                     }
                     Some(irori_protocol::Incoming::Unpair(incoming)) => {
                         unpair(incoming, &mut registry, &client).await;
@@ -233,6 +266,13 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                         handle_disconnect(&mut registry, &ctx).await;
                     }
                     None => break Err(ProtocolError::new("stopped listening to the embedded broker")),
+                }
+            }
+            _ = scans.tick() => {
+                if registry.bridge_seen
+                    && let Err(why) = scan(&mut registry, &client, &ctx).await
+                {
+                    tracing::debug!(%why, "couldn't ask for the network map");
                 }
             }
             status = spawned.child.wait() => {
@@ -295,6 +335,64 @@ async fn handle_disconnect(registry: &mut Registry, ctx: &ProtocolContext) {
     if registry.join_open {
         registry.join_open = false;
         ctx.set_action_open(PERMIT_JOIN, None).await;
+    }
+    // Its answer would have come over the connection that's gone.
+    if registry.scanning.take().is_some() {
+        ctx.set_action_open(SCAN_NETWORK, None).await;
+    }
+}
+
+/// An action pressed: a scan of the network, or anything else `handle_action` answers.
+async fn act(
+    incoming: IncomingAction,
+    registry: &mut Registry,
+    client: &impl Publisher,
+    ctx: &ProtocolContext,
+) {
+    if incoming.action_id != SCAN_NETWORK {
+        handle_action(incoming, client).await;
+        return;
+    }
+    if incoming.stop {
+        incoming.reply(Err("a scan can't be stopped once it's under way".to_owned()));
+        return;
+    }
+    let answer = scan(registry, client, ctx).await;
+    incoming.reply(answer);
+}
+
+/// Asks Zigbee2MQTT for its network map, unless a scan is already under way. Its answer comes
+/// later, on the response topic, and `apply` draws it. The action stays open until then, so the
+/// map can say it's scanning.
+async fn scan(
+    registry: &mut Registry,
+    client: &impl Publisher,
+    ctx: &ProtocolContext,
+) -> Result<(), String> {
+    if registry
+        .scanning
+        .as_ref()
+        .is_some_and(|(asked, _)| asked.elapsed() < SCAN_LONGEST)
+    {
+        return Ok(());
+    }
+    registry.scans_sent += 1;
+    let transaction = format!("irori-scan-{}", registry.scans_sent);
+    let publish = bridge::network_map(BASE_TOPIC, &transaction);
+    client
+        .publish(&publish.topic, publish.payload, false)
+        .await?;
+    registry.scanning = Some((std::time::Instant::now(), transaction));
+    ctx.set_action_open(SCAN_NETWORK, Some(SCAN_LONGEST)).await;
+    Ok(())
+}
+
+/// Draws the network again, and sends it when it isn't the map last sent.
+async fn redraw(registry: &mut Registry, ctx: &ProtocolContext) {
+    let drawn = network::draw(&registry.network);
+    if registry.drawn.as_ref() != Some(&drawn) {
+        ctx.set_network(drawn.clone()).await;
+        registry.drawn = Some(drawn);
     }
 }
 
@@ -409,8 +507,12 @@ async fn apply(
             // This, not our own broker connecting, is what "ready to use" means: Zigbee2MQTT
             // itself confirmed up, not just our embedded broker having a socket open.
             ctx.set_health(Health::Running).await;
-            ctx.set_available_actions(vec![PERMIT_JOIN.to_owned()])
+            ctx.set_available_actions(vec![PERMIT_JOIN.to_owned(), SCAN_NETWORK.to_owned()])
                 .await;
+        }
+        if let Some(info) = network::info(&message.payload) {
+            registry.network.info = info;
+            redraw(registry, ctx).await;
         }
         // Every one of these is read, not just the first: Zigbee2MQTT publishes it again when
         // the network opens or closes, whoever asked — Irori's button, the bridge's own
@@ -426,6 +528,36 @@ async fn apply(
                 ctx.set_action_open(PERMIT_JOIN, None).await;
             }
             Some(bridge::JoinWindow::Closed) | None => {}
+        }
+        return;
+    }
+    if message.topic == bridge::devices_topic(BASE_TOPIC) {
+        if let Some(devices) = network::devices(&message.payload) {
+            registry.network.devices = devices;
+            redraw(registry, ctx).await;
+        }
+        return;
+    }
+    if message.topic == bridge::network_map_response_topic(BASE_TOPIC) {
+        // Someone else may have asked too (Zigbee2MQTT's own frontend does): a map of links is
+        // news whoever asked for it, but only the answer to Irori's own request ends its scan.
+        let ours = bridge::response(&message.payload).is_some_and(|answer| {
+            answer.transaction.is_some()
+                && answer.transaction.as_deref()
+                    == registry.scanning.as_ref().map(|(_, sent)| sent.as_str())
+        });
+        let at = irori_types::Timestamp::from_second(i64::try_from(now_ms() / 1000).unwrap_or(0));
+        match at.map(|at| network::scan(&message.payload, at)) {
+            Some(Ok(scan)) => {
+                registry.network.scan = Some(scan);
+                redraw(registry, ctx).await;
+            }
+            Some(Err(why)) if ours => tracing::info!(%why, "the network scan didn't finish"),
+            Some(Err(_)) | None => {}
+        }
+        if ours {
+            registry.scanning = None;
+            ctx.set_action_open(SCAN_NETWORK, None).await;
         }
         return;
     }
@@ -731,6 +863,7 @@ mod tests {
                     host::Op::SetHealth(_)
                     | host::Op::SetWaiting(_)
                     | host::Op::SetUnmodeled(_)
+                    | host::Op::SetNetworks(_)
                     | host::Op::SetActionOpen(_, _)
                     | host::Op::SetAvailableActions(_) => {}
                     host::Op::Load(_, reply) => {
@@ -976,7 +1109,7 @@ mod tests {
             while let Some(op) = ops.recv().await {
                 match op {
                     host::Op::SetAvailableActions(actions)
-                        if actions == vec![PERMIT_JOIN.to_owned()] =>
+                        if actions == vec![PERMIT_JOIN.to_owned(), SCAN_NETWORK.to_owned()] =>
                     {
                         counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
@@ -1152,6 +1285,15 @@ mod tests {
                     host::Op::SetActionOpen(action, left) => {
                         format!("{action} open: {:?}", left.map(|left| left.as_secs()))
                     }
+                    host::Op::SetNetworks(networks) => format!(
+                        "network: {} links, {} measured",
+                        networks.iter().map(|n| n.links.len()).sum::<usize>(),
+                        networks
+                            .iter()
+                            .flat_map(|n| &n.links)
+                            .filter(|link| link.quality.is_some())
+                            .count()
+                    ),
                     _ => continue,
                 };
                 recorded.lock().expect("not poisoned").push(said);
@@ -1347,13 +1489,110 @@ mod tests {
         .await;
 
         tokio::time::sleep(Duration::from_millis(20)).await;
-        let seen = ops.lock().expect("not poisoned").clone();
+        // Only the window: the map drawn from the same bridge info is another test's.
+        let seen: Vec<String> = ops
+            .lock()
+            .expect("not poisoned")
+            .iter()
+            .filter(|said| !said.starts_with("network:"))
+            .cloned()
+            .collect();
         assert_eq!(seen.len(), 2, "{seen:?}");
         assert!(
             seen[0] == "permit_join open: Some(59)" || seen[0] == "permit_join open: Some(60)",
             "{seen:?}"
         );
         assert_eq!(seen[1], "permit_join open: None");
+    }
+
+    /// "Scan network" asks Zigbee2MQTT for its map once, stays open while it scans, and its
+    /// answer (not anyone else's) draws who hears whom and closes it.
+    #[tokio::test]
+    async fn a_scan_asks_once_and_its_answer_draws_the_links() {
+        let (ctx, host) = host::connect();
+        let seen = record_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        apply(
+            message(
+                "zigbee2mqtt/bridge/devices",
+                br#"[{"ieee_address":"0x01","type":"Coordinator"},
+                     {"ieee_address":"0x02","type":"Router","friendly_name":"Lamp"}]"#,
+            ),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+
+        let (incoming, answer) = host::incoming_action(SCAN_NETWORK.to_owned());
+        act(incoming, &mut registry, &publisher, &ctx).await;
+        assert_eq!(answer.await.expect("answered"), Ok(()));
+        // A second press while it scans doesn't ask again.
+        let (again, answer) = host::incoming_action(SCAN_NETWORK.to_owned());
+        act(again, &mut registry, &publisher, &ctx).await;
+        assert_eq!(answer.await.expect("answered"), Ok(()));
+        {
+            let published = publisher.published.lock().expect("not poisoned");
+            assert_eq!(published.len(), 1, "{published:?}");
+            assert_eq!(published[0].0, "zigbee2mqtt/bridge/request/networkmap");
+        }
+
+        // Zigbee2MQTT's own frontend asking for a picture of the map: not Irori's answer, so the
+        // scan goes on.
+        apply(
+            message(
+                "zigbee2mqtt/bridge/response/networkmap",
+                br#"{"status":"ok","data":{"type":"graphviz","value":"digraph G {}"}}"#,
+            ),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert!(registry.scanning.is_some());
+
+        apply(
+            message(
+                "zigbee2mqtt/bridge/response/networkmap",
+                br#"{"status":"ok","transaction":"irori-scan-1","data":{"value":{"links":[
+                    {"source":{"ieeeAddr":"0x02"},"target":{"ieeeAddr":"0x01"},
+                     "lqi":200,"relationship":1}]}}}"#,
+            ),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        assert!(registry.scanning.is_none());
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let seen = seen.lock().expect("not poisoned").clone();
+        assert_eq!(
+            seen,
+            vec![
+                // Irori, the coordinator and the lamp hung off it unmeasured.
+                "network: 2 links, 0 measured".to_owned(),
+                "scan_network open: Some(300)".to_owned(),
+                "network: 2 links, 1 measured".to_owned(),
+                "scan_network open: None".to_owned(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scan_cant_be_stopped() {
+        let (ctx, _host) = host::connect();
+        let (mut incoming, answer) = host::incoming_action(SCAN_NETWORK.to_owned());
+        incoming.stop = true;
+        act(
+            incoming,
+            &mut Registry::default(),
+            &FakePublisher::default(),
+            &ctx,
+        )
+        .await;
+        assert!(answer.await.expect("answered").is_err());
     }
 
     #[tokio::test]

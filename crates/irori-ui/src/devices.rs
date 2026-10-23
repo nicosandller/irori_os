@@ -72,7 +72,7 @@ fn matches_device(home: &Home, device: &Device, needle: &str) -> bool {
 /// rather than anything Irori needs to know.
 const VIEW_KEY: &str = "irori.devices.view";
 
-/// The three ways to look at what's in the home.
+/// The ways to look at what's in the home.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Showing {
     /// One row per device. The default: a device is the thing a person bought and put somewhere.
@@ -81,16 +81,25 @@ enum Showing {
     Entities,
     /// Values Irori keeps itself, rather than a device reporting them.
     Helpers,
+    /// Every protocol's network, drawn as one around Irori (`network_map.rs`). The whole home's,
+    /// so not offered to someone who has only some of its rooms.
+    Network,
 }
 
 impl Showing {
-    const ALL: [Showing; 3] = [Showing::Devices, Showing::Entities, Showing::Helpers];
+    const ALL: [Showing; 4] = [
+        Showing::Devices,
+        Showing::Entities,
+        Showing::Helpers,
+        Showing::Network,
+    ];
 
     fn key(self) -> &'static str {
         match self {
             Showing::Devices => "devices",
             Showing::Entities => "entities",
             Showing::Helpers => "helpers",
+            Showing::Network => "network",
         }
     }
 
@@ -99,6 +108,7 @@ impl Showing {
             Showing::Devices => "Devices",
             Showing::Entities => "Entities",
             Showing::Helpers => "Helpers",
+            Showing::Network => "Network map",
         }
     }
 }
@@ -108,6 +118,7 @@ pub fn Devices() -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let crate::Session(session) = expect_context::<crate::Session>();
     let owner = move || session.with(|session| session.as_ref().is_none_or(|s| s.owner));
+    let limited = move || session.with(|s| s.as_ref().is_some_and(crate::api::Session::limited));
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
     let adding_helper = RwSignal::new(false);
@@ -125,13 +136,23 @@ pub fn Devices() -> impl IntoView {
     });
 
     Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
+    // Someone with only some rooms can't read the networks, which name devices in every room.
+    Effect::new(move |_| {
+        if limited() && showing.get() == Showing::Network {
+            showing.set(Showing::Devices);
+        }
+    });
 
     view! {
         <div class="page-head">
             <h1>"Devices"</h1>
-            {crate::segmented::segmented(
+            {move || crate::segmented::segmented(
                 "What to show",
-                Showing::ALL.into_iter().map(|view| (view, view.label())).collect(),
+                Showing::ALL
+                    .into_iter()
+                    .filter(|view| *view != Showing::Network || !limited())
+                    .map(|view| (view, view.label()))
+                    .collect(),
                 showing.into(),
                 move |view| showing.set(view),
             )}
@@ -198,9 +219,10 @@ pub fn Devices() -> impl IntoView {
             </crate::modal::Modal>
         })}
 
-        {move || (showing.get() != Showing::Helpers).then(|| view! { <updates::Updates /> })}
+        {move || matches!(showing.get(), Showing::Devices | Showing::Entities)
+            .then(|| view! { <updates::Updates /> })}
 
-        {move || view! {
+        {move || (showing.get() != Showing::Network).then(|| view! {
             <input
                 class="filter"
                 type="search"
@@ -213,7 +235,7 @@ pub fn Devices() -> impl IntoView {
                 prop:value=filter
                 on:input:target=move |ev| filter.set(ev.target().value())
             />
-        }}
+        })}
 
         // The two lists watch the home themselves, and only what they're made of (`tables.rs`).
         // Helpers are redrawn when a helper changes and not with every reading in the home, so
@@ -228,6 +250,10 @@ pub fn Devices() -> impl IntoView {
                 <tables::HelperTable filter=filter />
             }
             .into_any(),
+            // Only for someone with the whole home; the effect above moves anyone else off it.
+            Showing::Network => (!limited())
+                .then(|| view! { <crate::network_map::NetworkMap /> })
+                .into_any(),
         }}
         {move || adding_helper.get().then(|| view! {
             <crate::modal::Modal
@@ -461,7 +487,7 @@ struct HelperTrouble(RwSignal<Option<String>>);
 /// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
 /// or low/ok from a battery binary sensor. `None` when it doesn't have one, which is most
 /// mains-powered things.
-fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
+pub(crate) fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
     home.entities
         .iter()
         .filter(|entity| entity.device_id.as_ref() == Some(device))
@@ -485,7 +511,7 @@ fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
         })
 }
 
-fn battery_reading(entity: &Entity, state: &EntityState) -> Option<String> {
+pub(crate) fn battery_reading(entity: &Entity, state: &EntityState) -> Option<String> {
     match (&entity.capabilities, state.state.as_ref()) {
         (
             Capabilities::Sensor(SensorCapabilities {
@@ -1227,7 +1253,17 @@ fn closing_times(live: crate::Live, id: ExtensionId) -> RwSignal<BTreeMap<String
             home.extensions
                 .iter()
                 .find(|(known, _)| **known == id)
-                .map(|(_, extension)| extension.open_actions.clone())
+                // A network map's own action (Zigbee's scan) stays open while it runs, but it
+                // isn't the network listening for new devices.
+                .map(|(_, extension)| {
+                    let mut open = extension.open_actions.clone();
+                    open.retain(|action, _| {
+                        !extension.actions.iter().any(|known| {
+                            &known.id == action && known.place == irori_types::ActionPlace::Network
+                        })
+                    });
+                    open
+                })
                 .unwrap_or_default()
         });
         let now = web_sys::js_sys::Date::now();
@@ -1273,13 +1309,19 @@ fn ProtocolActions(
     let trouble = RwSignal::new(None::<String>);
     let live = expect_context::<crate::Live>();
 
-    if extension.actions.is_empty() {
+    // The network map's buttons are on the map, not here.
+    let actions: Vec<_> = extension
+        .actions
+        .iter()
+        .filter(|action| action.place != irori_types::ActionPlace::Network)
+        .cloned()
+        .collect();
+    if actions.is_empty() {
         return ().into_any();
     }
-    let (usable, waiting_on): (Vec<_>, Vec<_>) =
-        extension.actions.iter().cloned().partition(|action| {
-            extension.available_actions.contains(&action.id) || forms.holding(&action.id)
-        });
+    let (usable, waiting_on): (Vec<_>, Vec<_>) = actions.into_iter().partition(|action| {
+        extension.available_actions.contains(&action.id) || forms.holding(&action.id)
+    });
 
     let not_yet = (!waiting_on.is_empty()).then(|| {
         let names = waiting_on

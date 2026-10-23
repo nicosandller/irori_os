@@ -408,6 +408,27 @@ pub struct ProtocolAction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(range(min = 1, max = 300))]
     pub answer_within_seconds: Option<u32>,
+    /// Where its button is: on "+ Add device" (the default), or on the network map, for one
+    /// that's about the network rather than adding to it (Zigbee's scan).
+    #[serde(default, skip_serializing_if = "ActionPlace::is_add_device")]
+    pub place: ActionPlace,
+}
+
+/// Where an action's button is.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionPlace {
+    /// On "+ Add device", under the protocol's card.
+    #[default]
+    AddDevice,
+    /// On the network map (the Devices page's Network map tab), beside the networks it draws.
+    Network,
+}
+
+impl ActionPlace {
+    fn is_add_device(&self) -> bool {
+        *self == Self::AddDevice
+    }
 }
 
 /// The longest an action may say it takes to answer (`answer_within_seconds`): five minutes.

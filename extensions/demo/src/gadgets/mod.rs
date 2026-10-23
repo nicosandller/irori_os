@@ -208,6 +208,32 @@ const RETIRED: &[&str] = &[
 ];
 
 /// What the devices are doing.
+/// A device as the demo's network map needs it: its handle, name, what it is and where.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Placed {
+    pub unique_id: &'static str,
+    pub name: &'static str,
+    pub model: &'static str,
+    pub room: &'static str,
+}
+
+/// Every device in the house, in the order the house lists them.
+pub(crate) fn placed() -> Vec<Placed> {
+    Gadgets::new()
+        .all
+        .iter()
+        .map(|gadget| {
+            let device = gadget.device();
+            Placed {
+                unique_id: device.unique_id,
+                name: device.name,
+                model: device.model,
+                room: device.room,
+            }
+        })
+        .collect()
+}
+
 pub(crate) struct Gadgets {
     all: Vec<Box<dyn Gadget>>,
 }
@@ -645,6 +671,7 @@ fn assert_fits(gadget: &dyn Gadget, states: &[(&'static str, State)]) {
 
 #[cfg(test)]
 mod tests {
+
     use std::collections::BTreeSet;
 
     use tokio::time::Duration;

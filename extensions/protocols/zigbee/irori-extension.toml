@@ -1,7 +1,7 @@
 [extension]
 id = "zigbee"
 name = "Zigbee"
-version = "0.5.1"
+version = "0.6.0"
 irori = ">=1.5.0"
 # 1.4.0 has the `update` kind: firmware a device can be told to install. 1.5.0 is the first
 # core that takes a device's serial number, which Zigbee2MQTT's discovery can carry.
@@ -19,6 +19,13 @@ run = { command = "bin/irori-ext-zigbee" }
 id = "permit_join"
 label = "Permit joining"
 seconds = 60
+
+# On the network map rather than "+ Add device": asks every router who it hears, for the map's
+# links. Slow and busy on the radio, so it's also run only every few hours on its own.
+[[contributes.protocol.actions]]
+id = "scan_network"
+label = "Scan network"
+place = "network"
 
 # This extension downloads a Node.js runtime and installs Zigbee2MQTT (an npm package) the
 # first time it starts, then runs it as a supervised subprocess — full access to this machine,

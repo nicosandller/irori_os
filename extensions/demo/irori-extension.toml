@@ -1,8 +1,9 @@
 [extension]
 id = "demo"
 name = "Demo"
-version = "0.8.0"
-irori = ">=1.4.0"
+version = "0.9.0"
+irori = ">=1.5.0"
+# 1.5.0 is the first core that draws a protocol's network map.
 description = "A whole demo house for trying Irori without hardware, living a day every minute: door, presence, vibration and leak sensors; a garage door, a smart lock and a video doorbell; lights, a TV and metered plugs; cameras indoors and in the garden; climate, soil and light sensors; a thermostat, a smoke detector and a water boiler."
 icon = "icon.svg"
 
@@ -10,3 +11,9 @@ icon = "icon.svg"
 iot_class = "local_push"
 entity_kinds = ["light", "switch", "sensor", "binary_sensor", "number", "select", "button", "event", "cover", "lock", "climate", "water_heater", "media_player", "update", "camera"]
 run = { command = "bin/irori-ext-demo" }
+
+# On the network map: measures the demo's Zigbee mesh again, a little differently each time.
+[[contributes.protocol.actions]]
+id = "scan_network"
+label = "Scan network"
+place = "network"

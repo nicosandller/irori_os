@@ -61,6 +61,9 @@ pub enum FromExt {
     SetUnmodeled {
         unmodeled: Vec<Unmodeled>,
     },
+    SetNetworks {
+        networks: Vec<irori_types::Network>,
+    },
     SetAvailableActions {
         actions: Vec<String>,
     },
@@ -762,6 +765,7 @@ impl Pending {
             Op::SetHealth(health) => Some(FromExt::SetHealth { health }),
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
             Op::SetUnmodeled(unmodeled) => Some(FromExt::SetUnmodeled { unmodeled }),
+            Op::SetNetworks(networks) => Some(FromExt::SetNetworks { networks }),
             Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
             Op::SetActionOpen(action_id, remaining) => Some(FromExt::SetActionOpen {
                 action_id,

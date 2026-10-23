@@ -100,6 +100,11 @@ A service call made with a token is recorded as `origin.type = "api"` and that t
 areas, floors, held devices, the floorplan when one has been drawn, and `installs`: the updates
 waiting their turn to install, each with its `entity_id` and how many are `ahead` of it.
 
+`GET /api/network` is every running protocol's network map ([protocols.md](protocols.md) §6.8):
+`{ "networks": [{ "extension", "name"?, "detail"?, "scanned_at"?, "nodes", "links" }…] }`, by
+extension id. A person with only some rooms gets `403` (`docs/specs/access.md` §2.3), and so does
+a token.
+
 `POST /api/command` is `{ "entity_id", "command", "data"? }`. `command` is one of the
 entity's actions (`turn_on`) or `toggle`. The response is the entity's state once the
 protocol has confirmed, or an error.

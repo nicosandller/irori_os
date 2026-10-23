@@ -373,6 +373,8 @@ struct Shared {
     /// When each extension's open actions close (`set_action_open`). On this process's own
     /// monotonic clock: the extension says how long is left, not what time it thinks it is.
     action_windows: RwLock<HashMap<ExtensionId, BTreeMap<String, std::time::Instant>>>,
+    /// Each running extension's last maps of its networks (`set_networks`).
+    networks: RwLock<HashMap<ExtensionId, Vec<irori_types::Network>>>,
     /// Running engines that have a page, keyed by extension id: where the page's questions go.
     app_links: RwLock<HashMap<ExtensionId, mpsc::Sender<AppCall>>>,
     /// Where `history:read` is answered from; nothing until the binary provides it.
@@ -473,6 +475,7 @@ impl Core {
             links: RwLock::default(),
             action_links: RwLock::default(),
             action_windows: RwLock::default(),
+            networks: RwLock::default(),
             app_links: RwLock::default(),
             history: RwLock::default(),
             config_dir: RwLock::default(),
@@ -1435,6 +1438,13 @@ impl Core {
                 self.set_unmodeled(extension, unmodeled);
                 return;
             }
+            Op::SetNetworks(networks) => {
+                match irori_types::Network::validate_all(&networks) {
+                    Ok(()) => self.set_networks(extension, networks),
+                    Err(why) => tracing::warn!(%extension, %why, "refused its network map"),
+                }
+                return;
+            }
             Op::SetAvailableActions(actions) => {
                 self.set_available_actions(extension, actions);
                 return;
@@ -1627,6 +1637,32 @@ impl Core {
             extension_id: extension.clone(),
             status,
         }]);
+    }
+
+    /// Keeps the maps an extension last drew of its networks; an empty list forgets them, as
+    /// when it stops. Not published: a map changes far more often than anything else on the
+    /// page, and only the network map asks for it, while it's showing.
+    pub(crate) fn set_networks(
+        &self,
+        extension: &ExtensionId,
+        networks: Vec<irori_types::Network>,
+    ) {
+        let mut all = write(&self.0.networks);
+        if networks.is_empty() {
+            all.remove(extension);
+        } else {
+            all.insert(extension.clone(), networks);
+        }
+    }
+
+    /// Every running extension's networks, by extension, in the order of their ids.
+    pub fn networks(&self) -> Vec<(ExtensionId, Vec<irori_types::Network>)> {
+        let mut all: Vec<_> = read(&self.0.networks)
+            .iter()
+            .map(|(extension, networks)| (extension.clone(), networks.clone()))
+            .collect();
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        all
     }
 
     /// Records that one of an extension's actions is open for `remaining` more, or closed.
