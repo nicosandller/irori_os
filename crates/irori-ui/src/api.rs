@@ -922,27 +922,6 @@ pub struct CatalogEntry {
     /// The secret settings that have a value saved, by name only (never what they hold).
     #[serde(default)]
     pub secrets_set: Vec<String>,
-    /// It has drawn a map of its network, which its settings window shows.
-    #[serde(default)]
-    pub network: bool,
-}
-
-/// The map an extension last drew of its network; `None` when it hasn't drawn one.
-pub async fn fetch_network(id: &str) -> Result<Option<irori_types::Network>, String> {
-    let response = Request::get(&format!("/api/extensions/{id}/network"))
-        .send()
-        .await
-        .map_err(unreachable)?;
-    if response.status() == 404 {
-        return Ok(None);
-    }
-    if !response.ok() {
-        return match checked(response).await {
-            Err(reason) => Err(reason),
-            Ok(()) => Err("the server refused without a reason".into()),
-        };
-    }
-    response.json().await.map(Some).map_err(unreachable)
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {

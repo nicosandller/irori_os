@@ -1786,7 +1786,6 @@ dependencies = [
  "irori-node-runtime",
  "irori-protocol",
  "irori-types",
- "mdns-sd",
  "schemars",
  "serde",
  "serde_json",

@@ -15,7 +15,6 @@
 mod client;
 mod map;
 mod model;
-mod network;
 mod server;
 pub mod settings;
 
@@ -228,7 +227,6 @@ async fn drive(
     ctx.set_available_actions(vec![ADD_DEVICE.to_owned()]).await;
 
     let (done_tx, mut done) = mpsc::channel(8);
-    let (mut routers, listening) = network::listen_for_border_routers();
     let mut update_check = tokio::time::interval_at(
         tokio::time::Instant::now() + FIRST_UPDATE_CHECK,
         UPDATE_CHECK_EVERY,
@@ -250,7 +248,6 @@ async fn drive(
             },
             Some(finished) = done.recv() => home.finish(finished, ctx).await,
             _ = update_check.tick() => home.check_updates(None, &client, &done_tx),
-            Some(heard) = routers.recv() => home.heard(heard, ctx).await,
             event = events.recv() => match event {
                 Some(Event::ServerShutdown) => {
                     break Ended::Failed("the Matter server shut down".to_owned());
@@ -276,9 +273,6 @@ async fn drive(
         }
     };
     reader.abort();
-    if let Some(listening) = listening {
-        listening.abort();
-    }
     ended
 }
 
@@ -328,10 +322,6 @@ struct Home {
     /// What was last said, so it's said again only when it changes.
     unmodeled: Vec<irori_types::Unmodeled>,
     health: Option<Health>,
-    /// Thread border routers heard announcing themselves, by mDNS name.
-    routers: BTreeMap<String, network::BorderRouter>,
-    /// The map of the network last drawn.
-    network: Option<irori_types::Network>,
 }
 
 /// A command sent to an entity, and when the device took it.
@@ -365,8 +355,6 @@ impl Home {
             removing: BTreeSet::new(),
             unmodeled: Vec::new(),
             health: None,
-            routers: BTreeMap::new(),
-            network: None,
         }
     }
 
@@ -562,42 +550,6 @@ impl Home {
             ctx.set_health(health.clone()).await;
             self.health = Some(health);
         }
-        self.draw_network(ctx).await;
-    }
-
-    /// Draws the network again, and sends it when it isn't the map last sent.
-    async fn draw_network(&mut self, ctx: &ProtocolContext) {
-        let members: Vec<network::Member<'_>> = self
-            .nodes
-            .values()
-            .map(|tracked| network::Member {
-                node: &tracked.node,
-                device: map::node_device(self.fabric, tracked.node.id),
-                name: tracked.described.devices.first().map_or_else(
-                    || format!("Matter device {}", tracked.node.id),
-                    |device| device.name.as_str().to_owned(),
-                ),
-            })
-            .collect();
-        let routers: Vec<network::BorderRouter> = self.routers.values().cloned().collect();
-        let drawn = network::map(&members, &routers);
-        if self.network.as_ref() != Some(&drawn) {
-            ctx.set_network(drawn.clone()).await;
-            self.network = Some(drawn);
-        }
-    }
-
-    /// A border router announced itself, or went.
-    async fn heard(&mut self, heard: network::Heard, ctx: &ProtocolContext) {
-        match heard {
-            network::Heard::Seen(name, router) => {
-                self.routers.insert(name, router);
-            }
-            network::Heard::Gone(name) => {
-                self.routers.remove(&name);
-            }
-        }
-        self.draw_network(ctx).await;
     }
 
     /// Adds a device from its pairing code, in a task of its own; [`Home::finish`] answers.
@@ -1277,9 +1229,7 @@ mod tests {
                         let _ = reply.send(Ok(()));
                         continue;
                     }
-                    host::Op::SetWaiting(_)
-                    | host::Op::SetActionOpen(..)
-                    | host::Op::SetNetwork(_) => continue,
+                    host::Op::SetWaiting(_) | host::Op::SetActionOpen(..) => continue,
                 };
                 lines.0.lock().expect("not poisoned").push(line);
             }

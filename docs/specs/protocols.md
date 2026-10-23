@@ -323,32 +323,6 @@ entity's id ([entities.md](entities.md) §3) and a placeholder kind would have t
 every rule that named it. When Irori gains the kind, the protocol describes the thing as an
 entity and leaves it off this list.
 
-### 6.8 Network
-
-A map of the protocol's network as it sees it (`set_network`): Irori or the controller it runs,
-the border routers, access points and routers between, and its devices, with what reaches what.
-The extension's settings window draws it as the network map, and shows a device's messages
-travelling along it as its states arrive. The protocol sends the **whole map** when it changes,
-and the core keeps the last one, in memory, until the protocol stops. It isn't published to every
-page the way the rest of an extension's status is: it changes often, and only its settings
-window reads it (`GET /api/extensions/{id}/network`, while the map is open).
-
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `nodes[].id` | 1-64 of letters, digits, `_.:-` | yes | Its id in this map, once each |
-| `nodes[].name` | string, 1-100 | yes | |
-| `nodes[].role` | `controller`, `border_router`, `access_point`, `router`, `end_device`, `sleepy_end_device`, `device` | yes | |
-| `nodes[].medium` | `thread`, `wifi`, `ethernet`, `zigbee`, `bluetooth`, `ip` | no | How it's connected |
-| `nodes[].device_unique_id` | `UniqueId` | no | The device it is, when it's one of the protocol's |
-| `nodes[].detail` | string, ≤ 200 | no | "Thread router, channel 25" |
-| `links[].from`, `links[].to` | node ids | yes | `from` is the end further from the controller, when known |
-| `links[].medium` | as above | no | |
-| `links[].quality` | `poor`, `fair`, `good`, `excellent` | no | Steps, not a raw signal strength: a map that changes on every report isn't one anyone can read |
-| `links[].detail` | string, ≤ 200 | no | |
-
-At most 512 nodes and 2048 links. A map with a link to a node it doesn't have, or an id used
-twice, is refused (and logged), and the last good one stays.
-
 ## 7. Service calls
 
 ### 7.1 Standard services

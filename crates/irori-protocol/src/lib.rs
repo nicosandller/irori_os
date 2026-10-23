@@ -552,15 +552,6 @@ impl ProtocolContext {
         let _ = self.ops.send(host::Op::SetUnmodeled(unmodeled)).await;
     }
 
-    /// Draws its network (spec §6.8): what's on it and what reaches what, replacing the last
-    /// map. The settings window of its extension shows it as the network map.
-    ///
-    /// Send it when the picture changes, not on every report: links in steps of quality, not raw
-    /// signal strengths, keep it from changing all the time.
-    pub async fn set_network(&self, network: irori_types::Network) {
-        let _ = self.ops.send(host::Op::SetNetwork(Box::new(network))).await;
-    }
-
     /// Says which of its manifest-declared actions are usable right now, replacing the last
     /// list — an empty list when none are (the default, until a protocol calls this). E.g. the
     /// `zigbee` protocol only offers `permit_join` once it's actually found a Z2M bridge.
@@ -933,7 +924,6 @@ pub mod host {
         SetHealth(Health),
         SetWaiting(Vec<Waiting>),
         SetUnmodeled(Vec<Unmodeled>),
-        SetNetwork(Box<irori_types::Network>),
         SetAvailableActions(Vec<String>),
         /// An action's window: open for this much longer, or `None` once closed.
         SetActionOpen(String, Option<std::time::Duration>),

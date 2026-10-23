@@ -197,7 +197,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/entities/{id}", patch(edit_entity))
         .route("/api/entities/{id}/picture", get(camera_picture))
         .route("/api/extensions/{id}/secrets", put(give_secret))
-        .route("/api/extensions/{id}/network", get(extension_network))
         .route(
             "/api/extensions/{id}/settings",
             post(set_extension_settings),
@@ -1604,18 +1603,6 @@ async fn camera_picture(State(state): State<AppState>, Path(id): Path<EntityId>)
 /// Always a 200, even for an extension that has said nothing or isn't installed: "nothing to
 /// show" is an answer, and a 404 here would make the page decide whether an empty log is an
 /// error. A built-in has no process of its own and so never has anything here.
-/// The map an extension last drew of its network (`docs/specs/protocols.md` §6.8), while it's
-/// running. Its settings window asks for this every few seconds while the map is open.
-async fn extension_network(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
-    match state.0.core.network_of(&id) {
-        Some(network) => Json(network).into_response(),
-        None => refused(
-            StatusCode::NOT_FOUND,
-            format!("`{id}` hasn't drawn a map of its network"),
-        ),
-    }
-}
-
 async fn extension_log(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
     axum::Json(serde_json::json!({ "lines": state.0.core.log(&id) })).into_response()
 }
@@ -2157,7 +2144,6 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         saved_secrets(secrets.get(&item.id).map_or(&[][..], Vec::as_slice), schema)
                     })
                     .unwrap_or_default();
-                let network = state.0.core.network_of(&item.id).is_some();
                 CatalogEntry {
                     id: item.id,
                     name: item.name.to_string(),
@@ -2194,7 +2180,6 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                         .and_then(|info| info.config_schema.clone()),
                     settings,
                     secrets_set,
-                    network,
                 }
             })
             .collect(),
@@ -2245,9 +2230,6 @@ struct CatalogEntry {
     /// saved, and folds a section of them away, without the value ever leaving `secrets.toml`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     secrets_set: Vec<String>,
-    /// It has drawn a map of its network, which its settings window shows.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    network: bool,
 }
 
 /// What the Extensions page sends when the person has read the full-access warning and chosen
@@ -4247,36 +4229,6 @@ mod tests {
                 }])
                 .await;
             }
-            // Its network: itself, and the vault it reaches. A map that isn't one (a link to
-            // nothing) is refused and the last good one kept.
-            let node = |id: &str, role| irori_types::NetworkNode {
-                id: id.to_owned(),
-                name: id.to_owned(),
-                role,
-                medium: None,
-                device_unique_id: None,
-                detail: None,
-            };
-            let link = |from: &str, to: &str| irori_types::NetworkLink {
-                from: from.to_owned(),
-                to: to.to_owned(),
-                medium: Some(irori_types::NetworkMedium::Thread),
-                quality: Some(irori_types::LinkQuality::Good),
-                detail: None,
-            };
-            ctx.set_network(irori_types::Network {
-                nodes: vec![
-                    node("safe", irori_types::NetworkRole::Controller),
-                    node("vault", irori_types::NetworkRole::SleepyEndDevice),
-                ],
-                links: vec![link("vault", "safe")],
-            })
-            .await;
-            ctx.set_network(irori_types::Network {
-                nodes: vec![node("safe", irori_types::NetworkRole::Controller)],
-                links: vec![link("nowhere", "safe")],
-            })
-            .await;
             // Only offered once it has a code — same idea as `zigbee`'s permit_join only
             // showing up once it's actually found a Z2M bridge.
             if settings.code.is_some() {
@@ -4918,29 +4870,6 @@ mod tests {
             !written.contains("1234-5678"),
             "the field should have been cleared: {written}"
         );
-
-        host.shutdown().await;
-        Ok(())
-    }
-
-    /// An extension's map of its network is there to read while it runs; one that isn't a map
-    /// is refused, and the last good one stays.
-    #[tokio::test]
-    async fn an_extensions_network_map_is_there_to_read() -> anyhow::Result<()> {
-        let (core, host) = safe().await?;
-        let server = Server::new(core.clone())?;
-
-        let network = server.read("/api/extensions/safe/network").await?;
-        assert_eq!(network["nodes"][1]["id"], "vault", "{network}");
-        assert_eq!(network["links"][0]["quality"], "good", "{network}");
-        let (status, _) = server
-            .json(
-                "GET",
-                "/api/extensions/nobody/network",
-                serde_json::json!({}),
-            )
-            .await?;
-        assert_eq!(status, StatusCode::NOT_FOUND);
 
         host.shutdown().await;
         Ok(())

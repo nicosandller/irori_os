@@ -360,8 +360,6 @@ struct Shared {
     /// When each extension's open actions close (`set_action_open`). On this process's own
     /// monotonic clock: the extension says how long is left, not what time it thinks it is.
     action_windows: RwLock<HashMap<ExtensionId, BTreeMap<String, std::time::Instant>>>,
-    /// Each running extension's last map of its network (`set_network`).
-    networks: RwLock<HashMap<ExtensionId, irori_types::Network>>,
     /// Running engines that have a page, keyed by extension id: where the page's questions go.
     app_links: RwLock<HashMap<ExtensionId, mpsc::Sender<AppCall>>>,
     /// Where `history:read` is answered from; nothing until the binary provides it.
@@ -449,7 +447,6 @@ impl Core {
             links: RwLock::default(),
             action_links: RwLock::default(),
             action_windows: RwLock::default(),
-            networks: RwLock::default(),
             app_links: RwLock::default(),
             history: RwLock::default(),
             config_dir: RwLock::default(),
@@ -1355,13 +1352,6 @@ impl Core {
                 self.set_unmodeled(extension, unmodeled);
                 return;
             }
-            Op::SetNetwork(network) => {
-                match network.validate() {
-                    Ok(()) => self.set_network(extension, Some(*network)),
-                    Err(why) => tracing::warn!(%extension, %why, "refused its network map"),
-                }
-                return;
-            }
             Op::SetAvailableActions(actions) => {
                 self.set_available_actions(extension, actions);
                 return;
@@ -1554,30 +1544,6 @@ impl Core {
             extension_id: extension.clone(),
             status,
         }]);
-    }
-
-    /// Keeps the map an extension last drew of its network, or forgets it (`None`) when it
-    /// stops. Not published: a map changes far more often than anything else on the page, and
-    /// only its settings window asks for it, while it's open.
-    pub(crate) fn set_network(
-        &self,
-        extension: &ExtensionId,
-        network: Option<irori_types::Network>,
-    ) {
-        let mut networks = write(&self.0.networks);
-        match network {
-            Some(network) => {
-                networks.insert(extension.clone(), network);
-            }
-            None => {
-                networks.remove(extension);
-            }
-        }
-    }
-
-    /// The map an extension last drew of its network, while it's running.
-    pub fn network_of(&self, extension: &ExtensionId) -> Option<irori_types::Network> {
-        read(&self.0.networks).get(extension).cloned()
     }
 
     /// Records that one of an extension's actions is open for `remaining` more, or closed.
