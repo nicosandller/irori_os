@@ -163,6 +163,7 @@ fn device(
         model: Some(model.into()),
         sw_version: Some(env!("CARGO_PKG_VERSION").into()),
         hw_version: None,
+        serial_number: None,
         suggested_area: Some(Name::try_from(room)?),
         via_device_unique_id: None,
     })

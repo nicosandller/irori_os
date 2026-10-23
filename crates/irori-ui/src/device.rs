@@ -478,6 +478,10 @@ fn page(
                     <dt>"Hardware"</dt>
                     <dd>{version}</dd>
                 })}
+                {device.serial_number.clone().map(|serial| view! {
+                    <dt>"Serial number"</dt>
+                    <dd>{serial}</dd>
+                })}
                 {device.via_device_id.clone().map(|via| view! {
                     <dt>"Reached through"</dt>
                     <dd><A href=format!("/devices/{via}") attr:class="row-link">{via.to_string()}</A></dd>
@@ -1538,6 +1542,7 @@ mod tests {
             model: None,
             sw_version: None,
             hw_version: None,
+            serial_number: None,
             area_id: None,
             suggested_area: None,
             via_device_id: None,

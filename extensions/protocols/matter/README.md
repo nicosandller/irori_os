@@ -23,6 +23,8 @@ many homes. [Why not `rs-matter`](#why-wrap-a-server-instead-of-rs-matter) is be
   **carries out commands** on them:
   - Lights: on and off, brightness, colour temperature and colour, as the light supports.
   - Plugs, in-wall switches and appliances' power: switches.
+  - What a light or plug does when the power comes back (on, off, toggle, or as it was): a
+    select under the device's settings.
   - Locks: lock, unlock, and unlatch for a lock that can pull its latch. A lock that wants a PIN
     for remote use is sent the code given with the command.
   - Blinds, shades, curtains, awnings and shutters: open, close, stop, and a position and tilt
@@ -34,7 +36,10 @@ many homes. [Why not `rs-matter`](#why-wrap-a-server-instead-of-rs-matter) is be
     as the fan supports.
   - Each device's firmware, when it can take new firmware (see [Firmware](#firmware)).
   - Temperature, humidity, illuminance, pressure, flow, battery, power, voltage, current and
-    energy: sensors in Irori's units (°C, %, lx, kPa, m³/h, W, V, A, kWh).
+    energy: sensors in Irori's units (°C, %, lx, kPa, m³/h, W, V, A, kWh). A plug that measures
+    RMS voltage and current, as most do, shows those. Voltage, current and battery are
+    diagnostics, as in Home Assistant.
+  - Each device's make, model, firmware and hardware versions, and serial number.
   - Occupancy, door contact, water leak, freeze and rain: binary sensors.
   - A bridge's devices (a Hue bridge, an IKEA hub) as devices of their own, reached through the
     bridge.

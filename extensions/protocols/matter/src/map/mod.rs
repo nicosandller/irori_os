@@ -23,13 +23,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::json;
 
 use crate::client::SoftwareUpdate;
-use crate::model::{Command, Node, NodeId, cluster, device_type};
+use crate::model::{Command, Node, NodeId, Path, cluster, device_type};
 use irori_types::{
     BinarySensorCapabilities, BinarySensorClass, BinarySensorState, Capabilities,
     ClimateCapabilities, CoverCapabilities, DeviceDescription, EntityCategory, EntityDescription,
     FanCapabilities, HvacMode, LightCapabilities, LockCapabilities, Name, ObjectId,
-    SensorCapabilities, SensorClass, SensorState, SensorValue, SensorValueType, Service, State,
-    StateClass, SwitchCapabilities, SwitchClass, SwitchState, UniqueId, Unmodeled,
+    SelectCapabilities, SelectState, SensorCapabilities, SensorClass, SensorState, SensorValue,
+    SensorValueType, Service, State, StateClass, SwitchCapabilities, SwitchClass, SwitchState,
+    UniqueId, Unmodeled,
 };
 
 /// Everything a node is, in Irori's terms.
@@ -63,9 +64,23 @@ pub enum Reading {
     Cover(CoverCapabilities),
     Climate(ClimateCapabilities),
     Fan(FanCapabilities),
+    /// What its On/Off cluster does when power comes back (StartUpOnOff).
+    PowerOn,
     /// The node's firmware.
     Update,
 }
+
+/// On/Off's StartUpOnOff: what a light or plug does when power comes back after a cut.
+const START_UP_ON_OFF: u32 = 0x4003;
+
+/// The power-on choices, as Home Assistant names them, and StartUpOnOff's value for each:
+/// `null` is "as it was before the power went".
+const POWER_ON: &[(&str, Option<u64>)] = &[
+    ("On", Some(1)),
+    ("Off", Some(0)),
+    ("Toggle", Some(2)),
+    ("Previous", None),
+];
 
 /// What an entity's state needs beside the node: what the Matter server found newer.
 #[derive(Debug, Clone, Copy, Default)]
@@ -142,6 +157,9 @@ struct MeasureInfo {
     measure: Measure,
     cluster: u32,
     attribute: u32,
+    /// Read instead when the device doesn't report `attribute`: a plug that measures RMS
+    /// voltage and current reports those, not the instantaneous ones.
+    fallback: Option<u32>,
     key: &'static str,
     name: &'static str,
     class: SensorClass,
@@ -155,6 +173,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Temperature,
         cluster: cluster::TEMPERATURE,
         attribute: 0,
+        fallback: None,
         key: "temperature",
         name: "Temperature",
         class: SensorClass::Temperature,
@@ -166,6 +185,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Humidity,
         cluster: cluster::HUMIDITY,
         attribute: 0,
+        fallback: None,
         key: "humidity",
         name: "Humidity",
         class: SensorClass::Humidity,
@@ -177,6 +197,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Illuminance,
         cluster: cluster::ILLUMINANCE,
         attribute: 0,
+        fallback: None,
         key: "illuminance",
         name: "Illuminance",
         class: SensorClass::Illuminance,
@@ -188,6 +209,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Pressure,
         cluster: cluster::PRESSURE,
         attribute: 0,
+        fallback: None,
         key: "pressure",
         name: "Pressure",
         class: SensorClass::Pressure,
@@ -199,6 +221,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Flow,
         cluster: cluster::FLOW,
         attribute: 0,
+        fallback: None,
         key: "flow",
         name: "Flow",
         class: SensorClass::VolumeFlowRate,
@@ -210,6 +233,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Battery,
         cluster: cluster::POWER_SOURCE,
         attribute: 12,
+        fallback: None,
         key: "battery",
         name: "Battery",
         class: SensorClass::Battery,
@@ -221,6 +245,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Power,
         cluster: cluster::ELECTRICAL_POWER,
         attribute: 8,
+        fallback: None,
         key: "power",
         name: "Power",
         class: SensorClass::Power,
@@ -232,6 +257,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Voltage,
         cluster: cluster::ELECTRICAL_POWER,
         attribute: 4,
+        fallback: Some(0x000B),
         key: "voltage",
         name: "Voltage",
         class: SensorClass::Voltage,
@@ -243,6 +269,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Current,
         cluster: cluster::ELECTRICAL_POWER,
         attribute: 5,
+        fallback: Some(0x000C),
         key: "current",
         name: "Current",
         class: SensorClass::Current,
@@ -254,6 +281,7 @@ const MEASURES: &[MeasureInfo] = &[
         measure: Measure::Energy,
         cluster: cluster::ELECTRICAL_ENERGY,
         attribute: 1,
+        fallback: None,
         key: "energy",
         name: "Energy",
         class: SensorClass::Energy,
@@ -344,6 +372,7 @@ pub fn describe(fabric: u64, node: &Node, updates: bool) -> Described {
         let device = owner(endpoint).clone();
         let types = node.device_types(endpoint);
         let is_any = |list: &[u32]| types.iter().any(|t| list.contains(t));
+        let switched = found.len();
         if node.has(endpoint, cluster::ON_OFF, 0) {
             if is_any(LIGHTS) {
                 found.push((
@@ -377,8 +406,19 @@ pub fn describe(fabric: u64, node: &Node, updates: bool) -> Described {
                 ));
             }
         }
+        // What a light or plug does when power comes back, beside the entity that switches it.
+        if found.len() > switched && node.has(endpoint, cluster::ON_OFF, START_UP_ON_OFF) {
+            found.push((
+                device.clone(),
+                endpoint,
+                "power_on",
+                Some("Power-on behaviour"),
+                Reading::PowerOn,
+            ));
+        }
         for measure in MEASURES {
-            if node.has(endpoint, measure.cluster, measure.attribute) {
+            let read = |attribute| node.has(endpoint, measure.cluster, attribute);
+            if read(measure.attribute) || measure.fallback.is_some_and(read) {
                 found.push((
                     device.clone(),
                     endpoint,
@@ -518,7 +558,7 @@ pub fn describe(fabric: u64, node: &Node, updates: bool) -> Described {
                         Reading::Sensor(measure) if info(*measure).diagnostic => {
                             Some(EntityCategory::Diagnostic)
                         }
-                        Reading::Update => Some(EntityCategory::Config),
+                        Reading::Update | Reading::PowerOn => Some(EntityCategory::Config),
                         _ => None,
                     },
                 },
@@ -593,6 +633,7 @@ fn device(
         model: text(3).or_else(|| text(14)),
         sw_version: text(10),
         hw_version: text(8),
+        serial_number: text(15),
         suggested_area: None,
         via_device_unique_id: via,
     }
@@ -625,6 +666,12 @@ fn capabilities(reading: &Reading) -> Capabilities {
         Reading::Climate(climate) => Capabilities::Climate(climate.clone()),
         Reading::Fan(fan) => Capabilities::Fan(fan.clone()),
         Reading::Update => Capabilities::Update(update::capabilities()),
+        Reading::PowerOn => Capabilities::Select(SelectCapabilities {
+            options: POWER_ON
+                .iter()
+                .map(|(option, _)| (*option).to_owned())
+                .collect(),
+        }),
         Reading::Binary(binary) => Capabilities::BinarySensor(BinarySensorCapabilities {
             device_class: Some(match binary {
                 Binary::Occupancy => BinarySensorClass::Occupancy,
@@ -645,6 +692,16 @@ pub fn state(node: &Node, mapped: &Mapped, known: &Known<'_>) -> Option<State> {
         Reading::Climate(caps) => climate::state(node, endpoint, caps),
         Reading::Fan(caps) => fan::state(node, endpoint, caps),
         Reading::Update => update::state(node, known.update),
+        Reading::PowerOn => {
+            // Read with `get`, not `value`: its `null` is a choice, not "not known".
+            let value = node.get(endpoint, cluster::ON_OFF, START_UP_ON_OFF)?;
+            let (option, _) = POWER_ON
+                .iter()
+                .find(|(_, raw)| *raw == value.as_u64() && (raw.is_some() || value.is_null()))?;
+            Some(State::Select(SelectState {
+                option: (*option).to_owned(),
+            }))
+        }
         Reading::Light(known) => light::state(node, endpoint, known),
         Reading::Switch(_) => Some(State::Switch(SwitchState {
             on: node.value(endpoint, cluster::ON_OFF, 0)?.as_bool()?,
@@ -707,6 +764,19 @@ pub fn command(
             climate::command(endpoint, caps, current, last_on, service)
         }
         Reading::Fan(_) => fan::command(node, endpoint, service),
+        Reading::PowerOn => match service {
+            Service::SelectSelectOption(choice) => {
+                let (_, raw) = POWER_ON
+                    .iter()
+                    .find(|(option, _)| *option == choice.option)
+                    .ok_or_else(|| format!("power-on behaviour can't be {:?}", choice.option))?;
+                Ok(vec![Command::Write {
+                    path: Path::new(endpoint, cluster::ON_OFF, START_UP_ON_OFF),
+                    value: raw.map_or(serde_json::Value::Null, |raw| json!(raw)),
+                }])
+            }
+            other => Err(format!("power-on behaviour doesn't take {}", other.name())),
+        },
         Reading::Sensor(_) | Reading::Binary(_) | Reading::Update => {
             Err(format!("it doesn't take {}", service.name()))
         }
@@ -721,7 +791,12 @@ fn reading(node: &Node, endpoint: u16, measure: Measure) -> Option<f64> {
         let energy = node.value(endpoint, info.cluster, info.attribute)?;
         return Some(round(energy.get("0")?.as_f64()? / 1_000_000.0, 3));
     }
-    let raw = node.number(endpoint, info.cluster, info.attribute)?;
+    let raw = node
+        .number(endpoint, info.cluster, info.attribute)
+        .or_else(|| {
+            info.fallback
+                .and_then(|attribute| node.number(endpoint, info.cluster, attribute))
+        })?;
     Some(match measure {
         Measure::Temperature | Measure::Humidity => round(raw / 100.0, 2),
         Measure::Illuminance => round(10_f64.powf((raw - 1.0) / 10_000.0), 1),
@@ -740,7 +815,6 @@ fn round(value: f64, places: i32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Path;
     use irori_types::{ColorMode, ColorTempRange, LightState};
 
     const FABRIC: u64 = 0x8E57_6D93_9A1C_2B52;
@@ -782,6 +856,7 @@ mod tests {
             }
             "silabs_light_switch" => include_str!("../../tests/fixtures/silabs_light_switch.json"),
             "lab_plug" => include_str!("../../tests/fixtures/lab_plug.json"),
+            "tapo_p110m" => include_str!("../../tests/fixtures/tapo_p110m.json"),
             "lab_occupancy" => include_str!("../../tests/fixtures/lab_occupancy.json"),
             "lab_switch" => include_str!("../../tests/fixtures/lab_switch.json"),
             "mock_door_lock" => include_str!("../../tests/fixtures/mock_door_lock.json"),
@@ -852,6 +927,12 @@ mod tests {
         }))
     }
 
+    fn selected(option: &str) -> Option<State> {
+        Some(State::Select(SelectState {
+            option: option.to_owned(),
+        }))
+    }
+
     fn binary(on: bool) -> Option<State> {
         Some(State::BinarySensor(BinarySensorState { on }))
     }
@@ -879,24 +960,25 @@ mod tests {
     #[test]
     fn a_plug_is_a_switch_under_the_devices_own_name() {
         let on_off = |on| Some(State::Switch(SwitchState { on }));
-        assert_eq!(
-            summary(&fixture("lab_plug")),
-            vec![(
+        let switch_and_power_on = vec![
+            (
                 "-1-switch".to_owned(),
                 None,
                 "switch".to_owned(),
-                on_off(false)
-            )]
-        );
+                on_off(false),
+            ),
+            (
+                "-1-power_on".to_owned(),
+                Some("Power-on behaviour".to_owned()),
+                "select".to_owned(),
+                selected("Previous"),
+            ),
+        ];
+        assert_eq!(summary(&fixture("lab_plug")), switch_and_power_on);
         // A plug with Level Control is still a plug, as Home Assistant has it.
         assert_eq!(
             summary(&fixture("mock_on_off_plugin_unit")),
-            vec![(
-                "-1-switch".to_owned(),
-                None,
-                "switch".to_owned(),
-                on_off(false)
-            )]
+            switch_and_power_on
         );
         assert_eq!(
             summary(&fixture("eve_energy_plug"))[0],
@@ -933,12 +1015,20 @@ mod tests {
         let entities = summary(&fixture("mock_onoff_light"));
         assert_eq!(
             entities,
-            vec![(
-                "-1-light".to_owned(),
-                None,
-                "light".to_owned(),
-                Some(State::Light(light_of(true)))
-            )]
+            vec![
+                (
+                    "-1-light".to_owned(),
+                    None,
+                    "light".to_owned(),
+                    Some(State::Light(light_of(true)))
+                ),
+                (
+                    "-1-power_on".to_owned(),
+                    Some("Power-on behaviour".to_owned()),
+                    "select".to_owned(),
+                    selected("Previous")
+                )
+            ]
         );
 
         let dimmable = summary(&fixture("mock_dimmable_light"));
@@ -1154,8 +1244,116 @@ mod tests {
         let names: Vec<Option<String>> = summary(&node).into_iter().map(|e| e.1).collect();
         assert_eq!(
             names,
-            vec![Some("Light 1".to_owned()), Some("Light 2".to_owned())]
+            [
+                "Light 1",
+                "Power-on behaviour 1",
+                "Light 2",
+                "Power-on behaviour 2"
+            ]
+            .map(|name| Some(name.to_owned()))
         );
+    }
+
+    #[test]
+    fn a_plug_that_measures_rms_says_its_voltage_and_current() {
+        // A Tapo P110M: Electrical Power Measurement with RMS voltage and current only.
+        let node = fixture("tapo_p110m");
+        assert_eq!(
+            summary(&node),
+            vec![
+                (
+                    "-1-switch".to_owned(),
+                    None,
+                    "switch".to_owned(),
+                    Some(State::Switch(SwitchState { on: false }))
+                ),
+                (
+                    "-1-power_on".to_owned(),
+                    Some("Power-on behaviour".to_owned()),
+                    "select".to_owned(),
+                    selected("Off")
+                ),
+                (
+                    "-1-power".to_owned(),
+                    Some("Power".to_owned()),
+                    "sensor".to_owned(),
+                    number(0.0)
+                ),
+                (
+                    "-1-voltage".to_owned(),
+                    Some("Voltage".to_owned()),
+                    "sensor".to_owned(),
+                    number(101.442)
+                ),
+                (
+                    "-1-current".to_owned(),
+                    Some("Current".to_owned()),
+                    "sensor".to_owned(),
+                    number(0.015)
+                ),
+                (
+                    "-1-energy".to_owned(),
+                    Some("Energy".to_owned()),
+                    "sensor".to_owned(),
+                    number(123.203)
+                ),
+            ]
+        );
+        let described = describe(FABRIC, &node, false);
+        let category = |key: &str| {
+            described
+                .entities
+                .iter()
+                .find(|mapped| mapped.description.unique_id.as_str().ends_with(key))
+                .and_then(|mapped| mapped.description.entity_category)
+        };
+        // As Home Assistant has them: the readings an electrician wants are diagnostics.
+        assert_eq!(category("-voltage"), Some(EntityCategory::Diagnostic));
+        assert_eq!(category("-current"), Some(EntityCategory::Diagnostic));
+        assert_eq!(category("-power"), None);
+        assert_eq!(category("-power_on"), Some(EntityCategory::Config));
+        assert_eq!(
+            described.devices[0].serial_number.as_deref(),
+            Some("P110M00000001")
+        );
+    }
+
+    #[test]
+    fn power_on_behaviour_is_written_to_start_up_on_off() {
+        let mut node = fixture("tapo_p110m");
+        let (mapped, _) = only(&node, "select");
+        let choose = |node: &Node, option: &str| {
+            command(
+                node,
+                &mapped,
+                &Service::SelectSelectOption(irori_types::SelectOption {
+                    option: option.to_owned(),
+                }),
+                None,
+            )
+        };
+        let path = Path::new(1, cluster::ON_OFF, START_UP_ON_OFF);
+        for (option, value) in [
+            ("On", json!(1)),
+            ("Off", json!(0)),
+            ("Toggle", json!(2)),
+            ("Previous", serde_json::Value::Null),
+        ] {
+            assert_eq!(
+                choose(&node, option),
+                Ok(vec![Command::Write {
+                    path,
+                    value: value.clone()
+                }])
+            );
+            // The node reporting it back is the state.
+            node.set(path, value);
+            assert_eq!(state(&node, &mapped, &Known::default()), selected(option));
+        }
+        assert!(choose(&node, "Sometimes").is_err());
+        // A value the spec doesn't define isn't a choice to show.
+        node.set(path, json!(7));
+        assert_eq!(state(&node, &mapped, &Known::default()), None);
     }
 
     #[test]
@@ -1182,6 +1380,7 @@ mod tests {
             "lab_plug",
             "lab_occupancy",
             "lab_switch",
+            "tapo_p110m",
         ] {
             let node = fixture(name);
             let described = describe(FABRIC, &node, false);

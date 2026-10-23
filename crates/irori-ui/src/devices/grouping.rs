@@ -488,6 +488,7 @@ mod tests {
             model: None,
             sw_version: None,
             hw_version: None,
+            serial_number: None,
             area_id: area.map(|area| area.parse().expect("valid")),
             suggested_area: None,
             via_device_id: None,

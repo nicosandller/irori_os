@@ -36,6 +36,7 @@ async fn describe_lamp(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
         model: None,
         sw_version: None,
         hw_version: None,
+        serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
     })
@@ -1635,6 +1636,7 @@ async fn an_inbound_program_connects_and_describes_its_device() {
                 model: None,
                 sw_version: None,
                 hw_version: None,
+                serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
             },

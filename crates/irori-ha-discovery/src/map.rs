@@ -15,6 +15,7 @@ pub fn device(parsed: &ParsedConfig) -> Option<DeviceDescription> {
         model: device.model.clone(),
         sw_version: device.sw_version.clone(),
         hw_version: device.hw_version.clone(),
+        serial_number: device.serial_number.clone(),
         suggested_area: None, // HA discovery has no equivalent of ESPHome's `area`
         via_device_unique_id: device.via_device_unique_id.clone(),
     })

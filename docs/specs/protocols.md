@@ -211,7 +211,7 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 |---|---|---|---|
 | `unique_id` | `UniqueId` | yes | |
 | `name` | `Name` | yes | Updated each time the device is described. Once people can rename devices (config spec, M0.7), a name they set wins |
-| `manufacturer`, `model`, `sw_version`, `hw_version` | string | no | Informational, updated every time |
+| `manufacturer`, `model`, `sw_version`, `hw_version`, `serial_number` | string | no | Informational, updated every time |
 | `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
 | `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
 

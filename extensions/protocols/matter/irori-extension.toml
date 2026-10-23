@@ -1,17 +1,18 @@
 [extension]
 id = "matter"
 name = "Matter"
-version = "0.2.2"
+version = "0.2.3"
 irori = ">=1.5.0"
 # 1.5.0 is the first core whose actions have ways with fields and settings (the pairing code,
-# and Wi-Fi for a new device) and can say how long they take to answer.
+# and Wi-Fi for a new device) and can say how long they take to answer, and the first whose
+# devices have a serial number.
 description = "Matter devices on the local network, through the Open Home Foundation Matter Server it installs and runs: lights, plugs, locks, blinds, thermostats, fans and sensors, and their firmware."
 config_schema = "config.schema.json"
 icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor", "lock", "cover", "climate", "fan", "update"]
+entity_kinds = ["light", "switch", "sensor", "binary_sensor", "lock", "cover", "climate", "fan", "select", "update"]
 # Removing a Matter device takes Irori's fabric off it. Other controllers it belongs to keep it.
 unpairs = true
 run = { command = "bin/irori-ext-matter" }
