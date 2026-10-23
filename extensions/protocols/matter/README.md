@@ -94,8 +94,8 @@ off Irori.
 ## Settings
 
 Behind the gear icon on the Extensions page, from [`config.schema.json`](config.schema.json).
-Everything has a default. Bluetooth, Wi-Fi and Thread are sections there (`x-irori-group`), which
-fold away once something in them is saved.
+Everything has a default. Bluetooth, Wi-Fi and Thread are sections there (`x-irori-group`), folded
+until opened; each says in a word what it holds.
 
 | Field | Default | Notes |
 |---|---|---|
@@ -155,6 +155,14 @@ Matter runs over IPv6 on the local network and finds devices with mDNS.
   doesn't run one. On Linux the machine has to accept the routes the border router announces:
   set `net.ipv6.conf.<interface>.accept_ra_rt_info_max_plen = 64` (and `accept_ra = 1`),
   otherwise Thread devices are found but can't be reached.
+
+## On the network map
+
+Devices → Network map draws Matter's devices: Thread ones through the border routers heard over
+mDNS (`_meshcop._udp`), with how well each hears its neighbours, Wi-Fi ones on their access
+point, with their signal from Wi-Fi diagnostics. A Wi-Fi device without Wi-Fi diagnostics (a Tapo
+plug, say) is on the map without a signal, and says it doesn't report one. A border router
+carries its mDNS host, so a Nest Hub added through Google Cast is drawn once, as that device.
 
 ## Who can control your devices
 

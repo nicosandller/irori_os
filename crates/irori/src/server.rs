@@ -205,6 +205,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/system/log", get(system_log))
         .route("/api/serial-ports", get(serial_ports))
         .route("/api/restart", post(restart))
+        .route("/api/network", get(home_network))
         // How the extensions behind the home are faring is the owner's business, and it names
         // the devices they have found: a person with only some rooms is told of none.
         .route(
@@ -1769,6 +1770,40 @@ async fn camera_picture(
 /// error. A built-in has no process of its own and so never has anything here.
 async fn extension_log(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
     axum::Json(serde_json::json!({ "lines": state.0.core.log(&id) })).into_response()
+}
+
+/// Every running protocol's networks (`docs/specs/protocols.md` §6.8), for the Devices page's
+/// network map, which asks again every few seconds while it's showing. Each network says which
+/// extension drew it; the page joins them into one home.
+async fn home_network(State(state): State<AppState>) -> Json<HomeNetwork> {
+    Json(HomeNetwork {
+        networks: state
+            .0
+            .core
+            .networks()
+            .into_iter()
+            .flat_map(|(extension, networks)| {
+                networks.into_iter().map(move |network| DrawnNetwork {
+                    extension: extension.clone(),
+                    network,
+                })
+            })
+            .collect(),
+    })
+}
+
+/// What `GET /api/network` answers.
+#[derive(Debug, Serialize)]
+struct HomeNetwork {
+    networks: Vec<DrawnNetwork>,
+}
+
+/// One network, and the extension that drew it.
+#[derive(Debug, Serialize)]
+struct DrawnNetwork {
+    extension: ExtensionId,
+    #[serde(flatten)]
+    network: irori_types::Network,
 }
 
 /// What Irori itself has said lately: the tail of this process's own log, oldest line first.
@@ -4425,6 +4460,41 @@ mod tests {
                 }])
                 .await;
             }
+            // Its network: itself, and the vault it reaches. A map that isn't one (a link to
+            // nothing) is refused and the last good one kept.
+            let node = |id: &str, role| irori_types::NetworkNode {
+                id: id.to_owned(),
+                name: id.to_owned(),
+                role,
+                medium: None,
+                device_unique_id: None,
+                detail: None,
+                host: None,
+            };
+            let link = |from: &str, to: &str| irori_types::NetworkLink {
+                from: from.to_owned(),
+                to: to.to_owned(),
+                medium: Some(irori_types::NetworkMedium::Thread),
+                quality: Some(irori_types::LinkQuality::Good),
+                reading: Some("-58 dBm".to_owned()),
+                detail: None,
+            };
+            ctx.set_network(irori_types::Network {
+                name: Some("Safe mesh".to_owned()),
+                nodes: vec![
+                    node("safe", irori_types::NetworkRole::Controller),
+                    node("vault", irori_types::NetworkRole::SleepyEndDevice),
+                ],
+                links: vec![link("vault", "safe")],
+                ..irori_types::Network::default()
+            })
+            .await;
+            ctx.set_network(irori_types::Network {
+                nodes: vec![node("safe", irori_types::NetworkRole::Controller)],
+                links: vec![link("nowhere", "safe")],
+                ..irori_types::Network::default()
+            })
+            .await;
             // Only offered once it has a code — same idea as `zigbee`'s permit_join only
             // showing up once it's actually found a Z2M bridge.
             if settings.code.is_some() {
@@ -5066,6 +5136,26 @@ mod tests {
             !written.contains("1234-5678"),
             "the field should have been cleared: {written}"
         );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The home's networks are there to read while their extensions run, each saying who drew
+    /// it; one that isn't a map is refused, and the last good one stays.
+    #[tokio::test]
+    async fn the_homes_networks_are_there_to_read() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+
+        let answer = server.read("/api/network").await?;
+        let network = &answer["networks"][0];
+        assert_eq!(network["extension"], "safe", "{answer}");
+        assert_eq!(network["name"], "Safe mesh", "{answer}");
+        assert_eq!(network["nodes"][1]["id"], "vault", "{answer}");
+        assert_eq!(network["links"][0]["quality"], "good", "{answer}");
+        assert_eq!(network["links"][0]["reading"], "-58 dBm", "{answer}");
+        assert_eq!(answer["networks"].as_array().map(Vec::len), Some(1));
 
         host.shutdown().await;
         Ok(())
@@ -9667,6 +9757,7 @@ mod tests {
         ("GET", "/api/history/{entity_id}/summary", Hidden),
         ("GET", "/api/history/{entity_id}", Hidden),
         ("GET", "/api/recorder", Whole),
+        ("GET", "/api/network", Whole),
         ("PUT", "/api/recorder", Run),
         ("GET", "/api/system", Whole),
         ("GET", "/api/system/usage", Whole),

@@ -29,6 +29,7 @@ mod log_window;
 mod machine;
 mod map;
 mod modal;
+mod network_map;
 mod place;
 mod places;
 mod programs;
@@ -71,6 +72,9 @@ pub struct Live {
     pub health: RwSignal<Option<Health>>,
     /// Why the last refresh failed, if it did.
     pub trouble: RwSignal<Option<String>>,
+    /// The last state that came in live: a count, so the same entity twice is two, its entity,
+    /// and whether a command caused it rather than the device. The network map sparks on it.
+    pub heard: RwSignal<Option<(u64, irori_types::EntityId, bool)>>,
 }
 
 /// Whether a model can answer. `None` until the first look, which hides the sidebar entry.
@@ -104,6 +108,7 @@ fn App() -> impl IntoView {
         home: RwSignal::new(Home::default()),
         health: RwSignal::new(None),
         trouble: RwSignal::new(None),
+        heard: RwSignal::new(None),
     };
     provide_context(live);
     // Who is there. Asked before anything else: a home that asks gets the sign-in page and
@@ -651,6 +656,19 @@ async fn follow_home(live: Live, session: RwSignal<Option<api::Session>>) {
                 Err(error) => leptos::logging::error!("{error}"),
             },
             irori_types::LiveMessage::State { state, .. } => {
+                let commanded = state.context.parent_id.is_some()
+                    || matches!(
+                        state.context.origin,
+                        irori_types::Origin::User { .. }
+                            | irori_types::Origin::Automation { .. }
+                            | irori_types::Origin::Api { .. }
+                    );
+                let count = live
+                    .heard
+                    .get_untracked()
+                    .map_or(0, |(count, ..)| count + 1);
+                live.heard
+                    .set(Some((count, state.entity_id.clone(), commanded)));
                 let mut next = live.home.get_untracked();
                 if next.accept(*state) {
                     live.home.set(next);

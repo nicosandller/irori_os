@@ -266,6 +266,9 @@ pub struct ProtocolActionInfo {
     /// "It's new, or reset"). Empty for a plain button.
     #[serde(default)]
     pub ways: Vec<irori_types::ActionWay>,
+    /// Where its button is: "+ Add device", or the network map (Zigbee's scan).
+    #[serde(default)]
+    pub place: irori_types::ActionPlace,
 }
 
 /// The header only Irori's own page sends. Once somebody has a password, every change has to
@@ -934,6 +937,37 @@ pub struct CatalogEntry {
     /// The secret settings that have a value saved, by name only (never what they hold).
     #[serde(default)]
     pub secrets_set: Vec<String>,
+}
+
+/// One network as `/api/network` gives it: what an extension drew, and which extension.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct DrawnNetwork {
+    pub extension: ExtensionId,
+    #[serde(flatten)]
+    pub network: irori_types::Network,
+}
+
+/// Every running protocol's networks, for the network map.
+pub async fn fetch_networks() -> Result<Vec<DrawnNetwork>, String> {
+    #[derive(Deserialize)]
+    struct Answer {
+        networks: Vec<DrawnNetwork>,
+    }
+    let response = Request::get("/api/network")
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if !response.ok() {
+        return match checked(response).await {
+            Err(reason) => Err(reason),
+            Ok(()) => Err("the server refused without a reason".into()),
+        };
+    }
+    response
+        .json::<Answer>()
+        .await
+        .map(|answer| answer.networks)
+        .map_err(unreachable)
 }
 
 pub async fn fetch_catalog() -> Result<Vec<CatalogEntry>, String> {

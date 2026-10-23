@@ -117,7 +117,8 @@ other (C34); a person sees it when they see the rest (§1.1).
 ### 2.3 Addresses that are for the whole home
 
 `GET /api/place`, `/api/catalog`, `/api/system`, `/api/system/usage`, `/api/serial-ports`,
-and `/api/recorder` answer **403** to a person who has only some rooms and as before to
+`/api/recorder` and `/api/network` (every protocol's network map, which names devices in every
+room) answer **403** to a person who has only some rooms and as before to
 everybody else. They are addresses, not things: nothing in them can be asked
 about by id. One function in `server/auth.rs` (`whole_home_only`) lists them, and the table that
 says who may ask for what has a case for each.

@@ -33,7 +33,7 @@ mod more;
 mod picker;
 mod snapping;
 mod source;
-mod zoom;
+pub(crate) mod zoom;
 
 use look::{Look, look_for};
 use many::Group;
@@ -5392,7 +5392,7 @@ const UNDO: &str = r#"<path d="M4 9h10a5 5 0 0 1 0 10H8" fill="none" stroke="cur
 const REDO: &str = r#"<path d="M20 9H10a5 5 0 0 0 0 10h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="m16 5 4 4-4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 
 /// Home: the view the plan comes back to.
-const HOME: &str = r#"<path d="M4 11.2 12 4l8 7.2M6.2 9.6V20h4.3v-5.4h3V20h4.3V9.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
+pub(crate) const HOME: &str = r#"<path d="M4 11.2 12 4l8 7.2M6.2 9.6V20h4.3v-5.4h3V20h4.3V9.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;
 
 /// The plan as text: a pair of braces.
 const BRACES: &str = r#"<path d="M9 4c-2 0-3 1-3 3v2.5c0 1.4-.8 2.5-2 2.5 1.2 0 2 1.1 2 2.5V17c0 2 1 3 3 3M15 4c2 0 3 1 3 3v2.5c0 1.4.8 2.5 2 2.5-1.2 0-2 1.1-2 2.5V17c0 2-1 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>"#;

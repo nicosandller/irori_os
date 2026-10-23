@@ -50,20 +50,29 @@ fn scrolled_by(delta: f64, mode: u32, gain: f64) -> f64 {
 }
 
 /// How far the ridges have rolled at a zoom, in screen pixels: a turn for every doubling.
-fn rolled(scale: f64) -> f64 {
-    (scale / MIN_SCALE).max(f64::MIN_POSITIVE).log2() * TURN
+fn rolled(scale: f64, least: f64) -> f64 {
+    (scale / least).max(f64::MIN_POSITIVE).log2() * TURN
 }
 
 /// Where a zoom falls between the least and the most, from 0 to 100, for a screen reader.
-fn share(scale: f64) -> f64 {
-    let whole = (MAX_SCALE / MIN_SCALE).ln();
-    ((scale / MIN_SCALE).ln() / whole * 100.0).clamp(0.0, 100.0)
+fn share(scale: f64, least: f64, most: f64) -> f64 {
+    let whole = (most / least).ln();
+    ((scale / least).ln() / whole * 100.0).clamp(0.0, 100.0)
 }
 
 /// The strip. `scale` is the zoom as it stands, and `by` zooms by a factor about the middle of
-/// the canvas.
+/// the canvas. `least` and `most` are the zoom's limits, the floorplan's unless given, and
+/// `spoken` says a zoom in words for a screen reader.
 #[component]
-pub(super) fn ZoomWheel(scale: Signal<f64>, by: Callback<f64>) -> impl IntoView {
+pub(crate) fn ZoomWheel(
+    scale: Signal<f64>,
+    by: Callback<f64>,
+    #[prop(optional)] least: Option<f64>,
+    #[prop(optional)] most: Option<f64>,
+    #[prop(optional)] spoken: Option<Callback<f64, String>>,
+) -> impl IntoView {
+    let least = least.unwrap_or(MIN_SCALE);
+    let most = most.unwrap_or(MAX_SCALE);
     // Where the pointer turning the strip last was. `None` when nothing is turning it.
     let held = RwSignal::new(None::<f64>);
     view! {
@@ -76,10 +85,13 @@ pub(super) fn ZoomWheel(scale: Signal<f64>, by: Callback<f64>) -> impl IntoView 
             aria-orientation="horizontal"
             aria-valuemin="0"
             aria-valuemax="100"
-            aria-valuenow=move || format!("{:.0}", share(scale.get()))
-            aria-valuetext=move || format!("{:.0} pixels to the metre", scale.get() * 100.0)
+            aria-valuenow=move || format!("{:.0}", share(scale.get(), least, most))
+            aria-valuetext=move || match spoken {
+                Some(spoken) => spoken.run(scale.get()),
+                None => format!("{:.0} pixels to the metre", scale.get() * 100.0),
+            }
             title="Drag or scroll to zoom by a little"
-            style:--roll=move || format!("{:.2}px", rolled(scale.get()))
+            style:--roll=move || format!("{:.2}px", rolled(scale.get(), least))
             on:pointerdown=move |event: ev::PointerEvent| {
                 event.prevent_default();
                 if let Some(strip) = event
@@ -112,8 +124,8 @@ pub(super) fn ZoomWheel(scale: Signal<f64>, by: Callback<f64>) -> impl IntoView 
                 let factor = match event.key().as_str() {
                     "ArrowRight" | "ArrowUp" => 1.05,
                     "ArrowLeft" | "ArrowDown" => 1.0 / 1.05,
-                    "Home" => MIN_SCALE / scale.get_untracked(),
-                    "End" => MAX_SCALE / scale.get_untracked(),
+                    "Home" => least / scale.get_untracked(),
+                    "End" => most / scale.get_untracked(),
                     _ => return,
                 };
                 event.prevent_default();
@@ -149,9 +161,9 @@ mod tests {
 
     #[test]
     fn the_ridges_roll_a_turn_for_every_doubling() {
-        let turn = rolled(0.6) - rolled(0.3);
+        let turn = rolled(0.6, MIN_SCALE) - rolled(0.3, MIN_SCALE);
         assert!((turn - TURN).abs() < 1e-9, "{turn}");
-        assert_eq!(share(MIN_SCALE), 0.0);
-        assert!((share(MAX_SCALE) - 100.0).abs() < 1e-9);
+        assert_eq!(share(MIN_SCALE, MIN_SCALE, MAX_SCALE), 0.0);
+        assert!((share(MAX_SCALE, MIN_SCALE, MAX_SCALE) - 100.0).abs() < 1e-9);
     }
 }

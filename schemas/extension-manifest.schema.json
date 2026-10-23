@@ -59,6 +59,21 @@
         "label"
       ]
     },
+    "ActionPlace": {
+      "description": "Where an action's button is.",
+      "oneOf": [
+        {
+          "description": "On \"+ Add device\", under the protocol's card.",
+          "type": "string",
+          "const": "add_device"
+        },
+        {
+          "description": "On the network map (the Devices page's Network map tab), beside the networks it draws.",
+          "type": "string",
+          "const": "network"
+        }
+      ]
+    },
     "ActionWay": {
       "description": "One way to do an action (`ProtocolAction::ways`): what the person picks at the top of its\nform, and what it asks for once picked.",
       "type": "object",
@@ -617,6 +632,10 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S"
+        },
+        "place": {
+          "description": "Where its button is: on \"+ Add device\" (the default), or on the network map, for one\nthat's about the network rather than adding to it (Zigbee's scan).",
+          "$ref": "#/$defs/ActionPlace"
         },
         "seconds": {
           "description": "A default duration in seconds, for a timed action — a hint the UI can show (e.g.\n\"for 60s\"), not enforced by the core.",

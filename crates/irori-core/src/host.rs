@@ -830,6 +830,7 @@ async fn supervise(
                 core.mark_unavailable(&protocol);
                 core.set_waiting(&extension, Vec::new());
                 core.set_unmodeled(&extension, Vec::new());
+                core.set_networks(&extension, Vec::new());
                 core.set_available_actions(&extension, Vec::new());
                 match outcome {
                     Outcome::Stopped => {
@@ -1429,6 +1430,7 @@ async fn supervise_package(
         }
         core.set_waiting(&extension, Vec::new());
         core.set_unmodeled(&extension, Vec::new());
+        core.set_networks(&extension, Vec::new());
         core.set_available_actions(&extension, Vec::new());
         // The pump already asked a process to stop, and may have killed it. Say it once more
         // on the way out. A program that dialed in only hears it here: there is nothing to kill.
@@ -1864,6 +1866,10 @@ async fn apply_from_ext(
         }
         FromExt::SetUnmodeled { unmodeled } => {
             core.apply_op(extension, protocol, kinds, Op::SetUnmodeled(unmodeled));
+            Ok(None)
+        }
+        FromExt::SetNetworks { networks } => {
+            core.apply_op(extension, protocol, kinds, Op::SetNetworks(networks));
             Ok(None)
         }
         FromExt::SetAvailableActions { actions } => {

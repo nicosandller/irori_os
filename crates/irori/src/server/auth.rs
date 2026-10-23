@@ -219,7 +219,7 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
 fn whole_home_only(rest: &str) -> bool {
     matches!(
         rest,
-        "place" | "catalog" | "system" | "system/usage" | "serial-ports" | "recorder"
+        "place" | "catalog" | "system" | "system/usage" | "serial-ports" | "recorder" | "network"
     )
 }
 
@@ -248,6 +248,7 @@ fn named_read(rest: &str) -> bool {
             | "serial-ports"
             | "assistant"
             | "recorder"
+            | "network"
     ) || rest.starts_with("history/")
         // A picture is the camera's face on the page: an `<img>` that carries the cookie.
         || (rest.starts_with("entities/") && rest.ends_with("/picture"))
@@ -1147,6 +1148,8 @@ mod tests {
             (Method::GET, "/api/history/light.hall", Use),
             (Method::GET, "/api/history/sensor.temp/summary", Use),
             (Method::GET, "/api/recorder", Whole),
+            // The networks reach every room, and name what's in each.
+            (Method::GET, "/api/network", Whole),
             (Method::PUT, "/api/recorder", Run),
             (
                 Method::GET,

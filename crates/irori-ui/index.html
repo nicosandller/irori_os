@@ -9,6 +9,9 @@
   <!-- The map's own script (src/map.js). Small, and it fetches nothing until a map is shown. -->
   <link data-trunk rel="copy-file" href="src/map.js">
   <script src="/map.js" defer></script>
+  <!-- The network map's drawing (src/network_map.js), for the Devices page's Network map tab. -->
+  <link data-trunk rel="copy-file" href="src/network_map.js">
+  <script src="/network_map.js" defer></script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     /* Brand tokens (assets/README.md). Fonts are never downloaded: the UI works offline. */
@@ -143,7 +146,7 @@
     .shell.folded { grid-template-columns: 3.5rem 1fr; }
     main { width: 100%; max-width: 56rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; min-width: 0; }
     /* A page of lists is read across: it takes the room a wide screen has. */
-    main:has(.table-scroll.grouped) { max-width: 78rem; }
+    main:has(.table-scroll.grouped), main:has(.network-map) { max-width: 78rem; }
 
     .sidebar { position: sticky; top: 0; height: 100vh; display: flex; flex-direction: column;
                gap: .25rem; padding: 1rem .6rem; border-right: 1px solid var(--line);
@@ -286,6 +289,13 @@
     /* The page heading row, with whatever action belongs to that page. */
     .page-head { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.25rem; }
     .page-head h1 { margin: 0; }
+    /* On a phone, a page's tabs get a row of their own under its heading, each tab as wide as
+       its share: four don't fit beside "Devices" and its button. */
+    @media (max-width: 40rem) {
+      .page-head:has(> .switcher) { flex-wrap: wrap; }
+      .page-head > .switcher { order: 3; flex: 1 1 100%; }
+      .page-head > .switcher button { flex: 1 1 auto; padding-inline: .45rem; }
+    }
     .add { margin-left: auto; padding: .4rem .75rem; font: inherit; font-size: .9rem;
            color: var(--fg); background: var(--card); border: 1px solid var(--line);
            border-radius: .4rem; cursor: pointer; }
@@ -2300,15 +2310,15 @@
     .floorplan .plan-foot { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
                             display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem;
                             padding: 1rem 1.25rem; pointer-events: none; }
-    .floorplan .zoom { display: grid; gap: .4rem; pointer-events: auto; }
-    .floorplan .zoom-buttons { display: flex; gap: .25rem; }
-    .floorplan .zoom-buttons button { flex: 1; }
-    .floorplan .zoom-buttons button svg { width: 1rem; height: 1rem; display: block; }
-    .floorplan .zoom-buttons .home { display: grid; place-items: center; }
-    .floorplan .zoom-buttons .set-fit { display: inline-flex; align-items: center; gap: .25rem; }
+    :is(.floorplan, .network-map) .zoom { display: grid; gap: .4rem; pointer-events: auto; }
+    :is(.floorplan, .network-map) .zoom-buttons { display: flex; gap: .25rem; }
+    :is(.floorplan, .network-map) .zoom-buttons button { flex: 1; }
+    :is(.floorplan, .network-map) .zoom-buttons button svg { width: 1rem; height: 1rem; display: block; }
+    :is(.floorplan, .network-map) .zoom-buttons .home { display: grid; place-items: center; }
+    :is(.floorplan, .network-map) .zoom-buttons .set-fit { display: inline-flex; align-items: center; gap: .25rem; }
     /* Offered only once the view has been moved off Fit, so it arrives: sliding out from
        beside Fit, which is what it is about. */
-    .floorplan .zoom-buttons .set-fit { flex: 0 0 auto; white-space: nowrap; color: var(--ember);
+    :is(.floorplan, .network-map) .zoom-buttons .set-fit { flex: 0 0 auto; white-space: nowrap; color: var(--ember);
                                         border-color: color-mix(in srgb, var(--ember) 45%, var(--line));
                                         animation: set-fit-in var(--dur-base) var(--ease-spring) backwards; }
     @keyframes set-fit-in { from { opacity: 0; translate: -.5rem 0; scale: .9; } }
@@ -2316,7 +2326,7 @@
        are a pattern slid along by the zoom itself (`--roll`), so it turns whatever did the
        zooming, and springs to rest after a button's jump; held, it follows the hand exactly.
        The ends fade out the way the sides of a wheel turn away. */
-    .floorplan .zoom-wheel { position: relative; width: 9rem; height: 1.05rem;
+    :is(.floorplan, .network-map) .zoom-wheel { position: relative; width: 9rem; height: 1.05rem;
                              border: 1px solid var(--line); border-radius: .55rem;
                              background-color: var(--card);
                              background-image: repeating-linear-gradient(90deg,
@@ -2330,13 +2340,13 @@
                              opacity: .45; cursor: ew-resize; touch-action: none;
                              transition: opacity var(--dur-base) var(--ease-out),
                                          background-position var(--dur-base) var(--ease-spring); }
-    .floorplan .zoom-wheel::after { content: ""; position: absolute; left: 50%; top: -1px;
+    :is(.floorplan, .network-map) .zoom-wheel::after { content: ""; position: absolute; left: 50%; top: -1px;
                                     bottom: -1px; width: 2px; margin-left: -1px;
                                     border-radius: 1px; background: var(--ember); }
-    .floorplan .zoom-wheel:hover, .floorplan .zoom-wheel:focus-visible,
-    .floorplan .zoom-wheel.turning { opacity: 1; }
-    .floorplan .zoom-wheel:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
-    .floorplan .zoom-wheel.turning { cursor: grabbing;
+    :is(.floorplan, .network-map) .zoom-wheel:hover, :is(.floorplan, .network-map) .zoom-wheel:focus-visible,
+    :is(.floorplan, .network-map) .zoom-wheel.turning { opacity: 1; }
+    :is(.floorplan, .network-map) .zoom-wheel:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    :is(.floorplan, .network-map) .zoom-wheel.turning { cursor: grabbing;
                                      transition: opacity var(--dur-base) var(--ease-out); }
     .floorplan .zoom button { min-width: 2rem; padding: .25rem .5rem; font: inherit;
                               font-size: .85rem; color: var(--fg); background: var(--card);
@@ -3510,6 +3520,186 @@
     .map-pin.landed-b:not(.held) .map-pin-ring { animation: pin-ring-b 620ms var(--ease-out) 120ms; }
     @keyframes pin-ring-a { from { opacity: .9; scale: .4; } to { opacity: 0; scale: 5; } }
     @keyframes pin-ring-b { from { opacity: .9; scale: .4; } to { opacity: 0; scale: 5; } }
+    /* The network map (network_map.rs, network_map.js): every protocol's network around Irori.
+       Its colours are tokens the drawing reads, so it follows the page's theme: on the dark
+       page it glows, light added to light; on the light one the same marks are drawn deeper,
+       and simply painted over each other. */
+    .network-map {
+        --nm-zigbee: #c4552b; --nm-matter: #3f6f9f; --nm-esphome: #5f8a3c; --nm-thread: #3f6f9f;
+        --nm-wifi: #8a7f76; --nm-other-1: #8a5fa8; --nm-other-2: #2f8a80; --nm-other-3: #a8792a;
+        --nm-other-4: #a8456b; --nm-cast: #2f8a80;
+        --nm-ink: #1c1714; --nm-dim: #8a8079; --nm-grid: #b5aaa1; --nm-weak: #b06f00;
+        --nm-poor: #c23b2b; --nm-off: #c4bab2; --nm-cmd: #c4552b; --nm-lit: #e3a33f;
+        --nm-core: #fffdfb; --nm-glow: #c4552b; --nm-blend: source-over;
+        --nm-surface: var(--card); --nm-stage: radial-gradient(ellipse 70% 65% at 50% 50%,
+            #fffdfb 0%, #f4eee8 70%, #ece5de 100%);
+        --nm-hub-fill: #f3e9e1; --nm-coord-fill: #f7f1eb; --nm-label: #fffdfb;
+        display: grid; gap: 1rem; container-type: inline-size; }
+    @media (prefers-color-scheme: dark) {
+      .network-map {
+          --nm-zigbee: #e07a52; --nm-matter: #8fb3d9; --nm-esphome: #a9c48f; --nm-thread: #8fb3d9;
+          --nm-wifi: #c9beb5; --nm-other-1: #c3a6dc; --nm-other-2: #8fd0c6; --nm-other-3: #e3c27a;
+          --nm-other-4: #e59ab6; --nm-cast: #8fd0c6;
+          --nm-ink: #f1ebe6; --nm-dim: #a39990; --nm-grid: #c9beb5; --nm-weak: #d9a24a;
+          --nm-poor: #e0594a; --nm-off: #5a504a; --nm-cmd: #ffe0c2; --nm-lit: #f2c88a;
+          --nm-core: #fff6ea; --nm-glow: #e07a52; --nm-blend: lighter;
+          --nm-surface: #181412; --nm-stage: radial-gradient(ellipse 70% 65% at 50% 50%,
+              #1e1815 0%, #120e0d 70%, #0c0a09 100%);
+          --nm-hub-fill: #2a211d; --nm-coord-fill: #241c18; --nm-label: #141110; }
+    }
+    .nm-body { display: grid; gap: 1.25rem 1.5rem; }
+    .nm-main { display: grid; gap: .75rem; min-width: 0; }
+    .nm-tools { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; }
+    .nm-gap { flex: 1; }
+    .nm-segs { display: flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--line);
+               border-radius: .45rem; background: var(--sunk); }
+    .nm-seg { display: flex; align-items: center; gap: .4rem; padding: .3rem .65rem; font: inherit;
+              font-size: .82rem; color: var(--muted); background: transparent; border: 0;
+              border-radius: .3rem; cursor: pointer; }
+    .nm-seg:hover { color: var(--fg); }
+    .nm-seg[aria-pressed="true"] { color: var(--fg); background: var(--card);
+                                   box-shadow: 0 0 0 1px var(--line); }
+    .nm-toggle, .nm-action { padding: .35rem .75rem; font: inherit; font-size: .82rem;
+                             color: var(--fg); background: var(--card); border: 1px solid var(--line);
+                             border-radius: .45rem; cursor: pointer; text-decoration: none;
+                             white-space: nowrap; }
+    a.nm-action { justify-self: start; }
+    .nm-toggle:hover, .nm-action:hover:not(:disabled) { border-color: var(--ember); }
+    .nm-toggle[aria-pressed="true"] { background: var(--sunk); border-color: var(--muted); }
+    .nm-action:disabled { color: var(--muted); cursor: default; }
+    .nm-find { width: 12rem; max-width: 100%; padding: .38rem .65rem; font: inherit; font-size: .82rem;
+               color: var(--fg); background: var(--card); border: 1px solid var(--line);
+               border-radius: .45rem; outline: none; }
+    .nm-find:focus { border-color: var(--ember); }
+    .nm-dot { flex: none; display: inline-block; width: .45rem; height: .45rem; border-radius: 50%;
+              background: var(--nm-dim); }
+    .nm-dot[data-tone="all"] { background: var(--nm-ink); }
+    .nm-dot[data-tone="ok"] { background: var(--nm-esphome); }
+    .nm-dot[data-tone="weak"] { background: var(--nm-weak); }
+    .nm-dot[data-tone="poor"] { background: var(--nm-poor); }
+    .nm-dot[data-tone="zigbee"], .nm-eyebrow[data-tone="zigbee"] { --tone: var(--nm-zigbee); }
+    .nm-dot[data-tone="matter"], .nm-eyebrow[data-tone="matter"] { --tone: var(--nm-matter); }
+    .nm-dot[data-tone="thread"], .nm-eyebrow[data-tone="thread"] { --tone: var(--nm-thread); }
+    .nm-dot[data-tone="esphome"], .nm-eyebrow[data-tone="esphome"] { --tone: var(--nm-esphome); }
+    .nm-dot[data-tone="wifi"], .nm-eyebrow[data-tone="wifi"] { --tone: var(--nm-wifi); }
+    .nm-dot[data-tone="cast"], .nm-eyebrow[data-tone="cast"] { --tone: var(--nm-cast); }
+    .nm-dot[data-tone="other-1"], .nm-eyebrow[data-tone="other-1"] { --tone: var(--nm-other-1); }
+    .nm-dot[data-tone="other-2"], .nm-eyebrow[data-tone="other-2"] { --tone: var(--nm-other-2); }
+    .nm-dot[data-tone="other-3"], .nm-eyebrow[data-tone="other-3"] { --tone: var(--nm-other-3); }
+    .nm-dot[data-tone="other-4"], .nm-eyebrow[data-tone="other-4"] { --tone: var(--nm-other-4); }
+    .nm-dot[data-tone^="zigbee"], .nm-dot[data-tone^="matter"], .nm-dot[data-tone^="thread"],
+    .nm-dot[data-tone^="esphome"], .nm-dot[data-tone^="wifi"], .nm-dot[data-tone^="cast"],
+    .nm-dot[data-tone^="other"] {
+        background: var(--tone); }
+    /* The map: always the design's shape, 1000 by 640, and as wide as its column. */
+    .nm-stage { position: relative; width: 100%; aspect-ratio: 1000 / 640; overflow: hidden;
+                border: 1px solid var(--line); border-radius: .5rem; background: var(--nm-stage); }
+    .nm-layer, .nm-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    .nm-canvas, .nm-front { pointer-events: none; }
+    .nm-stage { user-select: none; -webkit-user-select: none; }
+    /* A device is pressed to choose it and dragged to move it; a finger dragging one moves it
+       rather than the page. */
+    .nm-front .nm-node { cursor: pointer; touch-action: none; transition: opacity var(--dur-base); }
+    .nm-stage.nm-dragging, .nm-stage.nm-dragging .nm-node { cursor: grabbing; }
+    .nm-node:focus { outline: none; }
+    .nm-stage.nm-dragging .nm-node { transition: none; }
+    /* Zoom: the floorplan's controls in the map's corner. Zoomed in, the empty map is dragged
+       along, and a finger on it moves the map rather than the page; at the whole map a finger
+       still scrolls the page, and two pinch. */
+    .nm-view { position: relative; min-width: 0; }
+    .nm-zoom { position: absolute; left: .75rem; bottom: .75rem; z-index: 2; }
+    .nm-stage { touch-action: pan-y; }
+    .nm-stage.nm-zoomed { touch-action: none; cursor: grab; }
+    .nm-stage.nm-panning { cursor: grabbing; }
+    @container (max-width: 34rem) {
+      .nm-zoom { left: .5rem; bottom: .5rem; }
+      .nm-zoom .zoom-wheel { display: none; }
+    }
+    .nm-toggle.nm-icon { display: inline-grid; place-items: center; padding-inline: .55rem; }
+    .nm-toggle.nm-icon svg { width: 1.1rem; height: 1.1rem; display: block; }
+    .nm-rings { pointer-events: none; transition: opacity var(--dur-expressive); }
+    .nm-ring { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 3 6; }
+    .nm-ring-label { fill: var(--nm-dim); font: 10px var(--mono); letter-spacing: 1.5px; }
+    .nm-edge { pointer-events: none; transition: opacity var(--dur-base), stroke var(--dur-base); }
+    .nm-edge-label rect { fill: var(--nm-label); stroke: var(--line); }
+    .nm-edge-label text { font: 10px var(--mono); }
+    .nm-edge-label { transition: opacity var(--dur-base); }
+    .nm-glow { opacity: 0; transition: opacity var(--dur-expressive); }
+    .nm-glow.on { opacity: 1; }
+    .nm-selected { stroke: var(--nm-ink); stroke-width: 1.5; stroke-dasharray: 3 3; opacity: 0;
+                   transition: opacity var(--dur-base); }
+    .nm-selected.on { opacity: 1; }
+    .nm-hub { fill: var(--nm-hub-fill); stroke: var(--nm-ink); stroke-width: 1.5; }
+    .nm-hub-core { fill: var(--ember); }
+    .nm-coord { fill: var(--nm-coord-fill); }
+    .nm-name { font: 12px var(--sans); fill: var(--nm-ink); stroke: var(--nm-label); stroke-width: 3;
+               paint-order: stroke; transition: fill var(--dur-base); }
+    .nm-name.small { font-size: 10.5px; fill: var(--nm-dim); }
+    .nm-name.away { fill: var(--nm-off); }
+    .nm-name.found { fill: var(--ember); font-weight: 600; }
+    .nm-legend { display: flex; flex-wrap: wrap; gap: .4rem 1rem; color: var(--muted); font-size: .75rem; }
+    .nm-legend > span { display: flex; align-items: center; gap: .4rem; }
+    .nm-key { flex: none; display: inline-block; width: .7rem; height: .7rem; border: 1.5px solid var(--nm-dim); }
+    .nm-key.hub { border-color: var(--nm-ink); border-radius: .2rem; background: var(--nm-hub-fill);
+                  box-shadow: inset 0 0 0 .18rem var(--nm-hub-fill), inset 0 0 0 .5rem var(--ember); }
+    .nm-key.coord { width: .55rem; height: .55rem; rotate: 45deg; border-radius: 1px; background: var(--nm-coord-fill); }
+    .nm-key.router { border-radius: 50%; border-width: 2px;
+                     background: radial-gradient(circle, var(--nm-dim) 28%, color-mix(in srgb, var(--nm-dim) 20%, transparent) 30%); }
+    .nm-key.end { width: .55rem; height: .55rem; border: 0; border-radius: 50%; background: var(--nm-dim); }
+    .nm-key.sleepy { width: .55rem; height: .55rem; border-radius: 50%; border-style: dashed; }
+    .nm-line { flex: none; display: inline-block; width: 1.3rem; height: 0; border-top: 3px solid var(--nm-dim);
+               border-radius: 2px; }
+    .nm-line.weak { border-top: 2px dashed var(--nm-weak); }
+    .nm-line.poor { border-top: 2px dotted var(--nm-poor); }
+    /* The panel: beside the map where the page is wide enough, as in the design; under it, in
+       two columns where there's room, on a narrower one. */
+    .nm-panel { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+                gap: 1rem 1.5rem; align-items: start; }
+    @container (min-width: 56rem) {
+      .nm-body { grid-template-columns: minmax(0, 1fr) 19rem; align-items: start; }
+      .nm-panel { grid-template-columns: minmax(0, 1fr); gap: 1.25rem; }
+      .nm-log { padding-top: 1rem; border-top: 1px solid var(--line); }
+    }
+    .nm-panel > div { display: grid; gap: .9rem; min-width: 0; }
+    .nm-block { display: grid; gap: .6rem; min-width: 0; }
+    .nm-eyebrow { margin: 0; color: var(--tone, var(--muted)); font: .68rem var(--mono);
+                  letter-spacing: .1em; text-transform: uppercase; font-weight: 400; }
+    .nm-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .6rem; }
+    .nm-title { margin: .2rem 0; font-size: 1.15rem; font-weight: 600; letter-spacing: -.01em; }
+    .nm-close { flex: none; width: 2rem; height: 2rem; padding: 0; font-size: 1rem; color: var(--muted);
+                background: transparent; border: 1px solid var(--line); border-radius: .45rem; cursor: pointer; }
+    .nm-close:hover { color: var(--fg); }
+    .nm-status { display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
+    .nm-card { display: grid; gap: .45rem; padding: .75rem .85rem; background: var(--sunk);
+               border: 1px solid var(--line); border-radius: .5rem; }
+    .nm-card-head { display: flex; align-items: center; gap: .5rem; font-size: .85rem; }
+    .nm-mono { font: .78rem var(--mono); color: var(--muted); }
+    .nm-mono.big { font-size: .95rem; color: var(--fg); }
+    .nm-mono[data-look="weak"] { color: var(--nm-weak); }
+    .nm-mono[data-look="poor"] { color: var(--nm-poor); }
+    .nm-bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+    .nm-bar > div { height: 100%; border-radius: 2px; background: var(--nm-esphome);
+                    transition: width var(--dur-expressive) var(--ease-out); }
+    .nm-bar > div[data-look="weak"] { background: var(--nm-weak); }
+    .nm-bar > div[data-look="poor"] { background: var(--nm-poor); }
+    .nm-bar > div[data-look="wired"], .nm-bar > div[data-look="unknown"] { background: var(--nm-dim); }
+    .nm-route { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+    .nm-hop { padding: .2rem .5rem; font-size: .78rem; border-radius: .3rem; background: var(--sunk); }
+    .nm-row { display: flex; align-items: center; gap: .6rem; width: 100%; padding: .45rem .4rem;
+              font: inherit; font-size: .85rem; color: var(--fg); text-align: left;
+              background: transparent; border: 0; border-radius: .35rem; cursor: pointer; }
+    .nm-row:hover { background: var(--sunk); }
+    .nm-grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .nm-figure { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+                 font-size: .85rem; color: var(--muted); }
+    .nm-figure > span:last-child { color: var(--fg); }
+    .nm-log { align-content: start; }
+    .nm-log-line { display: flex; gap: .6rem; font-size: .82rem; line-height: 1.4; }
+    .nm-time { flex: none; padding-top: .1rem; font: .7rem var(--mono); color: var(--muted); }
+    @media (max-width: 40rem) {
+      .nm-find { width: 100%; }
+      .nm-name.small { display: none; }
+    }
   </style>
 </head>
 <body></body>
