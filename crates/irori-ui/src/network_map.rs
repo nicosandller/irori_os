@@ -657,7 +657,15 @@ struct Mounted {
     handle: JsValue,
     _on_select: Closure<dyn Fn(JsValue)>,
     _on_arranged: Closure<dyn Fn(JsValue)>,
+    _on_zoom: Closure<dyn Fn(JsValue)>,
 }
+
+/// How far the map zooms in: four times the whole of it. It never zooms out past the whole.
+const MOST_ZOOM: f64 = 4.0;
+
+/// The speaker the sound button shows: sounding, and crossed out.
+const SPEAKER: &str = r#"<path d="M4 9.5h3.2L12 5.6v12.8l-4.8-3.9H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M15.6 9.2a4 4 0 0 1 0 5.6M18.2 6.6a7.6 7.6 0 0 1 0 10.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#;
+const SPEAKER_OFF: &str = r#"<path d="M4 9.5h3.2L12 5.6v12.8l-4.8-3.9H4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="m16 9.5 5 5m0-5-5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>"#;
 
 impl Mounted {
     fn call(&self, method: &str, arguments: &[JsValue]) {
@@ -715,6 +723,8 @@ pub fn NetworkMap() -> impl IntoView {
     let networks = RwSignal::new(None::<Vec<DrawnNetwork>>);
     // Whether any device has been dragged somewhere of its own, for the Reset button.
     let arranged = RwSignal::new(false);
+    // How far the map is zoomed in, as the drawing says: 1 is the whole of it.
+    let zoom = RwSignal::new(1.0_f64);
 
     // Asked for as the tab opens, and every few seconds while it's showing.
     let ask = move || {
@@ -791,6 +801,12 @@ pub fn NetworkMap() -> impl IntoView {
             let _ = arranged.try_set(moved.is_truthy());
         });
         let _ = Reflect::set(&options, &"onArranged".into(), on_arranged.as_ref());
+        let on_zoom = Closure::<dyn Fn(JsValue)>::new(move |k: JsValue| {
+            if let Some(k) = k.as_f64() {
+                let _ = zoom.try_set(k);
+            }
+        });
+        let _ = Reflect::set(&options, &"onZoom".into(), on_zoom.as_ref());
         let element: &web_sys::Element = &frame;
         let arguments: Array = [
             JsValue::from(element.clone()),
@@ -804,6 +820,7 @@ pub fn NetworkMap() -> impl IntoView {
                 handle,
                 _on_select: on_select,
                 _on_arranged: on_arranged,
+                _on_zoom: on_zoom,
             }));
         }
     });
@@ -983,7 +1000,31 @@ pub fn NetworkMap() -> impl IntoView {
                             }
                         } />
                 </div>
-                <div class="nm-stage" node_ref=frame></div>
+                <div class="nm-view">
+                    <div class="nm-stage" node_ref=frame></div>
+                    // The floorplan's zoom: the strip for a little, the buttons for a jump, and
+                    // the whole map again. A pinch, or Control and a scroll, zooms about the
+                    // pointer; zoomed in, the empty map drags along.
+                    <div class="zoom nm-zoom">
+                        <crate::floorplan::zoom::ZoomWheel
+                            scale=Signal::derive(move || zoom.get())
+                            by=Callback::new(move |factor: f64| call("zoomBy", vec![factor.into()]))
+                            least=1.0
+                            most=MOST_ZOOM
+                            spoken=Callback::new(|k: f64| format!("{k:.1} times the whole map"))
+                        />
+                        <div class="zoom-buttons">
+                            <button type="button" aria-label="Zoom out"
+                                on:click=move |_| call("zoomBy", vec![(1.0 / 1.25).into()])>"−"</button>
+                            <button type="button" aria-label="Zoom in"
+                                on:click=move |_| call("zoomBy", vec![1.25.into()])>"+"</button>
+                            <button type="button" class="home" aria-label="Whole map"
+                                title="The whole map" on:click=move |_| call("resetView", vec![])>
+                                <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=crate::floorplan::HOME></svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
                 {move || joined.with(|joined| joined.networks.is_empty()).then(|| view! {
                     <p class="muted small">
                         "No network is drawn yet. Zigbee, Matter, ESPHome and the Demo draw theirs \
@@ -1005,7 +1046,7 @@ pub fn NetworkMap() -> impl IntoView {
                     <span><i class="nm-line weak"></i>"Weak"</span>
                     <span><i class="nm-line poor"></i>"Poor"</span>
                     <span class="nm-gap"></span>
-                    <span>"Drag a device to move it"</span>
+                    <span>"Drag a device to move it · pinch to zoom"</span>
                 </div>
                 <div class="nm-tools">
                     {move || (!scans.with(Vec::is_empty)).then(|| view! {
@@ -1025,9 +1066,11 @@ pub fn NetworkMap() -> impl IntoView {
                         {segment("Warp grid", Signal::derive(move || backdrop.get() == "grid"), Box::new(move || backdrop.set("grid")))}
                         {segment("Coverage", Signal::derive(move || backdrop.get() == "coverage"), Box::new(move || backdrop.set("coverage")))}
                     </div>
-                    <button type="button" class="nm-toggle" aria-pressed=move || sound.get().to_string()
+                    <button type="button" class="nm-toggle nm-icon" aria-pressed=move || sound.get().to_string()
+                        aria-label="Sound" title=move || if sound.get() { "Sound on: each message is a note" } else { "Sound off" }
                         on:click=move |_| sound.update(|on| *on = !*on)>
-                        {move || if sound.get() { "Sound on" } else { "Sound off" }}
+                        <svg viewBox="0 0 24 24" aria-hidden="true"
+                            inner_html=move || if sound.get() { SPEAKER } else { SPEAKER_OFF }></svg>
                     </button>
                 </div>
             </div>

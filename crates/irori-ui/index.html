@@ -2310,15 +2310,15 @@
     .floorplan .plan-foot { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2;
                             display: flex; flex-wrap: wrap; align-items: center; gap: .6rem 1rem;
                             padding: 1rem 1.25rem; pointer-events: none; }
-    .floorplan .zoom { display: grid; gap: .4rem; pointer-events: auto; }
-    .floorplan .zoom-buttons { display: flex; gap: .25rem; }
-    .floorplan .zoom-buttons button { flex: 1; }
-    .floorplan .zoom-buttons button svg { width: 1rem; height: 1rem; display: block; }
-    .floorplan .zoom-buttons .home { display: grid; place-items: center; }
-    .floorplan .zoom-buttons .set-fit { display: inline-flex; align-items: center; gap: .25rem; }
+    :is(.floorplan, .network-map) .zoom { display: grid; gap: .4rem; pointer-events: auto; }
+    :is(.floorplan, .network-map) .zoom-buttons { display: flex; gap: .25rem; }
+    :is(.floorplan, .network-map) .zoom-buttons button { flex: 1; }
+    :is(.floorplan, .network-map) .zoom-buttons button svg { width: 1rem; height: 1rem; display: block; }
+    :is(.floorplan, .network-map) .zoom-buttons .home { display: grid; place-items: center; }
+    :is(.floorplan, .network-map) .zoom-buttons .set-fit { display: inline-flex; align-items: center; gap: .25rem; }
     /* Offered only once the view has been moved off Fit, so it arrives: sliding out from
        beside Fit, which is what it is about. */
-    .floorplan .zoom-buttons .set-fit { flex: 0 0 auto; white-space: nowrap; color: var(--ember);
+    :is(.floorplan, .network-map) .zoom-buttons .set-fit { flex: 0 0 auto; white-space: nowrap; color: var(--ember);
                                         border-color: color-mix(in srgb, var(--ember) 45%, var(--line));
                                         animation: set-fit-in var(--dur-base) var(--ease-spring) backwards; }
     @keyframes set-fit-in { from { opacity: 0; translate: -.5rem 0; scale: .9; } }
@@ -2326,7 +2326,7 @@
        are a pattern slid along by the zoom itself (`--roll`), so it turns whatever did the
        zooming, and springs to rest after a button's jump; held, it follows the hand exactly.
        The ends fade out the way the sides of a wheel turn away. */
-    .floorplan .zoom-wheel { position: relative; width: 9rem; height: 1.05rem;
+    :is(.floorplan, .network-map) .zoom-wheel { position: relative; width: 9rem; height: 1.05rem;
                              border: 1px solid var(--line); border-radius: .55rem;
                              background-color: var(--card);
                              background-image: repeating-linear-gradient(90deg,
@@ -2340,13 +2340,13 @@
                              opacity: .45; cursor: ew-resize; touch-action: none;
                              transition: opacity var(--dur-base) var(--ease-out),
                                          background-position var(--dur-base) var(--ease-spring); }
-    .floorplan .zoom-wheel::after { content: ""; position: absolute; left: 50%; top: -1px;
+    :is(.floorplan, .network-map) .zoom-wheel::after { content: ""; position: absolute; left: 50%; top: -1px;
                                     bottom: -1px; width: 2px; margin-left: -1px;
                                     border-radius: 1px; background: var(--ember); }
-    .floorplan .zoom-wheel:hover, .floorplan .zoom-wheel:focus-visible,
-    .floorplan .zoom-wheel.turning { opacity: 1; }
-    .floorplan .zoom-wheel:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
-    .floorplan .zoom-wheel.turning { cursor: grabbing;
+    :is(.floorplan, .network-map) .zoom-wheel:hover, :is(.floorplan, .network-map) .zoom-wheel:focus-visible,
+    :is(.floorplan, .network-map) .zoom-wheel.turning { opacity: 1; }
+    :is(.floorplan, .network-map) .zoom-wheel:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    :is(.floorplan, .network-map) .zoom-wheel.turning { cursor: grabbing;
                                      transition: opacity var(--dur-base) var(--ease-out); }
     .floorplan .zoom button { min-width: 2rem; padding: .25rem .5rem; font: inherit;
                               font-size: .85rem; color: var(--fg); background: var(--card);
@@ -3603,6 +3603,20 @@
     .nm-stage.nm-dragging, .nm-stage.nm-dragging .nm-node { cursor: grabbing; }
     .nm-node:focus { outline: none; }
     .nm-stage.nm-dragging .nm-node { transition: none; }
+    /* Zoom: the floorplan's controls in the map's corner. Zoomed in, the empty map is dragged
+       along, and a finger on it moves the map rather than the page; at the whole map a finger
+       still scrolls the page, and two pinch. */
+    .nm-view { position: relative; min-width: 0; }
+    .nm-zoom { position: absolute; left: .75rem; bottom: .75rem; z-index: 2; }
+    .nm-stage { touch-action: pan-y; }
+    .nm-stage.nm-zoomed { touch-action: none; cursor: grab; }
+    .nm-stage.nm-panning { cursor: grabbing; }
+    @container (max-width: 34rem) {
+      .nm-zoom { left: .5rem; bottom: .5rem; }
+      .nm-zoom .zoom-wheel { display: none; }
+    }
+    .nm-toggle.nm-icon { display: inline-grid; place-items: center; padding-inline: .55rem; }
+    .nm-toggle.nm-icon svg { width: 1.1rem; height: 1.1rem; display: block; }
     .nm-rings { pointer-events: none; transition: opacity var(--dur-expressive); }
     .nm-ring { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 3 6; }
     .nm-ring-label { fill: var(--nm-dim); font: 10px var(--mono); letter-spacing: 1.5px; }

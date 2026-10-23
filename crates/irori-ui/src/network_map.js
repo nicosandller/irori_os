@@ -167,7 +167,8 @@
       root.textContent = '';
       const back = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, class: 'nm-layer' }, root);
       const ground = svg('rect', { x: 0, y: 0, width: W, height: H, fill: 'transparent' }, back);
-      ground.addEventListener('click', () => onSelect(null));
+      // A press on the empty map that moved it along isn't a click on nothing.
+      ground.addEventListener('click', () => { if (!s.panned) onSelect(null); });
       const ringsG = svg('g', { class: 'nm-rings', fill: 'none' }, back);
       const edgesG = svg('g', { class: 'nm-edges' }, back);
       const canvas = document.createElement('canvas');
@@ -193,6 +194,9 @@
         edgeEls: {}, nodeEls: {}, labelEls: {}, dirty: true,
         // Where devices were dragged to, per layout, kept by this browser; and a drag under way.
         places: loadPlaces(), drag: null, dragged: false, client: null,
+        // How the map is looked at: drawn `k` times its size, moved by `x`, `y` (in the map's own
+        // units). 1, 0, 0 is the whole map. A pan under way, and the fingers on it.
+        view: { k: 1, x: 0, y: 0 }, pan: null, panned: false, touches: new Map(), pinch: null,
       };
 
       // The canvas is as sharp as the screen shows it, and no sharper: a map drawn at twice its
@@ -671,9 +675,11 @@
 
       function drawCanvas(ts) {
         const t = s.t, moving = live(), m = s.mouse, th = s.theme, d = s.d;
-        ctx.setTransform(scale, 0, 0, scale, 0, 0);
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.globalCompositeOperation = 'source-over';
-        ctx.clearRect(0, 0, W, H);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const v = s.view;
+        ctx.setTransform(scale * v.k, 0, 0, scale * v.k, scale * v.x, scale * v.y);
         ctx.lineCap = 'round'; ctx.lineJoin = 'round';
         if (s.backdrop === 'grid') {
           ctx.fillStyle = th.grid;
@@ -899,9 +905,121 @@
       root.addEventListener('mouseleave', () => { s.client = null; s.mouse = null; });
       function readPointer() {
         if (!s.client) { s.mouse = null; return; }
-        const r = root.getBoundingClientRect();
-        s.mouse = { x: ((s.client.x - r.left) * W) / r.width, y: ((s.client.y - r.top) * H) / r.height };
+        s.mouse = mapOf(s.client.x, s.client.y);
       }
+
+      // Zoom. The map is drawn `k` times over, moved so the place being looked at stays put; it
+      // never shrinks below the whole map, nor moves off it.
+      const MIN_K = 1, MAX_K = 4;
+      // Where a point of the page is on the stage, in the map's units, and then on the map.
+      function stageOf(clientX, clientY) {
+        const r = root.getBoundingClientRect();
+        return { x: ((clientX - r.left) * W) / (r.width || W), y: ((clientY - r.top) * H) / (r.height || H) };
+      }
+      function mapOf(clientX, clientY) {
+        const p = stageOf(clientX, clientY), v = s.view;
+        return { x: (p.x - v.x) / v.k, y: (p.y - v.y) / v.k };
+      }
+      function keepOn() {
+        const v = s.view;
+        v.k = Math.max(MIN_K, Math.min(MAX_K, v.k));
+        v.x = Math.min(0, Math.max(W - v.k * W, v.x));
+        v.y = Math.min(0, Math.max(H - v.k * H, v.y));
+      }
+      function showView() {
+        keepOn();
+        const v = s.view, box = [-v.x / v.k, -v.y / v.k, W / v.k, H / v.k].map((n) => n.toFixed(2)).join(' ');
+        back.setAttribute('viewBox', box);
+        front.setAttribute('viewBox', box);
+        root.classList.toggle('nm-zoomed', v.k > 1.001);
+        s.dirty = true;
+        if (options.onZoom) options.onZoom(v.k);
+        paint();
+      }
+      // Zooms by `factor` about a point of the stage, which stays where it is.
+      function zoomAt(factor, at) {
+        const v = s.view, k = Math.max(MIN_K, Math.min(MAX_K, v.k * factor));
+        const mx = (at.x - v.x) / v.k, my = (at.y - v.y) / v.k;
+        v.k = k; v.x = at.x - k * mx; v.y = at.y - k * my;
+        showView();
+      }
+      // Moves the map by so much of the stage. Says whether it could: at an edge, it can't, and
+      // a scroll there is the page's to scroll.
+      function panBy(dx, dy) {
+        const v = s.view, x = v.x, y = v.y;
+        v.x += dx; v.y += dy;
+        keepOn();
+        if (Math.abs(v.x - x) < 0.01 && Math.abs(v.y - y) < 0.01) return false;
+        showView();
+        return true;
+      }
+      // A pinch on a trackpad arrives as a scroll with Control held, and zooms about the pointer.
+      // A plain scroll over a zoomed-in map moves along it, until it can't.
+      function onWheel(event) {
+        const lines = event.deltaMode === 1 ? 33 : event.deltaMode === 2 ? 300 : 1;
+        const dx = Math.max(-300, Math.min(300, event.deltaX * lines)), dy = Math.max(-300, Math.min(300, event.deltaY * lines));
+        if (event.ctrlKey) {
+          event.preventDefault();
+          zoomAt(Math.exp(-dy * 0.01), stageOf(event.clientX, event.clientY));
+          return;
+        }
+        if (s.view.k <= 1.001) return;
+        const r = root.getBoundingClientRect();
+        if (panBy((-dx * W) / (r.width || W), (-dy * H) / (r.height || H))) event.preventDefault();
+      }
+      root.addEventListener('wheel', onWheel, { passive: false });
+
+      // The empty map dragged moves along it, once zoomed in; two fingers on it pinch, and move
+      // it with them.
+      function onPress(event) {
+        if (event.pointerType === 'touch') {
+          s.touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+          if (s.touches.size === 2) {
+            // A second finger: whatever the first was doing, this is a pinch now.
+            s.drag = null; s.pan = null;
+            root.classList.remove('nm-dragging', 'nm-panning');
+            const [a, b] = [...s.touches.values()];
+            s.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+            return;
+          }
+        }
+        if (event.button !== 0 || s.drag || (event.target.closest && event.target.closest('.nm-node'))) return;
+        s.pan = { pointer: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+      }
+      function onPanMove(event) {
+        if (s.touches.has(event.pointerId)) s.touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        if (s.pinch && s.touches.size >= 2) {
+          event.preventDefault();
+          const [a, b] = [...s.touches.values()];
+          const d = Math.hypot(a.x - b.x, a.y - b.y) || 1, mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+          const r = root.getBoundingClientRect();
+          panBy(((mid.x - s.pinch.mid.x) * W) / (r.width || W), ((mid.y - s.pinch.mid.y) * H) / (r.height || H));
+          zoomAt(d / s.pinch.d, stageOf(mid.x, mid.y));
+          s.pinch = { d, mid };
+          s.panned = true;
+          return;
+        }
+        const p = s.pan;
+        if (!p || event.pointerId !== p.pointer) return;
+        if (!p.moved && Math.hypot(event.clientX - p.x, event.clientY - p.y) < 4) return;
+        if (!p.moved) { p.moved = true; s.panned = true; root.classList.add('nm-panning'); }
+        event.preventDefault();
+        const r = root.getBoundingClientRect();
+        panBy(((event.clientX - p.x) * W) / (r.width || W), ((event.clientY - p.y) * H) / (r.height || H));
+        p.x = event.clientX; p.y = event.clientY;
+      }
+      function onPanEnd(event) {
+        s.touches.delete(event.pointerId);
+        if (s.touches.size < 2) s.pinch = null;
+        const p = s.pan;
+        if (p && event.pointerId === p.pointer) {
+          s.pan = null;
+          root.classList.remove('nm-panning');
+        }
+        // The click that follows the end of a pan or a pinch isn't one on nothing.
+        if (s.panned) later(() => { s.panned = false; }, 0);
+      }
+      root.addEventListener('pointerdown', onPress);
 
       // Dragging a device: it goes where it's put and stays there, in this layout, in this
       // browser. A press that doesn't travel a few pixels is still a click.
@@ -915,7 +1033,9 @@
         if (!d.moved && Math.hypot(event.clientX - d.x0, event.clientY - d.y0) < 4) return;
         if (!d.moved) { d.moved = true; root.classList.add('nm-dragging'); }
         event.preventDefault();
-        const x = d.from.x + ((event.clientX - d.x0) * W) / d.rect.width, y = d.from.y + ((event.clientY - d.y0) * H) / d.rect.height;
+        // So far on the stage, which zoomed in is less far on the map.
+        const k = s.view.k;
+        const x = d.from.x + ((event.clientX - d.x0) * W) / d.rect.width / k, y = d.from.y + ((event.clientY - d.y0) * H) / d.rect.height / k;
         placesOf()[d.id] = { x: Math.round(Math.max(16, Math.min(W - 16, x))), y: Math.round(Math.max(16, Math.min(H - 28, y))) };
         s.tween = null; s.cov = null; s.dirty = true;
         paint();
@@ -935,6 +1055,9 @@
       window.addEventListener('pointermove', onDragMove);
       window.addEventListener('pointerup', onDragEnd);
       window.addEventListener('pointercancel', onDragEnd);
+      window.addEventListener('pointermove', onPanMove, { passive: false });
+      window.addEventListener('pointerup', onPanEnd);
+      window.addEventListener('pointercancel', onPanEnd);
 
       return {
         setDrawing(json) { try { setDrawing(JSON.parse(json)); } catch (error) { console.error('network map', error); } },
@@ -967,12 +1090,18 @@
         setActive(on) { s.active = !!on; if (!s.active) { cancelAnimationFrame(s.raf); s.raf = 0; } paint(); },
         report(id, commanded) { report(id, !!commanded); },
         scan() { scan(); },
+        // Zooms by `factor` about the middle; `resetView` shows the whole map again.
+        zoomBy(factor) { zoomAt(factor, { x: W / 2, y: H / 2 }); },
+        resetView() { s.view = { k: 1, x: 0, y: 0 }; showView(); },
         destroy() {
           s.gone = true;
           cancelAnimationFrame(s.raf);
           s.timers.forEach(clearTimeout);
           document.removeEventListener('visibilitychange', onVisibility);
           window.removeEventListener('pointermove', onDragMove);
+          window.removeEventListener('pointermove', onPanMove);
+          window.removeEventListener('pointerup', onPanEnd);
+          window.removeEventListener('pointercancel', onPanEnd);
           window.removeEventListener('pointerup', onDragEnd);
           window.removeEventListener('pointercancel', onDragEnd);
           if (resized) resized.disconnect();
