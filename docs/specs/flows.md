@@ -22,7 +22,7 @@ is a graph, not a list.
 | F3 | **Mode is per flow**: `single` (default), `restart`, `queued { max }`, `parallel { max }`, max 1–32. | Same as rules.md K7. With several triggers, a door-open firing in `restart` cancels the motion run's wait: one flow, one thing going on. |
 | F4 | **Fork is implicit, merge is explicit.** A port with several wires runs them all. Paths that forked meet again only through a `join` (`all` or `first`); the validator warns otherwise. Paths that split at *different ports of one exclusive node* (a gate's yes/no, a wait's matched/timeout, a switch's cases) never both run, so they rejoin freely. | Node-RED's "a node runs once per message that arrives" is what multiplies runs nobody meant to have. |
 | F5 | **Node ids are stable names** (`motion`, `dark`), chosen when the node is created. Traces key `(flow_id, version, node_id)`. | Adding a node doesn't renumber the others, unlike tree paths. |
-| F6 | **Layout is not the definition.** `layout` (x/y per node), `groups` (branch names) and `enabled` are left out of the version hash; `nodes` keys and `wires` are sorted before hashing. | Dragging a node, or tidying the file, must not fork a flow's history (pillar 8). |
+| F6 | **Layout is not the definition.** `layout` (x/y per node), `groups` (branch names), `enabled` and `owner` are left out of the version hash; `nodes` keys and `wires` are sorted before hashing. | Dragging a node, or tidying the file, or handing a flow to the home when its owner leaves, must not fork a flow's history (pillar 8). |
 | F7 | **Sans-IO engine.** The engine never awaits, sleeps or reads the clock: it's handed events and "now", and hands back calls to make and trace records. | The same code runs live, in a dry run with a virtual clock, and in a backtest over history (pillar 7), with nothing to mock. rules.md §14's async traits were for a different engine; this one chooses replay first. |
 | F8 | **Unavailable fails closed**, as rules.md K5: `num()` of an unavailable sensor is an error, a condition that errors is `no`, a `for` hold resets. | A three-hour-old lux reading must not turn lights on. |
 | F9 | **In-flight calls are not cancelled** when a run is superseded or aborted; waits, delays and joins are. | rules.md K8. |
@@ -65,6 +65,7 @@ same file the canvas saves (rules.md D18).
 | `id` | `RuleId` slug, 1–64 | yes | | Equals the file stem |
 | `name` | `Name` | yes | | |
 | `description` | `Description` | no | | |
+| `owner` | user id | no | the home's own | Whose it is ([access.md](access.md) §4). Checked as that person: against the rooms they have and what they may send. Set by the extension from who saved it, never from what the page says. Not part of the version |
 | `enabled` | bool | no | `true` | Not part of the version |
 | `mode` | as rules.md §8 | no | `"single"` | |
 | `nodes` | map of node id → node, 1–128 | yes | | Node id: `ObjectId` slug |
@@ -203,6 +204,14 @@ Layer 3 home checks reuse `irori-rules`: entities exist and are the right kind f
 services fit the entity and its capabilities, expressions parse inside the allowed surface and
 type-check, wait expressions read an entity and not the clock, time/sun gates.
 
+They are made **as the flow's owner**. For a flow with an `owner` that is a regular user, the
+home the checks read is the home narrowed to the rooms they have, so an entity outside them is
+"no such entity" exactly as one that was never there is, and a flow that names one is unarmed.
+Two more errors apply to them alone: a command to a kind whose commands need an owner (an
+update: `EntityKind::commands_need_owner`, the one rule the page's command route also uses), and
+a trigger that waits for an event, which is not about any one room. The checks run again whenever
+the home or the people change ([access.md](access.md) §4).
+
 Every problem has `node` (or `wire` index), `severity` (`error` or `warning`) and a sentence.
 Errors unarm; warnings don't.
 
@@ -210,9 +219,9 @@ Errors unarm; warnings don't.
 
 ## 5. Versions
 
-`version` = lowercase hex SHA-256 of the canonical JSON of the flow without `enabled` and
-`layout`: keys sorted, no whitespace, `wires` sorted. Every save whose version is new keeps a
-snapshot (definition + layout at the time). Runs record their version and the page draws them on
+`version` = lowercase hex SHA-256 of the canonical JSON of the flow without `owner`, `enabled`,
+`layout` and `groups`: keys sorted, no whitespace, `wires` sorted. Every save whose version is new
+keeps a snapshot (definition + layout at the time) and who saved it, when a regular user did. Runs record their version and the page draws them on
 that snapshot. Restoring a version saves its snapshot as the current file.
 
 ---
@@ -274,16 +283,21 @@ history already holds what really happened).
 
 ## 8. The extension's methods
 
-What the page calls through the bridge's `rpc`. The assistant calls `flow.source` and `flows.propose` the same way; a suggestion is drawn on the open canvas and not written until Save.
+What the page calls through the bridge's `rpc`. Each is asked **as someone**: the shell puts who
+on the question (`caller`, [automations.md](automations.md) §B2), and the page cannot. An owner
+asks about every flow. A regular user asks about their own: another person's flow, or the home's,
+answers as "there's no flow" (`flows.save` over another's id says the id is taken), `flows.list`
+holds only theirs, and what they can read, test and back-test is what they can see. Every method
+says what it is about, and a test fails for one that does not. The assistant calls `flow.source` and `flows.propose` the same way; a suggestion is drawn on the open canvas and not written until Save.
 
 | Method | Params | Answer |
 |---|---|---|
-| `flows.list` | — | Each flow: id, name, enabled, armed, problems count, last run, near-miss count |
+| `flows.list` | — | Each flow: id, name, enabled, armed, problems count, last run, near-miss count, and for an owner whose each is (`owner`) |
 | `flows.get` | `id` | Definition, version, problems |
 | `flows.validate` | `flow` | Problems |
 | `flow.source` | `id` | The saved flow for the assistant to read and rewrite: the definition without `layout`, `groups` or `enabled`. Missing flow is an error. The core never opens the file |
 | `flows.propose` | `id` (optional), `flow` | Checks a suggestion and hands back the flow to draw (`ok`, `flow`, `problems`), or `ok: false` and `problems` with no flow. `id` is this chat's flow. Without `id` the flow is a new one the editor has not saved: nothing is kept from a saved flow, nodes are laid out left to right along their wires, and the editor names it on Save. It is filled in when the suggestion omits it, and a different id is refused. `layout`, `groups` and `enabled` on the suggestion are ignored: the saved on/off switch is kept, positions of nodes that remain are kept, a new node is placed to the right of the rightmost, and group names whose nodes remain are kept. An error refuses it. A warning comes back with the flow. Nothing is written and nothing is armed |
-| `flows.save` | `flow` | Version, problems. Writes the file atomically |
+| `flows.save` | `flow` | Version, problems. Writes the file atomically. The flow's `owner` is the asking regular user's if it is new; a flow that is there keeps its owner whoever saves it |
 | `flows.enable` | `id`, `enabled` | |
 | `flows.delete` | `id` | |
 | `versions.list` / `versions.get` / `versions.restore` | `id`, `version` | |

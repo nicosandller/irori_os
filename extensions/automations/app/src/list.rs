@@ -110,6 +110,11 @@ pub fn List() -> impl IntoView {
                                                 <div class="row">
                                                     <span class="name">{flow.name.to_string()}</span>
                                                     {status(&flow)}
+                                                    {flow.owner.as_ref().map(|owner| view! {
+                                                        <span class="chip" title="Whose automation this is">
+                                                            {format!("{}'s", owner.name)}
+                                                        </span>
+                                                    })}
                                                     {(problems > 0).then(|| view! {
                                                         <span class="chip warn">{format!("{problems} to fix")}</span>
                                                     })}

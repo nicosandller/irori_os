@@ -6,6 +6,7 @@
 //! One place fetches what the home looks like and hands it to whichever page is showing, so
 //! moving between pages doesn't refetch and the two can't disagree.
 
+mod activity;
 mod api;
 mod app_frame;
 mod assistant;
@@ -76,6 +77,12 @@ pub struct Live {
 #[derive(Debug, Clone, Copy)]
 pub struct Assistant(pub RwSignal<Option<api::AssistantStatus>>);
 
+/// The pages of extensions a regular user may open (`docs/specs/access.md` §4.1), from
+/// `/api/apps`. The home they are shown says nothing of extensions, so their sidebar and the frame
+/// are made from this; an owner's come from the home. `None` until asked.
+#[derive(Debug, Clone, Copy)]
+pub struct Apps(pub RwSignal<Option<Vec<api::AppEntry>>>);
+
 /// Who this browser is, and how far the home has been set up. `None` until the first answer.
 #[derive(Debug, Clone, Copy)]
 pub struct Session(pub RwSignal<Option<api::Session>>);
@@ -103,6 +110,7 @@ fn App() -> impl IntoView {
     // nothing behind it, and a home nobody has set up gets the welcome.
     let session = RwSignal::new(None::<api::Session>);
     provide_context(Session(session));
+    provide_context(Apps(RwSignal::new(None)));
     let place = RwSignal::new(None);
     provide_context(place::Place(place));
     let people = RwSignal::new(Vec::new());
@@ -129,8 +137,11 @@ fn App() -> impl IntoView {
         }
         // Tokens are an owner's. The check above has already waited until the session answered.
         let ask_programs = session.with(|s| s.as_ref().is_some_and(|s| s.owner));
+        // Where the home is describes the home as a whole, not a room: not for a person who has
+        // only some rooms (`docs/specs/access.md` §2.3).
+        let limited = session.with(|s| s.as_ref().is_some_and(api::Session::limited));
         spawn_local(async move {
-            if let Ok(home) = api::fetch_place().await {
+            if !limited && let Ok(home) = api::fetch_place().await {
                 place.set(Some(home));
             }
             if let Ok(users) = api::fetch_users().await {
@@ -203,6 +214,8 @@ fn App() -> impl IntoView {
                 if let Ok(health) = api::fetch_health().await {
                     live.health.set(Some(health));
                 }
+                // Whoever is asking is answered from what they have of the home, so everybody is
+                // told whether it can (`docs/specs/access.md` §2).
                 if let Ok(status) = api::fetch_assistant().await {
                     assistant.set(Some(status));
                 }
@@ -266,15 +279,22 @@ fn App() -> impl IntoView {
                         </button>
                     </div>
                     <nav aria-label="Sections">
-                        {SECTIONS
-                            .iter()
-                            .map(|(href, label, icon)| view! {
-                                <A href=*href attr:title=*label>
-                                    <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=*icon></svg>
-                                    <span class="label">{*label}</span>
-                                </A>
-                            })
-                            .collect_view()}
+                        {move || {
+                            // The Extensions page is about the home as a whole; a person who has
+                            // only some rooms is not offered it.
+                            let limited = session
+                                .with(|s| s.as_ref().is_some_and(api::Session::limited));
+                            SECTIONS
+                                .iter()
+                                .filter(|(href, ..)| !(limited && *href == "/extensions"))
+                                .map(|(href, label, icon)| view! {
+                                    <A href=*href attr:title=*label>
+                                        <svg viewBox="0 0 24 24" aria-hidden="true" inner_html=*icon></svg>
+                                        <span class="label">{*label}</span>
+                                    </A>
+                                })
+                                .collect_view()
+                        }}
                         <AppLinks />
                     </nav>
                     <div class="sidebar-bottom">
@@ -319,6 +339,9 @@ fn App() -> impl IntoView {
 #[component]
 fn Page(live: Live) -> impl IntoView {
     let location = use_location();
+    let Session(session) = expect_context::<Session>();
+    // Pages about the home as a whole aren't there for a person who has only some rooms.
+    let whole_home = move || !session.with(|s| s.as_ref().is_some_and(api::Session::limited));
     transition::watch(location.pathname);
     view! {
         <main class:full=move || {
@@ -333,8 +356,26 @@ fn Page(live: Live) -> impl IntoView {
                 <Route path=path!("/floorplan") view=floorplan::Floorplan />
                 <Route path=path!("/devices") view=devices::Devices />
                 <Route path=path!("/devices/:id") view=device::DevicePage />
-                <Route path=path!("/extensions") view=extensions::Extensions />
-                <Route path=path!("/assistant") view=assistant::Page />
+                <Route
+                    path=path!("/extensions")
+                    view=move || view! {
+                        {move || if whole_home() {
+                            view! { <extensions::Extensions /> }.into_any()
+                        } else {
+                            view! { <NotFound /> }.into_any()
+                        }}
+                    }
+                />
+                <Route
+                    path=path!("/assistant")
+                    view=move || view! {
+                        {move || if whole_home() {
+                            view! { <assistant::Page /> }.into_any()
+                        } else {
+                            view! { <NotFound /> }.into_any()
+                        }}
+                    }
+                />
                 <Route path=path!("/settings") view=settings::Settings />
                 <Route path=path!("/apps/:id") view=app_frame::AppPage />
                 <Route path=path!("/apps/:id/*rest") view=app_frame::AppPage />
@@ -357,6 +398,8 @@ const IGNITE: Duration = Duration::from_millis(1700);
 #[component]
 fn Mark() -> impl IntoView {
     let Assistant(assistant) = expect_context::<Assistant>();
+    let Session(session) = expect_context::<Session>();
+    let owner = move || session.with(|s| s.as_ref().is_none_or(|s| s.owner));
     let ready = Memo::new(move |_| assistant.get().map(|status| status.ready));
     let igniting = RwSignal::new(false);
     // Only a change seen happening catches light: a page that opens with a model already
@@ -411,7 +454,7 @@ fn Mark() -> impl IntoView {
                     class="mark"
                     class:igniting=move || igniting.get()
                     title=move || {
-                        if igniting.get() {
+                        if igniting.get() || !owner() {
                             "IroriOS"
                         } else {
                             "IroriOS. Its assistant is set up in Settings."
@@ -460,10 +503,30 @@ const SECTIONS: [(&str, &str, &str); 3] = [
 fn AppLinks() -> impl IntoView {
     let live = expect_context::<Live>();
     let Session(session) = expect_context::<Session>();
+    let Apps(theirs) = expect_context::<Apps>();
+    let owner = move || session.with(|s| s.as_ref().is_none_or(|s| s.owner));
+    // A regular user is offered the pages that limit what they can do, as the server lists them.
+    // Asked when they are known to be one, and again whenever the home is read again, since a
+    // page can start or stop.
+    Effect::new(move |_| {
+        live.home.track();
+        if session.with(|s| s.as_ref().is_some_and(|s| !s.owner)) {
+            spawn_local(async move {
+                if let Ok(entries) = api::fetch_apps().await {
+                    theirs.set(Some(entries));
+                }
+            });
+        }
+    });
     let apps = Memo::new(move |_| {
-        // An extension's page talks to its engine, which is running the home: an owner's.
-        if !session.with(|s| s.as_ref().is_none_or(|s| s.owner)) {
-            return Vec::new();
+        if !owner() {
+            return theirs.with(|entries| {
+                entries
+                    .iter()
+                    .flatten()
+                    .map(|entry| (entry.extension.clone(), entry.label.clone(), entry.has_icon))
+                    .collect::<Vec<_>>()
+            });
         }
         live.home.with(|home| {
             home.extensions

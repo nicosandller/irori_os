@@ -13,9 +13,11 @@ program easy to write and leaves the rest out.
 
 - Commands are HTTP. The websocket only pushes changes. There is no second copy of every
   call on the socket.
-- A token carries scopes. It is not a copy of its owner.
+- A token carries scopes. It is not a copy of its owner, and it is not held to its owner's
+  rooms: only an owner makes one, and an owner has the whole home (`access.md` §5).
 - A token cannot mint tokens, add people, install extensions, or restart Irori. That stays
-  on the page, with the owner's session.
+  on the page, with the owner's session. It does not send a command to an `update` entity
+  either: that installs software (`access.md` §2.1).
 - There is one token, shown once. There is no refresh-token exchange.
 
 ---
@@ -24,7 +26,7 @@ program easy to write and leaves the rest out.
 
 | Caller | Credential | May |
 |---|---|---|
-| The page | Session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows (C14) |
+| The page | Session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows (C14), and of the home only the rooms they have (`access.md` §1). A person with only some rooms is answered as if the rest of the home were not there: it is missing from every list, `404` by its id, and the addresses that describe the home as a whole are `403` |
 | Irori's CLI, signed in | The same session cookie, and `x-irori-ui: 1` on every change | Whatever that person's role allows. It is Irori's own program, so it sends the header the page sends |
 | A program | `Authorization: Bearer <secret>` | The scopes on its token |
 | An extension that dials in | A token made for that extension, on `/api/extension` | Speak the extension protocol (§6) |
@@ -82,8 +84,8 @@ it needs and no others.
 | `services:call` | `POST /api/command` |
 | `events:read`, with the two reads above | `GET /api/ws` |
 
-Anything else — users, extensions, the floorplan's edits, restart, the assistant, tokens —
-answers `403` to a token. The message names the limit: `this token doesn't include
+Anything else — users, extensions, the floorplan's edits, restart, the assistant, tokens, the
+activity log (`GET /api/audit`) — answers `403` to a token. The message names the limit: `this token doesn't include
 states:read`, or `a token can't change how the home is set up`.
 
 A service call made with a token is recorded as `origin.type = "api"` and that token's id
@@ -107,6 +109,25 @@ protocol has confirmed, or an error.
 `Content-Security-Policy` that lets nothing in it run, since a picture may be an SVG. `404` for
 anything that isn't a camera, `504` when the camera didn't answer within 5 seconds, `502` with
 the protocol's reason when it had no picture to give.
+
+`GET /api/history/<entity_id>` is `{ "entity", "states", "by"? }`. `by` maps the context of a
+command (the `parent_id` of a state change that answered it) to who sent it, when the activity
+log has the command: the owner and a person with the whole home are told the name, a person with
+some rooms is told their own and "someone" for the rest (`docs/specs/access.md` §3.1).
+
+`GET /api/audit` is the activity log, for an owner (a token gets `403`):
+`{ "entries": [AuditEntry…], "older"? }`, newest first. The query narrows it: `user` (an id; what
+that person did and what programs made for them did), `action` (`command`, `sign_in`…), `outcome`
+(`ok`, `denied`, `failed`), `since` (RFC 3339), `limit` (at most 1000, 200 if left out) and
+`before` (a row's `id`; `older` is the one to ask with to read on). An `AuditEntry` is `id`, `at`,
+`actor` (`{kind: person|token|extension|irori|nobody, …}` with the name as it was), `action`,
+`target?`, `outcome`, `detail?`, `context_id?`, `client?`. A query it can't read is `422`.
+
+`GET /api/apps` lists the extensions' pages: all of them for an owner, and for a regular user only
+the pages that limit what they can do (`automations.md` §B1, `access.md` §4.1).
+`POST /api/apps/<extension>/rpc` is a page's question to its engine (`automations.md` §B3). It is for
+the page, not for a token. A regular user's question is answered only by such an extension,
+as the person who asked, and is `404` for any other.
 
 ## 4. The websocket
 
@@ -195,6 +216,6 @@ There is no log message on this socket.
 
 | Topic | Where |
 |---|---|
-| Per-area permissions, an audit log | C28 |
+| Per-area permissions, an audit log | `docs/specs/access.md` (C28). Rooms on tokens are not built |
 | Signing extension packages | C26 |
 | CORS, refresh tokens, a command channel on the websocket | Left out on purpose (§1) |

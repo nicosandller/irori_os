@@ -263,6 +263,9 @@ struct UsersFile {
 struct RawUser {
     name: Name,
     role: Role,
+    /// Absent: the whole home (`docs/specs/access.md` §1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    areas: Option<Vec<AreaId>>,
 }
 
 /// The people in `users.toml`, ordered by id (`docs/specs/config.md` §3.10). A file with people
@@ -276,6 +279,7 @@ pub fn read_users(text: &str) -> Result<Vec<User>, String> {
             id,
             name: raw.name,
             role: raw.role,
+            areas: raw.areas,
         })
         .collect();
     irori_types::check_users(&users).map_err(|e| e.to_string())?;
@@ -293,14 +297,16 @@ pub fn write_users(users: &[User]) -> String {
                     RawUser {
                         name: user.name.clone(),
                         role: user.role,
+                        areas: user.areas.clone(),
                     },
                 )
             })
             .collect(),
     };
     format!(
-        "# The people allowed into your home. An owner runs it; a user sees everything and\n\
-         # controls devices. Passwords are not here: they are kept, hashed, in secrets.toml.\n\
+        "# The people allowed into your home. An owner runs it; a user sees and controls devices,\n\
+         # in the whole home or, with `areas = [\"hall\"]`, only in those rooms. Passwords are not\n\
+         # here: they are kept, hashed, in secrets.toml.\n\
          #\n\
          # Written by Irori, and yours to edit: changes are picked up within a couple of seconds.\n\
          # Comments and ordering don't survive a rewrite. See docs/specs/config.md.\n\n{}",
@@ -325,6 +331,8 @@ pub struct IroriSettings {
     pub devices: DevicesSection,
     #[serde(default)]
     pub recorder: RecorderSection,
+    #[serde(default)]
+    pub audit: AuditSection,
     #[serde(default)]
     pub updates: UpdatesSection,
 }
@@ -407,6 +415,62 @@ pub struct RecorderSection {
 
 fn default_retain_days() -> u32 {
     10
+}
+
+/// `[audit]`. How long the activity log is kept and how large it may grow
+/// (`docs/specs/access.md` §3.2). Applied while Irori runs, like `[recorder]`; the page does not
+/// rewrite it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuditSection {
+    /// Days to keep a row. At least 1; a missing value is 90. Never shorter than
+    /// `[recorder] retain_days`, which a state change's "who" is read back from: a shorter
+    /// value is raised to it where the log is pruned.
+    #[serde(default = "default_audit_days")]
+    pub retain_days: u32,
+    /// The most rows to keep, oldest going first. At least 1000; a missing value is 100000.
+    #[serde(default = "default_audit_rows")]
+    pub max_rows: u32,
+}
+
+fn default_audit_days() -> u32 {
+    90
+}
+
+fn default_audit_rows() -> u32 {
+    100_000
+}
+
+impl Default for AuditSection {
+    fn default() -> Self {
+        Self {
+            retain_days: default_audit_days(),
+            max_rows: default_audit_rows(),
+        }
+    }
+}
+
+impl AuditSection {
+    /// The fewest rows a log may be held to: less than this would drop a day's ordinary use.
+    pub const LEAST_ROWS: u32 = 1000;
+
+    pub fn check(&self) -> Result<(), String> {
+        if self.retain_days == 0 {
+            return Err("audit.retain_days must be at least 1".to_owned());
+        }
+        if self.max_rows < Self::LEAST_ROWS {
+            return Err(format!(
+                "audit.max_rows must be at least {}",
+                Self::LEAST_ROWS
+            ));
+        }
+        Ok(())
+    }
+
+    /// The days a row is kept for, given how long history is: never fewer.
+    pub fn days_given(&self, recorder: &RecorderSection) -> u32 {
+        self.retain_days.max(recorder.retain_days)
+    }
 }
 
 impl Default for RecorderSection {
@@ -517,6 +581,7 @@ pub struct ExtensionsSection {
 pub fn read_irori(text: &str) -> Result<IroriSettings, String> {
     let settings: IroriSettings = toml::from_str(text).map_err(|e| e.to_string())?;
     settings.recorder.check()?;
+    settings.audit.check()?;
     Ok(settings)
 }
 
@@ -726,6 +791,52 @@ mod tests {
     }
 
     #[test]
+    fn a_users_rooms_are_read_and_written_and_absent_means_the_whole_home() {
+        let users = read_users(
+            "[users.nico]\nname = \"Nico\"\nrole = \"owner\"\n\n\
+             [users.leo]\nname = \"Leo\"\nrole = \"user\"\nareas = [\"leos_room\", \"hall\"]\n\n\
+             [users.guest]\nname = \"A guest\"\nrole = \"user\"\n\n\
+             [users.visitor]\nname = \"A visitor\"\nrole = \"user\"\nareas = []\n",
+        )
+        .expect("valid");
+        let rooms = |id: &str| {
+            users
+                .iter()
+                .find(|user| user.id.as_str() == id)
+                .and_then(|user| user.areas.clone())
+        };
+        assert_eq!(rooms("nico"), None);
+        assert_eq!(rooms("guest"), None, "absent is the whole home");
+        assert_eq!(rooms("visitor"), Some(vec![]), "empty is no rooms at all");
+        assert_eq!(
+            rooms("leo"),
+            Some(vec![area_id("leos_room"), area_id("hall")]),
+            "the order a person gave is the order kept"
+        );
+        // Written and read again: the same people, and no `areas` line for those without one.
+        let text = write_users(&users);
+        assert_eq!(read_users(&text).expect("round trip"), users);
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("areas = "))
+                .count(),
+            2,
+            "{text}"
+        );
+        // A file that gives an owner some rooms, or one room twice, is refused whole.
+        let why =
+            read_users("[users.nico]\nname = \"Nico\"\nrole = \"owner\"\nareas = [\"hall\"]\n")
+                .expect_err("an owner");
+        assert!(why.contains("take `areas` out"), "{why}");
+        let why = read_users(
+            "[users.nico]\nname = \"Nico\"\nrole = \"owner\"\n\n\
+             [users.leo]\nname = \"Leo\"\nrole = \"user\"\nareas = [\"hall\", \"hall\"]\n",
+        )
+        .expect_err("twice");
+        assert!(why.contains("`hall` twice"), "{why}");
+    }
+
+    #[test]
     fn irori_toml_reads_the_shape_the_spec_shows() {
         let settings = read_irori(
             "[server]\nbind = \"0.0.0.0:8480\"\nbind_fallback = \"0.0.0.0:8481\"\n\
@@ -783,6 +894,29 @@ mod tests {
         assert!(read_irori("[recorder]\nretain_days = \"week\"\n").is_err());
         assert!(read_irori("[recorder]\nretain_days = 30\nsummary_days = 0\n").is_err());
         assert!(read_irori("[recorder]\nretain_days = 30\nsummary_days = 7\n").is_err());
+    }
+
+    #[test]
+    fn the_activity_log_is_kept_ninety_days_and_a_hundred_thousand_rows_unless_told() {
+        let empty = read_irori("").expect("empty").audit;
+        assert_eq!((empty.retain_days, empty.max_rows), (90, 100_000));
+        let told = read_irori("[audit]\nretain_days = 365\nmax_rows = 5000\n")
+            .expect("valid")
+            .audit;
+        assert_eq!((told.retain_days, told.max_rows), (365, 5000));
+        assert!(read_irori("[audit]\nretain_days = 0\n").is_err());
+        assert!(read_irori("[audit]\nmax_rows = 999\n").is_err());
+        assert!(read_irori("[audit]\nkeep = 3\n").is_err());
+    }
+
+    /// History is read back to say who did what, so the log is never kept for less time.
+    #[test]
+    fn the_log_is_kept_at_least_as_long_as_history() {
+        let settings = read_irori("[recorder]\nretain_days = 120\n[audit]\nretain_days = 30\n")
+            .expect("valid");
+        assert_eq!(settings.audit.days_given(&settings.recorder), 120);
+        let longer = read_irori("[audit]\nretain_days = 365\n").expect("valid");
+        assert_eq!(longer.audit.days_given(&longer.recorder), 365);
     }
 
     #[test]

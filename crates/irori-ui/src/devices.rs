@@ -106,6 +106,8 @@ impl Showing {
 #[component]
 pub fn Devices() -> impl IntoView {
     let live = expect_context::<crate::Live>();
+    let crate::Session(session) = expect_context::<crate::Session>();
+    let owner = move || session.with(|session| session.as_ref().is_none_or(|s| s.owner));
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
     let adding_helper = RwSignal::new(false);
@@ -136,7 +138,10 @@ pub fn Devices() -> impl IntoView {
             // Helpers aren't devices and don't arrive through an extension — making one is a
             // name and nothing else — so the Helpers tab gets its own button, not a card in the
             // add-a-device flow pretending a helper is something an extension found.
-            {move || if showing.get() == Showing::Helpers {
+            {move || if !owner() {
+                // Bringing devices in and making helpers is setup: the owner's.
+                ().into_any()
+            } else if showing.get() == Showing::Helpers {
                 view! {
                     <button
                         type="button"

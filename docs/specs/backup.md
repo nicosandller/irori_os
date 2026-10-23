@@ -20,7 +20,7 @@ directory of mode `0700`. Three roots, and no absolute paths, so a backup restor
 `--config` and `--data`:
 
 ```
-manifest.json   { format, irori_version, created_at, extensions, encrypted, history }
+manifest.json   { format, irori_version, created_at, extensions, encrypted, history, activity }
 config/         the config directory, secrets.toml, users.toml and flows/ included
 data/           irori.db, extension-data/, tls/ and any other state
 ```
@@ -155,9 +155,18 @@ opened**: nothing replaces files a running server has open.
 | extensions | what extensions remember: `data/extension-data/` and any other state beside the database |
 | state | `irori.db` except history: sign-ins, tokens, the assistant's chats, what extensions keep |
 | history | the history tables |
+| activity | the activity log (`access.md` §3): who did what |
+
+A backup always holds the activity log (it is small, and it is the record of who changed the
+home). **A restore leaves the log as it is unless "activity" is chosen**: winding the home back
+to last month must not take last month out of the record of who changed it. The usual restore is
+every other part; the first-run restore on a machine with nothing, and the way back to a safety
+copy, bring it too. A backup from before the log existed has none, and restoring its state keeps
+the home's own log.
 
 "Everything but history" builds the database from the backup's and copies the current history
-tables into it. A config that doesn't load is what the home was: it is said as a note, not a
+tables into it. Each of the three kinds in it (state, history, the activity log) comes from
+whichever the parts say. A config that doesn't load is what the home was: it is said as a note, not a
 refusal. A backup from a newer Irori is refused (a `0.0.0` development build reads anything).
 
 **After.** If the restore replaced who is signed in, the person signs in again with the
@@ -176,7 +185,8 @@ refuses when a server answers at `<data>/cli.url`.
 - Page: Settings → Backups (an owner's): the list with Download, Restore… (parts, key, Verify) and Delete; Create backup; upload a file; the schedule; the key (shown on request, with
   a file to save); backup locations (add, Test, Browse and copy a backup to this machine, Remove); what the
   last restore did. The welcome offers to restore.
-- CLI (`docs/specs/cli.md`): `irori backup create|list|verify|restore|key`. They work on files.
+- CLI (`docs/specs/cli.md`): `irori backup create|list|verify|restore|key`. They work on files. Restore's `--only` takes
+  `activity` among the parts.
 - API: `GET/POST /api/backups`, `GET/DELETE /api/backups/{name}`, `POST …/{name}/verify`,
   `POST …/{name}/restore`, `POST /api/backups/upload`, `PUT /api/backups/settings`,
   `GET/POST /api/backups/key`, `GET /api/backups/destinations/{place}` (and `/test`, `/fetch`),

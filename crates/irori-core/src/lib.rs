@@ -9,18 +9,21 @@ mod home;
 mod home_access;
 mod host;
 mod installs;
+mod people;
+mod reach;
 mod services;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use irori_protocol::host::{Op, incoming_call};
 use irori_protocol::{IncomingAction, IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    ApiScope, Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId,
+    ApiScope, Area, AreaId, Context, ContextId, Description, Device, DeviceId, Entity, EntityId,
     EntityKind, EntityState, ExtensionId, ExtensionSettings, IotClass, Name, Origin, PackagePath,
     ProtocolId, Service, ServiceCall, Settings, SettingsKey, StateReport, Timestamp, UniqueId,
     Version, Waiting,
@@ -31,6 +34,8 @@ use tokio::sync::{broadcast, mpsc, watch};
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
 pub use host::{ExtensionHost, InboundLink, Timing};
+pub use people::{NOTE_ACTIONS, Notes, Person};
+pub use reach::{Reach, Rooms, Seen};
 pub use services::{CallError, Command};
 
 pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};
@@ -79,6 +84,8 @@ pub trait HistorySource: Send + Sync + fmt::Debug {
 pub struct AppCall {
     pub method: String,
     pub params: serde_json::Value,
+    /// Who asked. Only sent on to an engine that limits what a regular user can do.
+    pub caller: Option<irori_protocol::engine::Caller>,
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
 }
 
@@ -189,6 +196,9 @@ pub struct AppInfo {
     pub api: Vec<ApiScope>,
     /// The entity format its page reads, as its manifest says (`irori_types::format`).
     pub entity_format: u32,
+    /// Whether its manifest asks for regular users to open it (`docs/specs/access.md` §4.1).
+    /// The home honours that only for the extensions it trusts with it: [`Core::limits_people`].
+    pub users: bool,
 }
 
 fn is_present<S: serde::Serializer>(
@@ -335,6 +345,9 @@ pub struct Retired {
     pub entities: Vec<(ProtocolId, UniqueId)>,
 }
 
+/// What each list of rooms holds, with the revision of the home it was worked out at.
+type ReachCache = BTreeMap<Vec<AreaId>, (u64, Arc<Rooms>)>;
+
 /// A handle to the core. Cheap to clone; all clones share the same home.
 #[derive(Debug, Clone)]
 pub struct Core(Arc<Shared>);
@@ -381,6 +394,19 @@ struct Shared {
     /// fails says why in its own words and nowhere else; keeping the tail is what lets the card
     /// show a real reason instead of an exit status, and what the log window reads.
     logs: RwLock<BTreeMap<ExtensionId, VecDeque<String>>>,
+    /// Counts the changes to the registry and to what a person said about it: what a person's
+    /// rooms are worked out from. Counted before the event that announces the change goes out,
+    /// so whoever hears it and asks gets an answer that includes it.
+    registry_revision: AtomicU64,
+    /// What each list of rooms holds, as of the revision it was worked out at.
+    reaches: Mutex<ReachCache>,
+    /// Who is in the home and what each can reach, as the one who reads `users.toml` said.
+    people: RwLock<Vec<Person>>,
+    /// Which extensions the home trusts to limit what a regular user can do with their page.
+    /// Asked each time, so a package that is replaced stops being trusted at once.
+    trusted_with_people: RwLock<Option<people::Trust>>,
+    /// Where an engine's remarks go, for the activity log.
+    notes: RwLock<Option<Arc<dyn Notes>>>,
 }
 
 /// How many lines of an extension's own output are kept. Enough for a stack trace or a
@@ -453,6 +479,11 @@ impl Core {
             disabled: watch::Sender::new(BTreeSet::new()),
             storage: RwLock::new(Arc::new(irori_protocol::MemoryStorage::default())),
             logs: RwLock::new(BTreeMap::new()),
+            registry_revision: AtomicU64::new(0),
+            reaches: Mutex::default(),
+            people: RwLock::default(),
+            trusted_with_people: RwLock::default(),
+            notes: RwLock::default(),
         }))
     }
 
@@ -550,6 +581,37 @@ impl Core {
     /// The rooms of the home, as the config directory has them.
     pub fn areas(&self) -> Vec<Area> {
         read(&self.0.home).areas().to_vec()
+    }
+
+    /// What a person can see and use. `rooms` is their list from `users.toml`: `None` is the
+    /// whole home, and so is anybody who isn't held to one (`docs/specs/access.md` §1).
+    ///
+    /// Worked out once per list and revision of the home, so asking again is a lookup.
+    pub fn reach_for(&self, rooms: Option<&[AreaId]>) -> Reach {
+        let Some(rooms) = rooms else {
+            return Reach::Whole;
+        };
+        let mut wanted = rooms.to_vec();
+        wanted.sort();
+        wanted.dedup();
+        // The revision first: a change that lands while this is worked out leaves the answer
+        // looking older than it is, which is asked again, never newer.
+        let revision = self.0.registry_revision.load(Ordering::SeqCst);
+        let mut cache = self
+            .0
+            .reaches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, held)) = cache.get(&wanted)
+            && *at == revision
+        {
+            return Reach::Rooms(held.clone());
+        }
+        let held = Arc::new(Rooms::of(&read(&self.0.home), &wanted));
+        // A list nobody asks for any more is dropped with the rest of what is out of date.
+        cache.retain(|_, (at, _)| *at == revision);
+        cache.insert(wanted, (revision, held.clone()));
+        Reach::Rooms(held)
     }
 
     /// The levels of the home, lowest first.
@@ -1045,7 +1107,15 @@ impl Core {
         extension: &ExtensionId,
         method: String,
         params: serde_json::Value,
+        caller: irori_protocol::engine::Caller,
     ) -> Result<serde_json::Value, AppRequestError> {
+        // An engine that doesn't limit what a regular user can do is never told there is one
+        // asking: one that ignored the field would take them for the home.
+        if !caller.owner && !self.limits_people(extension) {
+            return Err(AppRequestError::Failed(format!(
+                "`{extension}` is not for regular users"
+            )));
+        }
         let sender = read(&self.0.app_links)
             .get(extension)
             .cloned()
@@ -1055,6 +1125,7 @@ impl Core {
         let call = AppCall {
             method,
             params,
+            caller: (!caller.owner).then_some(caller),
             reply,
         };
         let sent = tokio::time::timeout_at(deadline, sender.send(call)).await;
@@ -1238,6 +1309,18 @@ impl Core {
 
     fn publish(&self, events: Vec<Event>) {
         for event in events {
+            if matches!(
+                event,
+                Event::DeviceAdded { .. }
+                    | Event::DeviceUpdated { .. }
+                    | Event::DeviceRemoved { .. }
+                    | Event::EntityAdded { .. }
+                    | Event::EntityUpdated { .. }
+                    | Event::EntityRemoved { .. }
+                    | Event::SettingsChanged
+            ) {
+                self.0.registry_revision.fetch_add(1, Ordering::SeqCst);
+            }
             if let Event::StateChanged {
                 entity_id,
                 new_state,
@@ -1691,6 +1774,35 @@ fn sanitize_waiting(extension: &ExtensionId, waiting: Vec<Waiting>) -> Vec<Waiti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a list of rooms holds is worked out once and kept, and a change to the home or to
+    /// what was said about it makes the next answer new.
+    #[test]
+    fn a_reach_follows_the_home_it_is_asked_of() {
+        let core = Core::new(Arc::new(SystemClock));
+        let study = AreaId::try_from("study").expect("valid");
+        let rooms = std::slice::from_ref(&study);
+        assert!(core.reach_for(None).is_whole());
+        assert!(
+            !core.reach_for(Some(rooms)).sees_area(&study),
+            "no such room yet"
+        );
+        core.apply_settings(Settings {
+            areas: vec![Area {
+                id: study.clone(),
+                name: Name::try_from("Study").expect("valid"),
+                floor_id: None,
+            }],
+            ..Settings::default()
+        });
+        assert!(core.reach_for(Some(rooms)).sees_area(&study));
+        assert!(
+            core.reach_for(Some(rooms)).sees_area(&study),
+            "asked again, the same"
+        );
+        core.apply_settings(Settings::default());
+        assert!(!core.reach_for(Some(rooms)).sees_area(&study));
+    }
 
     /// Whatever ends a call before it's delivered (an error, a timeout, or the caller walking
     /// away mid-send), the recorded context must not stay valid for `caused_by`.

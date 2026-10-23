@@ -15,7 +15,7 @@ use std::time::SystemTime;
 use irori_flow_types::Flow;
 use irori_flow_types::api::VersionEntry;
 use irori_flow_types::trace::{NearMiss, RunRecord};
-use irori_types::{RuleId, Timestamp};
+use irori_types::{RuleId, Timestamp, UserId};
 use serde::de::DeserializeOwned;
 
 /// Runs kept per flow.
@@ -66,6 +66,19 @@ impl Store {
 
     pub fn problems(&self) -> &[FileProblem] {
         &self.problems
+    }
+
+    /// Whether anything of a flow called `id` is kept: a flow, a file that does not read, or what
+    /// a flow that was deleted left behind (versions, runs, near-misses). A name with any of these
+    /// is not free for a regular user to take, whose it was: the old definition and what it read
+    /// are not theirs to find, and a restore would make them the owner.
+    pub fn knows(&self, id: &RuleId) -> bool {
+        self.flows.contains_key(id)
+            || self.flows_dir.join(format!("{id}.json")).exists()
+            || self.versions_dir(id).exists()
+            || self.log("runs", id).exists()
+            || self.log("near_misses", id).exists()
+            || self.tests_file(id).exists()
     }
 
     /// Whether any flow file changed on disk since the last look; reloads if so.
@@ -126,14 +139,15 @@ impl Store {
         self.seen = listing;
     }
 
-    /// Writes a flow to its file, atomically, and keeps a snapshot of its version.
-    pub fn save(&mut self, flow: &Flow, now: Timestamp) -> Result<(), String> {
+    /// Writes a flow to its file, atomically, and keeps a snapshot of its version. `by` is the
+    /// regular user who saved it, if one did.
+    pub fn save(&mut self, flow: &Flow, now: Timestamp, by: Option<&UserId>) -> Result<(), String> {
         std::fs::create_dir_all(&self.flows_dir)
             .map_err(|e| format!("couldn't create {}: {e}", self.flows_dir.display()))?;
         let path = self.flows_dir.join(format!("{}.json", flow.id));
         let text = serde_json::to_string_pretty(flow).map_err(|e| e.to_string())?;
         write_atomically(&path, text.as_bytes())?;
-        self.keep_version(flow, now)?;
+        self.keep_version(flow, now, by)?;
         self.reload();
         Ok(())
     }
@@ -155,8 +169,14 @@ impl Store {
         self.data_dir.join("versions").join(id.as_str())
     }
 
-    /// Keeps this definition's snapshot, unless it's already kept.
-    pub fn keep_version(&self, flow: &Flow, now: Timestamp) -> Result<(), String> {
+    /// Keeps this definition's snapshot, unless it's already kept (and then who saved it first
+    /// stays what it says).
+    pub fn keep_version(
+        &self,
+        flow: &Flow,
+        now: Timestamp,
+        by: Option<&UserId>,
+    ) -> Result<(), String> {
         let dir = self.versions_dir(&flow.id);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         let path = dir.join(format!("{}.json", flow.version()));
@@ -166,6 +186,7 @@ impl Store {
         let entry = VersionEntry {
             version: flow.version(),
             saved_at: now,
+            saved_by: by.cloned(),
             flow: Some(flow.clone()),
         };
         let text = serde_json::to_string(&entry).map_err(|e| e.to_string())?;
@@ -353,7 +374,7 @@ mod tests {
     fn a_broken_edit_keeps_the_last_good_flow_and_says_why() {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path().join("flows"), dir.path().join("data"));
-        store.save(&flow("hall", "Hall"), now()).unwrap();
+        store.save(&flow("hall", "Hall"), now(), None).unwrap();
         assert_eq!(store.flows().count(), 1);
 
         std::fs::write(dir.path().join("flows/hall.json"), "{ not json").unwrap();
@@ -384,9 +405,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path().join("flows"), dir.path().join("data"));
         let id: RuleId = "hall".parse().unwrap();
-        store.save(&flow("hall", "Hall"), now()).unwrap();
-        store.save(&flow("hall", "Hall"), now()).unwrap();
-        store.save(&flow("hall", "Hallway"), now()).unwrap();
+        store.save(&flow("hall", "Hall"), now(), None).unwrap();
+        store.save(&flow("hall", "Hall"), now(), None).unwrap();
+        store.save(&flow("hall", "Hallway"), now(), None).unwrap();
         assert_eq!(store.versions(&id).len(), 2);
         let version = flow("hall", "Hall").version();
         assert!(store.version(&id, &version).unwrap().flow.is_some());
@@ -401,7 +422,7 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let mut store = Store::open(dir.path().join("flows"), dir.path().join("data"));
-        store.save(&flow("hall", "Hall"), now()).unwrap();
+        store.save(&flow("hall", "Hall"), now(), None).unwrap();
         let flows = dir.path().join("flows");
         std::fs::set_permissions(&flows, std::fs::Permissions::from_mode(0o000)).unwrap();
         if std::fs::read_dir(&flows).is_ok() {

@@ -182,11 +182,23 @@ fn first_format() -> u32 {
     1
 }
 
-/// One entry of `/api/apps`: a running extension's page and whether its files are there.
+/// One entry of `/api/apps`: a running extension's page and whether its files are there. A
+/// regular user's sidebar and frame are made from these, since the home they are shown says
+/// nothing of extensions.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct AppEntry {
     pub extension: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub has_icon: bool,
+    #[serde(default)]
+    pub api: Vec<String>,
+    #[serde(default)]
+    pub has_engine: bool,
     pub built: bool,
+    #[serde(default = "first_format")]
+    pub entity_format: u32,
 }
 
 pub async fn fetch_apps() -> Result<Vec<AppEntry>, String> {
@@ -939,6 +951,32 @@ pub async fn fetch_extension_log(id: &str) -> Result<Vec<String>, String> {
 
 /// Irori's own log, oldest line first: what this process has said since it started, which
 /// includes the lines an extension's output arrived as. The Settings page's log window shows it.
+/// A hundred rows of the activity log, newest first: of one person (by id) if asked, only what
+/// was `outcome` if asked, and the ones older than `before` when reading on.
+pub async fn fetch_audit(
+    user: Option<&str>,
+    outcome: Option<irori_types::Outcome>,
+    before: Option<u64>,
+) -> Result<irori_types::AuditPage, String> {
+    let mut query = vec!["limit=100".to_owned()];
+    if let Some(user) = user {
+        query.push(format!("user={user}"));
+    }
+    if let Some(outcome) = outcome {
+        query.push(format!("outcome={outcome}"));
+    }
+    if let Some(before) = before {
+        query.push(format!("before={before}"));
+    }
+    read(
+        Request::get(&format!("/api/audit?{}", query.join("&")))
+            .send()
+            .await
+            .map_err(unreachable)?,
+    )
+    .await
+}
+
 pub async fn fetch_system_log() -> Result<Vec<String>, String> {
     fetch_log("/api/system/log").await
 }
@@ -1127,6 +1165,9 @@ pub struct BackupManifest {
     pub extensions: Vec<String>,
     #[serde(default)]
     pub history: bool,
+    /// Whether the activity log is in it (backups from before it existed have none).
+    #[serde(default)]
+    pub activity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -1222,6 +1263,10 @@ pub struct BackupParts {
     pub extensions: bool,
     pub state: bool,
     pub history: bool,
+    /// The activity log. Off unless asked for: a restore is not a way to take what was done
+    /// since the backup out of the record.
+    #[serde(default)]
+    pub activity: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -2117,6 +2162,13 @@ pub struct Session {
 }
 
 impl Session {
+    /// Signed in as somebody who has only some rooms of the home (`docs/specs/access.md` §1):
+    /// what the home answers them is already only theirs, and the pages for the home as a whole
+    /// are not offered.
+    pub fn limited(&self) -> bool {
+        !self.owner && self.user.as_ref().is_some_and(|user| user.areas.is_some())
+    }
+
     /// Locked, and this browser is nobody yet: nothing it asks for will be answered.
     pub fn shut_out(&self) -> bool {
         self.locked && self.user.is_none()
@@ -2198,6 +2250,9 @@ pub struct UserRow {
     pub id: irori_types::UserId,
     pub name: Name,
     pub role: irori_types::Role,
+    /// The rooms they have. Absent: the whole home (`docs/specs/access.md` §1).
+    #[serde(default)]
+    pub areas: Option<Vec<irori_types::AreaId>>,
     pub has_password: bool,
 }
 
@@ -2209,9 +2264,14 @@ pub async fn add_user(
     name: &Name,
     role: irori_types::Role,
     password: &str,
+    areas: Option<&[irori_types::AreaId]>,
 ) -> Result<Vec<UserRow>, String> {
+    let mut body = serde_json::json!({ "name": name, "role": role, "password": password });
+    if let Some(areas) = areas {
+        body["areas"] = serde_json::json!(areas);
+    }
     let response = post(USERS_URL)
-        .json(&serde_json::json!({ "name": name, "role": role, "password": password }))
+        .json(&body)
         .map_err(|e| e.to_string())?
         .send()
         .await

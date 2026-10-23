@@ -279,6 +279,13 @@ pub struct AppContribution {
     /// Where it appears. Only the sidebar in this version.
     #[serde(default, skip_serializing_if = "AppPlacement::is_sidebar")]
     pub placement: AppPlacement,
+    /// Lets regular users open this page. That is trust handed to the extension, which says
+    /// "I limit what a person can do with this": the shell tells it who is asking, and what a
+    /// person's own rooms hold is the extension's to enforce (`docs/specs/access.md` §4.1).
+    /// Until permissions are approved one by one (ROADMAP C26), only official extensions are
+    /// given it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub users: bool,
 }
 
 /// Where an app's entry appears.

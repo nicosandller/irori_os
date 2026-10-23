@@ -461,6 +461,10 @@ the motion sensor reported at 22:04:12").
 | `api` | `token_id` | An API client with an access token |
 | `system` | — | Irori itself: restoring state at startup, reloading config |
 
+A command sent from the page or with a token leaves a row in the activity log with its call's
+context (`access.md` §3.1). The state change it causes carries that context as its `parent_id`,
+and `GET /api/history/<entity_id>` joins the two to say who sent it.
+
 ## 7. Validation
 
 Data is validated in layers. This spec covers the first two; the core adds the third.

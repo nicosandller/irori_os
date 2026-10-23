@@ -1,8 +1,8 @@
 //! What the page asks (`docs/specs/flows.md` §8).
 
 use irori_flow_types::api::{
-    Armed, Backtest, FlowDetail, FlowSummary, Holding, Live, Problem, Saved, Severity, TestRequest,
-    Timeline,
+    Armed, Backtest, FlowDetail, FlowSummary, Holding, Live, Owner, Problem, Saved, Severity,
+    TestRequest, Timeline,
 };
 use irori_flow_types::trace::{RunRecord, TestKind};
 use std::collections::BTreeMap;
@@ -10,12 +10,193 @@ use std::collections::BTreeMap;
 use irori_flow_types::{Flow, Node, Trigger};
 use irori_flows::engine::next_moment;
 use irori_flows::{sim, validate};
-use irori_types::{ContextId, RuleId, Timestamp};
+use irori_protocol::engine::Caller;
+use irori_types::{ContextId, RuleId, Timestamp, UserId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::{HISTORY_CAP, Service, a_day_before, brief, history, now};
+
+/// Who is asking, as far as it matters to what they may touch: the home's own owner, or a
+/// regular user and the flows that are theirs (`docs/specs/access.md` §4).
+#[derive(Debug, Clone)]
+pub struct Who {
+    owner: bool,
+    user: Option<UserId>,
+}
+
+impl Who {
+    /// A regular user who is saving, or testing, is what flows and runs say they did.
+    fn by(&self) -> Option<UserId> {
+        if self.owner { None } else { self.user.clone() }
+    }
+
+    fn is(&self, owner: Option<&UserId>) -> bool {
+        self.owner || (self.user.is_some() && self.user.as_ref() == owner)
+    }
+}
+
+/// What a question is about, which is what decides how a person who isn't the owner may ask it.
+/// Every question the engine takes has a row here; a test fails for one that does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum About {
+    /// Nothing of anybody's: the clock.
+    Nothing,
+    /// Flows, any number of them: a person is given their own.
+    Listing,
+    /// The flow named by `id`: if it exists it has to be theirs, and answers as no flow if not.
+    Flow,
+    /// The flow in `flow`, which may be new: if its id is taken by somebody else's, it is taken.
+    Draft,
+    /// A suggestion, a dry run or a backtest for the flow named by `id`, or for a new one, with
+    /// the flow itself in `flow`: both ids have to be theirs or nobody's. What a draft may read
+    /// is what its owner can reach, and a draft takes the owner of the flow whose id it carries;
+    /// one carrying somebody else's id would read as them.
+    Proposal,
+    /// Runs going now, of the flow named by `id` or of every flow: a person's own.
+    Runs,
+    /// The run named by `run_id`: it has to be a run of theirs.
+    Run,
+}
+
+const QUESTIONS: &[(&str, About)] = &[
+    ("flows.list", About::Listing),
+    ("flow.brief", About::Flow),
+    ("flows.get", About::Flow),
+    ("flows.validate", About::Draft),
+    ("flow.source", About::Flow),
+    ("flows.propose", About::Proposal),
+    ("flows.save", About::Draft),
+    ("flows.enable", About::Flow),
+    ("flows.delete", About::Flow),
+    ("versions.list", About::Flow),
+    ("versions.get", About::Flow),
+    ("versions.restore", About::Flow),
+    ("runs.list", About::Flow),
+    ("runs.get", About::Flow),
+    ("runs.active", About::Runs),
+    ("runs.cancel", About::Run),
+    ("tests.get", About::Flow),
+    ("tests.save", About::Flow),
+    ("live", About::Flow),
+    ("nearmiss.list", About::Flow),
+    ("timeline", About::Flow),
+    ("test", About::Proposal),
+    ("backtest", About::Proposal),
+    ("clock.next", About::Nothing),
+    ("clock.holds", About::Nothing),
+];
+
+fn about(method: &str) -> Option<About> {
+    QUESTIONS
+        .iter()
+        .find(|(name, _)| *name == method)
+        .map(|(_, about)| *about)
+}
+
+/// Works out who is asking, and where they stand if they are a regular user.
+async fn who_asks(service: &mut Service, caller: &Caller) -> Result<Who, String> {
+    if caller.owner {
+        return Ok(Who {
+            owner: true,
+            user: caller.user.clone(),
+        });
+    }
+    let Some(user) = caller.user.clone() else {
+        return Err("sign in to use Automations".to_owned());
+    };
+    // Where they stand now, not where they stood when they last asked: their rooms may have
+    // changed since (and the engine is told when they do, but this is the answer that counts).
+    service.learn(&user).await;
+    match service.people.get(&user) {
+        Some(standing) if standing.here => Ok(Who {
+            owner: false,
+            user: Some(user),
+        }),
+        Some(_) => Err("you are not in the home any more".to_owned()),
+        None => Err("what you can reach could not be told just now".to_owned()),
+    }
+}
+
+/// Whether the flow named in `named` is the asker's. `taken` is for a flow that may be new: its
+/// name is free unless anything of that name is kept, a file that doesn't read or what a deleted
+/// flow left behind, and then it is taken. Otherwise the flow has to be there and be theirs: one
+/// that is somebody else's, one that was deleted and one that never was all answer the same way.
+fn theirs(service: &Service, who: &Who, named: Option<&Value>, taken: bool) -> Result<(), String> {
+    let Some(id) = named
+        .and_then(Value::as_str)
+        .and_then(|id| RuleId::try_from(id).ok())
+    else {
+        // Not a flow id: the question fails by itself, reading it.
+        return Ok(());
+    };
+    match service.store.flow(&id) {
+        Some(flow) if who.is(flow.owner.as_ref()) => Ok(()),
+        Some(_) => Err(not_free(&id, taken)),
+        None if taken && !service.store.knows(&id) => Ok(()),
+        None => Err(not_free(&id, taken)),
+    }
+}
+
+fn not_free(id: &RuleId, taken: bool) -> String {
+    if taken {
+        format!("a flow called `{id}` exists already; give this one another name")
+    } else {
+        format!("there's no flow `{id}`")
+    }
+}
+
+/// A person gets to ask about their own flows and runs, and nothing else's.
+fn allowed(service: &Service, who: &Who, method: &str, raw: &Value) -> Result<(), String> {
+    let Some(about) = about(method) else {
+        return Err(format!("the Automations engine has no `{method}`"));
+    };
+    if who.owner {
+        return Ok(());
+    }
+    match about {
+        About::Nothing | About::Listing => Ok(()),
+        About::Flow | About::Runs => theirs(service, who, raw.get("id"), false),
+        About::Draft => theirs(service, who, raw.pointer("/flow/id"), true),
+        About::Proposal => {
+            // A suggestion is about a flow that is there. A dry run or a backtest of a draft may
+            // be about one that is not saved yet: the draft carries its name.
+            let drafted =
+                method != "flows.propose" && raw.get("flow").is_some_and(|flow| !flow.is_null());
+            theirs(service, who, raw.get("id"), drafted)?;
+            theirs(service, who, raw.pointer("/flow/id"), true)
+        }
+        About::Run => {
+            let run = raw
+                .get("run_id")
+                .and_then(Value::as_str)
+                .and_then(|run| ContextId::try_from(run).ok());
+            let flow = run.and_then(|run| {
+                service
+                    .engine
+                    .active(None)
+                    .into_iter()
+                    .find(|active| active.record.run_id == run)
+                    .map(|active| active.record.flow_id)
+            });
+            match flow {
+                Some(flow) => theirs(service, who, Some(&json!(flow)), false)
+                    .map_err(|_| "that run isn't going".to_owned()),
+                None => Ok(()),
+            }
+        }
+    }
+}
+
+/// Whose a flow is, once saved: a new one is the asker's, if they are a regular user; one that
+/// is there keeps its owner, whoever saves it. Never what the page said.
+fn stamped(service: &Service, who: &Who, flow: &mut Flow) {
+    flow.owner = match service.store.flow(&flow.id) {
+        Some(existing) => existing.owner.clone(),
+        None => who.by(),
+    };
+}
 
 fn params<T: DeserializeOwned>(params: Value) -> Result<T, String> {
     serde_json::from_value(params).map_err(|e| format!("the request didn't make sense: {e}"))
@@ -56,7 +237,7 @@ fn not_suggested(message: impl Into<String>) -> Value {
 ///
 /// Without an `id` the flow is a new one the editor has not saved: there is nothing to keep, so
 /// the nodes are laid out left to right along their wires, and the editor names it on Save.
-fn propose(service: &Service, raw: Value) -> Result<Value, String> {
+fn propose(service: &Service, who: &Who, raw: Value) -> Result<Value, String> {
     #[derive(Deserialize)]
     struct Suggested {
         id: Option<RuleId>,
@@ -79,6 +260,7 @@ fn propose(service: &Service, raw: Value) -> Result<Value, String> {
     object.remove("layout");
     object.remove("groups");
     object.remove("enabled");
+    object.remove("owner");
     match &id {
         Some(id) => {
             object.entry("id").or_insert_with(|| json!(id));
@@ -103,6 +285,7 @@ fn propose(service: &Service, raw: Value) -> Result<Value, String> {
         Some(saved) => lay(saved, &mut flow),
         None => arrange(&mut flow),
     }
+    stamped(service, who, &mut flow);
     let problems = service.problems(&flow);
     let ok = problems.iter().all(|problem| !problem.is_error());
     if ok {
@@ -186,14 +369,30 @@ fn draft(value: Value) -> Result<Flow, Problem> {
     })
 }
 
-/// Answers one question from the page.
-pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<Value, String> {
+/// Answers one question from the page, for whoever the core says asked it.
+pub async fn handle(
+    service: &mut Service,
+    caller: &Caller,
+    method: &str,
+    raw: Value,
+) -> Result<Value, String> {
+    let who = who_asks(service, caller).await?;
+    allowed(service, &who, method, &raw)?;
+    ask(service, &who, method, raw).await
+}
+
+async fn ask(service: &mut Service, who: &Who, method: &str, raw: Value) -> Result<Value, String> {
     match method {
         "flows.list" => answer(json!({
-            "flows": list(service),
-            "file_problems": service.store.problems().iter().map(|p| json!({
-                "file": p.file, "reason": p.reason,
-            })).collect::<Vec<_>>(),
+            "flows": list(service, who),
+            // Files that couldn't be read are the home's to look at.
+            "file_problems": if who.owner {
+                service.store.problems().iter().map(|p| json!({
+                    "file": p.file, "reason": p.reason,
+                })).collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            },
         })),
         // One flow written out for the assistant. The core never opens the flow file.
         "flow.brief" => {
@@ -211,13 +410,14 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 .cloned()
                 .ok_or_else(|| format!("there's no flow `{id}`"))?;
             let problems = service.problems(&flow);
+            let view = service.view(flow.owner.as_ref())?;
             let armed = service
                 .engine
                 .armed()
                 .remove(&id)
                 .map(|(armed, _)| armed)
                 .unwrap_or(Armed::Disabled);
-            let mut involved = validate::watched(&flow, &service.registry);
+            let mut involved = validate::watched(&flow, view.registry);
             involved.extend(flow.nodes.values().filter_map(|node| match node {
                 Node::Call { entity, .. } => Some(entity.clone()),
                 _ => None,
@@ -235,9 +435,9 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                     flow: &flow,
                     armed: &armed,
                     problems: &problems,
-                    registry: &service.registry,
-                    states: &service.engine.states(),
-                    involved: involved.into_iter().collect(),
+                    registry: view.registry,
+                    states: &view.states(service.engine.states()),
+                    involved: involved.into_iter().filter(|id| view.sees(id)).collect(),
                     going: going.as_ref(),
                     last: kept.iter().find(|run| run.test.is_none()),
                     ran_as_test: !kept.is_empty(),
@@ -275,7 +475,10 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
         "flows.validate" => {
             let WithFlow { flow } = params(raw)?;
             answer(match draft(flow) {
-                Ok(flow) => service.problems(&flow),
+                Ok(mut flow) => {
+                    stamped(service, who, &mut flow);
+                    service.problems(&flow)
+                }
                 Err(problem) => vec![problem],
             })
         }
@@ -293,15 +496,17 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 object.remove("layout");
                 object.remove("groups");
                 object.remove("enabled");
+                object.remove("owner");
             }
             answer(json!({ "flow": value }))
         }
         // A suggestion for the canvas. Checked the same way as a save, and not written.
-        "flows.propose" => propose(service, raw),
+        "flows.propose" => propose(service, who, raw),
         "flows.save" => {
             let WithFlow { flow } = params(raw)?;
-            let flow = draft(flow).map_err(|problem| problem.message)?;
-            service.store.save(&flow, now())?;
+            let mut flow = draft(flow).map_err(|problem| problem.message)?;
+            stamped(service, who, &mut flow);
+            service.store.save(&flow, now(), who.by().as_ref())?;
             service.arm();
             answer(Saved {
                 version: flow.version(),
@@ -321,7 +526,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 .cloned()
                 .ok_or_else(|| format!("there's no flow `{id}`"))?;
             flow.enabled = enabled;
-            service.store.save(&flow, now())?;
+            service.store.save(&flow, now(), who.by().as_ref())?;
             service.arm();
             answer(Value::Null)
         }
@@ -349,10 +554,12 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             if method == "versions.get" {
                 return answer(entry);
             }
-            let flow = entry
+            let mut flow = entry
                 .flow
                 .ok_or_else(|| "that version's definition wasn't kept".to_owned())?;
-            service.store.save(&flow, now())?;
+            // What the old definition said of its owner is not what this one's is.
+            stamped(service, who, &mut flow);
+            service.store.save(&flow, now(), who.by().as_ref())?;
             service.arm();
             answer(Saved {
                 version: flow.version(),
@@ -386,7 +593,16 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
                 id: Option<RuleId>,
             }
             let Maybe { id } = params(raw)?;
-            answer(service.engine.active(id.as_ref()))
+            let mut running = service.engine.active(id.as_ref());
+            if !who.owner {
+                running.retain(|run| {
+                    service
+                        .store
+                        .flow(&run.record.flow_id)
+                        .is_some_and(|flow| who.is(flow.owner.as_ref()))
+                });
+            }
+            answer(running)
         }
         "runs.cancel" => {
             #[derive(Deserialize)]
@@ -507,11 +723,16 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             let request: TestRequest = params(raw)?;
             let at = now();
             if request.dry {
-                let flow = service.flow_or_draft(&request.id, request.flow)?;
+                let mut flow = service.flow_or_draft(&request.id, request.flow)?;
+                stamped(service, who, &mut flow);
+                // What it can read is what its owner has, however the draft was written.
+                let states = service
+                    .view(flow.owner.as_ref())?
+                    .states(service.engine.states());
                 answer(sim::dry_run(
                     &flow,
                     &request.trigger,
-                    service.engine.states(),
+                    states,
                     &request.overrides,
                     service.engine.place().cloned(),
                     at,
@@ -519,7 +740,13 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             } else {
                 let run_id = service
                     .engine
-                    .fire(&request.id, &request.trigger, Some(TestKind::Live), at)?
+                    .fire_by(
+                        &request.id,
+                        &request.trigger,
+                        Some(TestKind::Live),
+                        who.by(),
+                        at,
+                    )?
                     .ok_or("the flow's mode didn't start a run: one is already going")?;
                 service.apply_effects();
                 answer(find_run(service, &request.id, &run_id).ok_or("the run went missing")?)
@@ -534,12 +761,19 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             }
             let Ask { id, flow } = params(raw)?;
             let flow = match flow {
-                Some(flow) => draft(flow).map_err(|problem| problem.message)?,
+                Some(flow) => {
+                    let mut flow = draft(flow).map_err(|problem| problem.message)?;
+                    stamped(service, who, &mut flow);
+                    flow
+                }
                 None => service.flow_or_draft(&id, None)?,
             };
             let to = now();
             let window = a_day_before(to);
             let history = history(service, &flow, window).await?;
+            let states = service
+                .view(flow.owner.as_ref())?
+                .states(service.engine.states());
             // An entity the core kept its most changes for may reach back less than a day; the
             // backtest only covers as far back as every entity does.
             // History only reaches back as far as the core has been keeping it, and an entity
@@ -562,7 +796,7 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
             let (would, changes) = sim::backtest(
                 &flow,
                 &history,
-                &service.engine.states(),
+                &states,
                 service.engine.place().cloned(),
                 to,
             );
@@ -603,11 +837,13 @@ pub async fn handle(service: &mut Service, method: &str, raw: Value) -> Result<V
     }
 }
 
-fn list(service: &Service) -> Vec<FlowSummary> {
+fn list(service: &Service, who: &Who) -> Vec<FlowSummary> {
     let armed = service.engine.armed();
     service
         .store
         .flows()
+        // A person is shown their own. The owner is shown all, and whose each is.
+        .filter(|flow| who.is(flow.owner.as_ref()))
         .map(|flow| {
             let problems = service.problems(flow);
             let last_run = service
@@ -626,6 +862,11 @@ fn list(service: &Service) -> Vec<FlowSummary> {
                     .unwrap_or(Armed::Disabled),
                 problems: problems.len(),
                 version: flow.version(),
+                owner: flow
+                    .owner
+                    .as_ref()
+                    .filter(|_| who.owner)
+                    .map(|id| owner_of(service, id)),
                 last_run,
                 near_misses: service.store.near_misses(&flow.id).len(),
                 active_runs: service.engine.running(&flow.id),
@@ -634,6 +875,20 @@ fn list(service: &Service) -> Vec<FlowSummary> {
             }
         })
         .collect()
+}
+
+/// A person as the list says them: who they are now, or who they were if they are gone.
+fn owner_of(service: &Service, id: &UserId) -> Owner {
+    let name = service
+        .people
+        .get(id)
+        .map(|standing| standing.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| id.to_string());
+    Owner {
+        id: id.clone(),
+        name,
+    }
 }
 
 fn find_run(service: &Service, id: &RuleId, run_id: &ContextId) -> Option<RunRecord> {
@@ -828,5 +1083,52 @@ fn clock_holds(service: &Service, conditions: Vec<Value>) -> ClockHolds {
         now: place.map(|place| clock::wall(place, at)),
         sun: place.map(|place| sun_today(place, at)).unwrap_or_default(),
         holds,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every question the engine takes says what it is about, so what a person who isn't the
+    /// owner may ask of it is decided, not defaulted. Reads the arms out of `ask`.
+    #[test]
+    fn every_question_says_what_it_is_about() {
+        let source = include_str!("rpc.rs");
+        let body = source
+            .split("async fn ask(")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn list(").next())
+            .expect("the match in ask");
+        let mut arms = Vec::new();
+        for line in body.lines() {
+            // An arm of the match, at its indent: `"flows.list" => …` or `"a" | "b" => {`.
+            let Some(rest) = line.strip_prefix("        \"") else {
+                continue;
+            };
+            let head = rest.split("=>").next().unwrap_or("");
+            if !line.contains("=>") {
+                continue;
+            }
+            for name in head.split('|') {
+                arms.push(name.trim().trim_matches('"').to_owned());
+            }
+        }
+        assert!(
+            arms.len() >= 20,
+            "read too little out of the match: {arms:?}"
+        );
+        for arm in &arms {
+            assert!(
+                about(arm).is_some(),
+                "`{arm}` is answered and QUESTIONS does not say what it is about"
+            );
+        }
+        for (name, _) in QUESTIONS {
+            assert!(
+                arms.iter().any(|arm| arm == name),
+                "`{name}` is listed and not answered"
+            );
+        }
     }
 }

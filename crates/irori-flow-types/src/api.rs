@@ -1,6 +1,6 @@
 //! What the extension's page and its engine say to each other (`docs/specs/flows.md` §8).
 
-use irori_types::{ContextId, EntityId, EntityState, Name, RuleId, Timestamp};
+use irori_types::{ContextId, EntityId, EntityState, Name, RuleId, Timestamp, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::trace::{NearMiss, RunRecord};
@@ -49,6 +49,13 @@ pub enum Armed {
     },
 }
 
+/// Whose a flow is: the person's id, and the name they go by now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Owner {
+    pub id: UserId,
+    pub name: String,
+}
+
 /// A row of the flow list.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FlowSummary {
@@ -59,6 +66,10 @@ pub struct FlowSummary {
     pub armed: Armed,
     pub problems: usize,
     pub version: String,
+    /// Whose it is, when it is a person's rather than the home's. Only an owner is told whose
+    /// each is; a regular user sees only their own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Owner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run: Option<RunSummary>,
     pub near_misses: usize,
@@ -107,6 +118,9 @@ pub struct Saved {
 pub struct VersionEntry {
     pub version: String,
     pub saved_at: Timestamp,
+    /// Who saved it, when a regular user did; absent for the owner's (the home's) own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_by: Option<UserId>,
     /// The definition as saved, layout included.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow: Option<Flow>,

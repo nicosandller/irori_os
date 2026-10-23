@@ -313,8 +313,10 @@ struct Restoring {
     parts: Parts,
 }
 
+/// What is put back when the request doesn't say: all of the home, and the log of what has been
+/// done to it stays as it is.
 fn all_parts() -> Parts {
-    Parts::ALL
+    Parts::USUAL
 }
 
 /// Opens the backup, checks it, stages it, and starts Irori again to put it in place.
@@ -337,7 +339,7 @@ async fn stage_and_restart(
     path: PathBuf,
     ask: Restoring,
 ) -> Response {
-    if !(ask.parts.settings || ask.parts.extensions || ask.parts.state || ask.parts.history) {
+    if !ask.parts.any() {
         return failed("choose something to restore");
     }
     let data = at.data.clone();

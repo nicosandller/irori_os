@@ -22,6 +22,6 @@ pub use prompt::{
 pub use stream::{AnthropicParser, Lines, OllamaParser, OpenAiParser, Piece};
 pub use tools::{
     LIMIT_CALLS, TOOL_ROUNDS, ToolCall, anthropic_tools, assemble, execute_round, openai_tools,
-    tool_offered,
+    owner_only, tool_offered,
 };
 pub use transcript::{LIMIT_BYTES, LIMIT_GLOBAL_BYTES, LIMIT_MESSAGES, Role, Turn, append_capped};

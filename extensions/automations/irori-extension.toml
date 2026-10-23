@@ -1,9 +1,10 @@
 [extension]
 id = "automations"
 name = "Automations"
-version = "0.7.2"
-irori = ">=1.4.0"
-# 1.4.0 has the `update` kind, and entity format 17 with it.
+version = "0.8.0"
+irori = ">=1.5.0"
+# 1.5.0 has people with rooms (`users = true` below, `get_reach`, who is asking). 1.4.0 has the
+# `update` kind, and entity format 17 with it.
 description = "Build automations as flows on a canvas, watch them run, and see why one didn't."
 icon = "icon.svg"
 # Format 26 adds cameras, whose value is what they are doing (`off`, `idle`, `recording`…).
@@ -25,9 +26,14 @@ entity_format = 26
 [[contributes.automation]]
 run = { command = "bin/irori-ext-automations" }
 
+# Regular users may open the page, and see and edit only their own flows, checked against the
+# rooms they have (`docs/specs/access.md` §4). That is trust handed to this extension, so the
+# install prompt says so; until permissions are approved one by one, only official extensions
+# are given it.
 [[contributes.app]]
 label = "Automations"
 entry = "app/index.html"
+users = true
 
 # It watches the home (registry, states, changes, the last day of history) and acts on it
 # (service calls). Its flows live in the config directory, beside irori.toml, so they're plain

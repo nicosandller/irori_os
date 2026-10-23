@@ -7,7 +7,20 @@ use irori_flow_types::{Condition, Flow, Node, NodeId, Port, Trigger, WaitUntil, 
 use irori_rules::{ExprString, RegistryView, VarKind};
 
 /// Everything wrong with `flow`, errors first. Errors unarm it; warnings don't.
+///
+/// This is the home's own flow: it may send anything and watch anything the home has. A
+/// regular user's is [`check_for`].
 pub fn check(flow: &Flow, registry: &impl RegistryView) -> Vec<Problem> {
+    check_for(flow, registry, true)
+}
+
+/// As [`check`], for a flow whose owner may run the home or not (`docs/specs/access.md` §4).
+///
+/// What the owner can see is the `registry` handed in: the caller narrows it to their rooms, so
+/// an entity outside them is "unknown" here like one that was never there. What is left is the
+/// role: a regular user's flow may not send a command only an owner may send, nor wait for an
+/// event that is not an entity's.
+pub fn check_for(flow: &Flow, registry: &impl RegistryView, runs_the_home: bool) -> Vec<Problem> {
     let mut problems = Vec::new();
     let wires_ok = check_wires(flow, &mut problems);
     if !flow.nodes.values().any(Node::is_trigger) {
@@ -24,7 +37,7 @@ pub fn check(flow: &Flow, registry: &impl RegistryView) -> Vec<Problem> {
             check_joins(flow, &mut problems);
             check_merges(flow, &mut problems);
             let vars = check_vars(flow, &order, registry, &mut problems);
-            check_home(flow, registry, &vars, &mut problems);
+            check_home(flow, registry, &vars, runs_the_home, &mut problems);
         } else {
             problems.push(error(
                 None,
@@ -359,9 +372,32 @@ fn check_home(
     flow: &Flow,
     registry: &impl RegistryView,
     vars: &BTreeMap<String, VarKind>,
+    runs_the_home: bool,
     problems: &mut Vec<Problem>,
 ) {
     for (id, node) in &flow.nodes {
+        if !runs_the_home {
+            match node {
+                Node::Trigger {
+                    trigger: Trigger::Event { .. },
+                } => problems.push(error(
+                    Some(id),
+                    None,
+                    "only an owner's flow can wait for an event: events are not about any one room",
+                )),
+                Node::Call { entity, .. } if entity.kind().commands_need_owner() => {
+                    problems.push(error(
+                        Some(id),
+                        None,
+                        format!(
+                            "only an owner can send commands to {entity}: it changes how the \
+                             home is set up"
+                        ),
+                    ));
+                }
+                _ => {}
+            }
+        }
         let found = match node {
             Node::Trigger { trigger } => {
                 if matches!(trigger, Trigger::Event { .. }) {

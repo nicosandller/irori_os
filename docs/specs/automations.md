@@ -115,6 +115,7 @@ host_fs = ["$CONFIG/flows"]
 | `label` | `Name` | yes | The sidebar entry's text |
 | `entry` | package path ending in `.html` | yes | The page, served from the package |
 | `placement` | `"sidebar"` | no, default `"sidebar"` | Only value in this version. Kept so a later editable sidebar, or other slots, don't need a new kind |
+| `users` | bool | no, default `false` | "Regular users may open this page, and I limit what they can do." Trust handed to the extension ([access.md](access.md) §4.1): the shell tells it who is asking with every question and it may ask where a person stands. Honoured for official extensions only, until permissions are approved one by one (ROADMAP C26); for any other it does nothing. Needs Irori 1.5.0 |
 
 The sidebar icon is the extension's own `icon`.
 
@@ -141,6 +142,8 @@ instead:
 | `get_states { id }` | `states:read` | `[EntityState]` |
 | `get_history { id, entities: [EntityId], since: Timestamp }` | `history:read` | `{ "<entity_id>": [EntityState] }`, oldest first |
 | `subscribe { id, states: bool, registry: bool }` | `events:read` | `null`. Afterwards the core pushes the events asked for |
+| `get_reach { id, user }` | — (needs `users = true`, §B1) | Where a person stands now: `{ here: bool, name, owner: bool, entities?: [EntityId] }`. `here: false` is a person who was removed. `entities` is what they can see; left out, the whole home. Answered only to an extension that limits what people can do (`docs/specs/access.md` §4.1), and an error to any other |
+| `note { action, target, detail }` | — (needs `users = true`) | No answer. Asks the core to write a line in the activity log as Irori itself: `flow_turned_off` (a flow was running and the home changed under it; `detail` says why) or `flow_handed_over` (its owner was removed). Any other `action` is dropped |
 | `call_service { id, entity_id, command, data?, run_id, parent_id? }` | `services:call` | `null`, or an error |
 | `app_answer { id, value?, error? }` | — | (answers `app_request`) |
 
@@ -151,7 +154,8 @@ instead:
 | `answer { id, value?, error? }` | Reply to any request above |
 | `state_changed { entity_id, old_state?, new_state }` | After `subscribe { states: true }`, for every state change in the home |
 | `registry_changed {}` | After `subscribe { registry: true }`, when an entity or device is added, changed or removed; and after any subscription, when the engine fell too far behind and missed events. A nudge: the engine asks again with `get_registry` and `get_states` |
-| `app_request { id, method, params }` | The engine's page asked it something (§B3) |
+| `app_request { id, method, params, caller? }` | The engine's page asked it something (§B3). `caller` is `{ user?, owner }`, put there by the core, never by the page. It is left out when the home's own owner asks. A regular user's question is sent only to an extension with `users = true` that the home trusts with it; an engine that reads no `caller` is therefore never one that could take a regular user for the owner |
+| `registry_changed {}` | (also) whenever a person's rooms or role change, or someone is added or removed: what a flow of theirs may touch is not what it was |
 
 The core never waits on an engine: pushes queue without limit on the engine's side, so an
 engine that awaits an answer while changes pour in still gets it. A request unanswered after 30 s
@@ -198,7 +202,13 @@ For each running extension with an `app` contribution, the core:
   scripts and images, and anything that isn't a browser are served as before.
 - relays `POST /api/apps/<extension>/rpc` with body `{ "method": "…", "params": … }` to the
   engine as `app_request`, and returns `{ "value": … }` or an error status with `{ "error": "…" }`.
-  30 s timeout (a backtest can take a moment). `503` if the engine isn't running.
+  30 s timeout (a backtest can take a moment). `503` if the engine isn't running. A regular user
+  may ask only an extension with `users = true` that the home trusts with it; to any other it
+  answers `404`, as if it had no page. A flow saved, turned on or off, deleted or brought back, or
+  tested for real, by anyone, is written to the activity log;
+- lists at `GET /api/apps` all of them for an owner, and for a regular user only those they may
+  open. (The home a regular user is shown says nothing of extensions, so their sidebar and the
+  frame are made from this list.)
 
 What the core promises about the static files:
 

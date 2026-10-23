@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use irori_engine_automations::store::Store;
 use irori_engine_automations::{Service, rpc};
-use irori_protocol::engine::Incoming;
+use irori_protocol::engine::{Caller, Incoming};
 use irori_protocol::{FromExt, ToExt};
 use irori_types::{
     Availability, BinarySensorCapabilities, BinarySensorState, Capabilities, Context, ContextId,
@@ -110,8 +110,30 @@ fn home() -> (Vec<Entity>, Vec<EntityState>) {
     )
 }
 
+/// What the fake core says of each person, by id, as `get_reach` answers it. A test changes it
+/// to move a person's rooms.
+type People = std::sync::Arc<std::sync::Mutex<BTreeMap<String, serde_json::Value>>>;
+
+/// What the engine told the core to write down: the action, what it was about, and why.
+type Notes = mpsc::UnboundedSender<(String, String, String)>;
+
 /// The core's side: answers every request, and reports the calls it was asked to make.
 async fn fake_core(stream: tokio::io::DuplexStream, calls: mpsc::UnboundedSender<FromExt>) {
+    fake_core_with(
+        stream,
+        calls,
+        People::default(),
+        mpsc::unbounded_channel().0,
+    )
+    .await;
+}
+
+async fn fake_core_with(
+    stream: tokio::io::DuplexStream,
+    calls: mpsc::UnboundedSender<FromExt>,
+    people: People,
+    notes: Notes,
+) {
     let (read, mut write) = tokio::io::split(stream);
     let (entities, states) = home();
     write
@@ -130,6 +152,35 @@ async fn fake_core(stream: tokio::io::DuplexStream, calls: mpsc::UnboundedSender
             ),
             FromExt::GetHistory { id, .. } => (*id, serde_json::json!({})),
             FromExt::CallService { id, .. } => (*id, serde_json::Value::Null),
+            FromExt::GetReach { id, user } => {
+                let said = people
+                    .lock()
+                    .expect("people")
+                    .get(user.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({ "here": false }));
+                // A person recorded as `{ "fails": true }` is one the core can't answer for.
+                if said.get("fails").is_some() {
+                    let reply = ToExt::Answer {
+                        id: *id,
+                        value: None,
+                        error: Some("the core couldn't tell".to_owned()),
+                    };
+                    let mut text = serde_json::to_string(&reply).expect("serializes");
+                    text.push('\n');
+                    write.write_all(text.as_bytes()).await.expect("write");
+                    continue;
+                }
+                (*id, said)
+            }
+            FromExt::Note {
+                action,
+                target,
+                detail,
+            } => {
+                let _ = notes.send((action.clone(), target.clone(), detail.clone()));
+                continue;
+            }
             _ => continue,
         };
         if matches!(message, FromExt::CallService { .. }) {
@@ -166,9 +217,14 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     let store = Store::open(dir.path().join("flows"), dir.path().join("data"));
     let (mut service, mut answers) = Service::start(client, store).await.expect("starts");
 
-    let list = rpc::handle(&mut service, "flows.list", serde_json::json!({}))
-        .await
-        .expect("lists");
+    let list = rpc::handle(
+        &mut service,
+        &Caller::owner(),
+        "flows.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("lists");
     assert_eq!(list["flows"][0]["state"], "armed", "{list}");
 
     // Motion in the dark: the light is asked to come on, at 60% as the core counts it.
@@ -210,6 +266,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     // Waiting on occupancy: the page can see where.
     let active = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "runs.active",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -220,6 +277,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     // The assistant is handed the logic, what each entity reports now, and the run under way.
     let brief = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flow.brief",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -246,6 +304,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     // A dry run of a draft sends nothing.
     let dry = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "test",
         serde_json::json!({ "id": "hallway_motion_light", "trigger": "motion", "dry": true }),
     )
@@ -262,18 +321,25 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     broken["nodes"]["off"]["entity"] = serde_json::json!("light.nope");
     let saved = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.save",
         serde_json::json!({ "flow": broken }),
     )
     .await
     .expect("saves");
     assert_eq!(saved["problems"][0]["node"], "off", "{saved}");
-    let list = rpc::handle(&mut service, "flows.list", serde_json::json!({}))
-        .await
-        .expect("lists");
+    let list = rpc::handle(
+        &mut service,
+        &Caller::owner(),
+        "flows.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("lists");
     assert_eq!(list["flows"][0]["state"], "unarmed", "{list}");
     let versions = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "versions.list",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -288,6 +354,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     // The run the edit cut short was kept, and says why.
     let runs = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "runs.list",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -298,6 +365,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     // What stops it running is told with where it is, and so is how the last run ended.
     let brief = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flow.brief",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -315,6 +383,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     }
     let short = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flow.brief",
         serde_json::json!({ "id": "hallway_motion_light", "budget": 900 }),
     )
@@ -328,6 +397,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     // moment it names, the run that just ended.
     let first = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "live",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -336,6 +406,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     assert_eq!(first["runs"], serde_json::json!([]), "{first}");
     let since = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "live",
         serde_json::json!({ "id": "hallway_motion_light", "after": "2000-01-01T00:00:00Z" }),
     )
@@ -346,6 +417,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
 
     let backtest = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "backtest",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -355,19 +427,20 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
 
     // How a test was set up is kept, as the page gave it, and goes when the flow does.
     let id = serde_json::json!({ "id": "hallway_motion_light" });
-    let none = rpc::handle(&mut service, "tests.get", id.clone())
+    let none = rpc::handle(&mut service, &Caller::owner(), "tests.get", id.clone())
         .await
         .expect("nothing kept yet");
     assert!(none.is_null(), "{none}");
     let settings = serde_json::json!({ "mode": "dry", "pretend": { "sensor.lux": 20 } });
     rpc::handle(
         &mut service,
+        &Caller::owner(),
         "tests.save",
         serde_json::json!({ "id": "hallway_motion_light", "settings": settings }),
     )
     .await
     .expect("kept");
-    let kept = rpc::handle(&mut service, "tests.get", id.clone())
+    let kept = rpc::handle(&mut service, &Caller::owner(), "tests.get", id.clone())
         .await
         .expect("read back");
     assert_eq!(kept, settings);
@@ -375,18 +448,20 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     assert!(
         rpc::handle(
             &mut service,
+            &Caller::owner(),
             "tests.save",
             serde_json::json!({ "id": "hallway_motion_light", "settings": huge }),
         )
         .await
         .is_err()
     );
-    rpc::handle(&mut service, "flows.delete", id.clone())
+    rpc::handle(&mut service, &Caller::owner(), "flows.delete", id.clone())
         .await
         .expect("deleted");
     assert!(
         rpc::handle(
             &mut service,
+            &Caller::owner(),
             "tests.save",
             serde_json::json!({ "id": "hallway_motion_light", "settings": settings }),
         )
@@ -394,7 +469,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
         .is_err(),
         "no settings for a flow that isn't there"
     );
-    let gone = rpc::handle(&mut service, "tests.get", id)
+    let gone = rpc::handle(&mut service, &Caller::owner(), "tests.get", id)
         .await
         .expect("asked");
     assert!(gone.is_null(), "{gone}");
@@ -405,9 +480,14 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
         { "type": "sun", "after": "sunset", "before": "sunrise", "after_offset": "-30m" },
         { "type": "sun", "after": "sunset", "offset": "1h", "after_offset": "-30m" },
     ] });
-    let unset = rpc::handle(&mut service, "clock.holds", windows.clone())
-        .await
-        .expect("asked");
+    let unset = rpc::handle(
+        &mut service,
+        &Caller::owner(),
+        "clock.holds",
+        windows.clone(),
+    )
+    .await
+    .expect("asked");
     assert!(unset.get("time_zone").is_none(), "{unset}");
     assert!(
         unset["holds"][0]["why"]
@@ -418,7 +498,7 @@ async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     let brussels =
         irori_rules::clock::Place::new("Europe/Brussels", Some((50.8467, 4.3525))).expect("a zone");
     service.engine.set_place(Some(brussels), stamp());
-    let told = rpc::handle(&mut service, "clock.holds", windows)
+    let told = rpc::handle(&mut service, &Caller::owner(), "clock.holds", windows)
         .await
         .expect("asked");
     assert_eq!(told["time_zone"], "Europe/Brussels");
@@ -458,6 +538,7 @@ async fn a_suggestion_is_checked_and_not_written() {
 
     let source = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flow.source",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -471,6 +552,7 @@ async fn a_suggestion_is_checked_and_not_written() {
 
     rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.enable",
         serde_json::json!({ "id": "hallway_motion_light", "enabled": false }),
     )
@@ -478,6 +560,7 @@ async fn a_suggestion_is_checked_and_not_written() {
     .expect("turned off");
     let mut kept = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.get",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -486,6 +569,7 @@ async fn a_suggestion_is_checked_and_not_written() {
     kept["flow"]["groups"] = serde_json::json!({ "motion": "Night" });
     rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.save",
         serde_json::json!({ "flow": kept["flow"] }),
     )
@@ -498,6 +582,7 @@ async fn a_suggestion_is_checked_and_not_written() {
     suggested["enabled"] = serde_json::json!(true);
     let proposed = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.propose",
         serde_json::json!({ "id": "hallway_motion_light", "flow": suggested }),
     )
@@ -532,6 +617,7 @@ async fn a_suggestion_is_checked_and_not_written() {
 
     let saved = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.get",
         serde_json::json!({ "id": "hallway_motion_light" }),
     )
@@ -544,6 +630,7 @@ async fn a_suggestion_is_checked_and_not_written() {
     omitted.as_object_mut().expect("an object").remove("id");
     let filled = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.propose",
         serde_json::json!({ "id": "hallway_motion_light", "flow": omitted }),
     )
@@ -556,6 +643,7 @@ async fn a_suggestion_is_checked_and_not_written() {
     other["id"] = serde_json::json!("other");
     let refused = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.propose",
         serde_json::json!({ "id": "hallway_motion_light", "flow": other }),
     )
@@ -578,6 +666,7 @@ async fn a_suggestion_is_checked_and_not_written() {
     });
     let refused = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.propose",
         serde_json::json!({ "id": "hallway_motion_light", "flow": coded }),
     )
@@ -592,6 +681,7 @@ async fn a_suggestion_is_checked_and_not_written() {
 
     let refused = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.propose",
         serde_json::json!({ "id": "hallway_motion_light", "flow": { "name": "Nope" } }),
     )
@@ -619,6 +709,7 @@ async fn a_suggestion_for_a_new_flow_is_laid_out_and_not_written() {
 
     let proposed = rpc::handle(
         &mut service,
+        &Caller::owner(),
         "flows.propose",
         serde_json::json!({ "flow": {
             "name": "Morning",
@@ -642,5 +733,599 @@ async fn a_suggestion_for_a_new_flow_is_laid_out_and_not_written() {
             .next()
             .is_none(),
         "nothing was written"
+    );
+}
+
+fn person(name: &str, entities: &[&str]) -> serde_json::Value {
+    serde_json::json!({ "here": true, "name": name, "owner": false, "entities": entities })
+}
+
+fn leo() -> Caller {
+    Caller {
+        user: Some("leo".parse().expect("a user id")),
+        owner: false,
+    }
+}
+
+/// A flow in the hall: motion turns the light on.
+fn leos_flow(id: &str, sensor: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id,
+        "name": "Leo's light",
+        "nodes": {
+            "motion": { "type": "trigger", "trigger": { "type": "state", "entity": sensor, "to": true } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["motion", "on"]]
+    })
+}
+
+/// A regular user has flows of their own, and only what they can reach: someone else's flow is
+/// no flow, what they cannot see is unknown to a flow of theirs, and a flow that stops being
+/// theirs to run is turned off once, with the reason.
+#[tokio::test]
+async fn a_regular_user_has_their_own_flows_and_only_what_they_can_reach() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    std::fs::create_dir_all(dir.path().join("flows")).expect("mkdir");
+    std::fs::write(
+        dir.path().join("flows/hallway_motion_light.json"),
+        include_str!("../../../fixtures/types/flow/valid/hallway.json"),
+    )
+    .expect("wrote the flow");
+
+    let people = People::default();
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), person("Leo", &[MOTION, LIGHT]));
+    let (notes_tx, mut notes) = mpsc::unbounded_channel();
+    let (core_end, engine_end) = tokio::io::duplex(1 << 20);
+    let (calls_tx, _calls) = mpsc::unbounded_channel();
+    tokio::spawn(fake_core_with(core_end, calls_tx, people.clone(), notes_tx));
+    let (read, write) = tokio::io::split(engine_end);
+    let (_, client, _incoming) = irori_protocol::engine::connect(read, write)
+        .await
+        .expect("connects");
+    let store = Store::open(dir.path().join("flows"), dir.path().join("data"));
+    let (mut service, _answers) = Service::start(client, store).await.expect("starts");
+
+    // Leo is shown nothing of the home's. The owner is shown the home's.
+    let list = rpc::handle(&mut service, &leo(), "flows.list", serde_json::json!({}))
+        .await
+        .expect("lists");
+    assert_eq!(list["flows"], serde_json::json!([]), "{list}");
+    let list = rpc::handle(
+        &mut service,
+        &Caller::owner(),
+        "flows.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("lists");
+    assert_eq!(list["flows"][0]["id"], "hallway_motion_light");
+
+    // Somebody else's flow is no flow, to read, to change, to run, or to delete.
+    for method in [
+        "flows.get",
+        "flow.brief",
+        "flow.source",
+        "flows.delete",
+        "versions.list",
+        "runs.list",
+        "nearmiss.list",
+        "tests.get",
+    ] {
+        let said = rpc::handle(
+            &mut service,
+            &leo(),
+            method,
+            serde_json::json!({ "id": "hallway_motion_light" }),
+        )
+        .await
+        .expect_err(method);
+        assert_eq!(said, "there's no flow `hallway_motion_light`", "{method}");
+    }
+    let missing = rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.get",
+        serde_json::json!({ "id": "zq_nothing_here" }),
+    )
+    .await
+    .expect_err("there's none");
+    assert_eq!(
+        missing.replace("zq_nothing_here", "ID"),
+        "there's no flow `ID`",
+        "a flow of someone else's answers as one that was never there"
+    );
+    let overwritten = rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.save",
+        serde_json::json!({ "flow": leos_flow("hallway_motion_light", MOTION) }),
+    )
+    .await
+    .expect_err("not his to write over");
+    assert!(overwritten.contains("exists already"), "{overwritten}");
+    assert!(
+        service
+            .store
+            .flow(&"hallway_motion_light".parse().expect("id"))
+            .is_some_and(|flow| flow.owner.is_none())
+    );
+
+    // His own: saved, his, and armed because he has both the sensor and the light.
+    let saved = rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.save",
+        serde_json::json!({ "flow": leos_flow("hall_light", MOTION) }),
+    )
+    .await
+    .expect("saves");
+    assert_eq!(saved["problems"], serde_json::json!([]), "{saved}");
+    let list = rpc::handle(&mut service, &leo(), "flows.list", serde_json::json!({}))
+        .await
+        .expect("lists");
+    assert_eq!(list["flows"][0]["id"], "hall_light", "{list}");
+    assert_eq!(list["flows"][0]["state"], "armed", "{list}");
+    assert_eq!(list["flows"].as_array().map(Vec::len), Some(1), "{list}");
+    // The page cannot say whose it is: Leo naming someone else as the owner is not heard.
+    let mut forged = leos_flow("hall_light_2", MOTION);
+    forged["owner"] = serde_json::json!("nico");
+    rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.save",
+        serde_json::json!({ "flow": forged }),
+    )
+    .await
+    .expect("saves");
+    assert_eq!(
+        service
+            .store
+            .flow(&"hall_light_2".parse().expect("id"))
+            .and_then(|flow| flow.owner.as_ref().map(ToString::to_string))
+            .as_deref(),
+        Some("leo")
+    );
+    // The owner is told whose each is.
+    let list = rpc::handle(
+        &mut service,
+        &Caller::owner(),
+        "flows.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("lists");
+    let whose: Vec<_> = list["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .map(|flow| {
+            (
+                flow["id"].as_str().unwrap_or(""),
+                flow["owner"]["name"].as_str(),
+            )
+        })
+        .collect();
+    assert!(whose.contains(&("hall_light", Some("Leo"))), "{whose:?}");
+    assert!(whose.contains(&("hallway_motion_light", None)), "{whose:?}");
+
+    // What he cannot see is unknown to a flow of his, and says no more than a missing one.
+    let hidden = rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.validate",
+        serde_json::json!({ "flow": leos_flow("probe", OCCUPANCY) }),
+    )
+    .await
+    .expect("answers");
+    let missing = rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.validate",
+        serde_json::json!({ "flow": leos_flow("probe", "binary_sensor.zq_nothing_here") }),
+    )
+    .await
+    .expect("answers");
+    assert!(hidden.to_string().contains("no such entity"), "{hidden}");
+    assert!(hidden.to_string().contains("in your rooms"), "{hidden}");
+    assert_eq!(
+        hidden.to_string().replace(OCCUPANCY, "ID"),
+        missing
+            .to_string()
+            .replace("binary_sensor.zq_nothing_here", "ID"),
+        "a hidden sensor is told as a missing one is"
+    );
+    // A draft that names it cannot read it either: a dry run is told nothing of it.
+    let dry = rpc::handle(
+        &mut service,
+        &leo(),
+        "test",
+        serde_json::json!({
+            "id": "probe",
+            "dry": true,
+            "trigger": "start",
+            "flow": {
+                "id": "probe",
+                "name": "Probe",
+                "nodes": {
+                    "start": { "type": "trigger", "trigger": { "type": "startup" } },
+                    "gate": { "type": "gate", "condition": { "type": "expr", "expr": "num('sensor.demo_luminosity_illuminance') < 30" } }
+                },
+                "wires": [["start", "gate"]]
+            }
+        }),
+    )
+    .await;
+    let dry = dry.expect("a dry run of his own draft");
+    assert!(
+        dry.to_string().contains("no such entity") && !dry.to_string().contains("\"value\":8"),
+        "a dry run read a sensor outside his rooms: {dry}"
+    );
+
+    // A draft that carries the id of a flow that is not his is not run as that flow's owner: it
+    // would be read as the home, which sees everything.
+    for method in ["test", "backtest"] {
+        let taken = rpc::handle(
+            &mut service,
+            &leo(),
+            method,
+            serde_json::json!({
+                "id": "probe",
+                "dry": true,
+                "trigger": "start",
+                "flow": {
+                    "id": "hallway_motion_light",
+                    "name": "Probe",
+                    "nodes": {
+                        "start": { "type": "trigger", "trigger": { "type": "startup" } },
+                        "gate": { "type": "gate", "condition": { "type": "expr", "expr": "num('sensor.demo_luminosity_illuminance') < 30" } }
+                    },
+                    "wires": [["start", "gate"]]
+                }
+            }),
+        )
+        .await
+        .expect_err(method);
+        assert!(taken.contains("exists already"), "{method}: {taken}");
+    }
+
+    // His motion sensor leaves his rooms: the flow is turned off, and the log is told once.
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), person("Leo", &[LIGHT]));
+    assert!(service.incoming(Incoming::RegistryChanged).await);
+    let list = rpc::handle(&mut service, &leo(), "flows.list", serde_json::json!({}))
+        .await
+        .expect("lists");
+    // Both flows of his name that sensor: both are off now, not only unable to run.
+    for flow in list["flows"].as_array().expect("flows") {
+        assert_eq!(flow["state"], "disabled", "{list}");
+        assert_eq!(flow["enabled"], false, "{list}");
+    }
+    let detail = rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.get",
+        serde_json::json!({ "id": "hall_light" }),
+    )
+    .await
+    .expect("his own flow");
+    assert!(
+        detail["problems"][0]["message"]
+            .as_str()
+            .is_some_and(|why| why.contains("no such entity") && why.contains("in your rooms")),
+        "{detail}"
+    );
+    let mut told = Vec::new();
+    while let Ok(note) = notes.try_recv() {
+        told.push(note);
+    }
+    let for_hall_light: Vec<_> = told
+        .iter()
+        .filter(|(_, target, _)| target == "hall_light")
+        .collect();
+    assert_eq!(for_hall_light.len(), 1, "{told:?}");
+    assert_eq!(for_hall_light[0].0, "flow_turned_off");
+    // Nothing changed since, so nothing more is said.
+    assert!(service.incoming(Incoming::RegistryChanged).await);
+    assert!(notes.try_recv().is_err(), "said again with nothing new");
+
+    // The sensor comes back to his rooms: the flow stays off. He turns it on when he wants it.
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), person("Leo", &[MOTION, LIGHT]));
+    assert!(service.incoming(Incoming::RegistryChanged).await);
+    let list = rpc::handle(&mut service, &leo(), "flows.list", serde_json::json!({}))
+        .await
+        .expect("lists");
+    assert_eq!(list["flows"][0]["state"], "disabled", "{list}");
+    assert_eq!(list["flows"][0]["problems"], 0, "{list}");
+    rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.enable",
+        serde_json::json!({ "id": "hall_light", "enabled": true }),
+    )
+    .await
+    .expect("his to turn on");
+    let list = rpc::handle(&mut service, &leo(), "flows.list", serde_json::json!({}))
+        .await
+        .expect("lists");
+    assert_eq!(list["flows"][0]["state"], "armed", "{list}");
+
+    // The core can't say where he stands: nothing is assumed of him, and nothing of his is
+    // turned off either. It is checked when the core can say.
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), serde_json::json!({ "fails": true }));
+    assert!(service.incoming(Incoming::RegistryChanged).await);
+    let list = rpc::handle(
+        &mut service,
+        &Caller::owner(),
+        "flows.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("lists");
+    let hall = list["flows"]
+        .as_array()
+        .expect("flows")
+        .iter()
+        .find(|flow| flow["id"] == "hall_light")
+        .expect("his flow");
+    assert_eq!(
+        hall["state"], "unarmed",
+        "not armed on an old answer: {list}"
+    );
+    assert_eq!(
+        hall["enabled"], true,
+        "and not turned off for want of one: {list}"
+    );
+    let said = rpc::handle(&mut service, &leo(), "flows.list", serde_json::json!({}))
+        .await
+        .expect_err("he is told nothing he can't be told");
+    assert!(said.contains("could not be told"), "{said}");
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), person("Leo", &[LIGHT]));
+    assert!(service.incoming(Incoming::RegistryChanged).await);
+    while notes.try_recv().is_ok() {}
+
+    // He is removed: his flows are kept, off, and the home's own.
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), serde_json::json!({ "here": false }));
+    assert!(service.incoming(Incoming::RegistryChanged).await);
+    let kept = service
+        .store
+        .flow(&"hall_light".parse().expect("id"))
+        .cloned()
+        .expect("still there");
+    assert!(kept.owner.is_none() && !kept.enabled, "{kept:?}");
+    let mut handed = Vec::new();
+    while let Ok(note) = notes.try_recv() {
+        handed.push(note);
+    }
+    assert!(
+        handed
+            .iter()
+            .any(|(action, target, _)| action == "flow_handed_over" && target == "hall_light"),
+        "{handed:?}"
+    );
+}
+
+/// Starts the extension on `dir` with `people` as the core's answers to who can reach what.
+async fn started_on(
+    dir: &std::path::Path,
+    people: &People,
+) -> (Service, mpsc::UnboundedReceiver<(String, String, String)>) {
+    let (notes_tx, notes) = mpsc::unbounded_channel();
+    let (core_end, engine_end) = tokio::io::duplex(1 << 20);
+    let (calls_tx, _calls) = mpsc::unbounded_channel();
+    tokio::spawn(fake_core_with(core_end, calls_tx, people.clone(), notes_tx));
+    let (read, write) = tokio::io::split(engine_end);
+    let (_, client, _incoming) = irori_protocol::engine::connect(read, write)
+        .await
+        .expect("connects");
+    let store = Store::open(dir.join("flows"), dir.join("data"));
+    let (service, _answers) = Service::start(client, store).await.expect("starts");
+    (service, notes)
+}
+
+/// What a deleted flow left behind, and a flow file that does not read, are not up for the
+/// taking: a regular user can't find the old definition or what it read, can't tell the id from
+/// one that never was, and can't save over it to become its owner.
+#[tokio::test]
+async fn a_regular_user_cannot_take_what_a_deleted_or_unreadable_flow_left() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    std::fs::create_dir_all(dir.path().join("flows")).expect("mkdir");
+    let people = People::default();
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), person("Leo", &[MOTION, LIGHT]));
+    let (mut service, _notes) = started_on(dir.path(), &people).await;
+    let owner = Caller::owner();
+
+    // The home's own flow, saved and then deleted.
+    let saved = rpc::handle(
+        &mut service,
+        &owner,
+        "flows.save",
+        serde_json::json!({ "flow": leos_flow("cellar_freezer_alarm", MOTION) }),
+    )
+    .await
+    .expect("saves");
+    let version = saved["version"].as_str().expect("a version").to_owned();
+    rpc::handle(
+        &mut service,
+        &owner,
+        "flows.delete",
+        serde_json::json!({ "id": "cellar_freezer_alarm" }),
+    )
+    .await
+    .expect("deletes");
+
+    let ask = |method: &'static str, id: &str| serde_json::json!({ "method": method, "params": { "id": id, "version": version, "run_id": "r", "after": null } });
+    for method in [
+        "flows.get",
+        "flow.brief",
+        "flow.source",
+        "versions.list",
+        "versions.get",
+        "versions.restore",
+        "runs.list",
+        "runs.get",
+        "nearmiss.list",
+        "tests.get",
+        "tests.save",
+        "live",
+    ] {
+        let params = ask(method, "cellar_freezer_alarm")["params"].clone();
+        let gone = rpc::handle(&mut service, &leo(), method, params)
+            .await
+            .expect_err(method);
+        let params = ask(method, "zq_never_was")["params"].clone();
+        let never = rpc::handle(&mut service, &leo(), method, params)
+            .await
+            .expect_err(method);
+        assert_eq!(
+            gone.replace("cellar_freezer_alarm", "ID"),
+            never.replace("zq_never_was", "ID"),
+            "{method}: a deleted flow reads as one that never was"
+        );
+    }
+    // Nor does he become its owner by saving over the name.
+    let taken = rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.save",
+        serde_json::json!({ "flow": leos_flow("cellar_freezer_alarm", MOTION) }),
+    )
+    .await
+    .expect_err("not free");
+    assert!(taken.contains("exists already"), "{taken}");
+    assert!(
+        service
+            .store
+            .flow(&"cellar_freezer_alarm".parse().expect("id"))
+            .is_none()
+    );
+    // The home can still look back on it, and bring it back.
+    let versions = rpc::handle(
+        &mut service,
+        &owner,
+        "versions.list",
+        serde_json::json!({ "id": "cellar_freezer_alarm" }),
+    )
+    .await
+    .expect("the home's own look back");
+    assert_eq!(versions.as_array().map(Vec::len), Some(1), "{versions}");
+
+    // A file that does not read is not in the store, and its name is not free either.
+    std::fs::write(dir.path().join("flows/broken_one.json"), "{ not json").expect("wrote");
+    service.store.reload();
+    assert!(
+        service
+            .store
+            .flow(&"broken_one".parse().expect("id"))
+            .is_none()
+    );
+    for method in ["flows.save", "flows.validate"] {
+        let taken = rpc::handle(
+            &mut service,
+            &leo(),
+            method,
+            serde_json::json!({ "flow": leos_flow("broken_one", MOTION) }),
+        )
+        .await
+        .expect_err(method);
+        assert!(taken.contains("exists already"), "{method}: {taken}");
+    }
+    // A name nothing has used is free, and a dry run of a draft that is not saved yet works.
+    rpc::handle(
+        &mut service,
+        &leo(),
+        "flows.save",
+        serde_json::json!({ "flow": leos_flow("hall_light", MOTION) }),
+    )
+    .await
+    .expect("a free name");
+}
+
+/// A flow whose owner lost its room while Irori was stopped is found out at start-up and turned
+/// off, once; one whose owner the core can't answer for is left as it is until it can.
+#[tokio::test]
+async fn a_change_made_while_stopped_turns_the_flow_off_at_start() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    std::fs::create_dir_all(dir.path().join("flows")).expect("mkdir");
+    for (id, owner) in [("hall_light", "leo"), ("porch_light", "mia")] {
+        let mut flow = leos_flow(id, MOTION);
+        flow["owner"] = serde_json::json!(owner);
+        flow["enabled"] = serde_json::json!(true);
+        std::fs::write(
+            dir.path().join(format!("flows/{id}.json")),
+            serde_json::to_string(&flow).expect("json"),
+        )
+        .expect("wrote");
+    }
+    let people = People::default();
+    // Leo has the light and lost the sensor; the core can't say anything of Mia.
+    people
+        .lock()
+        .expect("people")
+        .insert("leo".into(), person("Leo", &[LIGHT]));
+    people
+        .lock()
+        .expect("people")
+        .insert("mia".into(), serde_json::json!({ "fails": true }));
+    let (mut service, mut notes) = started_on(dir.path(), &people).await;
+    let list = rpc::handle(
+        &mut service,
+        &Caller::owner(),
+        "flows.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("lists");
+    let find = |id: &str| {
+        list["flows"]
+            .as_array()
+            .expect("flows")
+            .iter()
+            .find(|flow| flow["id"] == id)
+            .cloned()
+            .expect("there")
+    };
+    assert_eq!(find("hall_light")["enabled"], false, "{list}");
+    assert_eq!(find("porch_light")["enabled"], true, "{list}");
+    // The note goes to the core as a message of its own, which gets there a moment after.
+    let mut told = Vec::new();
+    if let Ok(Some(note)) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), notes.recv()).await
+    {
+        told.push(note);
+    }
+    while let Ok(note) = notes.try_recv() {
+        told.push(note);
+    }
+    assert_eq!(
+        told.iter()
+            .filter(|(action, target, _)| action == "flow_turned_off" && target == "hall_light")
+            .count(),
+        1,
+        "{told:?}"
+    );
+    assert!(
+        !told.iter().any(|(_, target, _)| target == "porch_light"),
+        "{told:?}"
     );
 }

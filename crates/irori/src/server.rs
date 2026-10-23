@@ -12,13 +12,13 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::{Deserialize, Serialize};
 
-use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview};
+use irori_core::{CallError, Command, Core, Event, ExtensionHost, ExtensionOverview, Reach};
 use irori_types::{
     Area, AreaId, ContextId, Description, Device, DeviceId, Entity, EntityId, EntityState,
-    ExtensionId, Floor, FloorId, Floorplan, Name, Origin, Placement, Timestamp, UserId,
+    ExtensionId, Floor, FloorId, Floorplan, Name, Origin, Outcome, Placement, Timestamp, UserId,
 };
 use tokio::sync::broadcast;
 
@@ -28,6 +28,7 @@ use crate::db::Database;
 use crate::history::History;
 use crate::syslog;
 
+mod activity;
 mod apps;
 #[cfg(feature = "assist")]
 mod assistant;
@@ -36,6 +37,7 @@ mod backups;
 mod live;
 mod people;
 mod tokens;
+mod trail;
 
 /// Who commands are attributed to in a home where nobody has been set up.
 static UNAUTHENTICATED: LazyLock<UserId> =
@@ -59,6 +61,8 @@ struct Inner {
     config: Config,
     host: ExtensionHost,
     history: History,
+    /// Who did what (`docs/specs/access.md` §3).
+    audit: crate::audit::Audit,
     /// What this process has said lately, kept by the log subscriber's writer (`syslog`) and
     /// served to the Settings page. Held here rather than reached for globally so a test can put
     /// lines in it without standing up a subscriber.
@@ -79,6 +83,9 @@ struct Inner {
     /// The questions the assistant is in the middle of answering, by conversation.
     #[cfg(feature = "assist")]
     turns: crate::assistant::Turns,
+    /// Whether a model is ready, as anybody who is not an owner is told.
+    #[cfg(feature = "assist")]
+    readiness: crate::assistant::Readiness,
 }
 
 impl AppState {
@@ -89,6 +96,7 @@ impl AppState {
         config: Config,
         host: ExtensionHost,
         history: History,
+        audit: crate::audit::Audit,
         log: Arc<syslog::Log>,
         restart: Arc<tokio::sync::Notify>,
         restarting: Arc<AtomicBool>,
@@ -104,12 +112,15 @@ impl AppState {
             config,
             host,
             history,
+            audit,
             log,
             restart,
             restarting,
             last_restart: Mutex::new(None),
             #[cfg(feature = "assist")]
             turns: crate::assistant::Turns::default(),
+            #[cfg(feature = "assist")]
+            readiness: crate::assistant::Readiness::default(),
         }))
     }
 }
@@ -147,6 +158,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/setup", post(auth::set_up))
         .route("/api/users", get(people::users).post(people::add_user))
+        // Who did what: an owner reads it, and no token does (`server/activity.rs`).
+        .route("/api/audit", get(activity::list))
         .route(
             "/api/users/{id}",
             patch(people::edit_user).delete(people::remove_user),
@@ -162,15 +175,27 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tokens/{id}", axum::routing::delete(tokens::revoke))
         .route(
             "/api/devices",
-            get(|State(s): State<AppState>| async move { Json(s.0.core.devices()) }),
+            get(
+                |State(s): State<AppState>, Extension(reach): Extension<Reach>| async move {
+                    Json(s.0.core.seen(&reach).devices())
+                },
+            ),
         )
         .route(
             "/api/entities",
-            get(|State(s): State<AppState>| async move { Json(s.0.core.entities()) }),
+            get(
+                |State(s): State<AppState>, Extension(reach): Extension<Reach>| async move {
+                    Json(s.0.core.seen(&reach).entities())
+                },
+            ),
         )
         .route(
             "/api/states",
-            get(|State(s): State<AppState>| async move { Json(s.0.core.states()) }),
+            get(
+                |State(s): State<AppState>, Extension(reach): Extension<Reach>| async move {
+                    Json(s.0.core.seen(&reach).states())
+                },
+            ),
         )
         .route("/api/history/{entity_id}/summary", get(entity_summary))
         .route("/api/history/{entity_id}", get(entity_history))
@@ -180,9 +205,19 @@ pub fn router(state: AppState) -> Router {
         .route("/api/system/log", get(system_log))
         .route("/api/serial-ports", get(serial_ports))
         .route("/api/restart", post(restart))
+        // How the extensions behind the home are faring is the owner's business, and it names
+        // the devices they have found: a person with only some rooms is told of none.
         .route(
             "/api/extensions",
-            get(|State(s): State<AppState>| async move { Json(s.0.core.extensions()) }),
+            get(
+                |State(s): State<AppState>, Extension(reach): Extension<Reach>| async move {
+                    Json(if reach.is_whole() {
+                        s.0.core.extensions()
+                    } else {
+                        BTreeMap::new()
+                    })
+                },
+            ),
         )
         // What a person has said about their home (`docs/specs/config.md`). These write files.
         .route("/api/areas", get(areas).post(add_area))
@@ -285,23 +320,49 @@ struct HomeView {
     installs: Vec<irori_core::QueuedInstall>,
 }
 
-fn snapshot(state: &AppState) -> HomeView {
-    let core = &state.0.core;
-    HomeView {
-        devices: core.devices(),
-        entities: core.entities(),
-        states: core.states(),
-        extensions: core.extensions(),
-        areas: core.areas(),
-        floors: core.floors(),
-        held: core.held_devices(),
-        floorplan: core.floorplan(),
-        installs: core.queued_installs(),
+impl HomeView {
+    /// The home as `reach` has it.
+    ///
+    /// Every field is named, so one added to the view will not compile until somebody has said
+    /// what a person with only some rooms is shown of it. The lists come from [`irori_core::Seen`],
+    /// which has nothing else to give.
+    fn of(core: &Core, reach: &Reach) -> HomeView {
+        let seen = core.seen(reach);
+        let whole = reach.is_whole();
+        HomeView {
+            devices: seen.devices(),
+            entities: seen.entities(),
+            states: seen.states(),
+            // What the extensions have found and are doing is the owner's.
+            extensions: if whole {
+                core.extensions()
+            } else {
+                BTreeMap::new()
+            },
+            areas: seen.areas(),
+            floors: seen.floors(),
+            // Devices kept out of the home are the owner's to let back in.
+            held: if whole {
+                core.held_devices()
+            } else {
+                Vec::new()
+            },
+            floorplan: seen.floorplan(),
+            installs: core
+                .queued_installs()
+                .into_iter()
+                .filter(|install| reach.sees_entity(&install.entity_id))
+                .collect(),
+        }
     }
 }
 
-async fn home(State(state): State<AppState>) -> Json<HomeView> {
-    Json(snapshot(&state))
+fn snapshot(state: &AppState, reach: &Reach) -> HomeView {
+    HomeView::of(&state.0.core, reach)
+}
+
+async fn home(State(state): State<AppState>, Extension(reach): Extension<Reach>) -> Json<HomeView> {
+    Json(snapshot(&state, &reach))
 }
 
 /// The machine running Irori, for the Settings page's System menu. Read from the OS each time
@@ -405,21 +466,62 @@ struct HistoryView {
     entity: EntityId,
     /// The changes, oldest first. Empty when the entity has no stored change in the last day.
     states: Vec<EntityState>,
+    /// Who sent the command a change answered, by the `parent_id` of its context. Only a
+    /// command a person or a program sent is here: a switch pressed on the wall, or a flow,
+    /// is not. Whoever has the whole home is told who; a person with some rooms is told their
+    /// own name, and "someone" for the rest.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    by: BTreeMap<ContextId, String>,
 }
+
+/// How many calls one answer looks up the sender of.
+const HISTORY_BY_AT_MOST: usize = 500;
 
 async fn entity_history(
     State(state): State<AppState>,
+    Extension(reach): Extension<Reach>,
+    Extension(who): Extension<auth::Actor>,
     Path(entity_id): Path<EntityId>,
 ) -> Response {
-    if state.0.core.state(&entity_id).is_none() {
+    // Outside a person's rooms it is answered as an entity that was never there.
+    if state.0.core.seen(&reach).state(&entity_id).is_none() {
         return refused(
             StatusCode::NOT_FOUND,
             format!("there's no entity `{entity_id}`"),
         );
     }
+    let states = state.0.history.for_entity(&entity_id);
+    // The calls the changes answered, found in the activity log. At most as many as there are
+    // changes in a day worth drawing.
+    let calls: Vec<ContextId> = states
+        .iter()
+        .filter_map(|change| change.context.parent_id.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        // The newest: ids are in time order, and the changes people look at are the last ones.
+        .rev()
+        .take(HISTORY_BY_AT_MOST)
+        .collect();
+    let audit = state.0.audit.clone();
+    let found = tokio::task::spawn_blocking(move || audit.who_for(&calls))
+        .await
+        .unwrap_or_default();
+    let me = who.user.as_ref().map(|user| user.id.clone());
+    let by = found
+        .into_iter()
+        .map(|(call, actor)| {
+            let said = if reach.is_whole() || (me.is_some() && actor.person() == me.as_ref()) {
+                actor.to_string()
+            } else {
+                "someone".to_owned()
+            };
+            (call, said)
+        })
+        .collect();
     Json(HistoryView {
         entity: entity_id.clone(),
-        states: state.0.history.for_entity(&entity_id),
+        states,
+        by,
     })
     .into_response()
 }
@@ -485,10 +587,11 @@ struct SummaryPointView {
 /// day of changes; this is the longer chart.
 async fn entity_summary(
     State(state): State<AppState>,
+    Extension(reach): Extension<Reach>,
     Path(entity_id): Path<EntityId>,
     RawQuery(query): RawQuery,
 ) -> Response {
-    if state.0.core.state(&entity_id).is_none() {
+    if state.0.core.seen(&reach).state(&entity_id).is_none() {
         return refused(
             StatusCode::NOT_FOUND,
             format!("there's no entity `{entity_id}`"),
@@ -558,8 +661,11 @@ fn percent_decode(text: &str) -> String {
 // (`docs/specs/config.md`). None of them touch what a protocol reports: taking a name away
 // gives the protocol's name back, rather than leaving whatever was on screen.
 
-async fn areas(State(state): State<AppState>) -> Json<Vec<Area>> {
-    Json(state.0.core.areas())
+async fn areas(
+    State(state): State<AppState>,
+    Extension(reach): Extension<Reach>,
+) -> Json<Vec<Area>> {
+    Json(state.0.core.seen(&reach).areas())
 }
 
 #[derive(Debug, Deserialize)]
@@ -648,7 +754,49 @@ async fn edit_area(
 
 /// Removes a room. Devices that were in it are left unplaced, and what was said about them is
 /// kept: making the room again puts them back.
-async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> Response {
+async fn remove_area(
+    State(state): State<AppState>,
+    Extension(trail): Extension<trail::Trail>,
+    Path(id): Path<AreaId>,
+) -> Response {
+    // whole-home: removing a room is an owner's
+    if !state.0.core.areas().iter().any(|area| area.id == id) {
+        return refused(StatusCode::BAD_REQUEST, format!("there's no room `{id}`"));
+    }
+    // Everybody who had the room loses it first. A room made again under the same name gets the
+    // same id, so a list left behind would give the old access back to whoever it names; and if
+    // the second write fails, somebody has one room fewer than they should, never one more.
+    let stripped = state
+        .0
+        .config
+        .edit_people(&state.0.core, |people| {
+            let mut had_it = Vec::new();
+            for user in &mut people.users {
+                if let Some(rooms) = &mut user.areas
+                    && rooms.contains(&id)
+                {
+                    rooms.retain(|room| room != &id);
+                    had_it.push((user.id.clone(), user.name.as_str().to_owned()));
+                }
+            }
+            Ok(had_it)
+        })
+        .await;
+    match stripped {
+        // Their open pages were shown the home with that room in it. Closed once the list is
+        // written, so the page that reconnects is served the new one.
+        Ok(had_it) => {
+            for (user, _) in &had_it {
+                state.0.sockets.close_user_sessions(user, None);
+            }
+            // Said in the log, which an owner reads: whose rooms these were.
+            if !had_it.is_empty() {
+                let names: Vec<&str> = had_it.iter().map(|(_, name)| name.as_str()).collect();
+                trail.detail(format!("no longer a room of {}", names.join(", ")));
+            }
+        }
+        Err(e) => return edit_failed(e),
+    }
     let removed = state
         .0
         .config
@@ -667,8 +815,11 @@ async fn remove_area(State(state): State<AppState>, Path(id): Path<AreaId>) -> R
     }
 }
 
-async fn floorplan(State(state): State<AppState>) -> Json<Floorplan> {
-    Json(state.0.core.floorplan())
+async fn floorplan(
+    State(state): State<AppState>,
+    Extension(reach): Extension<Reach>,
+) -> Json<Floorplan> {
+    Json(state.0.core.seen(&reach).floorplan())
 }
 
 /// Replaces the whole plan.
@@ -771,8 +922,11 @@ fn place_devices(
     moved
 }
 
-async fn floors(State(state): State<AppState>) -> Json<Vec<Floor>> {
-    Json(state.0.core.floors())
+async fn floors(
+    State(state): State<AppState>,
+    Extension(reach): Extension<Reach>,
+) -> Json<Vec<Floor>> {
+    Json(state.0.core.seen(&reach).floors())
 }
 
 #[derive(Debug, Deserialize)]
@@ -924,6 +1078,7 @@ async fn edit_device(
 ) -> Response {
     let core = &state.0.core;
     // A found device isn't in the registry, but it's still one a person can add.
+    // whole-home: adding or editing a device is an owner's
     let known = core.devices().iter().any(|device| device.id == id)
         || core.held_devices().iter().any(|device| device.id == id);
     if !known {
@@ -962,6 +1117,7 @@ async fn edit_device(
         .await;
     match edited {
         // The device as it now is, so the page doesn't have to guess what the change produced.
+        // whole-home: the owner's edit answers with the device
         Ok(()) => Json(core.devices().into_iter().find(|device| device.id == id)).into_response(),
         Err(e) => edit_failed(e),
     }
@@ -989,6 +1145,7 @@ async fn remove_device(
     // For a device that didn't answer a plain unpair: drop it from its network anyway.
     let force = query.as_deref() == Some("force=true");
     let core = &state.0.core;
+    // whole-home: removing a device is an owner's
     let in_home = core.devices().iter().any(|device| device.id == id);
     let found = core.held_devices().iter().any(|device| device.id == id);
     let unpairs = core.unpairs(&id);
@@ -1024,6 +1181,7 @@ async fn remove_device(
                 let core = &state.0.core;
                 for _ in 0..LATE_UNPAIR_CHECKS {
                     tokio::time::sleep(Duration::from_secs(1)).await;
+                    // whole-home: removing a device is an owner's
                     let gone = !core.devices().iter().any(|device| device.id == id)
                         && !core.held_devices().iter().any(|device| device.id == id);
                     if gone {
@@ -1132,6 +1290,7 @@ async fn edit_entity(
         })
         .await;
     match edited {
+        // whole-home: the owner's edit answers with the entity
         Ok(()) => Json(core.entities().into_iter().find(|entity| entity.id == id)).into_response(),
         Err(e) => edit_failed(e),
     }
@@ -1315,6 +1474,7 @@ async fn preview_helper(
         );
     };
     let core = &state.0.core;
+    // whole-home: previewing a helper is an owner's
     let entities = core.entities();
     let history = state.0.history.clone();
     let live = core.clone();
@@ -1555,11 +1715,15 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
 
 /// What a camera sees now, as its protocol draws it (`docs/specs/api.md`). Never cached, and
 /// served so that opening it on its own can't run anything: a protocol may send an SVG.
-async fn camera_picture(State(state): State<AppState>, Path(id): Path<EntityId>) -> Response {
+async fn camera_picture(
+    State(state): State<AppState>,
+    Extension(reach): Extension<Reach>,
+    Path(id): Path<EntityId>,
+) -> Response {
     if id.kind() != irori_types::EntityKind::Camera {
         return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
     }
-    if state.0.core.state(&id).is_none() {
+    if state.0.core.seen(&reach).state(&id).is_none() {
         return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
     }
     match state.0.core.camera_picture(&id).await {
@@ -2260,9 +2424,34 @@ struct CommandRequest {
 /// before anybody has been set up, to one unauthenticated person.
 async fn command(
     State(state): State<AppState>,
-    axum::Extension(who): axum::Extension<auth::Actor>,
+    Extension(who): Extension<auth::Actor>,
+    Extension(reach): Extension<Reach>,
+    Extension(trail): Extension<trail::Trail>,
     Json(request): Json<CommandRequest>,
 ) -> Response {
+    // Which command, never its data: a lock's code is data.
+    trail.target(request.entity_id.as_str());
+    trail.detail(request.command.as_str());
+    // A thing outside a person's rooms is answered as one that was never there. That comes
+    // before anything else is said about it, or "only an owner may" would give it away. The
+    // activity log, which only an owner reads, says what it was.
+    if !reach.sees_entity(&request.entity_id) {
+        trail.outcome(Outcome::Denied);
+        trail.detail(format!("{}: not in their rooms", request.command));
+        let gone = CallError::UnknownEntity(request.entity_id.clone());
+        return refused(status_for(&gone), gone.to_string());
+    }
+    // An update changes what the home runs on, which is setup. A token is never an owner, so
+    // it doesn't install one either (`docs/specs/api.md` §2).
+    if request.entity_id.kind().commands_need_owner() && !who.owner {
+        return refused(
+            StatusCode::FORBIDDEN,
+            format!(
+                "only an owner can send a command to `{}`: it changes what the home runs on",
+                request.entity_id
+            ),
+        );
+    }
     let command = Command {
         action: request.command,
         data: request.data.unwrap_or_default(),
@@ -2277,6 +2466,7 @@ async fn command(
         },
     };
     let who = core.new_context(origin);
+    trail.context(who.id.clone());
     // Subscribed before the call: the protocol reports the new state and answers the call in
     // the same breath, and the report must not slip past while the call is still in flight.
     let changes = core.subscribe();
@@ -2286,16 +2476,15 @@ async fn command(
     {
         Ok(()) => {
             // Something with no value (a button) reports nothing to wait for.
-            let has_value = core
-                .entities()
-                .iter()
-                .find(|entity| entity.id == request.entity_id)
+            let seen = core.seen(&reach);
+            let has_value = seen
+                .entity(&request.entity_id)
                 .is_some_and(|entity| entity.capabilities.primary_shape().is_some());
             if !has_value {
-                return Json(core.state(&request.entity_id)).into_response();
+                return Json(seen.state(&request.entity_id)).into_response();
             }
             let settled = settled(changes, &request.entity_id, &who.id).await;
-            Json(settled.or_else(|| core.state(&request.entity_id))).into_response()
+            Json(settled.or_else(|| seen.state(&request.entity_id))).into_response()
         }
         Err(e) => refused(status_for(&e), e.to_string()),
     }
@@ -2487,6 +2676,9 @@ mod tests {
         core: Core,
         config: Config,
         history: History,
+        /// Who did what. One for the whole test, as the real one is for the whole process: each
+        /// request builds its own router, and the rows from all of them land in one place.
+        audit: crate::audit::Audit,
         // The log this instance is serving, so a test can put lines in it. The real one is filled
         // by the log subscriber's writer (`syslog::Tee`), which a test has no reason to stand up.
         log: Arc<syslog::Log>,
@@ -2519,11 +2711,16 @@ mod tests {
                 &dir.path().join("irori.db"),
                 irori_recorder::Retention::default(),
             )?;
+            let audit = crate::audit::Audit::open(
+                &dir.path().join("irori.db"),
+                crate::audit::Keep::default(),
+            )?;
             Ok(Self {
                 dir,
                 core,
                 config,
                 history,
+                audit,
                 log: Arc::new(syslog::Log::default()),
                 restart: Arc::new(tokio::sync::Notify::new()),
                 restarting: Arc::new(AtomicBool::new(false)),
@@ -2543,6 +2740,7 @@ mod tests {
                 self.config.clone(),
                 host,
                 self.history.clone(),
+                self.audit.clone(),
                 Arc::clone(&self.log),
                 self.restart.clone(),
                 self.restarting.clone(),
@@ -6611,7 +6809,9 @@ mod tests {
                             history: &server.history,
                             db: &db.path,
                             log: &server.log,
-                            owner: false,
+                            owner: true,
+                            user: None,
+                            reach: irori_core::Reach::Whole,
                         },
                         "general".into(),
                         "hello".into(),
@@ -7261,7 +7461,6 @@ mod tests {
                 "/api/extensions/demo/install",
                 serde_json::json!({}),
             ),
-            ("POST", "/api/apps/automations/rpc", serde_json::json!({})),
             (
                 "PATCH",
                 "/api/users/nico",
@@ -7281,6 +7480,18 @@ mod tests {
                 "{why}"
             );
         }
+        // A question for an extension's engine is for one that limits what a regular user can do
+        // with it (`docs/specs/access.md` §4.1). Any other answers as if it had no page.
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/apps/automations/rpc",
+            Some(serde_json::json!({ "method": "flows.list" })),
+            Some(&guest),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{why}");
         // Their own password is theirs to change, with the one they have.
         for (current, expected) in [
             (serde_json::Value::Null, StatusCode::FORBIDDEN),
@@ -7311,6 +7522,405 @@ mod tests {
         )
         .await?;
         assert_eq!(status, StatusCode::OK);
+        Ok(())
+    }
+
+    /// A person the owner adds and who signs in: their cookie.
+    async fn person(app: &Router, owner: &str, name: &str, role: &str) -> anyhow::Result<String> {
+        let (status, why, _) = ask(
+            app,
+            "POST",
+            "/api/users",
+            Some(serde_json::json!({ "name": name, "role": role, "password": "let me in!" })),
+            Some(owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{why}");
+        let (status, why, cookie) = ask(
+            app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": name, "password": "let me in!" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        cookie.ok_or_else(|| anyhow::anyhow!("signing in sets a cookie"))
+    }
+
+    /// An update changes the software and firmware the home runs on, which is setup: a regular
+    /// user never sends one a command, whatever the command (`docs/specs/access.md` §2.1).
+    #[tokio::test]
+    async fn a_user_sends_no_command_to_an_update() -> anyhow::Result<()> {
+        let core = core();
+        let _host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<crate::system_device::IroriDevice>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if core
+                .entities()
+                .iter()
+                .any(|entity| entity.id.to_string() == "update.irori")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let guest = person(&app, &owner, "Guest", "user").await?;
+
+        for command in ["install", "check", "skip", "clear_skipped"] {
+            let body = serde_json::json!({ "entity_id": "update.irori", "command": command });
+            let (status, why, _) = ask(
+                &app,
+                "POST",
+                "/api/command",
+                Some(body.clone()),
+                Some(&guest),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{command}: {why}");
+            assert!(
+                why["error"].as_str().is_some_and(|e| e.contains("owner")),
+                "{command}: {why}"
+            );
+            // The owner is not told that. What the update then does is its own business.
+            let (status, why, _) =
+                ask(&app, "POST", "/api/command", Some(body), Some(&owner), true).await?;
+            assert_ne!(status, StatusCode::FORBIDDEN, "{command}: {why}");
+        }
+        Ok(())
+    }
+
+    /// The page shows a camera with an `<img>` that carries the session's cookie, so what a
+    /// regular user sees of the home includes its pictures.
+    #[tokio::test]
+    async fn a_user_sees_a_camera_picture() -> anyhow::Result<()> {
+        let (core, _host) = demo().await?;
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let guest = person(&app, &owner, "Guest", "user").await?;
+        for cookie in [&owner, &guest] {
+            let (status, _, _) = ask(
+                &app,
+                "GET",
+                "/api/entities/camera.garden_camera_1/picture",
+                None,
+                Some(cookie),
+                false,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK);
+        }
+        Ok(())
+    }
+
+    /// The logs hold the names of everybody who signs in and what the owner did, and are read
+    /// to run the home: they are the owner's (`docs/specs/access.md` §2.2).
+    #[tokio::test]
+    async fn the_logs_are_the_owners() -> anyhow::Result<()> {
+        let (core, _host) = demo().await?;
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let guest = person(&app, &owner, "Guest", "user").await?;
+        for path in [
+            "/api/system/log",
+            "/api/assistant/log",
+            "/api/extensions/demo/log",
+        ] {
+            let (status, why, _) = ask(&app, "GET", path, None, Some(&guest), false).await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{path}: {why}");
+            let (status, why, _) = ask(&app, "GET", path, None, Some(&owner), false).await?;
+            assert_ne!(status, StatusCode::FORBIDDEN, "{path}: {why}");
+        }
+        Ok(())
+    }
+
+    /// Only an owner makes tokens, so an owner who is made a regular user loses theirs: they
+    /// stay valid for as long as the person does otherwise (`docs/specs/access.md` §5).
+    #[tokio::test]
+    async fn an_owner_made_a_user_loses_their_tokens() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, nico) = locked_home(&server).await?;
+        let ana = person(&app, &nico, "Ana", "owner").await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            Some(&ana),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            "/api/users/ana",
+            Some(serde_json::json!({ "role": "user" })),
+            Some(&nico),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}");
+        Ok(())
+    }
+
+    /// A token is looked at against its person each time it is used: an owner made a regular
+    /// user by a hand edit of `users.toml` (or by a restore that brings their tokens back) doesn't
+    /// keep a token, which is whole-home.
+    #[tokio::test]
+    async fn a_token_of_somebody_who_is_not_an_owner_is_not_heard() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, nico) = locked_home(&server).await?;
+        let ana = person(&app, &nico, "Ana", "owner").await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            Some(&ana),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (status, _) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK);
+
+        // By hand, in the file: the tokens are not touched.
+        let file = server.config_dir().join("users.toml");
+        let text = std::fs::read_to_string(&file)?;
+        let (before, after) = text.split_once("[users.ana]").expect("ana is in the file");
+        let after = after.replacen("role = \"owner\"", "role = \"user\"", 1);
+        std::fs::write(&file, format!("{before}[users.ana]{after}"))?;
+        server.config.home().await;
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{why}");
+
+        // And back: she is an owner again, and the token is hers again.
+        std::fs::write(&file, text)?;
+        server.config.home().await;
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        Ok(())
+    }
+
+    /// An edit that is refused for something else takes nothing away: the tokens of an owner told
+    /// to be a regular user, and to have a room that is not there, are still theirs.
+    #[tokio::test]
+    async fn a_refused_demotion_leaves_the_tokens_alone() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, nico) = locked_home(&server).await?;
+        let ana = person(&app, &nico, "Ana", "owner").await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(serde_json::json!({ "name": "Tablet", "scopes": ["states:read"] })),
+            Some(&ana),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            "/api/users/ana",
+            Some(serde_json::json!({ "role": "user", "areas": ["no_such_room"] })),
+            Some(&nico),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
+        let (status, why) = bearer(&app, "GET", "/api/states", None, &secret).await?;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the refused edit took the token: {why}"
+        );
+        Ok(())
+    }
+
+    /// Rooms are set by the owner, are rooms the home has, belong to somebody who doesn't run
+    /// it, and go from a person's list when the room does (`docs/specs/access.md` §1).
+    #[tokio::test]
+    async fn a_person_has_rooms_the_owner_gave_and_loses_one_when_it_goes() -> anyhow::Result<()> {
+        let server = Server::new(core())?;
+        let (app, owner) = locked_home(&server).await?;
+        for name in ["Hall", "Study"] {
+            let (status, why, _) = ask(
+                &app,
+                "POST",
+                "/api/areas",
+                Some(serde_json::json!({ "name": name })),
+                Some(&owner),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::CREATED, "{why}");
+        }
+        let add = |body: serde_json::Value| {
+            let (app, owner) = (app.clone(), owner.clone());
+            async move { ask(&app, "POST", "/api/users", Some(body), Some(&owner), true).await }
+        };
+        let (status, users, _) = add(serde_json::json!({
+            "name": "Leo", "password": "let me in!", "areas": ["hall", "study"],
+        }))
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{users}");
+        let rooms = |users: &serde_json::Value, id: &str| {
+            users
+                .as_array()
+                .and_then(|all| all.iter().find(|user| user["id"] == id))
+                .map(|user| user["areas"].clone())
+        };
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["hall", "study"]))
+        );
+        assert_eq!(
+            rooms(&users, "nico"),
+            Some(serde_json::Value::Null),
+            "an owner has no list"
+        );
+
+        // A room that isn't there, and rooms for an owner, are refused.
+        for (body, said) in [
+            (
+                serde_json::json!({
+                    "name": "Mia", "password": "let me in!", "areas": ["garage"],
+                }),
+                "no room `garage`",
+            ),
+            (
+                serde_json::json!({
+                    "name": "Mia", "password": "let me in!", "role": "owner", "areas": ["hall"],
+                }),
+                "owner has the whole home",
+            ),
+        ] {
+            let (status, why, _) = add(body).await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{why}");
+            assert!(
+                why["error"].as_str().is_some_and(|e| e.contains(said)),
+                "{why}"
+            );
+        }
+
+        let patch = |who: &str, body: serde_json::Value, cookie: String| {
+            let (app, who) = (app.clone(), who.to_owned());
+            async move {
+                ask(
+                    &app,
+                    "PATCH",
+                    &format!("/api/users/{who}"),
+                    Some(body),
+                    Some(&cookie),
+                    true,
+                )
+                .await
+            }
+        };
+        // `null` is the whole home again, a list sets them, and leaving it out changes nothing.
+        let (status, users, _) =
+            patch("leo", serde_json::json!({ "areas": null }), owner.clone()).await?;
+        assert_eq!(status, StatusCode::OK, "{users}");
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::Value::Null));
+        let (_, users, _) = patch(
+            "leo",
+            serde_json::json!({ "areas": ["study", "study", "hall"] }),
+            owner.clone(),
+        )
+        .await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["study", "hall"])),
+            "each once, in the order given"
+        );
+        let (_, users, _) =
+            patch("leo", serde_json::json!({ "name": "Leo B" }), owner.clone()).await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["study", "hall"]))
+        );
+
+        // Nobody gives themselves rooms, or takes them off.
+        let leo = {
+            let (status, why, cookie) = ask(
+                &app,
+                "POST",
+                "/api/session",
+                Some(serde_json::json!({ "user": "leo", "password": "let me in!" })),
+                None,
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{why}");
+            cookie.ok_or_else(|| anyhow::anyhow!("a cookie"))?
+        };
+        let (status, why, _) = patch("leo", serde_json::json!({ "areas": null }), leo).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{why}");
+
+        // Made an owner, they have the whole home.
+        let (_, users, _) =
+            patch("leo", serde_json::json!({ "role": "owner" }), owner.clone()).await?;
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::Value::Null));
+        let (_, users, _) = patch(
+            "leo",
+            serde_json::json!({ "role": "user", "areas": ["hall", "study"] }),
+            owner.clone(),
+        )
+        .await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["hall", "study"]))
+        );
+
+        // A room that goes is taken off everybody's list in the same breath. A room made again
+        // under the same name is a new room to them.
+        let (status, _, _) =
+            ask(&app, "DELETE", "/api/areas/hall", None, Some(&owner), true).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let (_, users, _) = ask(&app, "GET", "/api/users", None, Some(&owner), false).await?;
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::json!(["study"])));
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/areas",
+            Some(serde_json::json!({ "name": "Hall" })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED);
+        let (_, users, _) = ask(&app, "GET", "/api/users", None, Some(&owner), false).await?;
+        assert_eq!(
+            rooms(&users, "leo"),
+            Some(serde_json::json!(["study"])),
+            "the new Hall is not the old one"
+        );
+        // A person left with no room has none, not the whole home.
+        let (_, _, _) = ask(&app, "DELETE", "/api/areas/study", None, Some(&owner), true).await?;
+        let (_, users, _) = ask(&app, "GET", "/api/users", None, Some(&owner), false).await?;
+        assert_eq!(rooms(&users, "leo"), Some(serde_json::json!([])));
         Ok(())
     }
 
@@ -8559,6 +9169,1797 @@ mod tests {
             ),
             "signing out should close the socket, got {closed:?}"
         );
+        Ok(())
+    }
+
+    // --- Rooms: what a person who has some of the home is shown (`docs/specs/access.md` §2) ---
+
+    /// Code that answers a request reads the home through [`irori_core::Seen`], which holds only
+    /// what the person has. `Core`'s own getters are the whole home's: a call to one in this code
+    /// has to say why, in a `// whole-home:` comment on the line before, and the reason is always
+    /// that only an owner gets that far. A new handler that reaches for the whole home fails here
+    /// until somebody has said it is meant to.
+    #[test]
+    fn the_whole_home_is_read_only_where_it_says_why() {
+        let sources: &[(&str, &str)] = &[
+            ("server.rs", include_str!("server.rs")),
+            ("server/people.rs", include_str!("server/people.rs")),
+            ("server/live.rs", include_str!("server/live.rs")),
+            ("server/apps.rs", include_str!("server/apps.rs")),
+            ("server/tokens.rs", include_str!("server/tokens.rs")),
+            ("server/activity.rs", include_str!("server/activity.rs")),
+            ("server/backups.rs", include_str!("server/backups.rs")),
+            ("server/trail.rs", include_str!("server/trail.rs")),
+            ("server/auth.rs", include_str!("server/auth.rs")),
+            ("assistant.rs", include_str!("assistant.rs")),
+        ];
+        #[cfg(feature = "assist")]
+        let assist = ("server/assistant.rs", include_str!("server/assistant.rs"));
+        let getters = [
+            "devices",
+            "entities",
+            "states",
+            "areas",
+            "floors",
+            "floorplan",
+            "state",
+            "entity",
+        ];
+        let mut unexplained = Vec::new();
+        let mut read = 0;
+        #[allow(unused_mut)]
+        let mut all = sources.to_vec();
+        #[cfg(feature = "assist")]
+        all.push(assist);
+        for (file, source) in all {
+            let production = source.split("\nmod tests {").next().unwrap_or(source);
+            let lines: Vec<&str> = production.lines().collect();
+            for (at, line) in lines.iter().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                let asks = getters
+                    .iter()
+                    .any(|getter| line.contains(&format!("core.{getter}(")));
+                if !asks {
+                    continue;
+                }
+                read += 1;
+                let said = at > 0 && lines[at - 1].contains("// whole-home:");
+                if !said {
+                    unexplained.push(format!("{file}:{}: {}", at + 1, line.trim()));
+                }
+            }
+        }
+        assert!(
+            read >= 8,
+            "read too little of the source ({read} calls found)"
+        );
+        assert!(
+            unexplained.is_empty(),
+            "these read the whole home without saying why; use `core.seen(&reach)`, or say why \
+             with a `// whole-home:` comment on the line before: {unexplained:#?}"
+        );
+    }
+
+    /// What an address must do for a person who has only some rooms.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Leak {
+        /// Open to anyone who can reach Irori.
+        Open,
+        /// Answers with the home, and what it answers holds nothing outside their rooms.
+        Filtered,
+        /// One thing by its id: outside their rooms it answers as a thing that was never there.
+        Hidden,
+        /// The home as a whole, or the machine it runs on: for people who have all of it.
+        Whole,
+        /// How the home is set up: an owner's.
+        Run,
+        /// Somebody's own name and password, and nobody else's.
+        Own,
+        /// The live feed, which has a test of its own.
+        Socket,
+        /// A question to the assistant, which is answered from what they have of the home; it
+        /// has a test of its own.
+        Asks,
+    }
+
+    use Leak::{Asks, Filtered, Hidden, Open, Own, Run, Socket, Whole};
+
+    /// Every address Irori answers under `/api/`, and what a person with rooms gets from it. A
+    /// new address has to be put here, or `every_address_is_decided_for_a_person_with_rooms`
+    /// fails: nothing is let through by being forgotten.
+    const ADDRESSES: &[(&str, &str, Leak)] = &[
+        ("GET", "/api/health", Open),
+        ("GET", "/api/session", Open),
+        ("POST", "/api/session", Open),
+        ("DELETE", "/api/session", Open),
+        ("POST", "/api/setup", Open),
+        ("GET", "/api/users", Filtered),
+        ("POST", "/api/users", Run),
+        ("GET", "/api/audit", Run),
+        ("PATCH", "/api/users/{id}", Own),
+        ("DELETE", "/api/users/{id}", Run),
+        ("GET", "/api/place", Whole),
+        ("PUT", "/api/place", Run),
+        ("GET", "/api/home", Filtered),
+        ("POST", "/api/command", Hidden),
+        ("GET", "/api/ws", Socket),
+        ("GET", "/api/extension", Run),
+        ("GET", "/api/tokens", Run),
+        ("POST", "/api/tokens", Run),
+        ("DELETE", "/api/tokens/{id}", Run),
+        ("GET", "/api/devices", Filtered),
+        ("GET", "/api/entities", Filtered),
+        ("GET", "/api/states", Filtered),
+        ("GET", "/api/history/{entity_id}/summary", Hidden),
+        ("GET", "/api/history/{entity_id}", Hidden),
+        ("GET", "/api/recorder", Whole),
+        ("PUT", "/api/recorder", Run),
+        ("GET", "/api/system", Whole),
+        ("GET", "/api/system/usage", Whole),
+        ("GET", "/api/system/log", Run),
+        ("GET", "/api/serial-ports", Whole),
+        ("POST", "/api/restart", Run),
+        ("GET", "/api/extensions", Filtered),
+        ("GET", "/api/areas", Filtered),
+        ("POST", "/api/areas", Run),
+        ("GET", "/api/floors", Filtered),
+        ("POST", "/api/floors", Run),
+        ("PATCH", "/api/floors/{id}", Run),
+        ("DELETE", "/api/floors/{id}", Run),
+        ("PATCH", "/api/areas/{id}", Run),
+        ("DELETE", "/api/areas/{id}", Run),
+        ("GET", "/api/floorplan", Filtered),
+        ("PUT", "/api/floorplan", Run),
+        ("PATCH", "/api/devices/{id}", Run),
+        ("DELETE", "/api/devices/{id}", Run),
+        ("PATCH", "/api/entities/{id}", Run),
+        ("GET", "/api/entities/{id}/picture", Hidden),
+        ("PUT", "/api/extensions/{id}/secrets", Run),
+        ("POST", "/api/extensions/{id}/settings", Run),
+        ("POST", "/api/extensions/{id}/actions/{action_id}", Run),
+        ("DELETE", "/api/extensions/{id}/actions/{action_id}", Run),
+        ("GET", "/api/catalog", Whole),
+        ("POST", "/api/extensions/{id}/install", Run),
+        ("POST", "/api/extensions/install", Run),
+        ("DELETE", "/api/extensions/{id}", Run),
+        ("GET", "/api/helpers", Run),
+        ("POST", "/api/helpers/{table}", Run),
+        ("POST", "/api/helpers/{table}/check", Run),
+        ("POST", "/api/helpers/{table}/preview", Run),
+        ("PATCH", "/api/helpers/{table}/{id}", Run),
+        ("DELETE", "/api/helpers/{table}/{id}", Run),
+        ("GET", "/api/extensions/{id}/icon.svg", Open),
+        ("GET", "/api/extensions/{id}/log", Run),
+        ("GET", "/api/apps", Filtered),
+        ("POST", "/api/apps/{id}/rpc", Hidden),
+        ("GET", "/api/assistant", Filtered),
+        ("PUT", "/api/assistant", Run),
+        ("POST", "/api/assistant/turns", Asks),
+        ("GET", "/api/assistant/turns/{scope}", Filtered),
+        ("POST", "/api/assistant/turns/{scope}/stop", Asks),
+        ("POST", "/api/assistant/check", Run),
+        ("POST", "/api/assistant/pull", Run),
+        ("POST", "/api/assistant/forget", Run),
+        ("POST", "/api/assistant/install", Run),
+        ("POST", "/api/assistant/uninstall", Run),
+        ("GET", "/api/assistant/log", Run),
+        ("POST", "/api/assistant/load", Run),
+        ("POST", "/api/assistant/unload", Run),
+        ("GET", "/api/assistant/transcript/{scope}", Filtered),
+        ("DELETE", "/api/assistant/transcript/{scope}", Asks),
+        ("GET", "/api/backups", Run),
+        ("POST", "/api/backups", Run),
+        ("POST", "/api/backups/key", Run),
+        ("DELETE", "/api/backups/{name}", Run),
+        ("POST", "/api/backups/upload", Run),
+        ("PUT", "/api/backups/settings", Run),
+        ("GET", "/api/backups/key", Run),
+        ("POST", "/api/backups/restore/cancel", Run),
+        ("POST", "/api/backups/restore/seen", Run),
+        ("POST", "/api/backups/destinations/{place}/test", Run),
+        ("GET", "/api/backups/destinations/{place}", Run),
+        ("POST", "/api/backups/destinations/{place}/fetch", Run),
+        ("GET", "/api/backups/{name}", Run),
+        ("POST", "/api/backups/{name}/verify", Run),
+        ("POST", "/api/backups/{name}/restore", Run),
+        ("POST", "/api/setup/backup/upload", Open),
+        ("POST", "/api/setup/backup/restore", Open),
+        ("POST", "/api/setup/backup/verify", Open),
+    ];
+
+    /// The `/api/` addresses the router is built with, each with its method, read out of the
+    /// source, so that an address (or a second method on one) somebody adds shows up here without
+    /// anyone remembering to say so. The methods are the calls at the top of a route's arguments:
+    /// `get(..).post(..)`, not whatever a handler's own code calls.
+    fn routed_addresses() -> std::collections::BTreeSet<(String, String)> {
+        let mut found = std::collections::BTreeSet::new();
+        for source in [include_str!("server.rs"), include_str!("server/backups.rs")] {
+            for after in source.split(".route(").skip(1) {
+                let Some(rest) = after.trim_start().strip_prefix('"') else {
+                    continue;
+                };
+                let Some(end) = rest.find('"') else {
+                    continue;
+                };
+                let path = &rest[..end];
+                if !path.starts_with("/api/") {
+                    continue;
+                }
+                let (mut depth, mut word, mut in_string) = (0_u32, String::new(), false);
+                for c in rest[end + 1..].chars() {
+                    if in_string {
+                        in_string = c != '"';
+                        continue;
+                    }
+                    match c {
+                        '"' => {
+                            in_string = true;
+                            word.clear();
+                        }
+                        '(' => {
+                            if depth == 0
+                                && matches!(
+                                    word.as_str(),
+                                    "get" | "post" | "put" | "patch" | "delete"
+                                )
+                            {
+                                found.insert((word.to_uppercase(), path.to_owned()));
+                            }
+                            word.clear();
+                            depth += 1;
+                        }
+                        ')' => {
+                            if depth == 0 {
+                                break;
+                            }
+                            depth -= 1;
+                            word.clear();
+                        }
+                        c if c.is_alphanumeric() || c == '_' => word.push(c),
+                        _ => word.clear(),
+                    }
+                }
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn every_address_is_decided_for_a_person_with_rooms() {
+        let routed = routed_addresses();
+        assert!(
+            routed.len() > 60,
+            "read too little of the router: {routed:?}"
+        );
+        let decided: std::collections::BTreeSet<(String, String)> = ADDRESSES
+            .iter()
+            .map(|(method, path, _)| ((*method).to_owned(), (*path).to_owned()))
+            .collect();
+        let forgotten: Vec<_> = routed.difference(&decided).collect();
+        assert!(
+            forgotten.is_empty(),
+            "these addresses are served and nobody has said what a person with rooms gets from \
+             them; add them to ADDRESSES: {forgotten:?}"
+        );
+        let gone: Vec<_> = decided.difference(&routed).collect();
+        assert!(
+            gone.is_empty(),
+            "these are in ADDRESSES and no longer served: {gone:?}"
+        );
+    }
+
+    /// A home with a hall and a vault in the cellar, a lamp in the hall and a camera in the vault,
+    /// an owner, Leo who has the hall, and Mia who is a regular user with the whole home.
+    struct House {
+        server: Server,
+        _host: irori_core::ExtensionHost,
+        app: Router,
+        owner: String,
+        leo: String,
+        mia: String,
+        rooms: Vec<String>,
+        floors: Vec<String>,
+        camera_device: String,
+        lamp_entities: Vec<String>,
+        /// Every id Leo has no room for, and the owner's own.
+        hidden: Vec<String>,
+        entities: serde_json::Value,
+    }
+
+    const CAMERA: &str = "camera.garden_camera_1";
+    const LAMP: &str = "demo_living_room_lamp";
+
+    async fn house_with_a_vault() -> anyhow::Result<House> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<crate::system_device::IroriDevice>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            let has = |id: &str| core.entities().iter().any(|e| e.id.to_string() == id);
+            if has("update.irori") && has("camera.garden_camera_1") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core.clone())?;
+        let (app, owner) = locked_home(&server).await?;
+        let call = |method: &str, path: &str, body: Option<serde_json::Value>, cookie: &str| {
+            let (app, method, path, cookie) = (
+                app.clone(),
+                method.to_owned(),
+                path.to_owned(),
+                cookie.to_owned(),
+            );
+            async move { ask(&app, &method, &path, body, Some(&cookie), true).await }
+        };
+
+        // A home with two floors and two rooms, a lamp in the hall and a camera in the vault.
+        let mut floors = Vec::new();
+        for (name, level) in [("Zqground", 0), ("Zqcellar", -1)] {
+            let (status, made, _) = call(
+                "POST",
+                "/api/floors",
+                Some(serde_json::json!({ "name": name, "level": level })),
+                &owner,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::CREATED, "{made}");
+            floors.push(made["id"].as_str().unwrap_or_default().to_owned());
+        }
+        let mut rooms = Vec::new();
+        for (name, floor) in [("Hall", &floors[0]), ("Zqvault", &floors[1])] {
+            let (status, made, _) = call(
+                "POST",
+                "/api/areas",
+                Some(serde_json::json!({ "name": name, "floor": floor })),
+                &owner,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::CREATED, "{made}");
+            rooms.push(made["id"].as_str().unwrap_or_default().to_owned());
+        }
+        let (_, entities, _) = call("GET", "/api/entities", None, &owner).await?;
+        let camera = "camera.garden_camera_1";
+        let camera_device = entities
+            .as_array()
+            .and_then(|all| all.iter().find(|entity| entity["id"] == camera))
+            .and_then(|entity| entity["device_id"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let lamp_device = "demo_living_room_lamp";
+        for (device, room, note) in [
+            (lamp_device, &rooms[0], None),
+            (camera_device.as_str(), &rooms[1], Some("Zqsecret note")),
+        ] {
+            let mut edit = serde_json::json!({ "area": room });
+            if let Some(note) = note {
+                edit["description"] = note.into();
+            }
+            let (status, why, _) = call(
+                "PATCH",
+                &format!("/api/devices/{device}"),
+                Some(edit),
+                &owner,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{device}: {why}");
+        }
+        let plan = serde_json::json!({
+            "floors": {
+                floors[0].clone(): {
+                    "walls": [{ "from": [0, 0], "to": [400, 0] }],
+                    "areas": [{ "area": rooms[0], "points": [[0, 0], [400, 0], [400, 300]] }],
+                    "devices": [{ "device": lamp_device, "at": [100, 50] }],
+                },
+                floors[1].clone(): {
+                    "walls": [{ "from": [0, 0], "to": [90, 0] }],
+                    "areas": [{ "area": rooms[1], "points": [[0, 0], [90, 0], [90, 90]] }],
+                    "devices": [{ "device": camera_device, "at": [10, 5] }],
+                },
+            },
+        });
+        let (status, why, _) = call("PUT", "/api/floorplan", Some(plan), &owner).await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+
+        // Leo has the hall. Mia has the whole home, and is a regular user all the same.
+        let (status, why, _) = call(
+            "POST",
+            "/api/users",
+            Some(serde_json::json!({
+                "name": "Leo", "password": "let me in!", "areas": [rooms[0]],
+            })),
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{why}");
+        let (status, why, leo) = ask(
+            &app,
+            "POST",
+            "/api/session",
+            Some(serde_json::json!({ "user": "Leo", "password": "let me in!" })),
+            None,
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let leo = leo.ok_or_else(|| anyhow::anyhow!("a cookie"))?;
+        let mia = person(&app, &owner, "Mia", "user").await?;
+
+        // What is not Leo's: every entity and device he has no room for.
+        let (_, devices, _) = call("GET", "/api/devices", None, &owner).await?;
+        let ids = |list: &serde_json::Value, key: &str| -> Vec<String> {
+            list.as_array()
+                .map(|all| {
+                    all.iter()
+                        .filter_map(|item| item[key].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let lamp_entities: Vec<String> = entities
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter(|entity| entity["device_id"] == lamp_device)
+                    .filter_map(|entity| entity["id"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(!lamp_entities.is_empty(), "the lamp has entities");
+        let mut hidden: Vec<String> = ids(&entities, "id")
+            .into_iter()
+            .chain(ids(&devices, "id"))
+            .filter(|id| !lamp_entities.contains(id) && id != lamp_device)
+            .collect();
+        hidden.push("nico".to_owned());
+        assert!(hidden.contains(&camera.to_owned()));
+        Ok(House {
+            server,
+            _host: host,
+            app,
+            owner,
+            leo,
+            mia,
+            rooms,
+            floors,
+            camera_device,
+            lamp_entities,
+            hidden,
+            entities,
+        })
+    }
+
+    /// Whatever isn't in a person's rooms isn't there for them: not in a list, not by its id, not
+    /// by a message that names it, not by the difference between "no" and "not found".
+    #[tokio::test]
+    async fn a_person_with_rooms_finds_nothing_of_the_rest_of_the_home() -> anyhow::Result<()> {
+        let House {
+            server: _server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            rooms,
+            floors,
+            lamp_entities,
+            hidden,
+            ..
+        } = house_with_a_vault().await?;
+        let camera = CAMERA;
+        let lamp_device = LAMP;
+        let call = |method: &str, path: &str, body: Option<serde_json::Value>, cookie: &str| {
+            let (app, method, path, cookie) = (
+                app.clone(),
+                method.to_owned(),
+                path.to_owned(),
+                cookie.to_owned(),
+            );
+            async move { ask(&app, &method, &path, body, Some(&cookie), true).await }
+        };
+        let ids = |list: &serde_json::Value, key: &str| -> Vec<String> {
+            list.as_array()
+                .map(|all| {
+                    all.iter()
+                        .filter_map(|item| item[key].as_str().map(str::to_owned))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let words = ["Zqvault", "Zqcellar", "Zqsecret", "Nico"];
+        let holds_nothing_hidden = |what: &str, value: &serde_json::Value| {
+            let text = value.to_string();
+            for id in &hidden {
+                assert!(
+                    !text.contains(&format!("\"{id}\"")),
+                    "{what} shows `{id}` to a person who has no room for it: {text}"
+                );
+            }
+            for word in words {
+                assert!(
+                    !text.contains(word),
+                    "{what} shows `{word}` to a person who has no room for it: {text}"
+                );
+            }
+        };
+
+        for (method, pattern, kind) in ADDRESSES {
+            let path = pattern
+                .replace("{scope}", "general")
+                .replace("{entity_id}", lamp_entities[0].as_str())
+                .replace("{id}", "zq")
+                .replace("{action_id}", "zq")
+                .replace("{table}", "zq")
+                .replace("{place}", "zq")
+                .replace("{name}", "zq");
+            let what = format!("{method} {pattern}");
+            // Without the assistant there is nothing at its addresses to answer.
+            if !cfg!(feature = "assist") && path.starts_with("/api/assistant") && *kind == Filtered
+            {
+                continue;
+            }
+            match kind {
+                Open | Socket | Asks => {}
+                Filtered => {
+                    let (status, got, _) = call(method, &path, None, &leo).await?;
+                    assert_eq!(status, StatusCode::OK, "{what}: {got}");
+                    holds_nothing_hidden(&what, &got);
+                }
+                Run => {
+                    let (status, got, _) = call(method, &path, None, &leo).await?;
+                    // The socket an extension dials in on wants its own token, whoever asks.
+                    let refusal = if *pattern == "/api/extension" {
+                        StatusCode::UNAUTHORIZED
+                    } else {
+                        StatusCode::FORBIDDEN
+                    };
+                    assert_eq!(status, refusal, "{what}: {got}");
+                }
+                Whole => {
+                    let (status, got, _) = call(method, &path, None, &leo).await?;
+                    assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {got}");
+                    // And a regular user who has the whole home is not shut out of it.
+                    let (status, got, _) = call(method, &path, None, &mia).await?;
+                    assert_ne!(status, StatusCode::FORBIDDEN, "{what}: {got}");
+                }
+                // A thing by its id: what it answers for one that is his must hold nothing of
+                // the rest either. (What it answers for one that is not his is checked below.)
+                Hidden if *method == "GET" => {
+                    let (status, got, _) = call(method, &path, None, &leo).await?;
+                    if status.is_success() {
+                        holds_nothing_hidden(&what, &got);
+                    }
+                }
+                // His own name and password: the answer is a list of people, and he is told
+                // of himself alone, even when what he sent changed nothing. A name is not
+                // his to change, and the refusal must not say whether it is taken.
+                Own => {
+                    let (status, got, _) =
+                        call(method, "/api/users/leo", Some(serde_json::json!({})), &leo).await?;
+                    assert_eq!(status, StatusCode::OK, "{what}: {got}");
+                    holds_nothing_hidden(&what, &got);
+                    assert_eq!(ids(&got, "id"), ["leo"], "{what}: {got}");
+                    for name in ["Mia", "Leonard"] {
+                        let (status, got, _) = call(
+                            method,
+                            "/api/users/leo",
+                            Some(serde_json::json!({ "name": name })),
+                            &leo,
+                        )
+                        .await?;
+                        assert_eq!(status, StatusCode::FORBIDDEN, "{what}: {got}");
+                        assert!(
+                            !got.to_string().contains("already"),
+                            "{what}: a refusal that says a name is taken: {got}"
+                        );
+                    }
+                }
+                Hidden => {}
+            }
+        }
+
+        // What Leo is shown is what is in the hall, and not an empty answer that is safe because
+        // it is empty.
+        let (_, seen, _) = call("GET", "/api/home", None, &leo).await?;
+        assert_eq!(ids(&seen["devices"], "id"), [lamp_device]);
+        let mut seen_entities = ids(&seen["entities"], "id");
+        seen_entities.sort();
+        let mut want = lamp_entities.clone();
+        want.sort();
+        assert_eq!(seen_entities, want);
+        assert_eq!(ids(&seen["states"], "entity_id").len(), want.len());
+        assert_eq!(ids(&seen["areas"], "id"), [rooms[0].as_str()]);
+        assert_eq!(ids(&seen["floors"], "id"), [floors[0].as_str()]);
+        assert_eq!(
+            seen["floorplan"]["floors"]
+                .as_object()
+                .map(|all| all.keys().cloned().collect::<Vec<_>>()),
+            Some(vec![floors[0].clone()])
+        );
+        assert_eq!(
+            seen["floorplan"]["floors"][floors[0].as_str()]["devices"][0]["device"],
+            lamp_device
+        );
+        assert_eq!(seen["held"], serde_json::Value::Null);
+        assert_eq!(seen["installs"], serde_json::Value::Null);
+        assert_eq!(seen["extensions"], serde_json::json!({}));
+        let (_, people, _) = call("GET", "/api/users", None, &leo).await?;
+        assert_eq!(
+            ids(&people, "id"),
+            ["leo"],
+            "a person is told of themselves"
+        );
+
+        // By its id, a thing that isn't Leo's answers as one that was never there.
+        let unknown = |id: &str| id.replace("garden_camera_1", "zq_nothing_here");
+        for (method, pattern) in [
+            ("GET", "/api/history/{entity_id}"),
+            (
+                "GET",
+                "/api/history/{entity_id}/summary?since=2020-01-01T00:00:00Z",
+            ),
+            ("GET", "/api/entities/{entity_id}/picture"),
+        ] {
+            let (status, body, _) =
+                call(method, &pattern.replace("{entity_id}", camera), None, &leo).await?;
+            let (gone_status, gone_body, _) = call(
+                method,
+                &pattern.replace("{entity_id}", &unknown(camera)),
+                None,
+                &leo,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{pattern}: {body}");
+            assert_eq!(status, gone_status, "{pattern}");
+            assert_eq!(
+                body.to_string().replace(camera, "ID"),
+                gone_body.to_string().replace(&unknown(camera), "ID"),
+                "{pattern}: a hidden camera answers in words a missing one would not"
+            );
+            // The owner, and a person who has the room, do get it.
+            let (status, _, _) = call(
+                method,
+                &pattern.replace("{entity_id}", camera),
+                None,
+                &owner,
+            )
+            .await?;
+            assert_ne!(status, StatusCode::NOT_FOUND, "{pattern} for the owner");
+        }
+        let (status, _, _) = call(
+            "GET",
+            &format!("/api/history/{}", lamp_entities[0]),
+            None,
+            &leo,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "the lamp's history is Leo's");
+
+        // A command to a thing that isn't his is 404, and says the same for an update (which is
+        // an owner's, and so would otherwise answer 403 for a thing that exists).
+        for hidden_id in [camera, "update.irori"] {
+            let gone_id = unknown(hidden_id).replace("irori", "zq_nothing_here");
+            let ask_for =
+                |entity: &str| serde_json::json!({ "entity_id": entity, "command": "turn_on" });
+            let (status, body, _) =
+                call("POST", "/api/command", Some(ask_for(hidden_id)), &leo).await?;
+            let (gone_status, gone_body, _) =
+                call("POST", "/api/command", Some(ask_for(&gone_id)), &leo).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{hidden_id}: {body}");
+            assert_eq!(status, gone_status);
+            assert_eq!(
+                body.to_string().replace(hidden_id, "ID"),
+                gone_body.to_string().replace(&gone_id, "ID"),
+                "{hidden_id}"
+            );
+        }
+        let (status, body, _) = call(
+            "POST",
+            "/api/command",
+            Some(serde_json::json!({ "entity_id": lamp_entities[0], "command": "turn_on" })),
+            &leo,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "a lamp in his room is his: {body}");
+
+        // Somebody else's name and password: the same answer for a person who is there and one
+        // who isn't.
+        let mut answers = Vec::new();
+        for other in ["nico", "zq_nobody"] {
+            let (status, body, _) = call(
+                "PATCH",
+                &format!("/api/users/{other}"),
+                Some(serde_json::json!({ "name": "Taken" })),
+                &leo,
+            )
+            .await?;
+            answers.push((status, body));
+        }
+        assert_eq!(answers[0], answers[1]);
+        assert_eq!(answers[0].0, StatusCode::FORBIDDEN);
+        Ok(())
+    }
+
+    #[cfg(feature = "assist")]
+    /// A model that does what the question says: `call: {"name": .., "arguments": {..}}` reaches
+    /// for that tool and reports what it was told; anything else is answered with the request
+    /// as the model was sent it, so that a test can read what it was shown.
+    async fn echoing_model() -> String {
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            axum::routing::post(|Json(body): Json<serde_json::Value>| async move {
+                let messages = body["messages"].as_array().cloned().unwrap_or_default();
+                let told = messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "tool")
+                    .and_then(|message| message["content"].as_str().map(str::to_owned));
+                let asked = messages
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "user")
+                    .and_then(|message| message["content"].as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                let line = match (told, asked.strip_prefix("call:")) {
+                    (Some(told), _) => {
+                        serde_json::json!({"choices": [{"delta": {"content": format!("Told: {told}")}}]})
+                    }
+                    (None, Some(call)) => {
+                        let call: serde_json::Value =
+                            serde_json::from_str(call).unwrap_or_default();
+                        serde_json::json!({"choices": [{"delta": {"tool_calls": [{
+                            "index": 0, "id": "a", "function": {
+                                "name": call["name"],
+                                "arguments": call["arguments"].to_string(),
+                            },
+                        }]}}]})
+                    }
+                    (None, None) => {
+                        serde_json::json!({"choices": [{"delta": {"content": body.to_string()}}]})
+                    }
+                };
+                (
+                    [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+                    format!("data: {line}\n\ndata: [DONE]\n\n"),
+                )
+                    .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a local port");
+        let address = listener.local_addr().expect("the port it bound");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.ok();
+        });
+        format!("http://{address}/v1")
+    }
+
+    /// A question to the assistant as somebody signed in, and everything it streamed back, joined.
+    #[cfg(feature = "assist")]
+    async fn asked(
+        app: &Router,
+        cookie: &str,
+        scope: &str,
+        message: &str,
+    ) -> anyhow::Result<String> {
+        let request = Request::post("/api/assistant/turns")
+            .header("cookie", cookie)
+            .header(UI_HEADER, "1")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&serde_json::json!({
+                "scope": scope,
+                "message": message,
+            }))?))?;
+        let response = app.clone().oneshot(request).await?;
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = response.into_body().collect().await?.to_bytes();
+        let mut said = String::new();
+        for line in String::from_utf8(bytes.to_vec())?.lines() {
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let event: serde_json::Value = serde_json::from_str(data.trim())?;
+            for key in ["delta", "error"] {
+                if let Some(text) = event[key].as_str() {
+                    said.push_str(text);
+                }
+            }
+        }
+        Ok(said)
+    }
+
+    /// Whether `text` names `id` (and not a longer id that starts the same).
+    #[cfg(feature = "assist")]
+    fn names(text: &str, id: &str) -> bool {
+        text.match_indices(id).any(|(at, _)| {
+            !text[at + id.len()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+        })
+    }
+
+    /// The assistant answers a person with some rooms from those rooms: what the model is told,
+    /// what its tools find, what is kept of the chat, and what the owner has set up stay out of
+    /// their reach (`docs/specs/access.md` §2).
+    #[cfg(feature = "assist")]
+    #[tokio::test]
+    async fn the_assistant_of_a_person_with_rooms_knows_only_their_rooms() -> anyhow::Result<()> {
+        let House {
+            server: _server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            lamp_entities,
+            hidden,
+            camera_device,
+            rooms,
+            ..
+        } = house_with_a_vault().await?;
+        let call = |method: &str, path: &str, body: Option<serde_json::Value>, cookie: &str| {
+            let (app, method, path, cookie) = (
+                app.clone(),
+                method.to_owned(),
+                path.to_owned(),
+                cookie.to_owned(),
+            );
+            async move { ask(&app, &method, &path, body, Some(&cookie), true).await }
+        };
+        let base = echoing_model().await;
+        let (status, set, _) = call(
+            "PUT",
+            "/api/assistant",
+            Some(serde_json::json!({
+                "mode": "cloud", "preset": "compatible", "base_url": base,
+                "model": "echo", "api_key": "sk-test-key-should-not-leak",
+                // The owner's standing notes may name what a person with rooms has no room for.
+                "instructions": "Never mention the Zqsecret freezer to the guests.",
+            })),
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{set}");
+        let secret_ids: Vec<&String> = hidden
+            .iter()
+            .filter(|id| id.contains('.') || id.contains('_'))
+            .collect();
+        let nothing_hidden = |what: &str, text: &str| {
+            for id in &secret_ids {
+                assert!(!names(text, id), "{what} names `{id}`: {text}");
+            }
+            for word in ["Zqvault", "Zqcellar", "Zqsecret"] {
+                assert!(!text.contains(word), "{what} says `{word}`: {text}");
+            }
+        };
+
+        // What the model is shown: the owner's whole home, Leo's hall and nothing more.
+        let for_owner = asked(&app, &owner, "general", "What is on?").await?;
+        assert!(names(&for_owner, CAMERA), "the owner is shown the camera");
+        assert!(
+            for_owner.contains("Zqsecret"),
+            "the owner's own notes are in the owner's prompt"
+        );
+        assert!(for_owner.contains("read_settings") && for_owner.contains("read_logs"));
+        let for_leo = asked(&app, &leo, "general", "What is on?").await?;
+        assert!(names(&for_leo, &lamp_entities[0]), "Leo is shown his lamp");
+        nothing_hidden("what Leo's model is told", &for_leo);
+        for setup in [
+            "read_settings",
+            "read_logs",
+            "list_helpers",
+            "propose_helper",
+        ] {
+            assert!(!for_leo.contains(setup), "Leo's model is offered `{setup}`");
+        }
+        assert!(for_leo.contains("list_devices"));
+        // And the chat of a device he has no room for is not there to open.
+        let gone = asked(&app, &leo, &format!("device:{camera_device}"), "Hi").await?;
+        let never = asked(&app, &leo, "device:zq_never_was", "Hi").await?;
+        assert_eq!(
+            gone.replace(&camera_device, "ID"),
+            never.replace("zq_never_was", "ID")
+        );
+
+        // What its tools find.
+        let tool = |name: &str, arguments: serde_json::Value| {
+            format!(
+                "call: {}",
+                serde_json::json!({ "name": name, "arguments": arguments })
+            )
+        };
+        let entities = asked(
+            &app,
+            &leo,
+            "general",
+            &tool("list_entities", serde_json::json!({})),
+        )
+        .await?;
+        assert!(names(&entities, &lamp_entities[0]), "{entities}");
+        nothing_hidden("list_entities", &entities);
+        let owners_entities = asked(
+            &app,
+            &owner,
+            "general",
+            &tool("list_entities", serde_json::json!({})),
+        )
+        .await?;
+        assert!(names(&owners_entities, CAMERA));
+        let plan = asked(
+            &app,
+            &leo,
+            "general",
+            &tool("read_floorplan", serde_json::json!({})),
+        )
+        .await?;
+        nothing_hidden("read_floorplan", &plan);
+        let device = asked(
+            &app,
+            &leo,
+            "general",
+            &tool("get_device", serde_json::json!({ "id": camera_device })),
+        )
+        .await?;
+        let no_device = asked(
+            &app,
+            &leo,
+            "general",
+            &tool("get_device", serde_json::json!({ "id": "zq_never_was" })),
+        )
+        .await?;
+        assert_eq!(
+            device.replace(&camera_device, "ID"),
+            no_device.replace("zq_never_was", "ID"),
+            "a device he has no room for is answered as one that was never there"
+        );
+        let history = asked(
+            &app,
+            &leo,
+            "general",
+            &tool("recent_states", serde_json::json!({ "entity_id": CAMERA })),
+        )
+        .await?;
+        let no_history = asked(
+            &app,
+            &leo,
+            "general",
+            &tool(
+                "recent_states",
+                serde_json::json!({ "entity_id": "camera.zq_never_was" }),
+            ),
+        )
+        .await?;
+        assert_eq!(
+            history.replace(CAMERA, "ID"),
+            no_history.replace("camera.zq_never_was", "ID")
+        );
+        // The log holds everybody's sign-ins, and a model is not a way round that, whoever asks
+        // it, an owner excepted.
+        let log = tool("read_logs", serde_json::json!({ "source": "irori" }));
+        for (who, cookie) in [("Leo", &leo), ("Mia", &mia)] {
+            let told = asked(&app, cookie, "general", &log).await?;
+            assert!(
+                told.contains("there is no tool `read_logs`"),
+                "{who}: {told}"
+            );
+        }
+        let told = asked(&app, &owner, "general", &log).await?;
+        assert!(
+            !told.contains("there is no tool"),
+            "the owner reads the log: {told}"
+        );
+
+        // How the home is set up is an owner's, in the chats as it is in Settings.
+        for (who, cookie) in [("Leo", &leo), ("Mia", &mia)] {
+            for scope in ["settings", "helpers"] {
+                let told = asked(&app, cookie, scope, "Hi").await?;
+                assert_eq!(told, "that conversation doesn't exist", "{who} {scope}");
+                let (status, _, _) = call(
+                    "GET",
+                    &format!("/api/assistant/transcript/{scope}"),
+                    None,
+                    cookie,
+                )
+                .await?;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{who} {scope}");
+            }
+        }
+        let told = asked(&app, &owner, "settings", "Hi").await?;
+        assert!(
+            told.contains("read_logs"),
+            "the owner's Settings chat: {told}"
+        );
+
+        // A chat is the person's own when they have only some rooms: nobody else reads it, and
+        // clearing it clears theirs.
+        let transcript = |cookie: String| {
+            let call = &call;
+            async move {
+                let (_, got, _) =
+                    call("GET", "/api/assistant/transcript/general", None, &cookie).await?;
+                anyhow::Ok(got["turns"].to_string())
+            }
+        };
+        let owners = transcript(owner.clone()).await?;
+        let leos = transcript(leo.clone()).await?;
+        let mias = transcript(mia.clone()).await?;
+        assert!(leos.contains("What is on?"));
+        assert!(owners.contains("What is on?"), "the owner's own chat");
+        assert!(
+            owners.contains("read_settings") && !leos.contains("read_settings"),
+            "Leo's chat is not the owner's"
+        );
+        // Mia has the whole home and is not an owner: what the model told the owner, from
+        // Settings and the logs, is not hers to read, clear or stop. Her chat is her own.
+        assert!(mias.contains("read_logs"), "Mia's own chat: {mias}");
+        assert!(
+            !mias.contains("read_settings"),
+            "the owner's chat is not Mia's"
+        );
+        let (status, _, _) =
+            call("DELETE", "/api/assistant/transcript/general", None, &mia).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(transcript(mia.clone()).await?, "[]");
+        assert_eq!(
+            transcript(owner.clone()).await?,
+            owners,
+            "clearing Mia's chat left the owner's"
+        );
+        let (_, mias_view, _) = call("GET", "/api/assistant", None, &mia).await?;
+        assert!(mias_view["base_url"].as_str().is_none_or(str::is_empty));
+        let (status, _, _) =
+            call("DELETE", "/api/assistant/transcript/general", None, &leo).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(transcript(leo.clone()).await?, "[]");
+        assert_eq!(
+            transcript(owner.clone()).await?,
+            owners,
+            "clearing Leo's chat left the owner's"
+        );
+
+        // Asking for it by its key is asking for a conversation that isn't one.
+        let (status, _, _) = call(
+            "GET",
+            "/api/assistant/transcript/general%23leo",
+            None,
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // What Leo is told of how it is set up is whether he can ask, and not how.
+        let (status, seen, _) = call("GET", "/api/assistant", None, &leo).await?;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(seen["ready"], true);
+        for field in [
+            "base_url",
+            "credential",
+            "cloud_model",
+            "local_tag",
+            "instructions",
+        ] {
+            assert!(
+                seen[field].as_str().is_none_or(str::is_empty),
+                "{field}: {seen}"
+            );
+        }
+        assert_eq!(seen["pulled"], serde_json::json!([]));
+        assert!(!seen.to_string().contains("sk-test-key"));
+        let (_, owners_view, _) = call("GET", "/api/assistant", None, &owner).await?;
+        assert_eq!(owners_view["base_url"], base);
+
+        // What was said about a room is forgotten once it is not theirs, however that came
+        // about: here the owner moves the lamp out of the hall. Gaining a room loses nothing.
+        let (_, _, _) = call("POST", "/api/assistant/turns/general/stop", None, &leo).await?;
+        asked(&app, &leo, "general", "Again?").await?;
+        assert!(transcript(leo.clone()).await?.contains("Again?"));
+        let move_to = |device: String, room: String| {
+            let call = &call;
+            let owner = owner.clone();
+            async move {
+                let (status, why, _) = call(
+                    "PATCH",
+                    &format!("/api/devices/{device}"),
+                    Some(serde_json::json!({ "area": room })),
+                    &owner,
+                )
+                .await?;
+                assert_eq!(status, StatusCode::OK, "{why}");
+                anyhow::Ok(())
+            }
+        };
+        move_to(LAMP.to_owned(), rooms[1].clone()).await?;
+        assert_eq!(
+            transcript(leo.clone()).await?,
+            "[]",
+            "the lamp left the hall"
+        );
+        move_to(LAMP.to_owned(), rooms[0].clone()).await?;
+        asked(&app, &leo, "general", "After?").await?;
+        assert!(transcript(leo.clone()).await?.contains("After?"));
+        move_to(camera_device.clone(), rooms[0].clone()).await?;
+        assert!(
+            transcript(leo.clone()).await?.contains("After?"),
+            "a room gained takes nothing away"
+        );
+        // A room with nothing in it is theirs too: losing it forgets the chat all the same,
+        // though no entity or device went anywhere.
+        let (status, empty, _) = call(
+            "POST",
+            "/api/areas",
+            Some(serde_json::json!({ "name": "Zqempty" })),
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{empty}");
+        let empty = empty["id"].as_str().unwrap_or_default().to_owned();
+        let (status, why, _) = call(
+            "PATCH",
+            "/api/users/leo",
+            Some(serde_json::json!({ "areas": [rooms[0], empty] })),
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        asked(&app, &leo, "general", "Empty?").await?;
+        assert!(transcript(leo.clone()).await?.contains("Empty?"));
+        let (status, why, _) = call("DELETE", &format!("/api/areas/{empty}"), None, &owner).await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{why}");
+        assert_eq!(
+            transcript(leo.clone()).await?,
+            "[]",
+            "an empty room is theirs, and was taken from them"
+        );
+        // Changing the person's rooms forgets them at once.
+        asked(&app, &leo, "general", "Before?").await?;
+        let (status, why, _) = call(
+            "PATCH",
+            "/api/users/leo",
+            Some(serde_json::json!({ "areas": [] })),
+            &owner,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        assert_eq!(transcript(leo.clone()).await?, "[]");
+        assert_eq!(
+            transcript(owner.clone()).await?,
+            owners,
+            "and the owner's is left"
+        );
+        Ok(())
+    }
+
+    /// What a person with rooms is sent on the live feed is theirs: the home as they have it,
+    /// the changes of what is in their rooms, and nothing of what is in the others. A thing moved
+    /// out of their room stops being sent; their rooms changing ends the feed, and the next one
+    /// is the new view (`docs/specs/access.md` §2).
+    #[tokio::test]
+    async fn the_live_feed_of_a_person_with_rooms_is_theirs_alone() -> anyhow::Result<()> {
+        use futures_util::StreamExt as _;
+        use tokio_tungstenite::tungstenite::Message;
+
+        let House {
+            server: _server,
+            _host,
+            app,
+            owner,
+            leo,
+            rooms,
+            lamp_entities,
+            hidden,
+            entities,
+            camera_device,
+            ..
+        } = house_with_a_vault().await?;
+        let address = listen(app.clone()).await?;
+        let mut feed = open_live(address, &[("cookie", leo.as_str())]).await?;
+
+        // Frames until the feed has been quiet for a moment.
+        async fn drain(
+            feed: &mut tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        ) -> anyhow::Result<Vec<String>> {
+            let mut frames = Vec::new();
+            while let Ok(Some(frame)) =
+                tokio::time::timeout(Duration::from_millis(700), feed.next()).await
+            {
+                if let Message::Text(text) = frame? {
+                    frames.push(text.to_string());
+                }
+            }
+            Ok(frames)
+        }
+        let nothing_hidden = |frames: &[String]| {
+            for frame in frames {
+                for id in &hidden {
+                    assert!(
+                        !frame.contains(&format!("\"{id}\"")),
+                        "the feed told a person with rooms of `{id}`: {frame}"
+                    );
+                }
+            }
+        };
+        let frames = drain(&mut feed).await?;
+        assert!(frames[0].contains("\"type\":\"snapshot\""), "{}", frames[0]);
+        assert!(frames[0].contains(&format!("\"{}\"", lamp_entities[0])));
+        nothing_hidden(&frames);
+
+        // The owner switches a light Leo has no room for, and then his lamp.
+        let elsewhere = entities
+            .as_array()
+            .and_then(|all| {
+                all.iter()
+                    .filter_map(|entity| entity["id"].as_str())
+                    .find(|id| id.starts_with("light.") && !lamp_entities.iter().any(|l| l == id))
+            })
+            .ok_or_else(|| anyhow::anyhow!("the demo has another light"))?
+            .to_owned();
+        let toggle = |entity: String| {
+            let (app, owner) = (app.clone(), owner.clone());
+            async move {
+                let (status, why, _) = ask(
+                    &app,
+                    "POST",
+                    "/api/command",
+                    Some(serde_json::json!({ "entity_id": entity, "command": "toggle" })),
+                    Some(&owner),
+                    true,
+                )
+                .await?;
+                assert_eq!(status, StatusCode::OK, "{why}");
+                anyhow::Ok(())
+            }
+        };
+        toggle(elsewhere).await?;
+        toggle(lamp_entities[0].clone()).await?;
+        let frames = drain(&mut feed).await?;
+        nothing_hidden(&frames);
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.contains("\"type\":\"state\"")
+                    && frame.contains(&lamp_entities[0])),
+            "his own lamp is reported: {frames:?}"
+        );
+
+        // The lamp moves to the vault. He is told the home changed, and then not told of it.
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            &format!("/api/devices/{LAMP}"),
+            Some(serde_json::json!({ "area": rooms[1] })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let frames = drain(&mut feed).await?;
+        assert!(
+            frames
+                .iter()
+                .any(|frame| frame.contains("\"type\":\"changed\"")),
+            "the page is told to read the home again: {frames:?}"
+        );
+        toggle(lamp_entities[0].clone()).await?;
+        let frames = drain(&mut feed).await?;
+        assert!(
+            !frames.iter().any(|frame| frame.contains(&lamp_entities[0])),
+            "a lamp that has left his room is not reported to him: {frames:?}"
+        );
+
+        // His rooms change: the feed ends, and the next one has the vault in it.
+        let (status, why, _) = ask(
+            &app,
+            "PATCH",
+            "/api/users/leo",
+            Some(serde_json::json!({ "areas": [rooms[0], rooms[1]] })),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let closed = tokio::time::timeout(Duration::from_secs(2), async {
+            while let Some(Ok(frame)) = feed.next().await {
+                if matches!(frame, Message::Close(_)) {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "his feed should end when his rooms change");
+        let mut feed = open_live(address, &[("cookie", leo.as_str())]).await?;
+        let frames = drain(&mut feed).await?;
+        assert!(frames[0].contains(&camera_device), "{}", frames[0]);
+
+        // His password is taken out of the file by hand: the feed that was opened with it ends,
+        // though nothing else about him changed.
+        let file = _server.config_dir().join("secrets.toml");
+        let text = std::fs::read_to_string(&file)?;
+        let without: String = text
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("leo ="))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert_ne!(text, without, "Leo had a password in the file");
+        std::fs::write(&file, without)?;
+        _server.config.home().await;
+        let closed = tokio::time::timeout(Duration::from_secs(8), async {
+            while let Some(Ok(frame)) = feed.next().await {
+                if matches!(frame, Message::Close(_)) {
+                    return;
+                }
+            }
+        })
+        .await;
+        assert!(closed.is_ok(), "his feed should end when his password goes");
+        Ok(())
+    }
+    // ---- who did what (`audit.rs`, `server/trail.rs`) ---------------------------------------
+
+    /// The log as an owner reads it, once the writer has caught up with what `wanted` looks for.
+    async fn log_of(
+        app: &Router,
+        owner: &str,
+        wanted: impl Fn(&[serde_json::Value]) -> bool,
+    ) -> anyhow::Result<Vec<serde_json::Value>> {
+        for _ in 0..300 {
+            let (status, page, _) = ask(
+                app,
+                "GET",
+                "/api/audit?limit=1000",
+                None,
+                Some(owner),
+                false,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{page}");
+            let rows = page["entries"].as_array().cloned().unwrap_or_default();
+            if wanted(&rows) {
+                return Ok(rows);
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        anyhow::bail!("the activity log never held what was looked for")
+    }
+
+    /// The newest row with this action by this person (or token) name.
+    fn row_by<'a>(
+        rows: &'a [serde_json::Value],
+        action: &str,
+        who: &str,
+    ) -> Option<&'a serde_json::Value> {
+        rows.iter()
+            .find(|row| row["action"] == action && row["actor"]["name"] == who)
+    }
+
+    /// Everything a person does that changes the home leaves a row with who, what and whether it
+    /// was allowed; a refusal is a row too; only an owner reads them; and none of them holds a
+    /// password (`docs/specs/access.md` §3).
+    #[tokio::test]
+    async fn what_people_do_is_written_down_and_only_an_owner_reads_it() -> anyhow::Result<()> {
+        let House {
+            server: _server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            rooms,
+            lamp_entities,
+            ..
+        } = house_with_a_vault().await?;
+        let lamp = lamp_entities
+            .iter()
+            .find(|id| id.starts_with("light."))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("the lamp has a light"))?;
+
+        // Leo turns the lamp on, asks for the camera he has no room for, and tries to add a room.
+        let command =
+            |entity: &str, name: &str| serde_json::json!({ "entity_id": entity, "command": name });
+        let (status, why, _) = ask(
+            &app,
+            "POST",
+            "/api/command",
+            Some(command(&lamp, "turn_on")),
+            Some(&leo),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/command",
+            Some(command(CAMERA, "toggle")),
+            Some(&leo),
+            true,
+        )
+        .await?;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "answered as if it was never there"
+        );
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/areas",
+            Some(serde_json::json!({ "name": "Attic" })),
+            Some(&leo),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Mia has the whole home and is not an owner: an update is the owner's.
+        let (status, _, _) = ask(
+            &app,
+            "POST",
+            "/api/command",
+            Some(command("update.irori", "install")),
+            Some(&mia),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        // Somebody who is nobody types a wrong password for Leo, and one for a name nobody has,
+        // which may well be a password typed in the wrong box.
+        for typed in ["Leo", "Zqhunter2"] {
+            let (status, _, _) = ask(
+                &app,
+                "POST",
+                "/api/session",
+                Some(serde_json::json!({ "user": typed, "password": "Zqwrong-password" })),
+                None,
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::UNAUTHORIZED);
+        }
+
+        let rows = log_of(&app, &owner, |rows| {
+            rows.iter()
+                .any(|row| row["action"] == "sign_in" && row["outcome"] == "denied")
+                && rows.iter().filter(|row| row["action"] == "command").count() >= 3
+                && rows
+                    .iter()
+                    .any(|row| row["action"] == "room_added" && row["outcome"] == "denied")
+        })
+        .await?;
+
+        let setup = row_by(&rows, "owner_set_up", "Nico").expect("the owner being set up");
+        assert_eq!(setup["outcome"], "ok");
+        let added = rows
+            .iter()
+            .find(|row| row["action"] == "person_added" && row["target"] == "leo")
+            .expect("Leo being added");
+        assert_eq!(added["actor"]["name"], "Nico");
+        assert!(
+            added["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("Leo") && d.contains(&rooms[0])),
+            "{added}"
+        );
+        // What Leo did: the lamp, with the context of the call so history can say who.
+        let on = rows
+            .iter()
+            .find(|row| {
+                row["action"] == "command"
+                    && row["actor"]["name"] == "Leo"
+                    && row["outcome"] == "ok"
+            })
+            .expect("Leo turning the lamp on");
+        assert_eq!(on["target"], lamp.as_str());
+        assert_eq!(on["detail"], "turn_on");
+        assert!(
+            on["context_id"].as_str().is_some_and(|id| !id.is_empty()),
+            "{on}"
+        );
+        // The camera: denied, with the reason only an owner is told.
+        let camera = rows
+            .iter()
+            .find(|row| row["action"] == "command" && row["target"] == CAMERA)
+            .expect("Leo asking for the camera");
+        assert_eq!(camera["outcome"], "denied");
+        assert_eq!(camera["actor"]["name"], "Leo");
+        assert!(
+            camera["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("not in their rooms")),
+            "{camera}"
+        );
+        // A change that was refused is a row.
+        let room = row_by(&rows, "room_added", "Leo").expect("Leo's refused room");
+        assert_eq!(room["outcome"], "denied");
+        assert!(
+            room["detail"].as_str().is_some_and(|d| d.contains("owner")),
+            "{room}"
+        );
+        let update = rows
+            .iter()
+            .find(|row| row["target"] == "update.irori" && row["actor"]["name"] == "Mia")
+            .expect("Mia's update");
+        assert_eq!(update["outcome"], "denied");
+        // Wrong passwords: nobody signed in, the person it was typed for only if they are one.
+        let wrong: Vec<_> = rows
+            .iter()
+            .filter(|row| row["action"] == "sign_in" && row["outcome"] == "denied")
+            .collect();
+        assert_eq!(wrong.len(), 2, "{wrong:?}");
+        assert!(wrong.iter().all(|row| row["actor"]["kind"] == "nobody"));
+        assert!(
+            wrong
+                .iter()
+                .any(|row| row["target"] == "leo" && row["detail"] == "wrong password")
+        );
+        assert!(wrong.iter().any(|row| row["detail"] == "a name nobody has"));
+        // And no secret anywhere: not a password somebody set or typed, nor what a nobody typed.
+        let all = serde_json::Value::Array(rows.clone()).to_string();
+        for secret in [
+            "let me in!",
+            "correct horse",
+            "Zqwrong-password",
+            "Zqhunter2",
+        ] {
+            assert!(!all.contains(secret), "the log holds {secret:?}: {all}");
+        }
+
+        // Who reads it: an owner. Nobody else, whatever rooms they have.
+        for who in [&leo, &mia] {
+            let (status, _, _) = ask(&app, "GET", "/api/audit", None, Some(who), false).await?;
+            assert_eq!(status, StatusCode::FORBIDDEN);
+        }
+        let (status, _, _) = ask(&app, "GET", "/api/audit", None, None, false).await?;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        Ok(())
+    }
+
+    /// A page reads the newest rows first, narrowed by what it asks, and goes on from where it
+    /// left off.
+    #[tokio::test]
+    async fn the_log_is_read_newest_first_by_who_and_what_and_a_page_at_a_time()
+    -> anyhow::Result<()> {
+        let House {
+            server: _server,
+            _host,
+            app,
+            owner,
+            leo,
+            lamp_entities,
+            ..
+        } = house_with_a_vault().await?;
+        let lamp = lamp_entities
+            .iter()
+            .find(|id| id.starts_with("light."))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("the lamp has a light"))?;
+        for name in ["turn_on", "turn_off", "turn_on"] {
+            let (status, why, _) = ask(
+                &app,
+                "POST",
+                "/api/command",
+                Some(serde_json::json!({ "entity_id": lamp, "command": name })),
+                Some(&leo),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{why}");
+        }
+        log_of(&app, &owner, |rows| {
+            rows.iter().filter(|row| row["action"] == "command").count() == 3
+        })
+        .await?;
+
+        let (status, page, _) = ask(
+            &app,
+            "GET",
+            "/api/audit?user=leo&action=command&limit=2",
+            None,
+            Some(&owner),
+            false,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let first = page["entries"].as_array().cloned().unwrap_or_default();
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0]["detail"], "turn_on", "the newest first");
+        assert_eq!(first[1]["detail"], "turn_off");
+        let older = page["older"].as_u64().expect("there is one more");
+        let (_, page, _) = ask(
+            &app,
+            "GET",
+            &format!("/api/audit?user=leo&action=command&limit=2&before={older}"),
+            None,
+            Some(&owner),
+            false,
+        )
+        .await?;
+        let rest = page["entries"].as_array().cloned().unwrap_or_default();
+        assert_eq!(rest.len(), 1, "{page}");
+        assert!(page.get("older").is_none(), "the last page says so");
+
+        // Anything it can't read as what it is meant to be is said, not ignored.
+        for query in ["outcome=maybe", "since=yesterday", "before=x", "limit=lots"] {
+            let (status, why, _) = ask(
+                &app,
+                "GET",
+                &format!("/api/audit?{query}"),
+                None,
+                Some(&owner),
+                false,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{query}: {why}");
+        }
+        Ok(())
+    }
+
+    /// A program is written down as the program, with the person it was made for, and as it was
+    /// called: the day it is revoked it is gone from its table, and the log still says who it was.
+    /// A program is not the person to ask who did what.
+    #[tokio::test]
+    async fn a_program_is_written_down_as_itself_and_does_not_read_the_log() -> anyhow::Result<()> {
+        let (core, _host) = demo().await?;
+        let server = Server::new(core)?;
+        let (app, owner) = locked_home(&server).await?;
+        let (status, created, _) = ask(
+            &app,
+            "POST",
+            "/api/tokens",
+            Some(
+                serde_json::json!({ "name": "Tablet", "scopes": ["services:call", "states:read"] }),
+            ),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["secret"].as_str().unwrap_or_default().to_owned();
+        let (_, entities, _) = ask(&app, "GET", "/api/entities", None, Some(&owner), false).await?;
+        let light = entities
+            .as_array()
+            .and_then(|all| {
+                all.iter()
+                    .filter_map(|entity| entity["id"].as_str())
+                    .find(|id| id.starts_with("light."))
+            })
+            .unwrap_or_default()
+            .to_owned();
+        let (status, why) = bearer(
+            &app,
+            "POST",
+            "/api/command",
+            Some(serde_json::json!({ "entity_id": light, "command": "turn_on" })),
+            &secret,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{why}");
+        let (status, _) = bearer(&app, "GET", "/api/audit", None, &secret).await?;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _, _) = ask(
+            &app,
+            "DELETE",
+            "/api/tokens/tablet",
+            None,
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let rows = log_of(&app, &owner, |rows| {
+            rows.iter().any(|row| row["action"] == "token_revoked")
+                && rows.iter().any(|row| row["action"] == "command")
+        })
+        .await?;
+        let command = rows
+            .iter()
+            .find(|row| row["action"] == "command")
+            .expect("the program's command");
+        assert_eq!(command["actor"]["kind"], "token");
+        assert_eq!(command["actor"]["name"], "Tablet");
+        assert_eq!(command["actor"]["person"]["name"], "Nico");
+        // The refused read of the log is the program's too.
+        let revoked = row_by(&rows, "token_revoked", "Nico").expect("the revoking");
+        assert_eq!(revoked["target"], "tablet");
+        assert!(
+            revoked["detail"]
+                .as_str()
+                .is_some_and(|d| d.contains("Tablet")),
+            "{revoked}"
+        );
+        let made = row_by(&rows, "token_made", "Nico").expect("the making");
+        assert!(
+            !made.to_string().contains(&secret),
+            "the secret is shown once and never written down"
+        );
+        Ok(())
+    }
+
+    /// A change a command made says who sent the command, through the call it answered: the
+    /// owner and a person with the whole home are told, a person with some rooms is told their
+    /// own name and "someone" for anybody else.
+    #[tokio::test]
+    async fn history_says_who_sent_the_command_a_change_answered() -> anyhow::Result<()> {
+        let House {
+            server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            lamp_entities,
+            ..
+        } = house_with_a_vault().await?;
+        let light = lamp_entities
+            .iter()
+            .find(|id| id.starts_with("light."))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("the lamp has a light"))?;
+        let entity: EntityId = light.parse()?;
+        for cookie in [&leo, &mia] {
+            let (status, changed, _) = ask(
+                &app,
+                "POST",
+                "/api/command",
+                Some(serde_json::json!({ "entity_id": light, "command": "toggle" })),
+                Some(cookie),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::OK, "{changed}");
+            // The server under test isn't subscribed to the core, so the change is handed to the
+            // diary the endpoint reads.
+            server
+                .history
+                .record(entity.clone(), serde_json::from_value(changed)?);
+        }
+        let told = |cookie: String| {
+            let (app, light) = (app.clone(), light.clone());
+            async move {
+                for _ in 0..300 {
+                    let (status, history, _) = ask(
+                        &app,
+                        "GET",
+                        &format!("/api/history/{light}"),
+                        None,
+                        Some(&cookie),
+                        false,
+                    )
+                    .await?;
+                    assert_eq!(status, StatusCode::OK, "{history}");
+                    let mut said: Vec<String> = history["by"]
+                        .as_object()
+                        .map(|by| {
+                            by.values()
+                                .filter_map(|name| name.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    if said.len() == 2 {
+                        said.sort();
+                        return anyhow::Ok(said);
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                anyhow::bail!("history never said who")
+            }
+        };
+        assert_eq!(told(owner).await?, ["Leo", "Mia"]);
+        assert_eq!(told(leo).await?, ["Leo", "someone"]);
         Ok(())
     }
 }

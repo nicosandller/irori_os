@@ -11,6 +11,7 @@ pub const VERSION: &str = env!("IRORI_VERSION");
 mod id;
 
 mod api;
+mod audit;
 mod context;
 mod extension;
 mod floorplan;
@@ -31,6 +32,7 @@ pub mod units;
 mod users;
 
 pub use api::LiveMessage;
+pub use audit::{AuditActor, AuditEntry, AuditPage, MOST_ROWS as MOST_AUDIT_ROWS, Named, Outcome};
 pub use context::{Context, Origin};
 pub use extension::{
     ApiScope, AppContribution, AppPlacement, AutomationContribution, Contributions,
