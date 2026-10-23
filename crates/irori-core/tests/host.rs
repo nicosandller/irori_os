@@ -1702,3 +1702,163 @@ async fn an_offer_is_refused_unless_the_extension_is_waiting() {
 
     host.shutdown().await;
 }
+
+/// One package is worked on by one thing at a time: a second Install, or an Uninstall while
+/// it's being installed, is told what's underway. The claim ends when it's dropped.
+#[tokio::test]
+async fn a_package_being_installed_is_claimed_until_the_work_ends() {
+    use irori_core::PackageWork;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    let lamp = ExtensionId::try_from("lamp").expect("valid");
+    let other = ExtensionId::try_from("other").expect("valid");
+
+    let claim = host
+        .claim(&lamp, PackageWork::Installing)
+        .expect("nothing else is underway");
+    assert_eq!(
+        host.work(),
+        BTreeMap::from([(lamp.clone(), PackageWork::Installing)])
+    );
+    let again = host
+        .claim(&lamp, PackageWork::Uninstalling)
+        .expect_err("already installing");
+    assert_eq!(again.work, PackageWork::Installing);
+    assert!(
+        again.to_string().contains("`lamp` is already installing"),
+        "{again}"
+    );
+    // Another extension isn't held up by it.
+    let other_claim = host
+        .claim(&other, PackageWork::Updating)
+        .expect("a different package");
+    drop(other_claim);
+
+    drop(claim);
+    assert!(host.work().is_empty());
+    let _claim = host
+        .claim(&lamp, PackageWork::Uninstalling)
+        .expect("free once the install is over");
+
+    // Every stage is a new folder, made as it's handed out, so two at once never share one.
+    let first = host.new_stage().expect("a stage");
+    assert!(first.is_dir());
+    let second = host.new_stage().expect("another");
+    assert_ne!(second, first);
+    assert!(second.is_dir());
+    host.shutdown().await;
+}
+
+/// An old version an update kept (it couldn't carry everything over) is that extension's too:
+/// uninstalling deletes it, so the next start doesn't put back what was just uninstalled.
+/// Another extension's old version, and one that can't be read, aren't touched.
+#[tokio::test]
+async fn uninstalling_deletes_the_old_versions_an_update_kept() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path().to_path_buf();
+    let host = ExtensionHost::start_with_packages(&core, vec![], Timing::default(), dir.clone())
+        .expect("starts");
+    // As an update that couldn't move everything would leave it, after the start's cleanup.
+    write_manifest(&dir.join("lamp"), LAMP_MANIFEST);
+    write_manifest(&dir.join("download-1.old"), LAMP_MANIFEST);
+    write_manifest(&dir.join("download-2.old"), INBOUND_MANIFEST);
+    std::fs::create_dir_all(dir.join("download-3.old")).expect("made it");
+    std::fs::write(
+        dir.join("download-3.old/irori-extension.toml"),
+        "not a manifest",
+    )
+    .expect("written");
+
+    host.uninstall(&ExtensionId::try_from("lamp").expect("valid"))
+        .await
+        .expect("uninstalled");
+
+    let mut left: Vec<String> = std::fs::read_dir(&dir)
+        .expect("reads")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    left.sort();
+    assert_eq!(left, ["download-2.old", "download-3.old"]);
+    host.shutdown().await;
+
+    // And the next start has no lamp to put back.
+    let again = ExtensionHost::start_with_packages(&core, vec![], Timing::default(), dir.clone())
+        .expect("starts again");
+    assert!(!dir.join("lamp").exists());
+    again.shutdown().await;
+}
+
+/// Irori stopping in the middle of an install leaves its download behind, and in the middle of
+/// an update it can leave the old package moved aside with nothing in its place. The next start
+/// deletes the one and puts the other back.
+#[tokio::test]
+async fn what_a_stopped_install_left_is_cleared_and_a_stopped_update_is_undone() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    // A download that never got installed.
+    write_manifest(&dir.join("download-1"), LAMP_MANIFEST);
+    // An update that moved the old package aside and stopped before the new one took its place.
+    write_manifest(&dir.join("download-2.old"), INBOUND_MANIFEST);
+    // An update that finished, but stopped before deleting the old package.
+    write_manifest(&dir.join("lamp"), LAMP_MANIFEST);
+    write_manifest(&dir.join("download-3.old"), LAMP_MANIFEST);
+    // An update that put the new package in place and stopped while carrying over what the old
+    // one had fetched for itself: the rest is carried over, then the old one goes.
+    let other = LAMP_MANIFEST
+        .replace(r#"id = "lamp""#, r#"id = "other""#)
+        .replace(r#"name = "Lamp""#, r#"name = "Other""#);
+    write_manifest(&dir.join("other"), &other);
+    write_manifest(&dir.join("download-4.old"), &other);
+    std::fs::create_dir_all(dir.join("download-4.old/node/bin")).expect("made it");
+    std::fs::write(dir.join("download-4.old/node/bin/node"), "#!").expect("written");
+    // One that can't be read could be the only copy of a package: it stays.
+    std::fs::create_dir_all(dir.join("download-5.old")).expect("made it");
+    std::fs::write(
+        dir.join("download-5.old/irori-extension.toml"),
+        "not a manifest",
+    )
+    .expect("written");
+    // Not Irori's to touch.
+    std::fs::create_dir_all(dir.join("notes")).expect("made it");
+
+    let host = ExtensionHost::start_with_packages(&core, vec![], Timing::default(), dir.into())
+        .expect("starts");
+
+    let mut left: Vec<String> = std::fs::read_dir(dir)
+        .expect("reads")
+        .map(|entry| {
+            entry
+                .expect("an entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    left.sort();
+    assert_eq!(left, ["bridge", "download-5.old", "lamp", "notes", "other"]);
+    assert!(
+        dir.join("other/node/bin/node").is_file(),
+        "what the old version had fetched is carried over"
+    );
+    assert!(
+        dir.join("bridge/irori-extension.toml").is_file(),
+        "the old package is back where it lives"
+    );
+    host.shutdown().await;
+}

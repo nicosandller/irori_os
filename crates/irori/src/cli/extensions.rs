@@ -151,11 +151,16 @@ fn find<'a>(catalog: &'a [CatalogEntry], id: &str) -> Result<&'a CatalogEntry, S
 
 fn print_catalog(catalog: &[CatalogEntry]) {
     for entry in catalog {
-        let state = entry.state.as_deref().unwrap_or(if entry.installed {
-            "installed"
-        } else {
-            "not installed"
-        });
+        let state =
+            entry
+                .busy
+                .as_deref()
+                .or(entry.state.as_deref())
+                .unwrap_or(if entry.installed {
+                    "installed"
+                } else {
+                    "not installed"
+                });
         let access = if entry.full_access {
             "\tfull access"
         } else {

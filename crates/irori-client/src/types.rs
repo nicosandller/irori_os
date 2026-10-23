@@ -97,6 +97,9 @@ pub struct CatalogEntry {
     #[serde(default)]
     pub full_access: bool,
     pub installed: bool,
+    /// `installing`, `updating` or `uninstalling` while the server is doing that.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub busy: Option<String>,
     #[serde(default)]
     pub installed_version: Option<String>,
     #[serde(default)]
