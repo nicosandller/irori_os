@@ -497,7 +497,9 @@ pub fn NetworkMap(id: String) -> impl IntoView {
             .collect();
         flashes.update(|now| now.extend(keys.iter().copied().zip(more)));
         set_timeout(
-            move || flashes.update(|now| now.retain(|(key, _)| !keys.contains(key))),
+            move || {
+                flashes.try_update(|now| now.retain(|(key, _)| !keys.contains(key)));
+            },
             Duration::from_millis(u64::from(last + HOP_MS * 2)),
         );
     };
@@ -516,7 +518,10 @@ pub fn NetworkMap(id: String) -> impl IntoView {
             let Some(drawing) = drawing.get_untracked() else {
                 return;
             };
-            let Some(node) = node_of(&drawing, &live, &protocol, &entity_id) else {
+            let Some(node) = live
+                .home
+                .with_untracked(|home| node_of(&drawing, home, &protocol, &entity_id))
+            else {
                 return;
             };
             show(flashes_for(&drawing, &node, commanded));
@@ -525,6 +530,8 @@ pub fn NetworkMap(id: String) -> impl IntoView {
     // Opening it sends a pulse out along every link once, ring by ring: the map saying hello.
     // Once each time it opens, as soon as there's a map to send it across.
     let greeted = StoredValue::new(false);
+    // Its things pop in as it opens, not again each time the map changes while it's open.
+    let intro = RwSignal::new(false);
     Effect::new(move |_| {
         if !open.get() {
             greeted.set_value(false);
@@ -537,6 +544,13 @@ pub fn NetworkMap(id: String) -> impl IntoView {
             return;
         };
         greeted.set_value(true);
+        intro.set(true);
+        set_timeout(
+            move || {
+                intro.try_set(false);
+            },
+            Duration::from_millis(2500),
+        );
         let hello: Vec<Flash> = drawing
             .links
             .iter()
@@ -588,7 +602,7 @@ pub fn NetworkMap(id: String) -> impl IntoView {
                     <p class="muted small">"It hasn't drawn its network yet."</p>
                 }
                 .into_any(),
-                Some(drawing) => draw(drawing, selected, flashes).into_any(),
+                Some(drawing) => draw(drawing, selected, flashes, intro).into_any(),
             }}
         </div>
     }
@@ -620,38 +634,37 @@ pub fn NetworkMap(id: String) -> impl IntoView {
 /// The map node that's the entity's device, or the device it's reached through.
 fn node_of(
     drawing: &Drawing,
-    live: &crate::Live,
+    home: &api::Home,
     protocol: &str,
     entity_id: &EntityId,
 ) -> Option<String> {
-    live.home.with_untracked(|home| {
-        let entity = home
-            .entities
-            .iter()
-            .find(|entity| &entity.id == entity_id)?;
-        let mut device_id = entity.device_id.clone()?;
-        for _ in 0..4 {
-            let device = home.devices.iter().find(|device| device.id == device_id)?;
-            if device.protocol.as_str() != protocol {
-                return None;
-            }
-            if let Some(placed) = drawing
-                .nodes
-                .iter()
-                .find(|placed| placed.node.device_unique_id.as_ref() == Some(&device.unique_id))
-            {
-                return Some(placed.node.id.clone());
-            }
-            device_id = device.via_device_id.clone()?;
+    let entity = home
+        .entities
+        .iter()
+        .find(|entity| &entity.id == entity_id)?;
+    let mut device_id = entity.device_id.clone()?;
+    for _ in 0..4 {
+        let device = home.devices.iter().find(|device| device.id == device_id)?;
+        if device.protocol.as_str() != protocol {
+            return None;
         }
-        None
-    })
+        if let Some(placed) = drawing
+            .nodes
+            .iter()
+            .find(|placed| placed.node.device_unique_id.as_ref() == Some(&device.unique_id))
+        {
+            return Some(placed.node.id.clone());
+        }
+        device_id = device.via_device_id.clone()?;
+    }
+    None
 }
 
 fn draw(
     drawing: Drawing,
     selected: RwSignal<Option<String>>,
     flashes: RwSignal<Vec<(u64, Flash)>>,
+    intro: RwSignal<bool>,
 ) -> impl IntoView {
     let view_box = format!("0 0 {:.0} {:.0}", drawing.width, drawing.height);
     let root = drawing
@@ -700,7 +713,7 @@ fn draw(
         .map(|drawn| medium_class(drawn.link.medium))
         .collect();
     view! {
-        <svg class="net-svg" viewBox=view_box role="img" aria-label="Network map">
+        <svg class="net-svg" class:intro=move || intro.get() viewBox=view_box role="img" aria-label="Network map">
             <defs>
                 <radialGradient id="net-glow">
                     <stop offset="0%" stop-color="var(--ember)" stop-opacity=".35" />
@@ -1041,6 +1054,75 @@ mod tests {
             .push(node("lost", NetworkRole::Device, Some(NetworkMedium::Ip)));
         let drawing = layout(&network);
         assert_eq!(drawing.at("lost").expect("placed").depth, 1);
+    }
+
+    fn device(id: &str, protocol: &str, unique_id: &str, via: Option<&str>) -> irori_types::Device {
+        irori_types::Device {
+            id: id.parse().expect("a valid device id"),
+            protocol: protocol.parse().expect("a valid protocol id"),
+            unique_id: unique_id.parse().expect("a valid unique id"),
+            name: id.parse().expect("a valid name"),
+            description: None,
+            manufacturer: None,
+            model: None,
+            sw_version: None,
+            hw_version: None,
+            serial_number: None,
+            area_id: None,
+            suggested_area: None,
+            via_device_id: via.map(|via| via.parse().expect("a valid device id")),
+        }
+    }
+
+    fn entity(id: &str, protocol: &str, device: &str) -> irori_types::Entity {
+        irori_types::Entity {
+            id: id.parse().expect("a valid entity id"),
+            protocol: protocol.parse().expect("a valid protocol id"),
+            unique_id: format!("{device}-{id}").parse().expect("a valid unique id"),
+            name: "Reading".parse().expect("a valid name"),
+            device_id: Some(device.parse().expect("a valid device id")),
+            area_id: None,
+            capabilities: irori_types::Capabilities::BinarySensor(
+                irori_types::BinarySensorCapabilities { device_class: None },
+            ),
+            entity_category: None,
+        }
+    }
+
+    #[test]
+    fn a_report_finds_its_device_on_the_map_or_the_bridge_it_comes_through() {
+        let mut network = home();
+        network.nodes[5].device_unique_id = Some("FAB-01".parse().expect("a valid unique id"));
+        let drawing = layout(&network);
+        let home = api::Home {
+            devices: vec![
+                // The plug, on the map as itself.
+                device("plug", "matter", "FAB-01", None),
+                // A bulb behind a bridge behind the plug: the map has only the plug.
+                device("bridge", "matter", "FAB-01-ep1", Some("plug")),
+                device("bulb", "matter", "FAB-01-ep2", Some("bridge")),
+                // Another protocol's device with the same unique id is someone else's.
+                device("other", "zigbee", "FAB-01", None),
+            ],
+            entities: vec![
+                entity("binary_sensor.plug", "matter", "plug"),
+                entity("binary_sensor.bulb", "matter", "bulb"),
+                entity("binary_sensor.other", "zigbee", "other"),
+            ],
+            ..api::Home::default()
+        };
+        let find = |entity: &str| {
+            node_of(
+                &drawing,
+                &home,
+                "matter",
+                &entity.parse().expect("a valid entity id"),
+            )
+        };
+        assert_eq!(find("binary_sensor.plug").as_deref(), Some("plug"));
+        assert_eq!(find("binary_sensor.bulb").as_deref(), Some("plug"));
+        assert_eq!(find("binary_sensor.other"), None);
+        assert_eq!(find("binary_sensor.nothing"), None);
     }
 
     #[test]
