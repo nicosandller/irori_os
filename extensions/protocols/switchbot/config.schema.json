@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "daily_calls": {
+      "title": "Calls a day",
+      "description": "How many of the account's 10 000 calls a day Irori may use. Home Assistant or another app\nsigned in with the same token spends from the same 10 000, so leave them room.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 5000,
+      "maximum": 10000,
+      "minimum": 100
+    },
+    "secret": {
+      "title": "Secret key",
+      "description": "The secret key shown beside the token in Developer Options.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "token": {
+      "title": "Token",
+      "description": "The account's API token. In the SwitchBot app: Profile → Preferences → About, tap App\nVersion ten times, then Developer Options.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "$defs": {
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}

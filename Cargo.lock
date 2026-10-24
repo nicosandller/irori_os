@@ -1607,6 +1607,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-cloud"
+version = "0.0.0"
+dependencies = [
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "irori-config"
 version = "0.0.0"
 dependencies = [
@@ -1810,6 +1821,24 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "irori-protocol-switchbot"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "irori-cloud",
+ "irori-protocol",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -4622,6 +4651,7 @@ dependencies = [
  "irori-protocol-cast",
  "irori-protocol-matter",
  "irori-protocol-mqtt",
+ "irori-protocol-switchbot",
  "irori-protocol-zigbee",
  "irori-rules",
  "irori-types",

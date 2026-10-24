@@ -1,0 +1,508 @@
+//! The protocol against a fake SwitchBot cloud on a local port.
+
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use irori_cloud::Secret;
+use irori_protocol::host::{self, Reports};
+use irori_protocol::{AvailabilityTarget, Health, IncomingCall, ProtocolError, ServiceError};
+use irori_types::{
+    Availability, Context, ContextId, DeviceDescription, LockCode, LockStatus, Origin, SensorValue,
+    Service, ServiceCall, State, StateReport, UniqueId, Unmodeled,
+};
+use serde_json::{Value, json};
+use tokio::sync::{mpsc, watch};
+
+use crate::cloud::Cloud;
+use crate::fake::{Answer, Fake};
+use crate::settings::{Account, Settings};
+use crate::{Timing, drive, sign};
+
+const HUB: &str = "AABBCCDDEE01";
+const METER: &str = "AABBCCDDEE02";
+const LOCK: &str = "AABBCCDDEE03";
+
+const FAST: Timing = Timing {
+    recheck: Duration::from_millis(50),
+    relist: Duration::from_secs(3600),
+    min_gap: Duration::from_millis(20),
+    per_device: Duration::ZERO,
+    refused: Duration::from_secs(3600),
+};
+
+#[derive(Debug, Default)]
+struct Log {
+    health: Vec<Health>,
+    devices: Vec<DeviceDescription>,
+    entities: Vec<UniqueId>,
+    removed: Vec<UniqueId>,
+    availability: Vec<(AvailabilityTarget, Availability)>,
+    unmodeled: Vec<Unmodeled>,
+    stored: BTreeMap<String, Value>,
+}
+
+struct World {
+    calls: mpsc::Sender<IncomingCall>,
+    reports: Reports,
+    log: Arc<Mutex<Log>>,
+    states: BTreeMap<String, StateReport>,
+    _stop: watch::Sender<bool>,
+    drive: tokio::task::JoinHandle<Result<(), ProtocolError>>,
+}
+
+fn account() -> Account {
+    Account {
+        token: Secret::from("the-token".to_owned()),
+        secret: Secret::from("the-secret".to_owned()),
+    }
+}
+
+fn settings() -> Settings {
+    Settings {
+        token: Some(account().token),
+        secret: Some(account().secret),
+        daily_calls: 5_000,
+    }
+}
+
+/// Starts the protocol against `fake`, with `stored` as what an earlier run kept.
+async fn world(fake: Option<&Fake>, stored: BTreeMap<String, Value>, timing: Timing) -> World {
+    let (ctx, host) = host::connect();
+    let log = Arc::new(Mutex::new(Log::default()));
+    let recorded = Arc::clone(&log);
+    let mut ops = host.ops;
+    tokio::spawn(async move {
+        while let Some(op) = ops.recv().await {
+            let mut log = recorded.lock().expect("log");
+            match op {
+                host::Op::DescribeDevice(device, reply) => {
+                    log.devices.push(device);
+                    let _ = reply.send(Ok(()));
+                }
+                host::Op::DescribeEntity(entity, reply) => {
+                    log.entities.push(entity.unique_id);
+                    let _ = reply.send(Ok(()));
+                }
+                host::Op::SetAvailability(target, availability, reply) => {
+                    log.availability.push((target, availability));
+                    let _ = reply.send(Ok(()));
+                }
+                host::Op::SetHealth(health) => log.health.push(health),
+                host::Op::RemoveDevice(id, reply) | host::Op::RemoveEntity(id, reply) => {
+                    log.removed.push(id);
+                    let _ = reply.send(Ok(()));
+                }
+                host::Op::SetUnmodeled(unmodeled) => log.unmodeled = unmodeled,
+                host::Op::SetWaiting(_)
+                | host::Op::SetNetworks(_)
+                | host::Op::SetActionOpen(_, _)
+                | host::Op::SetAvailableActions(_) => {}
+                host::Op::Load(key, reply) => {
+                    let _ = reply.send(Ok(stored.get(&key).cloned()));
+                }
+                host::Op::Store(key, value, reply) => {
+                    match value {
+                        Some(value) => log.stored.insert(key, value),
+                        None => log.stored.remove(&key),
+                    };
+                    let _ = reply.send(Ok(()));
+                }
+            }
+        }
+    });
+    let cloud = fake.map(|fake| {
+        Cloud::new(
+            irori_cloud::client("irori-switchbot-test").expect("a client"),
+            fake.base.clone(),
+            account(),
+        )
+    });
+    let settings = if cloud.is_some() {
+        settings()
+    } else {
+        Settings {
+            token: None,
+            secret: None,
+            daily_calls: 5_000,
+        }
+    };
+    let drive = tokio::spawn(drive(settings, ctx, cloud, timing));
+    World {
+        calls: host.calls,
+        reports: host.reports,
+        log,
+        states: BTreeMap::new(),
+        _stop: host.stop,
+        drive,
+    }
+}
+
+impl World {
+    async fn until<T>(&self, what: &str, mut check: impl FnMut(&Log) -> Option<T>) -> T {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(found) = check(&self.log.lock().expect("log")) {
+                return found;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "never saw {what}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    async fn health(&self, containing: &str) {
+        self.until(&format!("health saying {containing:?}"), |log| {
+            match log.health.last() {
+                Some(Health::Degraded(why)) if why.contains(containing) => Some(()),
+                _ => None,
+            }
+        })
+        .await;
+    }
+
+    /// Waits for a state of the entity `id` that `check` accepts.
+    async fn state(
+        &mut self,
+        id: &str,
+        mut check: impl FnMut(&StateReport) -> bool,
+    ) -> StateReport {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            for report in self.reports.drain() {
+                self.states
+                    .insert(report.unique_id.as_str().to_owned(), report);
+            }
+            if let Some(report) = self.states.get(id)
+                && check(report)
+            {
+                return report.clone();
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "never saw a state for {id}"
+            );
+            tokio::select! {
+                _ = self.reports.ready() => {}
+                _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+            }
+        }
+    }
+
+    async fn ask(&self, entity: &str, service: Service) -> Result<(), ServiceError> {
+        let (incoming, answer) = host::incoming_call(ServiceCall {
+            unique_id: UniqueId::try_from(entity).expect("an entity id"),
+            service,
+            context: Context {
+                id: context(),
+                parent_id: None,
+                origin: Origin::System,
+            },
+        });
+        self.calls
+            .send(incoming)
+            .await
+            .expect("the protocol is running");
+        tokio::time::timeout(Duration::from_secs(5), answer)
+            .await
+            .expect("a reply in time")
+            .expect("the reply was sent")
+    }
+
+    async fn shutdown(self) {
+        drop(self._stop);
+        drop(self.calls);
+        let _ = tokio::time::timeout(Duration::from_secs(2), self.drive).await;
+    }
+}
+
+fn context() -> ContextId {
+    ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9").expect("context")
+}
+
+fn listing() -> Answer {
+    Answer::ok(json!({
+        "deviceList": [
+            { "deviceId": METER.to_ascii_lowercase(), "deviceName": "Bedroom", "deviceType": "Meter", "hubDeviceId": HUB },
+            { "deviceId": HUB, "deviceName": "Hall hub", "deviceType": "Hub Mini", "hubDeviceId": "000000000000" },
+            { "deviceId": LOCK, "deviceName": "Front door", "deviceType": "Smart Lock Pro", "hubDeviceId": HUB },
+            { "deviceId": "AABBCCDDEE04", "deviceName": "Desk lamp", "deviceType": "Color Bulb", "hubDeviceId": "000000000000" }
+        ],
+        "infraredRemoteList": [
+            { "deviceId": "01-202310", "deviceName": "Living room TV", "remoteType": "TV", "hubDeviceId": HUB }
+        ]
+    }))
+}
+
+async fn home() -> Fake {
+    let fake = Fake::start().await;
+    fake.with(|state| {
+        state.devices = Some(listing());
+        state.status.insert(
+            METER.into(),
+            Answer::ok(
+                json!({ "temperature": 21.5, "humidity": 40, "battery": 90, "version": "V2.1" }),
+            ),
+        );
+        state.status.insert(
+            LOCK.into(),
+            Answer::ok(json!({ "lockState": "unlocked", "doorState": "closed", "battery": 80 })),
+        );
+    });
+    fake
+}
+
+fn lock_status(report: &StateReport) -> Option<LockStatus> {
+    match &report.state {
+        Some(State::Lock(lock)) => Some(lock.state),
+        _ => None,
+    }
+}
+
+#[tokio::test]
+async fn devices_in_the_account_are_described_through_their_hub_and_read() {
+    let fake = home().await;
+    let mut world = world(Some(&fake), BTreeMap::new(), FAST).await;
+
+    let devices = world
+        .until("three devices", |log| {
+            (log.devices.len() >= 3).then(|| log.devices.clone())
+        })
+        .await;
+    assert_eq!(
+        devices[0].unique_id.as_str(),
+        HUB,
+        "the hub is described first"
+    );
+    let meter = devices
+        .iter()
+        .find(|d| d.unique_id.as_str() == METER)
+        .expect("the meter, its id upper case");
+    assert_eq!(
+        meter.via_device_unique_id.as_ref().map(UniqueId::as_str),
+        Some(HUB)
+    );
+    assert_eq!(meter.manufacturer.as_deref(), Some("SwitchBot"));
+
+    let temperature = world
+        .state(&format!("{METER}:temperature"), |r| r.state.is_some())
+        .await;
+    assert!(matches!(
+        temperature.state,
+        Some(State::Sensor(ref sensor)) if sensor.value == SensorValue::Number(21.5)
+    ));
+    assert!(!temperature.replayed);
+    let lock = world
+        .state(&format!("{LOCK}:main"), |r| lock_status(r).is_some())
+        .await;
+    assert_eq!(lock_status(&lock), Some(LockStatus::Unlocked));
+
+    // The bulb and the TV remote are listed as found but not usable.
+    let unmodeled = world
+        .until("two unmodeled", |log| {
+            (log.unmodeled.len() == 2).then(|| log.unmodeled.clone())
+        })
+        .await;
+    assert!(
+        unmodeled
+            .iter()
+            .any(|u| u.platform.as_str() == "color_bulb")
+    );
+    assert!(
+        unmodeled
+            .iter()
+            .any(|u| u.platform.as_str() == "infrared_remote")
+    );
+
+    // Every request is signed: the token, the time, a nonce, and their HMAC.
+    let request = fake.requests().into_iter().next().expect("a request");
+    assert_eq!(
+        request.headers.get("authorization").map(String::as_str),
+        Some("the-token")
+    );
+    let t: u128 = request.headers["t"].parse().expect("t in milliseconds");
+    let expected = sign::sign(&account(), t, &request.headers["nonce"]);
+    assert_eq!(request.headers.get("sign"), Some(&expected.sign));
+
+    // The hub has nothing to read and isn't polled.
+    assert!(!fake.requests().iter().any(|r| r.path.contains(HUB)));
+    world
+        .until("running", |log| {
+            (log.health.last() == Some(&Health::Running)).then_some(())
+        })
+        .await;
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_command_goes_out_and_the_device_is_read_again_on_its_behalf() {
+    let fake = home().await;
+    let mut world = world(Some(&fake), BTreeMap::new(), FAST).await;
+    let lock = format!("{LOCK}:main");
+    world
+        .state(&lock, |r| lock_status(r) == Some(LockStatus::Unlocked))
+        .await;
+
+    fake.with(|state| {
+        state.status.insert(
+            LOCK.into(),
+            Answer::ok(json!({ "lockState": "locked", "doorState": "closed", "battery": 80 })),
+        );
+    });
+    world
+        .ask(&lock, Service::LockLock(LockCode::default()))
+        .await
+        .expect("SwitchBot took it");
+    let command = fake
+        .requests()
+        .into_iter()
+        .find(|r| r.method == "POST")
+        .expect("a command");
+    assert_eq!(command.path, format!("/v1.1/devices/{LOCK}/commands"));
+    assert_eq!(
+        command.body,
+        json!({ "commandType": "command", "command": "lock", "parameter": "default" })
+    );
+
+    let report = world
+        .state(&lock, |r| lock_status(r) == Some(LockStatus::Locked))
+        .await;
+    assert_eq!(
+        report.caused_by,
+        Some(context()),
+        "the re-read is on behalf of the call"
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_offline_device_is_unavailable_and_its_command_says_so() {
+    let fake = home().await;
+    fake.with(|state| {
+        state.status.insert(LOCK.into(), Answer::code(161));
+        state.commands.insert(LOCK.into(), Answer::code(161));
+    });
+    let world = world(Some(&fake), BTreeMap::new(), FAST).await;
+    world
+        .until("the lock unavailable", |log| {
+            log.availability
+                .iter()
+                .any(|(target, availability)| {
+                    matches!(target, AvailabilityTarget::Device(id) if id.as_str() == LOCK)
+                        && *availability == Availability::Unavailable
+                })
+                .then_some(())
+        })
+        .await;
+    let error = world
+        .ask(
+            &format!("{LOCK}:main"),
+            Service::LockLock(LockCode::default()),
+        )
+        .await
+        .expect_err("the lock is offline");
+    assert_eq!(error, ServiceError::unavailable("the device is offline"));
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_token_that_never_worked_is_reported_as_refused() {
+    let fake = Fake::start().await;
+    fake.with(|state| state.devices = Some(Answer::http(401)));
+    let world = world(Some(&fake), BTreeMap::new(), FAST).await;
+    world.health("refused the token").await;
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refusal_after_the_token_worked_today_means_the_calls_ran_out() {
+    let fake = Fake::start().await;
+    fake.with(|state| state.devices = Some(Answer::http(401)));
+    let today = crate::unix_now() / 86_400;
+    let ledger = json!({
+        "budget": irori_cloud::Budget::new(irori_cloud::Period::Day, 5_000, crate::unix_now()),
+        "worked_on": today,
+    });
+    let world = world(
+        Some(&fake),
+        BTreeMap::from([("ledger".into(), ledger)]),
+        FAST,
+    )
+    .await;
+    world.health("used up").await;
+    let stored = world
+        .until("the ledger stored", |log| log.stored.get("ledger").cloned())
+        .await;
+    assert_eq!(
+        stored["budget"]["spent"],
+        json!(5_000),
+        "the day counts as spent"
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_an_account_it_asks_for_the_token() {
+    let world = world(None, BTreeMap::new(), FAST).await;
+    world.health("Add the SwitchBot token").await;
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn readings_from_the_last_run_are_reported_as_replayed_before_the_first_read() {
+    let fake = home().await;
+    // SwitchBot is slow to answer the meter this time; the last run's reading shows meanwhile.
+    fake.with(|state| {
+        state.status.remove(METER);
+    });
+    let readings = json!({ METER: { "temperature": 19.0 } });
+    let mut world = world(
+        Some(&fake),
+        BTreeMap::from([("readings".into(), readings)]),
+        FAST,
+    )
+    .await;
+    let report = world
+        .state(&format!("{METER}:temperature"), |r| r.state.is_some())
+        .await;
+    assert!(report.replayed);
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_device_deleted_in_the_app_is_removed_at_the_next_listing() {
+    let fake = home().await;
+    let world = world(
+        Some(&fake),
+        BTreeMap::new(),
+        Timing {
+            relist: Duration::from_millis(200),
+            ..FAST
+        },
+    )
+    .await;
+    world
+        .until("the meter", |log| {
+            log.devices
+                .iter()
+                .any(|d| d.unique_id.as_str() == METER)
+                .then_some(())
+        })
+        .await;
+    fake.with(|state| {
+        state.devices = Some(Answer::ok(json!({
+            "deviceList": [
+                { "deviceId": HUB, "deviceName": "Hall hub", "deviceType": "Hub Mini", "hubDeviceId": "000000000000" },
+                { "deviceId": LOCK, "deviceName": "Front door", "deviceType": "Smart Lock Pro", "hubDeviceId": HUB }
+            ]
+        })));
+    });
+    world
+        .until("the meter removed", |log| {
+            log.removed
+                .iter()
+                .any(|id| id.as_str() == METER)
+                .then_some(())
+        })
+        .await;
+    world.shutdown().await;
+}

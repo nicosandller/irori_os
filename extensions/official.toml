@@ -69,6 +69,16 @@ bin = "irori-ext-matter"
 full_access = true
 
 [[extension]]
+id = "switchbot"
+name = "SwitchBot"
+category = "protocol"
+description = "SwitchBot meters, sensors, locks, plugs, curtains, humidifiers and vacuums, through SwitchBot's cloud."
+version = "0.1.0"
+source = "extensions/protocols/switchbot"
+crate = "irori-protocol-switchbot"
+bin = "irori-ext-switchbot"
+
+[[extension]]
 id = "automations"
 name = "Automations"
 category = "automation"
