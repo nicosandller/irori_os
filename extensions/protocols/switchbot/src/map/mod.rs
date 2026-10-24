@@ -130,9 +130,17 @@ mod tests {
     use irori_types::{EntityDescription, Name, UniqueId};
 
     /// Every entity of every family is one the core accepts: built the way the protocol builds
-    /// it, and checked the way the wire checks it.
+    /// it, checked the way the wire checks it, and of a kind the manifest lists (the core refuses
+    /// any other).
     #[test]
     fn every_family_describes_valid_entities_with_distinct_keys() {
+        let manifest = irori_protocol::parse_manifest(include_str!("../../irori-extension.toml"))
+            .expect("a valid manifest");
+        let kinds = &manifest.contributes.protocol[0].entity_kinds;
+        let pressing = entities(Family::Bot, &Reading::default());
+        for entity in &pressing {
+            assert!(kinds.contains(&entity.capabilities.kind()), "{entity:?}");
+        }
         let full = Reading {
             bot_mode: Some("switchMode".into()),
             ..Reading::default()
@@ -185,6 +193,12 @@ mod tests {
                     capabilities: entity.capabilities,
                     entity_category: entity.category,
                 };
+                assert!(
+                    kinds.contains(&described.kind()),
+                    "{family:?} {} is a {}, which the manifest doesn't list",
+                    entity.key,
+                    described.kind()
+                );
                 let json = serde_json::to_value(&described).expect("json");
                 serde_json::from_value::<EntityDescription>(json)
                     .unwrap_or_else(|error| panic!("{family:?} {}: {error}", entity.key));

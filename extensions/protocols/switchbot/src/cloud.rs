@@ -3,8 +3,9 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use irori_cloud::reqwest::header::HeaderValue;
 use irori_cloud::reqwest::{self, StatusCode};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::map::Command;
@@ -58,7 +59,7 @@ impl CloudError {
 }
 
 /// A device in the account's list.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Listed {
     /// Its MAC address, upper case, no colons: the same id it has over Bluetooth.
     pub id: String,
@@ -189,10 +190,14 @@ impl Cloud {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |since| since.as_millis());
         let signed = sign::sign(&self.account, millis, &sign::nonce());
+        // Marked sensitive, so no debug output of the request can show the token.
+        let mut token = HeaderValue::from_str(self.account.token.expose())
+            .map_err(|_| CloudError::Unauthorized)?;
+        token.set_sensitive(true);
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base))
-            .header("Authorization", self.account.token.expose())
+            .header("Authorization", token)
             .header("t", signed.t)
             .header("nonce", signed.nonce)
             .header("sign", signed.sign)

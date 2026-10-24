@@ -98,7 +98,15 @@ struct Ledger {
 }
 
 const LEDGER_KEY: &str = "ledger";
-const READINGS_KEY: &str = "readings";
+const DEVICES_KEY: &str = "devices";
+
+/// A device as the last run knew it: enough to describe it and report its states before
+/// SwitchBot answers, which on a day whose calls are spent is after midnight UTC.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Saved {
+    listed: Listed,
+    reading: Reading,
+}
 
 /// A device SwitchBot listed that Irori can use.
 #[derive(Debug)]
@@ -112,6 +120,20 @@ struct Known {
     version: Option<String>,
     available: bool,
     last_read: Option<Instant>,
+}
+
+impl Known {
+    fn new(listed: Listed, family: Family, reading: Reading) -> Self {
+        Self {
+            listed,
+            family,
+            reading,
+            described: BTreeSet::new(),
+            version: None,
+            available: true,
+            last_read: None,
+        }
+    }
 }
 
 /// What's keeping the extension from working as it should, worst first.
@@ -154,8 +176,8 @@ struct World {
     timing: Timing,
     ledger: Ledger,
     devices: BTreeMap<String, Known>,
-    /// Readings restored from the last run, for devices not listed yet.
-    restored: BTreeMap<String, Reading>,
+    /// A device list is on its way.
+    listing: bool,
     /// The order devices are polled in; urgent ones appear twice.
     rotation: Vec<String>,
     next_in_rotation: usize,
@@ -191,7 +213,7 @@ pub(crate) async fn drive(
         ),
         worked_on: ledger.and_then(|l| l.worked_on),
     };
-    let restored: BTreeMap<String, Reading> = load(&ctx, READINGS_KEY).await.unwrap_or_default();
+    let saved: Vec<Saved> = load(&ctx, DEVICES_KEY).await.unwrap_or_default();
     let (done, mut finished) = mpsc::channel(64);
     let mut world = World {
         ctx,
@@ -200,7 +222,7 @@ pub(crate) async fn drive(
         timing,
         ledger,
         devices: BTreeMap::new(),
-        restored,
+        listing: false,
         rotation: Vec::new(),
         next_in_rotation: 0,
         sweep: VecDeque::new(),
@@ -210,6 +232,7 @@ pub(crate) async fn drive(
         ledger_dirty: false,
         done,
     };
+    world.restore(saved).await;
     world.report_health().await;
 
     let mut list_backoff = Backoff::new();
@@ -235,12 +258,14 @@ pub(crate) async fn drive(
             }
             Some(done) = finished.recv() => match done {
                 Done::Listed(Ok(list)) => {
+                    world.listing = false;
                     list_backoff.succeeded();
                     world.worked().await;
                     world.adopt(list).await;
                     next_list = Some(Instant::now() + timing.relist);
                 }
                 Done::Listed(Err(error)) => {
+                    world.listing = false;
                     let wait = match &error {
                         CloudError::Unauthorized if !world.worked_today() => timing.refused,
                         _ => list_backoff.failed().max(world.wait_for(&error)),
@@ -335,12 +360,41 @@ impl World {
         let Some(cloud) = self.cloud.clone() else {
             return;
         };
+        if self.listing {
+            return;
+        }
+        self.listing = true;
         self.ledger.budget.spend(1, unix_now());
         self.ledger_dirty = true;
         let done = self.done.clone();
         tokio::spawn(async move {
             let _ = done.send(Done::Listed(cloud.devices().await)).await;
         });
+    }
+
+    /// Describes the devices the last run knew and reports their last readings, before SwitchBot
+    /// has answered anything. Each is read again first thing once SwitchBot answers.
+    async fn restore(&mut self, saved: Vec<Saved>) {
+        let listed: Vec<Listed> = saved.iter().map(|s| s.listed.clone()).collect();
+        let mut readings: BTreeMap<String, Reading> = saved
+            .into_iter()
+            .map(|s| (s.listed.id, s.reading))
+            .collect();
+        for listed in hubs_first(&listed) {
+            let Some(family) = Family::of(&listed.device_type) else {
+                continue;
+            };
+            let reading = readings.remove(&listed.id).unwrap_or_default();
+            let mut known = Known::new(listed.clone(), family, reading);
+            if self.describe(&mut known).await.is_ok() {
+                self.report(&known, None, true);
+            }
+            if !family.silent() {
+                self.sweep.push_back(known.listed.id.clone());
+            }
+            self.devices.insert(known.listed.id.clone(), known);
+        }
+        self.rotate();
     }
 
     /// Takes in a fresh device list: describes what's new or changed, removes what's gone,
@@ -350,7 +404,7 @@ impl World {
         let hubs: BTreeSet<String> = list
             .devices
             .iter()
-            .filter(|d| matches!(Family::of(&d.device_type), Some(Family::Hub(_))))
+            .filter(|d| is_hub(d))
             .map(|d| d.id.clone())
             .collect();
         let gone: Vec<String> = self
@@ -361,7 +415,6 @@ impl World {
             .collect();
         for id in gone {
             self.devices.remove(&id);
-            self.restored.remove(&id);
             self.readings_dirty = true;
             if let Ok(unique_id) = UniqueId::try_from(id.as_str()) {
                 let _ = self.ctx.remove_device(unique_id).await;
@@ -369,14 +422,7 @@ impl World {
         }
 
         let mut unmodeled = Vec::new();
-        // Hubs first, so a device can say it's reached through one already described.
-        let mut ordered: Vec<&Listed> = list
-            .devices
-            .iter()
-            .filter(|d| hubs.contains(&d.id))
-            .collect();
-        ordered.extend(list.devices.iter().filter(|d| !hubs.contains(&d.id)));
-        for listed in ordered {
+        for listed in hubs_first(&list.devices) {
             let Some(family) = Family::of(&listed.device_type) else {
                 unmodeled.push(Unmodeled {
                     device_unique_id: None,
@@ -404,16 +450,9 @@ impl World {
                     listed,
                     ..known
                 },
-                None => Known {
-                    family,
-                    reading: self.restored.remove(&listed.id).unwrap_or_default(),
-                    described: BTreeSet::new(),
-                    version: None,
-                    available: true,
-                    last_read: None,
-                    listed,
-                },
+                None => Known::new(listed, family, Reading::default()),
             };
+            self.readings_dirty = true;
             if self.describe(&mut known).await.is_ok() {
                 self.report(&known, None, true);
             }
@@ -601,17 +640,23 @@ impl World {
         result: Result<serde_json::Map<String, serde_json::Value>, CloudError>,
         caused_by: Option<ContextId>,
     ) {
+        // Any answer from SwitchBot says it's reachable and the token good, even one about the
+        // device; and every answer but 171 says the device's hub is up.
+        let hub_up = match &result {
+            Ok(_) | Err(CloudError::DeviceOffline | CloudError::Refused { .. }) => Some(true),
+            Err(CloudError::HubOffline) => Some(false),
+            _ => None,
+        };
         let available = match result {
             Ok(status) => {
                 self.worked().await;
-                let Some(known) = self.devices.get_mut(id) else {
+                let Some(mut known) = self.devices.remove(id) else {
                     return;
                 };
                 let reading = Reading::from_status(known.family, &status);
                 let online = reading.online.unwrap_or(true);
                 known.reading.merge(reading);
                 self.readings_dirty = true;
-                let mut known = self.devices.remove(id).expect("just found");
                 let keys = map::entities(known.family, &known.reading);
                 let reshaped = keys.len() != known.described.len()
                     || keys.iter().any(|e| !known.described.contains(e.key))
@@ -621,20 +666,40 @@ impl World {
                 }
                 self.report(&known, caused_by, false);
                 self.devices.insert(id.to_owned(), known);
-                online
+                Some(online)
             }
-            Err(CloudError::DeviceOffline | CloudError::HubOffline) => false,
+            Err(CloudError::DeviceOffline | CloudError::HubOffline) => {
+                self.worked().await;
+                Some(false)
+            }
             Err(CloudError::NotFound) => {
-                // Gone from the account: the next list removes it properly.
+                // Gone from the account: a fresh list removes it properly.
+                self.worked().await;
                 self.list();
-                return;
+                None
+            }
+            Err(error @ CloudError::Refused { .. }) => {
+                self.worked().await;
+                tracing::debug!("a SwitchBot status read failed: {}", error.describe());
+                None
             }
             Err(error) => {
                 self.failed(error).await;
-                return;
+                None
             }
         };
-        self.set_available(id, available).await;
+        if let Some(available) = available {
+            self.set_available(id, available).await;
+        }
+        // A hub with nothing of its own to read is only known to be up or down through the
+        // devices behind it.
+        let hub = self
+            .devices
+            .get(id)
+            .and_then(|known| known.listed.hub.clone());
+        if let (Some(hub), Some(up)) = (hub, hub_up) {
+            self.set_available(&hub, up).await;
+        }
     }
 
     async fn set_available(&mut self, id: &str, available: bool) {
@@ -784,12 +849,16 @@ impl World {
         if !self.readings_dirty {
             return;
         }
-        let mut all = self.restored.clone();
-        for (id, known) in &self.devices {
-            all.insert(id.clone(), known.reading.clone());
-        }
-        if let Ok(value) = serde_json::to_value(&all)
-            && self.ctx.store(READINGS_KEY, value).await.is_ok()
+        let saved: Vec<Saved> = self
+            .devices
+            .values()
+            .map(|known| Saved {
+                listed: known.listed.clone(),
+                reading: known.reading.clone(),
+            })
+            .collect();
+        if let Ok(value) = serde_json::to_value(&saved)
+            && self.ctx.store(DEVICES_KEY, value).await.is_ok()
         {
             self.readings_dirty = false;
         }
@@ -828,4 +897,15 @@ fn unix_now() -> u64 {
 
 fn far_future() -> Instant {
     Instant::now() + Duration::from_secs(365 * 86_400)
+}
+
+fn is_hub(listed: &Listed) -> bool {
+    matches!(Family::of(&listed.device_type), Some(Family::Hub(_)))
+}
+
+/// Hubs first, so a device can say it's reached through one already described.
+fn hubs_first(list: &[Listed]) -> Vec<&Listed> {
+    let mut ordered: Vec<&Listed> = list.iter().filter(|d| is_hub(d)).collect();
+    ordered.extend(list.iter().filter(|d| !is_hub(d)));
+    ordered
 }

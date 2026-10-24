@@ -19,11 +19,13 @@ stay on this machine.
   UTC, when SwitchBot's count starts again. Leak and contact sensors, locks and the garage door
   opener are read twice as often as the rest. A hub with no sensors of its own is never read.
 - **Merges what SwitchBot says** into one reading per device, so a field missing from one answer
-  keeps its last value. Readings are kept between runs and reported as replayed at start.
+  keeps its last value. The device list and readings are kept between runs: at start they're
+  described and reported as replayed straight away, even on a day SwitchBot refuses every call.
 - **Carries out commands** and answers once SwitchBot has taken them. It shows no state it hasn't
   read: the device is read again 6 seconds later, and that reading is reported on behalf of the
   call. SwitchBot's "something went wrong" (190) is tried once more.
-- **Marks a device unavailable** when SwitchBot says it (161) or its hub (171) is offline.
+- **Marks a device unavailable** when SwitchBot says it (161) or its hub (171) is offline. A hub
+  offline is marked unavailable too, and the extension's health names it.
 
 ## Settings
 

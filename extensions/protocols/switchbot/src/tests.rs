@@ -448,23 +448,89 @@ async fn without_an_account_it_asks_for_the_token() {
 }
 
 #[tokio::test]
-async fn readings_from_the_last_run_are_reported_as_replayed_before_the_first_read() {
-    let fake = home().await;
-    // SwitchBot is slow to answer the meter this time; the last run's reading shows meanwhile.
-    fake.with(|state| {
-        state.status.remove(METER);
-    });
-    let readings = json!({ METER: { "temperature": 19.0 } });
-    let mut world = world(
-        Some(&fake),
-        BTreeMap::from([("readings".into(), readings)]),
-        FAST,
-    )
-    .await;
+async fn a_restart_on_a_spent_day_still_shows_the_last_readings() {
+    // Home Assistant used up the day's calls, and Irori starts again: SwitchBot refuses even the
+    // device list until midnight UTC. The devices and readings the last run kept show meanwhile.
+    let fake = Fake::start().await;
+    fake.with(|state| state.devices = Some(Answer::http(401)));
+    let stored = BTreeMap::from([
+        (
+            "ledger".to_owned(),
+            json!({
+                "budget": irori_cloud::Budget::new(irori_cloud::Period::Day, 5_000, crate::unix_now()),
+                "worked_on": crate::unix_now() / 86_400,
+            }),
+        ),
+        (
+            "devices".to_owned(),
+            json!([
+                {
+                    "listed": { "id": METER, "name": "Bedroom", "device_type": "Meter", "hub": HUB },
+                    "reading": { "temperature": 19.0 }
+                },
+                {
+                    "listed": { "id": HUB, "name": "Hall hub", "device_type": "Hub Mini", "hub": null },
+                    "reading": {}
+                }
+            ]),
+        ),
+    ]);
+    let mut world = world(Some(&fake), stored, FAST).await;
     let report = world
         .state(&format!("{METER}:temperature"), |r| r.state.is_some())
         .await;
     assert!(report.replayed);
+    let devices = world
+        .until("both devices", |log| {
+            (log.devices.len() == 2).then(|| log.devices.clone())
+        })
+        .await;
+    assert_eq!(
+        devices[0].unique_id.as_str(),
+        HUB,
+        "the hub first, as at a listing"
+    );
+    world.health("used up").await;
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_hub_going_offline_takes_its_devices_with_it_and_says_so() {
+    let fake = home().await;
+    fake.with(|state| {
+        state.status.insert(METER.into(), Answer::code(171));
+        state.status.insert(LOCK.into(), Answer::code(171));
+    });
+    let world = world(Some(&fake), BTreeMap::new(), FAST).await;
+    let down = |log: &Log, id: &str| {
+        log.availability.iter().any(|(target, availability)| {
+            matches!(target, AvailabilityTarget::Device(device) if device.as_str() == id)
+                && *availability == Availability::Unavailable
+        })
+    };
+    world
+        .until("the meter and its hub unavailable", |log| {
+            (down(log, METER) && down(log, HUB)).then_some(())
+        })
+        .await;
+    world.health("The hub Hall hub is offline").await;
+
+    // The hub is back: its devices answer again.
+    fake.with(|state| {
+        state.status.insert(
+            METER.into(),
+            Answer::ok(json!({ "temperature": 21.5, "humidity": 40, "battery": 90 })),
+        );
+        state.status.insert(
+            LOCK.into(),
+            Answer::ok(json!({ "lockState": "locked", "doorState": "closed", "battery": 80 })),
+        );
+    });
+    world
+        .until("running again", |log| {
+            (log.health.last() == Some(&Health::Running)).then_some(())
+        })
+        .await;
     world.shutdown().await;
 }
 
