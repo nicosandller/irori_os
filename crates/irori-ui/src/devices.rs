@@ -770,6 +770,8 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
     // The found device being unpaired, while its window is up.
     let unpairing = RwSignal::new(None::<crate::api::HeldDevice>);
     let name = move || extension.with(|e| e.as_ref().map(|e| e.name.clone()).unwrap_or_default());
+    // A cloud protocol finds devices in an account, not on the network (tenet 10: say so).
+    let cloud = move || extension.with(|e| e.as_ref().is_some_and(|e| is_cloud(&e.iot_class)));
     let icon_there = move || extension.with(|e| e.as_ref().is_some_and(|e| e.has_icon));
 
     // What it has found that isn't in the home — what a device is, never what it's reporting, so
@@ -951,7 +953,11 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
             <div class="found">
                 <div class="found-head">
                     <h4>
-                        "Found on your network"
+                        {move || if cloud() {
+                            format!("Found in your {} account", name())
+                        } else {
+                            "Found on your network".to_owned()
+                        }}
                         {move || {
                             let count = found.with(Vec::len);
                             (count > 0).then(|| view! { <span class="found-count">{count}</span> })
@@ -1028,10 +1034,18 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                             <div class="listening-empty">
                                 <span class="listening-ring" aria-hidden="true"></span>
                                 <p>
-                                    {format!("Listening for {} devices on your network…", name())}
+                                    {if cloud() {
+                                        format!("Looking in your {} account…", name())
+                                    } else {
+                                        format!("Listening for {} devices on your network…", name())
+                                    }}
                                 </p>
                                 <p class="muted small">
-                                    "Anything it finds shows up here within a few seconds of joining. "
+                                    {if cloud() {
+                                        "Devices in the account show up here once it answers. "
+                                    } else {
+                                        "Anything it finds shows up here within a few seconds of joining. "
+                                    }}
                                     "Devices already in your home are listed below."
                                 </p>
                             </div>
@@ -1874,6 +1888,13 @@ async fn confirmed(live: crate::Live, id: &ExtensionId, action_id: &str, open: b
         gloo_timers::future::sleep(EVERY).await;
         waited += EVERY;
     }
+}
+
+/// Whether an `iot_class` means the devices are reached through a vendor's cloud.
+fn is_cloud(iot_class: &Option<String>) -> bool {
+    iot_class
+        .as_deref()
+        .is_some_and(|class| class.starts_with("cloud_"))
 }
 
 /// Plain words for an `iot_class`: where the device's brain is and what it needs.

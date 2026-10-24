@@ -37,6 +37,11 @@ pub struct Official {
     /// `the_catalog_says_full_access_exactly_when_the_manifest_does`.
     #[serde(default)]
     pub full_access: bool,
+    /// The internet hosts it connects to, as its manifest's `permissions.network`: a cloud
+    /// extension's card says so before it's installed (tenet 10). In the catalog for the same
+    /// reason as `full_access`, and kept in step by the same test.
+    #[serde(default)]
+    pub network: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -551,6 +556,13 @@ mod tests {
                 "{}",
                 item.id
             );
+            let network: Vec<String> = manifest
+                .permissions
+                .network
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            assert_eq!(item.network, network, "{}'s internet hosts", item.id);
         }
     }
 
@@ -726,6 +738,7 @@ mod tests {
             crate_name: "irori-protocol-demo".to_owned(),
             bin: "irori-ext-demo".to_owned(),
             full_access: false,
+            network: Vec::new(),
         };
         let url = release_asset_url_for(&item);
         assert!(

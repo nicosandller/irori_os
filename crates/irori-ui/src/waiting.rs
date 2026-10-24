@@ -63,7 +63,7 @@ pub fn Waiting() -> impl IntoView {
                     )}
                 </h2>
                 <p class="muted small">
-                    "These are on your network and Irori can see them, but can't use them yet."
+                    "Irori can see these, but can't use them yet."
                 </p>
                 <ul class="waiting-list">{items}</ul>
             </section>
@@ -96,7 +96,7 @@ pub fn WaitingFor(extension: ExtensionId) -> impl IntoView {
         view! {
             <div class="waiting-for">
                 <p class="muted small">
-                    "Found, and waiting for you — on your network, but can't be used yet."
+                    "Found, and waiting for you: Irori can see these, but can't use them yet."
                 </p>
                 <ul class="waiting-list">{rows}</ul>
             </div>

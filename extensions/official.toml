@@ -77,6 +77,8 @@ version = "0.1.0"
 source = "extensions/protocols/switchbot"
 crate = "irori-protocol-switchbot"
 bin = "irori-ext-switchbot"
+# Its manifest's `permissions.network`: the card says it uses the internet.
+network = ["api.switch-bot.com"]
 
 [[extension]]
 id = "automations"

@@ -2351,6 +2351,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     version: item.version,
                     official: true,
                     full_access: item.full_access,
+                    network: item.network,
                     installed: overview.is_some(),
                     busy,
                     installed_version: overview
@@ -2411,6 +2412,9 @@ struct CatalogEntry {
     /// `host_shell`, or a `host_fs` path outside Irori's own folders. The page says "full
     /// access to this machine" and install is refused until that is approved.
     full_access: bool,
+    /// The internet hosts it connects to. Empty for one that stays on the local network.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    network: Vec<String>,
     installed: bool,
     /// `installing`, `updating` or `uninstalling` while that is underway, whoever asked for it.
     #[serde(skip_serializing_if = "Option::is_none")]
