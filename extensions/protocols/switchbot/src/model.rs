@@ -440,6 +440,21 @@ fn watt_minutes(value: f64) -> f64 {
     (value / 60.0 * 100.0).round() / 100.0
 }
 
+/// A device type as a person reads it: SwitchBot's cloud uses ids like `MeterPro(CO2)` and
+/// `WoIOSensor`. The rest already read well and are kept as they are.
+pub fn readable(device_type: &str) -> &str {
+    match device_type {
+        "MeterPlus" => "Meter Plus",
+        "WoIOSensor" => "Outdoor Meter",
+        "MeterPro" => "Meter Pro",
+        "MeterPro(CO2)" => "Meter Pro CO2",
+        "Curtain3" => "Curtain 3",
+        "Humidifier2" => "Evaporative Humidifier",
+        "Smart Lock Pro Wifi" => "Smart Lock Pro Wi-Fi",
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,20 +599,5 @@ mod tests {
             Some(Family::Vacuum(VacuumApi::Mop))
         );
         assert_eq!(Family::of("Kata Friends"), None);
-    }
-}
-
-/// A device type as a person reads it: SwitchBot's cloud uses ids like `MeterPro(CO2)` and
-/// `WoIOSensor`. The rest already read well and are kept as they are.
-pub fn readable(device_type: &str) -> &str {
-    match device_type {
-        "MeterPlus" => "Meter Plus",
-        "WoIOSensor" => "Outdoor Meter",
-        "MeterPro" => "Meter Pro",
-        "MeterPro(CO2)" => "Meter Pro CO2",
-        "Curtain3" => "Curtain 3",
-        "Humidifier2" => "Evaporative Humidifier",
-        "Smart Lock Pro Wifi" => "Smart Lock Pro Wi-Fi",
-        other => other,
     }
 }
