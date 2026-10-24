@@ -40,7 +40,11 @@ pub struct Settings {
     )]
     pub bluetooth: bool,
     /// Which Bluetooth adapter, on Linux: 0 for `hci0`. A Mac has one, and ignores this.
-    #[schemars(title = "Bluetooth adapter", extend("x-irori-group" = "Bluetooth"))]
+    #[schemars(
+        title = "Bluetooth adapter",
+        default = "first_adapter",
+        extend("x-irori-group" = "Bluetooth")
+    )]
     pub bluetooth_adapter: u8,
 }
 
@@ -66,6 +70,10 @@ fn default_daily_calls() -> u32 {
 
 fn yes() -> bool {
     true
+}
+
+fn first_adapter() -> u8 {
+    0
 }
 
 #[derive(Deserialize)]
@@ -114,6 +122,12 @@ mod tests {
 
     fn load(value: serde_json::Value) -> Result<Settings, String> {
         serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn nothing_is_required_so_the_extension_starts_without_setup() {
+        let schema = serde_json::to_value(schemars::schema_for!(Settings)).expect("a schema");
+        assert_eq!(schema.get("required"), None, "{schema:#}");
     }
 
     #[test]

@@ -681,7 +681,7 @@ async fn without_an_account_bluetooth_alone_finds_and_reads_devices() {
     let device = world
         .until("the meter described", |log| log.devices.first().cloned())
         .await;
-    assert_eq!(device.model.as_deref(), Some("MeterPro(CO2)"));
+    assert_eq!(device.model.as_deref(), Some("Meter Pro CO2"));
     world
         .until("running", |log| {
             (log.health.last() == Some(&Health::Running)).then_some(())

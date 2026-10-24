@@ -535,7 +535,7 @@ impl World {
             let listed = Listed {
                 name: format!(
                     "{} {}",
-                    heard.device_type,
+                    crate::model::readable(heard.device_type),
                     &mac[mac.len().saturating_sub(4)..]
                 ),
                 id: mac.clone(),
@@ -676,7 +676,7 @@ impl World {
             unique_id: device_id.clone(),
             name,
             manufacturer: Some("SwitchBot".into()),
-            model: Some(known.listed.device_type.clone()),
+            model: Some(crate::model::readable(&known.listed.device_type).to_owned()),
             sw_version: known.reading.version.clone(),
             hw_version: None,
             serial_number: None,

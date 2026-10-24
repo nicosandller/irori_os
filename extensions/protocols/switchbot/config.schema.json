@@ -15,6 +15,7 @@
       "description": "Which Bluetooth adapter, on Linux: 0 for `hci0`. A Mac has one, and ignores this.",
       "type": "integer",
       "format": "uint8",
+      "default": 0,
       "maximum": 255,
       "minimum": 0,
       "x-irori-group": "Bluetooth"
@@ -53,9 +54,6 @@
       ]
     }
   },
-  "required": [
-    "bluetooth_adapter"
-  ],
   "$defs": {
     "Secret": {
       "type": "string",
