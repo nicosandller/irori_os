@@ -237,6 +237,8 @@ struct World {
     ears: BTreeMap<String, Ear>,
     /// Something on the map changed since it was last drawn.
     map_dirty: bool,
+    /// Devices heard nearby that the account doesn't list, each logged once.
+    strangers: std::collections::BTreeSet<String>,
     done: mpsc::Sender<Done>,
 }
 
@@ -283,6 +285,7 @@ pub(crate) async fn drive(
         },
         ears: BTreeMap::new(),
         map_dirty: false,
+        strangers: std::collections::BTreeSet::new(),
         done,
     };
     world.restore(saved).await;
@@ -525,8 +528,15 @@ impl World {
         };
         self.radio = RadioState::Listening;
         if !self.devices.contains_key(&mac) {
-            // With an account, only its devices: a neighbour's SwitchBot is the neighbour's.
+            // With an account, only its devices: a neighbour's SwitchBot is the neighbour's. Said
+            // once per device, so one whose Bluetooth address isn't its cloud id can be spotted.
             if self.cloud.is_some() {
+                if self.strangers.insert(mac.clone()) {
+                    tracing::info!(
+                        "heard a SwitchBot {} ({mac}) over Bluetooth that the account doesn't list; leaving it be",
+                        crate::model::readable(heard.device_type)
+                    );
+                }
                 return;
             }
             let Some(family) = Family::of(heard.device_type) else {

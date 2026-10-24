@@ -60,6 +60,8 @@ pub struct State {
     pub status: BTreeMap<String, Answer>,
     /// What `POST /v1.1/devices/{id}/commands` answers, by id. Ok when not set.
     pub commands: BTreeMap<String, Answer>,
+    /// How long a status answer takes, so a test can be sure of what happens first.
+    pub status_delay: std::time::Duration,
     pub requests: Vec<Request>,
 }
 
@@ -103,12 +105,18 @@ async fn serve(mut stream: TcpStream, state: Arc<Mutex<State>>) {
         let Some(request) = read_request(&mut stream, &mut buffer).await else {
             return;
         };
-        let answer = {
+        let (answer, delay) = {
             let mut state = state.lock().expect("fake state");
             let answer = answer(&state, &request);
+            let delay = if request.path.ends_with("/status") {
+                state.status_delay
+            } else {
+                std::time::Duration::ZERO
+            };
             state.requests.push(request);
-            answer
+            (answer, delay)
         };
+        tokio::time::sleep(delay).await;
         let body = if answer.http == 200 {
             json!({ "statusCode": answer.code, "body": answer.body, "message": "" }).to_string()
         } else {

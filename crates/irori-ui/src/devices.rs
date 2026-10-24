@@ -770,8 +770,28 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
     // The found device being unpaired, while its window is up.
     let unpairing = RwSignal::new(None::<crate::api::HeldDevice>);
     let name = move || extension.with(|e| e.as_ref().map(|e| e.name.clone()).unwrap_or_default());
-    // A cloud protocol finds devices in an account, not on the network (tenet 10: say so).
-    let cloud = move || extension.with(|e| e.as_ref().is_some_and(|e| is_cloud(&e.iot_class)));
+    // A cloud protocol finds devices in an account, not on the network (tenet 10: say so). One
+    // whose account isn't set up (secret settings, none saved) can only be finding devices
+    // nearby, as SwitchBot does over Bluetooth: known once the catalog answers.
+    let account = RwSignal::new(true);
+    let cloud_class =
+        move || extension.with(|e| e.as_ref().is_some_and(|e| is_cloud(&e.iot_class)));
+    if cloud_class() {
+        let wanted = id.to_string();
+        spawn_local(async move {
+            if let Ok(catalog) = crate::api::fetch_catalog().await
+                && let Some(entry) = catalog.into_iter().find(|entry| entry.id == wanted)
+            {
+                let secrets = entry
+                    .config_schema
+                    .as_ref()
+                    .is_some_and(crate::settings_form::has_secrets);
+                account.set(!secrets || !entry.secrets_set.is_empty());
+            }
+        });
+    }
+    let cloud = move || cloud_class() && account.get();
+    let nearby = move || cloud_class() && !account.get();
     let icon_there = move || extension.with(|e| e.as_ref().is_some_and(|e| e.has_icon));
 
     // What it has found that isn't in the home — what a device is, never what it's reporting, so
@@ -955,6 +975,8 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                     <h4>
                         {move || if cloud() {
                             format!("Found in your {} account", name())
+                        } else if nearby() {
+                            "Found nearby".to_owned()
                         } else {
                             "Found on your network".to_owned()
                         }}
@@ -1036,6 +1058,8 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                 <p>
                                     {if cloud() {
                                         format!("Looking in your {} account…", name())
+                                    } else if nearby() {
+                                        format!("Listening for {} devices nearby…", name())
                                     } else {
                                         format!("Listening for {} devices on your network…", name())
                                     }}
@@ -1043,6 +1067,8 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                 <p class="muted small">
                                     {if cloud() {
                                         "Devices in the account show up here once it answers. "
+                                    } else if nearby() {
+                                        "Anything it hears nearby shows up here within a few seconds. "
                                     } else {
                                         "Anything it finds shows up here within a few seconds of joining. "
                                     }}

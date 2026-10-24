@@ -615,6 +615,7 @@ async fn a_device_heard_nearby_is_read_from_its_adverts_and_not_polled() {
             .expect("a list")
             .push(json!({ "deviceId": "AABBCCDDEE05", "deviceName": "Office", "deviceType": "MeterPro(CO2)", "hubDeviceId": "000000000000" }));
         state.devices = Some(list);
+        state.status_delay = Duration::from_millis(200);
     });
     let (radio, heard) = mpsc::channel(8);
     let mut world = world_hearing(Some(&fake), BTreeMap::new(), FAST, Some(heard)).await;
@@ -640,11 +641,12 @@ async fn a_device_heard_nearby_is_read_from_its_adverts_and_not_polled() {
         co2.state,
         Some(State::Sensor(ref sensor)) if sensor.value == SensorValue::Number(1101.0)
     ));
-    // The sweep reads every listed device once; the office meter, heard first, isn't asked.
+    // The sweep reads the listed devices one at a time, each answer taking 200 ms; the office
+    // meter, listed last and heard long before its turn, isn't asked.
     world
         .state(&format!("{LOCK}:main"), |r| lock_status(r).is_some())
         .await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(
         !fake
             .requests()
