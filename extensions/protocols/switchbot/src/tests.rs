@@ -29,6 +29,7 @@ const FAST: Timing = Timing {
     min_gap: Duration::from_millis(20),
     per_device: Duration::ZERO,
     refused: Duration::from_secs(3600),
+    heard: Duration::from_secs(600),
 };
 
 #[derive(Debug, Default)]
@@ -63,11 +64,23 @@ fn settings() -> Settings {
         token: Some(account().token),
         secret: Some(account().secret),
         daily_calls: 5_000,
+        bluetooth: false,
+        bluetooth_adapter: 0,
     }
 }
 
 /// Starts the protocol against `fake`, with `stored` as what an earlier run kept.
 async fn world(fake: Option<&Fake>, stored: BTreeMap<String, Value>, timing: Timing) -> World {
+    world_hearing(fake, stored, timing, None).await
+}
+
+/// The same, with `radio` as its Bluetooth.
+async fn world_hearing(
+    fake: Option<&Fake>,
+    stored: BTreeMap<String, Value>,
+    timing: Timing,
+    radio: Option<mpsc::Receiver<crate::ble::Radio>>,
+) -> World {
     let (ctx, host) = host::connect();
     let log = Arc::new(Mutex::new(Log::default()));
     let recorded = Arc::clone(&log);
@@ -125,9 +138,11 @@ async fn world(fake: Option<&Fake>, stored: BTreeMap<String, Value>, timing: Tim
             token: None,
             secret: None,
             daily_calls: 5_000,
+            bluetooth: false,
+            bluetooth_adapter: 0,
         }
     };
-    let drive = tokio::spawn(drive(settings, ctx, cloud, timing));
+    let drive = tokio::spawn(drive(settings, ctx, cloud, radio, timing));
     World {
         calls: host.calls,
         reports: host.reports,
@@ -569,6 +584,119 @@ async fn a_device_deleted_in_the_app_is_removed_at_the_next_listing() {
                 .any(|id| id.as_str() == METER)
                 .then_some(())
         })
+        .await;
+    world.shutdown().await;
+}
+
+/// An advert from a Meter Pro CO2 with `mac`, saying 22.9 °C.
+fn meter_advert(mac: &str) -> crate::ble::Advert {
+    let mut data: Vec<u8> = (0..6)
+        .map(|i| u8::from_str_radix(&mac[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect();
+    data.extend([0x3f, 0x4c, 0x09, 0x96, 0x3c, 0x00, 0x1a, 0x04, 0x4d, 0x20]);
+    crate::ble::Advert {
+        address: Some([0; 6]),
+        manufacturer: BTreeMap::from([(crate::ble::advert::COMPANY, data)]),
+        service: BTreeMap::from([(
+            crate::ble::advert::SERVICE.to_owned(),
+            vec![0x35, 0x00, 0x4c],
+        )]),
+        rssi: Some(-70),
+    }
+}
+
+#[tokio::test]
+async fn a_device_heard_nearby_is_read_from_its_adverts_and_not_polled() {
+    let fake = home().await;
+    fake.with(|state| {
+        let mut list = listing();
+        list.body["deviceList"]
+            .as_array_mut()
+            .expect("a list")
+            .push(json!({ "deviceId": "AABBCCDDEE05", "deviceName": "Office", "deviceType": "MeterPro(CO2)", "hubDeviceId": "000000000000" }));
+        state.devices = Some(list);
+    });
+    let (radio, heard) = mpsc::channel(8);
+    let mut world = world_hearing(Some(&fake), BTreeMap::new(), FAST, Some(heard)).await;
+    world
+        .until("the office meter", |log| {
+            log.devices
+                .iter()
+                .any(|d| d.unique_id.as_str() == "AABBCCDDEE05")
+                .then_some(())
+        })
+        .await;
+    radio
+        .send(crate::ble::Radio::Advert(meter_advert("AABBCCDDEE05")))
+        .await
+        .expect("listening");
+    // A neighbour's meter, not in the account, is theirs.
+    radio
+        .send(crate::ble::Radio::Advert(meter_advert("FFEEDDCCBB99")))
+        .await
+        .expect("listening");
+    let co2 = world.state("AABBCCDDEE05:co2", |r| r.state.is_some()).await;
+    assert!(matches!(
+        co2.state,
+        Some(State::Sensor(ref sensor)) if sensor.value == SensorValue::Number(1101.0)
+    ));
+    // The sweep reads every listed device once; the office meter, heard first, isn't asked.
+    world
+        .state(&format!("{LOCK}:main"), |r| lock_status(r).is_some())
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        !fake
+            .requests()
+            .iter()
+            .any(|r| r.path.contains("AABBCCDDEE05")),
+        "a device heard nearby isn't polled"
+    );
+    let neighbour = world
+        .log
+        .lock()
+        .expect("log")
+        .devices
+        .iter()
+        .any(|d| d.unique_id.as_str() == "FFEEDDCCBB99");
+    assert!(!neighbour, "a neighbour's device isn't taken");
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn without_an_account_bluetooth_alone_finds_and_reads_devices() {
+    let (radio, heard) = mpsc::channel(8);
+    let mut world = world_hearing(None, BTreeMap::new(), FAST, Some(heard)).await;
+    radio
+        .send(crate::ble::Radio::Advert(meter_advert("AABBCCDDEE07")))
+        .await
+        .expect("listening");
+    let temperature = world
+        .state("AABBCCDDEE07:temperature", |r| r.state.is_some())
+        .await;
+    assert!(matches!(
+        temperature.state,
+        Some(State::Sensor(ref sensor)) if sensor.value == SensorValue::Number(22.9)
+    ));
+    let device = world
+        .until("the meter described", |log| log.devices.first().cloned())
+        .await;
+    assert_eq!(device.model.as_deref(), Some("MeterPro(CO2)"));
+    world
+        .until("running", |log| {
+            (log.health.last() == Some(&Health::Running)).then_some(())
+        })
+        .await;
+
+    // Bluetooth failing, with no account to fall back on, is trouble.
+    radio
+        .send(crate::ble::Radio::Failed(
+            "no Bluetooth adapter found".into(),
+        ))
+        .await
+        .expect("listening");
+    world
+        .health("Bluetooth isn't working (no Bluetooth adapter found)")
         .await;
     world.shutdown().await;
 }

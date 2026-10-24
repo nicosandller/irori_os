@@ -3,6 +3,22 @@
   "title": "Settings",
   "type": "object",
   "properties": {
+    "bluetooth": {
+      "title": "Read nearby devices over Bluetooth",
+      "description": "Read SwitchBot devices near this machine from their Bluetooth adverts: no calls spent, and\nchanges seen within seconds. On Linux it needs BlueZ (`bluetoothd`); on a Mac, Bluetooth\npermission for the app Irori runs in.",
+      "type": "boolean",
+      "default": true,
+      "x-irori-group": "Bluetooth"
+    },
+    "bluetooth_adapter": {
+      "title": "Bluetooth adapter",
+      "description": "Which Bluetooth adapter, on Linux: 0 for `hci0`. A Mac has one, and ignores this.",
+      "type": "integer",
+      "format": "uint8",
+      "maximum": 255,
+      "minimum": 0,
+      "x-irori-group": "Bluetooth"
+    },
     "daily_calls": {
       "title": "Calls a day",
       "description": "How many of the account's 10 000 calls a day Irori may use. Home Assistant or another app\nsigned in with the same token spends from the same 10 000, so leave them room.",
@@ -37,6 +53,9 @@
       ]
     }
   },
+  "required": [
+    "bluetooth_adapter"
+  ],
   "$defs": {
     "Secret": {
       "type": "string",

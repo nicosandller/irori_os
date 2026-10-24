@@ -172,6 +172,9 @@ impl Family {
 pub enum Bolt {
     Locked,
     Unlocked,
+    /// On its way, as Bluetooth says while the motor turns.
+    Locking,
+    Unlocking,
     Jammed,
 }
 

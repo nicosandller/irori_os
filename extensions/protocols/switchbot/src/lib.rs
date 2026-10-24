@@ -1,11 +1,13 @@
-//! SwitchBot devices, through SwitchBot's cloud API (and, later, over Bluetooth).
+//! SwitchBot devices, through SwitchBot's cloud API and over Bluetooth.
 //!
 //! One device is one SwitchBot device, keyed by its MAC address, which is both its cloud
-//! `deviceId` and its Bluetooth address. The cloud is polled one device at a time, paced so the
-//! day's share of SwitchBot's 10 000 calls lasts until midnight UTC, with doors, leaks and locks
-//! polled twice as often as the rest. Everything SwitchBot says about a device is merged into one
-//! reading per device, which outlives a restart.
+//! `deviceId` and the address its Bluetooth adverts carry. The cloud is polled one device at a
+//! time, paced so the day's share of SwitchBot's 10 000 calls lasts until midnight UTC, with
+//! doors, leaks and locks polled twice as often as the rest. A device heard over Bluetooth lately
+//! isn't polled at all: its adverts say the same, sooner. Everything said about a device, by
+//! either route, is merged into one reading per device, which outlives a restart.
 
+mod ble;
 mod cloud;
 mod map;
 mod model;
@@ -57,7 +59,15 @@ impl Protocol for SwitchBot {
             }
             None => None,
         };
-        drive(settings, ctx, cloud, Timing::REAL).await
+        let radio = settings.bluetooth.then(|| {
+            let (radio, heard) = mpsc::channel(256);
+            tokio::spawn(ble::keep_listening(
+                usize::from(settings.bluetooth_adapter),
+                radio,
+            ));
+            heard
+        });
+        drive(settings, ctx, cloud, radio, Timing::REAL).await
     }
 }
 
@@ -74,6 +84,9 @@ pub(crate) struct Timing {
     pub per_device: Duration,
     /// How long to wait before asking again with a token SwitchBot refused.
     pub refused: Duration,
+    /// How long a device counts as nearby after its last Bluetooth advert. Nearby devices aren't
+    /// polled; one that only Bluetooth knows is unavailable once it's been quiet this long.
+    pub heard: Duration,
 }
 
 impl Timing {
@@ -83,6 +96,7 @@ impl Timing {
         min_gap: Duration::from_secs(5),
         per_device: Duration::from_secs(60),
         refused: Duration::from_secs(3600),
+        heard: Duration::from_secs(600),
     };
 }
 
@@ -107,12 +121,21 @@ const DEVICES_KEY: &str = "devices";
 struct Saved {
     listed: Listed,
     reading: Reading,
+    #[serde(default = "yes")]
+    from_cloud: bool,
 }
 
-/// A device SwitchBot listed that Irori can use.
+fn yes() -> bool {
+    true
+}
+
+/// A device Irori can use: listed by the account, heard over Bluetooth, or both.
 #[derive(Debug)]
 struct Known {
+    /// What the account lists, or for one only Bluetooth knows, what its adverts say.
     listed: Listed,
+    /// The account lists it. One that isn't is left alone by the account's listings.
+    from_cloud: bool,
     family: Family,
     reading: Reading,
     /// The entity keys described for it, so ones that drop out can be removed.
@@ -127,6 +150,7 @@ impl Known {
     fn new(listed: Listed, family: Family, reading: Reading) -> Self {
         Self {
             listed,
+            from_cloud: true,
             family,
             reading,
             described: BTreeSet::new(),
@@ -147,6 +171,21 @@ enum Trouble {
     /// The day's calls are spent: by Irori, or by another app on the account.
     Spent,
     Unreachable(String),
+}
+
+/// The last Bluetooth advert from a device.
+#[derive(Debug, Clone, Copy)]
+struct Ear {
+    at: Instant,
+    rssi: Option<i16>,
+}
+
+/// How the Bluetooth radio is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RadioState {
+    Off,
+    Listening,
+    Failed(String),
 }
 
 /// Work done off the loop, coming back.
@@ -193,6 +232,11 @@ struct World {
     /// The call count changed since it was last stored. It's stored once a minute, not after
     /// every call; a crash loses at most a minute of counting.
     ledger_dirty: bool,
+    radio: RadioState,
+    /// The devices heard over Bluetooth, and when last.
+    ears: BTreeMap<String, Ear>,
+    /// Something on the map changed since it was last drawn.
+    map_dirty: bool,
     done: mpsc::Sender<Done>,
 }
 
@@ -200,6 +244,7 @@ pub(crate) async fn drive(
     settings: Settings,
     ctx: ProtocolContext,
     cloud: Option<Cloud>,
+    mut radio: Option<mpsc::Receiver<ble::Radio>>,
     timing: Timing,
 ) -> Result<(), ProtocolError> {
     let now = unix_now();
@@ -231,6 +276,13 @@ pub(crate) async fn drive(
         reported: None,
         readings_dirty: false,
         ledger_dirty: false,
+        radio: if radio.is_some() {
+            RadioState::Listening
+        } else {
+            RadioState::Off
+        },
+        ears: BTreeMap::new(),
+        map_dirty: false,
         done,
     };
     world.restore(saved).await;
@@ -241,6 +293,8 @@ pub(crate) async fn drive(
     let mut next_poll = Instant::now() + timing.min_gap;
     let mut save = tokio::time::interval(Duration::from_secs(60));
     save.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut redraw = tokio::time::interval(Duration::from_secs(10));
+    redraw.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     loop {
         let list_at = next_list.unwrap_or_else(far_future);
@@ -291,6 +345,12 @@ pub(crate) async fn drive(
                 }
                 Done::Failed(error) => world.failed(error).await,
             },
+            event = next_radio(&mut radio) => match event {
+                Some(ble::Radio::Advert(advert)) => world.hear(&advert).await,
+                Some(ble::Radio::Failed(why)) => world.deaf(why),
+                None => radio = None,
+            },
+            _ = redraw.tick() => world.redraw().await,
             _ = save.tick() => world.save().await,
         }
         world.report_health().await;
@@ -377,16 +437,17 @@ impl World {
     /// has answered anything. Each is read again first thing once SwitchBot answers.
     async fn restore(&mut self, saved: Vec<Saved>) {
         let listed: Vec<Listed> = saved.iter().map(|s| s.listed.clone()).collect();
-        let mut readings: BTreeMap<String, Reading> = saved
+        let mut readings: BTreeMap<String, (Reading, bool)> = saved
             .into_iter()
-            .map(|s| (s.listed.id, s.reading))
+            .map(|s| (s.listed.id, (s.reading, s.from_cloud)))
             .collect();
         for listed in hubs_first(&listed) {
             let Some(family) = Family::of(&listed.device_type) else {
                 continue;
             };
-            let reading = readings.remove(&listed.id).unwrap_or_default();
+            let (reading, from_cloud) = readings.remove(&listed.id).unwrap_or_default();
             let mut known = Known::new(listed.clone(), family, reading);
+            known.from_cloud = from_cloud;
             if self.describe(&mut known).await.is_ok() {
                 self.report(&known, None, true);
             }
@@ -399,9 +460,125 @@ impl World {
         self.rotate();
     }
 
-    async fn draw(&self) {
-        let map = network::draw(self.devices.values().map(|known| &known.listed));
+    async fn draw(&mut self) {
+        let devices = self.devices.values().map(|known| network::Drawn {
+            listed: &known.listed,
+            through_cloud: known.from_cloud,
+            heard: self
+                .ears
+                .get(&known.listed.id)
+                .filter(|ear| ear.at.elapsed() < self.timing.heard)
+                .map(|ear| ear.rssi),
+        });
+        let map = network::draw(devices, self.cloud.is_some());
         self.ctx.set_networks(vec![map]).await;
+        self.map_dirty = false;
+    }
+
+    fn heard_lately(&self, id: &str) -> bool {
+        self.ears
+            .get(id)
+            .is_some_and(|ear| ear.at.elapsed() < self.timing.heard)
+    }
+
+    /// Every ten seconds: forgets devices quiet for too long (one only Bluetooth knows goes
+    /// unavailable, one the account lists is polled again), and draws the map if it changed.
+    async fn redraw(&mut self) {
+        let quiet: Vec<String> = self
+            .ears
+            .iter()
+            .filter(|(_, ear)| ear.at.elapsed() >= self.timing.heard)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in quiet {
+            self.ears.remove(&id);
+            self.map_dirty = true;
+            if self.devices.get(&id).is_some_and(|known| !known.from_cloud) {
+                self.set_available(&id, false).await;
+            }
+        }
+        if self.map_dirty {
+            self.draw().await;
+        }
+    }
+
+    /// Bluetooth can't be used.
+    fn deaf(&mut self, why: String) {
+        if self.radio != RadioState::Failed(why.clone()) {
+            tracing::warn!("SwitchBot over Bluetooth: {why}");
+            self.radio = RadioState::Failed(why);
+        }
+    }
+
+    /// Takes in a Bluetooth advert: a device the account lists, or with no account, any
+    /// SwitchBot device nearby (the core keeps a new one aside until someone adds it).
+    async fn hear(&mut self, advert: &ble::Advert) {
+        let Some(mac) = advert.mac() else {
+            return;
+        };
+        let hint = self
+            .devices
+            .get(&mac)
+            .map(|known| known.listed.device_type.clone());
+        let Some(heard) = ble::parse(advert, hint.as_deref()) else {
+            return;
+        };
+        self.radio = RadioState::Listening;
+        if !self.devices.contains_key(&mac) {
+            // With an account, only its devices: a neighbour's SwitchBot is the neighbour's.
+            if self.cloud.is_some() {
+                return;
+            }
+            let Some(family) = Family::of(heard.device_type) else {
+                return;
+            };
+            let listed = Listed {
+                name: format!(
+                    "{} {}",
+                    heard.device_type,
+                    &mac[mac.len().saturating_sub(4)..]
+                ),
+                id: mac.clone(),
+                device_type: heard.device_type.to_owned(),
+                hub: None,
+            };
+            let mut known = Known::new(listed, family, Reading::default());
+            known.from_cloud = false;
+            if self.describe(&mut known).await.is_err() {
+                return;
+            }
+            self.devices.insert(mac.clone(), known);
+            self.readings_dirty = true;
+        }
+        let ear = Ear {
+            at: Instant::now(),
+            rssi: heard.rssi,
+        };
+        let quality = |ear: &Ear| {
+            ear.rssi
+                .map(|dbm| irori_types::LinkQuality::from_rssi(i64::from(dbm)))
+        };
+        match self.ears.insert(mac.clone(), ear) {
+            Some(before) if quality(&before) == quality(&ear) => {}
+            _ => self.map_dirty = true,
+        }
+        let Some(mut known) = self.devices.remove(&mac) else {
+            return;
+        };
+        let before = known.reading.clone();
+        known.reading.merge(heard.reading);
+        if known.reading != before {
+            self.readings_dirty = true;
+            let keys = map::entities(known.family, &known.reading);
+            if keys.len() != known.described.len()
+                || keys.iter().any(|e| !known.described.contains(e.key))
+            {
+                let _ = self.describe(&mut known).await;
+            }
+            self.report(&known, None, false);
+        }
+        self.devices.insert(mac.clone(), known);
+        self.set_available(&mac, true).await;
     }
 
     /// Takes in a fresh device list: describes what's new or changed, removes what's gone,
@@ -416,11 +593,19 @@ impl World {
             .collect();
         let gone: Vec<String> = self
             .devices
-            .keys()
-            .filter(|id| !ids.contains(*id))
-            .cloned()
+            .iter()
+            .filter(|(id, known)| known.from_cloud && !ids.contains(*id))
+            .map(|(id, _)| id.clone())
             .collect();
         for id in gone {
+            // Deleted in the app but still nearby: Bluetooth keeps it.
+            if self.heard_lately(&id)
+                && let Some(known) = self.devices.get_mut(&id)
+            {
+                known.from_cloud = false;
+                known.listed.hub = None;
+                continue;
+            }
             self.devices.remove(&id);
             self.readings_dirty = true;
             if let Ok(unique_id) = UniqueId::try_from(id.as_str()) {
@@ -441,6 +626,9 @@ impl World {
             };
             let mut listed = listed.clone();
             listed.hub = listed.hub.filter(|hub| hubs.contains(hub));
+            if let Some(known) = self.devices.get_mut(&listed.id) {
+                known.from_cloud = true;
+            }
             let changed = self
                 .devices
                 .get(&listed.id)
@@ -555,7 +743,7 @@ impl World {
         let pollable: Vec<(&String, &Known)> = self
             .devices
             .iter()
-            .filter(|(_, known)| !known.family.silent())
+            .filter(|(_, known)| known.from_cloud && !known.family.silent())
             .collect();
         let mut rotation: Vec<String> = pollable.iter().map(|(id, _)| (*id).clone()).collect();
         rotation.extend(
@@ -600,21 +788,32 @@ impl World {
             return;
         }
         while let Some(id) = self.sweep.pop_front() {
-            if self.devices.contains_key(&id) {
+            if self.wants_reading(&id) {
                 self.read(&id, None).await;
                 return;
             }
         }
-        let id = self.rotation[self.next_in_rotation % self.rotation.len()].clone();
-        self.next_in_rotation = (self.next_in_rotation + 1) % self.rotation.len();
-        let fresh = self
-            .devices
-            .get(&id)
-            .and_then(|known| known.last_read)
-            .is_some_and(|at| at.elapsed() < self.timing.per_device);
-        if !fresh {
-            self.read(&id, None).await;
+        // The next device in the rotation that needs the cloud: one heard nearby is read from
+        // its adverts, and one read a moment ago (an urgent one's second turn) can wait.
+        for _ in 0..self.rotation.len() {
+            let id = self.rotation[self.next_in_rotation % self.rotation.len()].clone();
+            self.next_in_rotation = (self.next_in_rotation + 1) % self.rotation.len();
+            let fresh = self
+                .devices
+                .get(&id)
+                .and_then(|known| known.last_read)
+                .is_some_and(|at| at.elapsed() < self.timing.per_device);
+            if !fresh && self.wants_reading(&id) {
+                self.read(&id, None).await;
+                return;
+            }
         }
+    }
+
+    /// Whether the cloud should be asked about `id`: the account lists it, and Bluetooth hasn't
+    /// heard it lately.
+    fn wants_reading(&self, id: &str) -> bool {
+        self.devices.get(id).is_some_and(|known| known.from_cloud) && !self.heard_lately(id)
     }
 
     /// Reads one device's status, off the loop.
@@ -750,7 +949,7 @@ impl World {
         };
         let Some(cloud) = self.cloud.clone() else {
             call.reply(Err(ServiceError::unavailable(
-                "SwitchBot's cloud isn't set up: add the token and secret key in the extension's settings",
+                "Controlling SwitchBot devices goes through SwitchBot's cloud for now: add the token and secret key in the extension's settings",
             )));
             return;
         };
@@ -809,9 +1008,16 @@ impl World {
             .map(|d| d.listed.name.as_str())
             .collect();
         let health = match &self.trouble {
-            Some(Trouble::NoAccount) => Health::Degraded(
-                "Add the SwitchBot token and secret key in this extension's settings to see your devices.".into(),
-            ),
+            // Bluetooth alone is a way to work; it's only trouble when Bluetooth isn't working.
+            Some(Trouble::NoAccount) => match &self.radio {
+                RadioState::Listening => Health::Running,
+                RadioState::Off => Health::Degraded(
+                    "Add the SwitchBot token and secret key in this extension's settings, or turn on Bluetooth, to see your devices.".into(),
+                ),
+                RadioState::Failed(why) => Health::Degraded(format!(
+                    "Bluetooth isn't working ({why}). Add the SwitchBot token and secret key in this extension's settings to reach your devices through SwitchBot's cloud."
+                )),
+            },
             Some(Trouble::Refused) => Health::Degraded(
                 "SwitchBot refused the token and secret key. Check them in this extension's settings.".into(),
             ),
@@ -863,6 +1069,7 @@ impl World {
             .map(|known| Saved {
                 listed: known.listed.clone(),
                 reading: known.reading.clone(),
+                from_cloud: known.from_cloud,
             })
             .collect();
         if let Ok(value) = serde_json::to_value(&saved)
@@ -916,4 +1123,11 @@ fn hubs_first(list: &[Listed]) -> Vec<&Listed> {
     let mut ordered: Vec<&Listed> = list.iter().filter(|d| is_hub(d)).collect();
     ordered.extend(list.iter().filter(|d| !is_hub(d)));
     ordered
+}
+
+async fn next_radio(radio: &mut Option<mpsc::Receiver<ble::Radio>>) -> Option<ble::Radio> {
+    match radio {
+        Some(radio) => radio.recv().await,
+        None => std::future::pending().await,
+    }
 }

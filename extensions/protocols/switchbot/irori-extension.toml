@@ -2,15 +2,16 @@
 id = "switchbot"
 name = "SwitchBot"
 version = "0.1.0"
-irori = ">=1.5.0"
-# 1.5.0 is the first core that draws a protocol's network map and lists what a protocol found
-# but can't use.
-description = "SwitchBot meters, sensors, locks, plugs, curtains, humidifiers and vacuums, through SwitchBot's cloud."
+irori = ">=1.6.0"
+# 1.6.0 is the first core whose network map has a vendor's cloud on it, and the first that knows
+# the bluetooth permission.
+description = "SwitchBot meters, sensors, locks, plugs, curtains, humidifiers and vacuums, through SwitchBot's cloud and over Bluetooth nearby."
 config_schema = "config.schema.json"
 icon = "icon.svg"
 
 # Readings and commands go through SwitchBot's servers, which also reach the devices behind a
-# hub. The token and secret key stay on this machine.
+# hub. The token and secret key stay on this machine. Devices near this machine are also read
+# from what they broadcast over Bluetooth, which spends none of the account's calls.
 [[contributes.protocol]]
 iot_class = "cloud_polling"
 entity_kinds = ["sensor", "binary_sensor", "lock", "switch", "button", "cover", "humidifier", "vacuum"]
@@ -18,3 +19,4 @@ run = { command = "bin/irori-ext-switchbot" }
 
 [permissions]
 network = ["api.switch-bot.com"]
+bluetooth = true

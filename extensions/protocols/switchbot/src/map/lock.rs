@@ -36,6 +36,8 @@ pub fn state(key: &str, reading: &Reading) -> Option<State> {
                 state: match bolt {
                     Bolt::Locked => LockStatus::Locked,
                     Bolt::Unlocked => LockStatus::Unlocked,
+                    Bolt::Locking => LockStatus::Locking,
+                    Bolt::Unlocking => LockStatus::Unlocking,
                     Bolt::Jammed => LockStatus::Jammed,
                 },
             })

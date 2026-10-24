@@ -3,7 +3,8 @@
 //!
 //! The token and secret are secrets (`writeOnly`): kept in `secrets.toml`, never sent back to a
 //! page, never printed. Neither is required, so a home with only Bluetooth devices works without
-//! an account; a token without its secret, or the other way round, is refused.
+//! an account; a token without its secret, or the other way round, is refused. Bluetooth is on
+//! unless turned off.
 
 use irori_cloud::Secret;
 use schemars::JsonSchema;
@@ -29,6 +30,18 @@ pub struct Settings {
         range(min = 100, max = 10_000)
     )]
     pub daily_calls: u32,
+    /// Read SwitchBot devices near this machine from their Bluetooth adverts: no calls spent, and
+    /// changes seen within seconds. On Linux it needs BlueZ (`bluetoothd`); on a Mac, Bluetooth
+    /// permission for the app Irori runs in.
+    #[schemars(
+        title = "Read nearby devices over Bluetooth",
+        default = "yes",
+        extend("x-irori-group" = "Bluetooth")
+    )]
+    pub bluetooth: bool,
+    /// Which Bluetooth adapter, on Linux: 0 for `hci0`. A Mac has one, and ignores this.
+    #[schemars(title = "Bluetooth adapter", extend("x-irori-group" = "Bluetooth"))]
+    pub bluetooth_adapter: u8,
 }
 
 /// The token and secret key, together: there is no use for one without the other.
@@ -51,6 +64,10 @@ fn default_daily_calls() -> u32 {
     5_000
 }
 
+fn yes() -> bool {
+    true
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Raw {
@@ -60,6 +77,10 @@ struct Raw {
     secret: Option<Secret>,
     #[serde(default = "default_daily_calls")]
     daily_calls: u32,
+    #[serde(default = "yes")]
+    bluetooth: bool,
+    #[serde(default)]
+    bluetooth_adapter: u8,
 }
 
 impl<'de> Deserialize<'de> for Settings {
@@ -81,6 +102,8 @@ impl<'de> Deserialize<'de> for Settings {
             token,
             secret,
             daily_calls: raw.daily_calls,
+            bluetooth: raw.bluetooth,
+            bluetooth_adapter: raw.bluetooth_adapter,
         })
     }
 }
@@ -98,6 +121,8 @@ mod tests {
         let settings = load(serde_json::json!({})).expect("valid");
         assert_eq!(settings.account(), None);
         assert_eq!(settings.daily_calls, 5_000);
+        assert!(settings.bluetooth);
+        assert_eq!(settings.bluetooth_adapter, 0);
     }
 
     #[test]

@@ -1,10 +1,11 @@
 # irori-protocol-switchbot
 
-SwitchBot devices through SwitchBot's cloud API (v1.1): meters and hubs, contact, motion,
-presence and leak sensors, locks, the Bot, plugs and relays, curtains, roller shades, blind tilts,
-the garage door opener, humidifiers and robot vacuums. Readings and commands go through
-SwitchBot's servers, which is also how devices behind a hub are reached. The token and secret key
-stay on this machine.
+SwitchBot devices through SwitchBot's cloud API (v1.1) and over Bluetooth: meters and hubs,
+contact, motion, presence and leak sensors, locks, the Bot, plugs and relays, curtains, roller
+shades, blind tilts, the garage door opener, humidifiers and robot vacuums. With an account,
+readings and commands go through SwitchBot's servers, which is also how devices behind a hub are
+reached. The token and secret key stay on this machine. Devices near this machine are also read
+from what they broadcast over Bluetooth, which needs no account and spends none of its calls.
 
 ## What it does
 
@@ -27,6 +28,30 @@ stay on this machine.
 - **Marks a device unavailable** when SwitchBot says it (161) or its hub (171) is offline. A hub
   offline is marked unavailable too, and the extension's health names it.
 
+## Bluetooth
+
+SwitchBot devices broadcast their readings a few times a second, unencrypted, locks included.
+The extension listens and reads them: a device is one Irori device whichever way it's reached,
+because its Bluetooth broadcast carries the same MAC address the cloud uses as its id.
+
+- **A device heard in the last 10 minutes isn't read through the cloud**, so the account's calls
+  go to what's out of range.
+- **With an account**, only the account's devices are taken; a neighbour's meter heard through
+  the wall is ignored. A device removed from the account but still heard stays, over Bluetooth.
+- **Without an account**, every SwitchBot device heard is found and named after its type and the
+  end of its address ("Contact Sensor 5E1F"). One that falls quiet for 10 minutes is unavailable.
+- **Commands go through the cloud** for now: without an account, devices are read but not
+  controlled.
+- **No adapter, or Bluetooth off**: with an account, the extension carries on through the cloud
+  and logs why; without one, its health says Bluetooth isn't working and why. It tries again
+  every minute.
+
+It uses [btleplug](https://github.com/deviceplug/btleplug): CoreBluetooth on macOS, BlueZ over
+D-Bus on Linux. On Linux it needs `bluetoothd` running and the system D-Bus reachable (in Docker,
+mount `/run/dbus`); no extra capabilities. The Linux build links libdbus statically, which is
+used under the Academic Free License 2.1. On macOS the first scan may ask for Bluetooth access
+for the app running Irori.
+
 ## Settings
 
 ```toml
@@ -37,9 +62,14 @@ token = "…"
 secret = "…"
 # Irori's share of the account's 10 000 calls a day (100–10 000). Default 5 000.
 daily_calls = 5000
+# Read nearby devices over Bluetooth. Default on.
+bluetooth = true
+# Which Bluetooth adapter, counting from 0, when the machine has more than one. Default 0.
+bluetooth_adapter = 0
 ```
 
-Give both the token and the secret key, or neither.
+Give both the token and the secret key, or neither: without them, devices are found over
+Bluetooth only.
 
 ## Sharing the account
 
@@ -54,6 +84,7 @@ hasn't worked today is reported as wrong. A wrong token is tried again after an 
 
 ## Not yet
 
-- Bluetooth, for reading nearby devices without spending calls.
+- Commands over Bluetooth, starting with the devices that don't need a key (Bot, curtains,
+  shades, humidifier), then locks and relays with their key.
 - SwitchBot's webhook, for changes as they happen.
 - Infrared remotes, as buttons.
