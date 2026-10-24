@@ -9,6 +9,7 @@
 mod cloud;
 mod map;
 mod model;
+mod network;
 pub mod settings;
 mod sign;
 
@@ -394,7 +395,13 @@ impl World {
             }
             self.devices.insert(known.listed.id.clone(), known);
         }
+        self.draw().await;
         self.rotate();
+    }
+
+    async fn draw(&self) {
+        let map = network::draw(self.devices.values().map(|known| &known.listed));
+        self.ctx.set_networks(vec![map]).await;
     }
 
     /// Takes in a fresh device list: describes what's new or changed, removes what's gone,
@@ -467,6 +474,7 @@ impl World {
             });
         }
         self.ctx.set_unmodeled(unmodeled).await;
+        self.draw().await;
         self.rotate();
     }
 

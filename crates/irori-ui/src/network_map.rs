@@ -65,7 +65,7 @@ impl Kind {
 pub struct Net {
     pub name: String,
     /// Which colour it's drawn in: `zigbee`, `matter`, `esphome`, `thread`, `cast`, `wifi`,
-    /// `other-N`.
+    /// `cloud`, `other-N`.
     pub tone: String,
     pub extension: String,
     pub detail: Option<String>,
@@ -218,9 +218,10 @@ fn tone(name: &str, spare: &mut usize) -> String {
 fn kind_of(role: NetworkRole) -> Kind {
     match role {
         NetworkRole::Controller => Kind::Hub,
-        NetworkRole::Coordinator | NetworkRole::BorderRouter | NetworkRole::AccessPoint => {
-            Kind::Coord
-        }
+        NetworkRole::Coordinator
+        | NetworkRole::BorderRouter
+        | NetworkRole::AccessPoint
+        | NetworkRole::Cloud => Kind::Coord,
         NetworkRole::Router => Kind::Router,
         NetworkRole::EndDevice => Kind::End,
         NetworkRole::SleepyEndDevice => Kind::Sleepy,
@@ -280,8 +281,18 @@ pub fn join(drawn: &[DrawnNetwork], home: &Home) -> Joined {
             .map_or_else(|| drawn.extension.to_string(), |e| e.name.clone());
         let name = network.name.clone().unwrap_or_else(|| owner.clone());
         owners.push(owner);
+        // A network reached through a vendor's cloud is drawn in the cloud's colour, whatever
+        // it's called.
+        let through_cloud = network
+            .nodes
+            .iter()
+            .any(|node| node.role == NetworkRole::Cloud);
         joined.networks.push(Net {
-            tone: tone(&name, &mut spare),
+            tone: if through_cloud {
+                "cloud".to_owned()
+            } else {
+                tone(&name, &mut spare)
+            },
             name,
             extension: drawn.extension.to_string(),
             detail: network.detail.clone(),
@@ -645,8 +656,12 @@ fn kind_words(joined: &Joined, node: &Node) -> String {
         NetworkRole::Router => format!("{} · routes for others", net(node.net)),
         NetworkRole::EndDevice => format!("{} end device", net(node.net)),
         NetworkRole::SleepyEndDevice => format!("{} · sleepy", net(node.net)),
+        NetworkRole::Cloud => "Vendor cloud · over the internet".to_owned(),
         NetworkRole::Device => match node.medium {
             Some(NetworkMedium::Ethernet) => format!("{} · wired", net(node.net)),
+            Some(NetworkMedium::Bluetooth) => format!("{} · Bluetooth", net(node.net)),
+            Some(NetworkMedium::Internet) => format!("{} · through the cloud", net(node.net)),
+            Some(NetworkMedium::Ip) => format!("{} · on the network", net(node.net)),
             _ => format!("{} · Wi-Fi", net(node.net)),
         },
     }
@@ -1819,6 +1834,44 @@ mod tests {
             joined.route("matter#0:lock"),
             vec!["matter#0:lock", "cast#0:hub", "irori"]
         );
+    }
+
+    #[test]
+    fn a_network_through_a_vendors_cloud_is_drawn_in_the_clouds_colour() {
+        let home = Home {
+            devices: vec![thing_of("switchbot", "meter")],
+            ..Home::default()
+        };
+        let mut cloud = node("cloud", NetworkRole::Cloud);
+        cloud.medium = Some(NetworkMedium::Internet);
+        let mut meter = mine("meter", NetworkRole::Device);
+        meter.medium = Some(NetworkMedium::Bluetooth);
+        let joined = join(
+            &[drawn(
+                "switchbot",
+                "SwitchBot",
+                vec![node("irori", NetworkRole::Controller), cloud, meter],
+                vec![link("cloud", "irori", None), link("meter", "cloud", None)],
+            )],
+            &home,
+        );
+        assert_eq!(joined.networks[0].tone, "cloud");
+        let cloud = joined
+            .nodes
+            .iter()
+            .find(|n| n.role == NetworkRole::Cloud)
+            .expect("drawn");
+        assert_eq!(cloud.kind, Kind::Coord);
+        assert_eq!(
+            kind_words(&joined, cloud),
+            "Vendor cloud · over the internet"
+        );
+        let meter = joined
+            .nodes
+            .iter()
+            .find(|n| n.device.is_some())
+            .expect("drawn");
+        assert!(kind_words(&joined, meter).ends_with("· Bluetooth"));
     }
 
     #[test]
