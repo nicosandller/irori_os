@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="SwitchBot">
+  <!-- An original mark: a small square device with a round button, and a signal to the cloud. -->
+  <rect x="8" y="16" width="24" height="24" rx="5" fill="#c4784a"/>
+  <circle cx="20" cy="28" r="6" fill="#fff"/>
+  <circle cx="20" cy="28" r="2.6" fill="#c4784a"/>
+  <path d="M30 12c3-3.6 8.6-3.6 11.6 0" fill="none" stroke="#c4784a" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M33.4 15.6c1.3-1.6 3.6-1.6 4.9 0" fill="none" stroke="#c4784a" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

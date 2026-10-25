@@ -919,6 +919,9 @@ pub struct CatalogEntry {
     /// before it proceeds.
     #[serde(default)]
     pub full_access: bool,
+    /// The internet hosts it connects to; empty when it stays on the local network.
+    #[serde(default)]
+    pub network: Vec<String>,
     pub installed: bool,
     /// `installing`, `updating` or `uninstalling` while the server is doing that, whoever asked:
     /// another tab, this page before a reload, or Irori's own update entity.
