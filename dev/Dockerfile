@@ -70,10 +70,12 @@ COPY crates/irori-types crates/irori-types
 COPY crates/irori-rules crates/irori-rules
 COPY crates/irori-flow-types crates/irori-flow-types
 COPY crates/irori-protocol crates/irori-protocol
+COPY crates/irori-cloud crates/irori-cloud
 COPY crates/irori-ha-discovery crates/irori-ha-discovery
 COPY crates/irori-node-runtime crates/irori-node-runtime
 COPY extensions/protocols/cast extensions/protocols/cast
 COPY extensions/protocols/matter extensions/protocols/matter
+COPY extensions/protocols/switchbot extensions/protocols/switchbot
 COPY extensions/protocols/mqtt extensions/protocols/mqtt
 COPY extensions/protocols/zigbee extensions/protocols/zigbee
 COPY crates/irori-ui crates/irori-ui
@@ -153,10 +155,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
            -p irori \
            -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-cast \
            -p irori-protocol-mqtt -p irori-protocol-zigbee -p irori-protocol-matter \
-           -p irori-engine-automations \
+           -p irori-protocol-switchbot -p irori-engine-automations \
          && cp /target/release/irori /irori \
          && mkdir -p /official/demo/bin /official/esphome/bin /official/cast/bin /official/mqtt/bin \
-           /official/zigbee/bin /official/matter/bin /official/automations/bin \
+           /official/zigbee/bin /official/matter/bin /official/switchbot/bin /official/automations/bin \
          && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
          && cp /target/release/irori-ext-demo /official/demo/bin/ \
          && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
@@ -171,6 +173,9 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
          && cp extensions/protocols/matter/irori-extension.toml extensions/protocols/matter/config.schema.json \
               extensions/protocols/matter/icon.svg /official/matter/ \
          && cp /target/release/irori-ext-matter /official/matter/bin/ \
+         && cp extensions/protocols/switchbot/irori-extension.toml extensions/protocols/switchbot/config.schema.json \
+              extensions/protocols/switchbot/icon.svg /official/switchbot/ \
+         && cp /target/release/irori-ext-switchbot /official/switchbot/bin/ \
          && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
          && cp /target/release/irori-ext-automations /official/automations/bin/ \
          && if [ -f extensions/automations/app/dist/index.html ]; then \
