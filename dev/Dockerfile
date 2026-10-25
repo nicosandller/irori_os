@@ -134,7 +134,11 @@ ARG LAB=0
 # linked `irori` alone existed because six fat-LTO links OOM a 4 GB VM.
 ENV CARGO_PROFILE_RELEASE_LTO=off \
     CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-    SOURCE_DATE_EPOCH=0
+    SOURCE_DATE_EPOCH=0 \
+    CFLAGS_aarch64_unknown_linux_musl=-mno-outline-atomics
+# SwitchBot's Bluetooth links a libdbus built here from C. Alpine's gcc on ARM makes its atomics
+# calls into libgcc helpers (__aarch64_ldadd4_sync) that a static musl link leaves out; plain
+# atomic instructions need no helper. Release builds use zig, whose runtime has them.
 COPY . .
 # The host's crates/irori/ui is dockerignored. These are the pages from the ui stage.
 COPY --from=ui /ui-out/embedded/ crates/irori/ui/
