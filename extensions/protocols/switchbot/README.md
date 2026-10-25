@@ -40,11 +40,19 @@ because its Bluetooth broadcast carries the same MAC address the cloud uses as i
   the wall is ignored. A device removed from the account but still heard stays, over Bluetooth.
 - **Without an account**, every SwitchBot device heard is found and named after its type and the
   end of its address ("Contact Sensor 5E1F"). One that falls quiet for 10 minutes is unavailable.
+  After a day unheard the extension forgets it, so a neighbour's device passing through doesn't
+  stay; one you added stays in the home, unavailable until it's heard again.
 - **Commands go through the cloud** for now: without an account, devices are read but not
   controlled.
 - **No adapter, or Bluetooth off**: with an account, the extension carries on through the cloud
   and logs why; without one, its health says Bluetooth isn't working and why. It tries again
   every minute.
+
+**Adverts aren't signed.** Anyone nearby with a Bluetooth radio could broadcast an advert that
+looks like one of your devices: a lock saying it's locked, a leak sensor saying it's dry. That
+also keeps the cloud from being asked about that device for 10 minutes. Home Assistant's
+SwitchBot Bluetooth integration reads them the same way. Commands aren't affected: they're
+signed, and go through the cloud. Turn `bluetooth` off to read only from the cloud.
 
 It uses [btleplug](https://github.com/deviceplug/btleplug): CoreBluetooth on macOS, BlueZ over
 D-Bus on Linux. On Linux it needs `bluetoothd` running and the system D-Bus reachable (in Docker,

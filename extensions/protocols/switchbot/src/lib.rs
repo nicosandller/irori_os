@@ -114,6 +114,10 @@ struct Ledger {
 
 const LEDGER_KEY: &str = "ledger";
 const DEVICES_KEY: &str = "devices";
+/// A device only Bluetooth knows, unheard for this long (seconds), is forgotten by the extension:
+/// it's not replayed at start, and a neighbour's device passing through doesn't stay for good.
+/// The home keeps a device someone added; it's just unavailable until heard again.
+const FORGET_UNHEARD_AFTER: u64 = 86_400;
 
 /// A device as the last run knew it: enough to describe it and report its states before
 /// SwitchBot answers, which on a day whose calls are spent is after midnight UTC.
@@ -123,6 +127,9 @@ struct Saved {
     reading: Reading,
     #[serde(default = "yes")]
     from_cloud: bool,
+    /// When it was last heard over Bluetooth (Unix seconds), to the hour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heard_at: Option<u64>,
 }
 
 fn yes() -> bool {
@@ -144,6 +151,8 @@ struct Known {
     version: Option<String>,
     available: bool,
     last_read: Option<Instant>,
+    /// When it was last heard over Bluetooth (Unix seconds), to the hour.
+    heard_at: Option<u64>,
 }
 
 impl Known {
@@ -157,6 +166,7 @@ impl Known {
             version: None,
             available: true,
             last_read: None,
+            heard_at: None,
         }
     }
 }
@@ -349,6 +359,7 @@ pub(crate) async fn drive(
                 Done::Failed(error) => world.failed(error).await,
             },
             event = next_radio(&mut radio) => match event {
+                Some(ble::Radio::Listening) => world.listening(),
                 Some(ble::Radio::Advert(advert)) => world.hear(&advert).await,
                 Some(ble::Radio::Failed(why)) => world.deaf(why),
                 None => radio = None,
@@ -439,18 +450,27 @@ impl World {
     /// Describes the devices the last run knew and reports their last readings, before SwitchBot
     /// has answered anything. Each is read again first thing once SwitchBot answers.
     async fn restore(&mut self, saved: Vec<Saved>) {
-        let listed: Vec<Listed> = saved.iter().map(|s| s.listed.clone()).collect();
-        let mut readings: BTreeMap<String, (Reading, bool)> = saved
+        let now = unix_now();
+        let before = saved.len();
+        let saved: Vec<Saved> = saved
             .into_iter()
-            .map(|s| (s.listed.id, (s.reading, s.from_cloud)))
+            .filter(|s| s.from_cloud || !forgotten(s.heard_at, now))
+            .collect();
+        // Forgetting one is saved, so it doesn't come back.
+        self.readings_dirty |= saved.len() != before;
+        let listed: Vec<Listed> = saved.iter().map(|s| s.listed.clone()).collect();
+        let mut readings: BTreeMap<String, (Reading, bool, Option<u64>)> = saved
+            .into_iter()
+            .map(|s| (s.listed.id, (s.reading, s.from_cloud, s.heard_at)))
             .collect();
         for listed in hubs_first(&listed) {
             let Some(family) = Family::of(&listed.device_type) else {
                 continue;
             };
-            let (reading, from_cloud) = readings.remove(&listed.id).unwrap_or_default();
+            let (reading, from_cloud, heard_at) = readings.remove(&listed.id).unwrap_or_default();
             let mut known = Known::new(listed.clone(), family, reading);
             known.from_cloud = from_cloud;
+            known.heard_at = heard_at;
             if self.describe(&mut known).await.is_ok() {
                 self.report(&known, None, true);
             }
@@ -500,9 +520,29 @@ impl World {
                 self.set_available(&id, false).await;
             }
         }
+        let now = unix_now();
+        let forget: Vec<String> = self
+            .devices
+            .iter()
+            .filter(|(_, known)| !known.from_cloud && forgotten(known.heard_at, now))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in forget {
+            self.devices.remove(&id);
+            self.readings_dirty = true;
+            self.map_dirty = true;
+        }
         if self.map_dirty {
             self.draw().await;
         }
+    }
+
+    /// Bluetooth is scanning, after starting or after trouble.
+    fn listening(&mut self) {
+        if matches!(self.radio, RadioState::Failed(_)) {
+            tracing::info!("SwitchBot over Bluetooth: working again");
+        }
+        self.radio = RadioState::Listening;
     }
 
     /// Bluetooth can't be used.
@@ -575,6 +615,14 @@ impl World {
         let Some(mut known) = self.devices.remove(&mac) else {
             return;
         };
+        let now = unix_now();
+        if known
+            .heard_at
+            .is_none_or(|at| now.saturating_sub(at) >= 3_600)
+        {
+            known.heard_at = Some(now);
+            self.readings_dirty = true;
+        }
         let before = known.reading.clone();
         known.reading.merge(heard.reading);
         if known.reading != before {
@@ -1080,6 +1128,7 @@ impl World {
                 listed: known.listed.clone(),
                 reading: known.reading.clone(),
                 from_cloud: known.from_cloud,
+                heard_at: known.heard_at,
             })
             .collect();
         if let Ok(value) = serde_json::to_value(&saved)
@@ -1112,6 +1161,11 @@ fn platform(device_type: &str) -> ObjectId {
     let slug = slug.trim_end_matches('_');
     ObjectId::try_from(if slug.is_empty() { "device" } else { slug })
         .unwrap_or_else(|_| ObjectId::try_from("device").expect("a valid object id"))
+}
+
+/// Whether a device only Bluetooth knows, last heard at `heard_at`, is to be forgotten.
+fn forgotten(heard_at: Option<u64>, now: u64) -> bool {
+    heard_at.is_some_and(|at| now.saturating_sub(at) > FORGET_UNHEARD_AFTER)
 }
 
 fn unix_now() -> u64 {

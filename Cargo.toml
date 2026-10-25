@@ -86,6 +86,7 @@ btleplug = "0.13.5"
 # AFL-2.1 licence), so the static musl builds need no system library.
 dbus = { version = "0.9.12", features = ["vendored"] }
 getrandom = "0.4.3"
+hmac = "0.13.0"
 # The MQTT client: broker connection, TLS, and the wire protocol. `mqtt` and `zigbee` (its own
 # embedded broker's client side) both depend on it directly; xtask/src/deps.rs keeps it out of
 # every crate that isn't a protocol.

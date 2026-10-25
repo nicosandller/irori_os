@@ -700,5 +700,55 @@ async fn without_an_account_bluetooth_alone_finds_and_reads_devices() {
     world
         .health("Bluetooth isn't working (no Bluetooth adapter found)")
         .await;
+
+    // A retry that scans again is working again, before anything is heard.
+    radio
+        .send(crate::ble::Radio::Listening)
+        .await
+        .expect("listening");
+    world
+        .until("running again", |log| {
+            (log.health.last() == Some(&Health::Running)).then_some(())
+        })
+        .await;
     world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_device_only_bluetooth_knew_is_forgotten_after_a_day_unheard() {
+    let now = crate::unix_now();
+    let stored = BTreeMap::from([(
+        "devices".to_owned(),
+        json!([
+            {
+                "listed": { "id": "AABBCCDDEE08", "name": "Meter 0008", "device_type": "Meter", "hub": null },
+                "reading": { "temperature": 21.0 },
+                "from_cloud": false,
+                "heard_at": now - 3_600
+            },
+            {
+                "listed": { "id": "AABBCCDDEE09", "name": "Meter 0009", "device_type": "Meter", "hub": null },
+                "reading": { "temperature": 18.0 },
+                "from_cloud": false,
+                "heard_at": now - 2 * 86_400
+            }
+        ]),
+    )]);
+    let (_radio, heard) = mpsc::channel(8);
+    let mut world = world_hearing(None, stored, FAST, Some(heard)).await;
+    world
+        .state("AABBCCDDEE08:temperature", |r| r.state.is_some())
+        .await;
+    let log = Arc::clone(&world.log);
+    world.shutdown().await;
+    let log = log.lock().expect("log");
+    let described: Vec<&str> = log.devices.iter().map(|d| d.unique_id.as_str()).collect();
+    assert_eq!(
+        described,
+        ["AABBCCDDEE08"],
+        "the one unheard for two days isn't replayed"
+    );
+    let kept = &log.stored["devices"];
+    assert_eq!(kept.as_array().map(Vec::len), Some(1), "{kept:#}");
+    assert_eq!(kept[0]["listed"]["id"], "AABBCCDDEE08");
 }

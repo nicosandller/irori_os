@@ -6,6 +6,7 @@
 //! the code.
 
 use base64::Engine as _;
+use hmac::{Hmac, KeyInit as _, Mac as _};
 use sha2::{Digest, Sha256};
 
 use crate::settings::Account;
@@ -30,33 +31,35 @@ pub fn sign(account: &Account, t_millis: u128, nonce: &str) -> Signed {
     }
 }
 
-/// A fresh nonce: 16 random bytes as hex.
+/// A fresh nonce: 16 random bytes as hex. Should the OS's random source fail, the time and a
+/// count stand in, hashed: still never the same twice, if guessable.
 pub fn nonce() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNT: AtomicU64 = AtomicU64::new(0);
     let mut bytes = [0u8; 16];
-    // The OS random source failing leaves zeros; the timestamp still changes every request.
-    let _ = getrandom::fill(&mut bytes);
+    if getrandom::fill(&mut bytes).is_err() {
+        let count = COUNT.fetch_add(1, Ordering::Relaxed);
+        if count == 0 {
+            tracing::warn!("the OS's random source failed; SwitchBot nonces come from the clock");
+        }
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let digest = Sha256::new()
+            .chain_update(nanos.to_le_bytes())
+            .chain_update(count.to_le_bytes())
+            .chain_update(std::process::id().to_le_bytes())
+            .finalize();
+        bytes.copy_from_slice(&digest[..16]);
+    }
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// HMAC (RFC 2104) over SHA-256.
 fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
-    const BLOCK: usize = 64;
-    let mut block = [0u8; BLOCK];
-    if key.len() > BLOCK {
-        block[..32].copy_from_slice(&Sha256::digest(key));
-    } else {
-        block[..key.len()].copy_from_slice(key);
-    }
-    let pad = |byte: u8| block.map(|k| k ^ byte);
-    let inner = Sha256::new()
-        .chain_update(pad(0x36))
-        .chain_update(message)
-        .finalize();
-    Sha256::new()
-        .chain_update(pad(0x5c))
-        .chain_update(inner)
-        .finalize()
-        .into()
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC takes a key of any length");
+    mac.update(message);
+    mac.finalize().into_bytes().into()
 }
 
 #[cfg(test)]

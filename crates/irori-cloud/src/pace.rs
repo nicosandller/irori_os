@@ -35,15 +35,37 @@ impl Default for Backoff {
     }
 }
 
+/// The longest a vendor's "slow down" is taken at its word. Past it, Irori asks again: a
+/// garbled or huge header mustn't silence an extension for good.
+pub const LONGEST_WAIT: Duration = Duration::from_secs(60 * 60);
+
 /// How long a vendor asked to be left alone (`Retry-After` in seconds, or the `RateLimit-Reset`
-/// draft's seconds). An HTTP date isn't read: no vendor here sends one.
+/// draft's seconds), at most [`LONGEST_WAIT`]. Many APIs send `X-RateLimit-Reset` as the Unix
+/// time the limit resets instead: a value that large is read as that time. An HTTP date isn't
+/// read: no vendor here sends one.
 pub fn retry_after(headers: &HeaderMap) -> Option<Duration> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    wait_from(headers, now)
+}
+
+fn wait_from(headers: &HeaderMap, now: u64) -> Option<Duration> {
+    // A count of seconds this large (over a year) can only be a Unix time.
+    const A_YEAR: u64 = 365 * 86_400;
     [RETRY_AFTER.as_str(), "ratelimit-reset", "x-ratelimit-reset"]
         .iter()
         .filter_map(|name| headers.get(*name))
         .filter_map(|value| value.to_str().ok())
         .filter_map(|text| text.trim().parse::<u64>().ok())
-        .map(Duration::from_secs)
+        .map(|value| {
+            let seconds = if value > A_YEAR {
+                value.saturating_sub(now)
+            } else {
+                value
+            };
+            Duration::from_secs(seconds).min(LONGEST_WAIT)
+        })
         .next()
 }
 
@@ -74,5 +96,30 @@ mod tests {
             HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
         );
         assert_eq!(retry_after(&headers), Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    fn a_reset_given_as_unix_time_is_read_as_that_time_and_no_wait_is_endless() {
+        let now = 1_800_000_000;
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-ratelimit-reset",
+            HeaderValue::from_str(&(now + 90).to_string()).expect("a header"),
+        );
+        assert_eq!(wait_from(&headers, now), Some(Duration::from_secs(90)));
+        // Already past: try now.
+        headers.insert(
+            "x-ratelimit-reset",
+            HeaderValue::from_str(&(now - 5).to_string()).expect("a header"),
+        );
+        assert_eq!(wait_from(&headers, now), Some(Duration::ZERO));
+        // Nothing waits longer than an hour, however large the number.
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("86400"));
+        assert_eq!(wait_from(&headers, now), Some(LONGEST_WAIT));
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("18446744073709551615"),
+        );
+        assert_eq!(wait_from(&headers, now), Some(LONGEST_WAIT));
     }
 }

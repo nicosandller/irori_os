@@ -11,6 +11,8 @@ pub use radio::listen;
 /// What the radio says.
 #[derive(Debug)]
 pub enum Radio {
+    /// Scanning started: Bluetooth works, whether or not anything is heard.
+    Listening,
     Advert(Advert),
     /// Bluetooth can't be used, in words for a person. It's tried again a minute later.
     Failed(String),

@@ -772,22 +772,36 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
     let name = move || extension.with(|e| e.as_ref().map(|e| e.name.clone()).unwrap_or_default());
     // A cloud protocol finds devices in an account, not on the network (tenet 10: say so). One
     // whose account isn't set up (secret settings, none saved) can only be finding devices
-    // nearby, as SwitchBot does over Bluetooth: known once the catalog answers.
+    // nearby, as SwitchBot does over Bluetooth: known once the catalog answers, and asked again
+    // whenever the extension restarts, which is what saving its settings does.
     let account = RwSignal::new(true);
     let cloud_class =
         move || extension.with(|e| e.as_ref().is_some_and(|e| is_cloud(&e.iot_class)));
-    if cloud_class() {
+    let restarts = Memo::new(move |_| {
+        extension.with(|e| {
+            e.as_ref()
+                .filter(|e| is_cloud(&e.iot_class))
+                .map(|e| e.state.clone())
+        })
+    });
+    {
         let wanted = id.to_string();
-        spawn_local(async move {
-            if let Ok(catalog) = crate::api::fetch_catalog().await
-                && let Some(entry) = catalog.into_iter().find(|entry| entry.id == wanted)
-            {
-                let secrets = entry
-                    .config_schema
-                    .as_ref()
-                    .is_some_and(crate::settings_form::has_secrets);
-                account.set(!secrets || !entry.secrets_set.is_empty());
+        Effect::new(move |_| {
+            if restarts.get().is_none() {
+                return;
             }
+            let wanted = wanted.clone();
+            spawn_local(async move {
+                if let Ok(catalog) = crate::api::fetch_catalog().await
+                    && let Some(entry) = catalog.into_iter().find(|entry| entry.id == wanted)
+                {
+                    let secrets = entry
+                        .config_schema
+                        .as_ref()
+                        .is_some_and(crate::settings_form::has_secrets);
+                    account.set(!secrets || !entry.secrets_set.is_empty());
+                }
+            });
         });
     }
     let cloud = move || cloud_class() && account.get();

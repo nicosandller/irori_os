@@ -13,7 +13,7 @@ mod pace;
 mod secret;
 
 pub use budget::{Budget, Period};
-pub use pace::{Backoff, retry_after};
+pub use pace::{Backoff, LONGEST_WAIT, retry_after};
 pub use reqwest;
 pub use secret::Secret;
 
