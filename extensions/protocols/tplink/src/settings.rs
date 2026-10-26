@@ -26,9 +26,9 @@ pub struct Settings {
     #[serde(default, deserialize_with = "account")]
     pub password: Option<String>,
     /// Devices to ask by address, as well as anything that answers the broadcast. Each one has to
-    /// be a private, loopback, or link-local address, or a name under `.local`, `.home.arpa`,
-    /// `.internal`, `.lan`, or `.home`. A port, a bare name, a public address, or an internet
-    /// hostname is refused.
+    /// be a private, loopback, or link-local IPv4 address, or a name under `.local`, `.home.arpa`,
+    /// `.internal`, `.lan`, or `.home`. A port, a bare name, an IPv6 address, a public address, or
+    /// an internet hostname is refused: TP-Link devices are found over IPv4.
     #[serde(default, deserialize_with = "known_hosts")]
     pub known_hosts: Vec<String>,
     /// Seconds between readings of each device, 5 to 300. 15 when left out.
@@ -101,17 +101,16 @@ fn normalize_host(host: &str) -> Result<String, String> {
     if host.is_empty() {
         return Err("a known host is empty".into());
     }
-    if let Some(ip) = host
-        .strip_prefix('[')
-        .and_then(|inner| inner.strip_suffix(']'))
+    if let Ok(ip) = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .parse::<IpAddr>()
     {
-        return lan_ip(ip);
-    }
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        return if is_lan_ip(ip) {
-            Ok(ip.to_string())
-        } else {
-            Err("a known host is not on the local network".into())
+        return match ip {
+            // Discovery and KLAP are IPv4 only, so an IPv6 host would never be reached.
+            IpAddr::V6(_) => Err("a known host has to be an IPv4 address or a name".into()),
+            IpAddr::V4(_) if is_lan_ip(ip) => Ok(ip.to_string()),
+            IpAddr::V4(_) => Err("a known host is not on the local network".into()),
         };
     }
     if host.contains(':') {
@@ -120,17 +119,6 @@ fn normalize_host(host: &str) -> Result<String, String> {
     let name = host.to_ascii_lowercase();
     if is_lan_name(&name) {
         Ok(name)
-    } else {
-        Err("a known host is not on the local network".into())
-    }
-}
-
-fn lan_ip(text: &str) -> Result<String, String> {
-    let Ok(ip) = text.parse::<IpAddr>() else {
-        return Err("a known host is not on the local network".into());
-    };
-    if is_lan_ip(ip) {
-        Ok(ip.to_string())
     } else {
         Err("a known host is not on the local network".into())
     }
@@ -219,12 +207,20 @@ mod tests {
 
     #[test]
     fn a_known_host_has_to_be_on_the_local_network() {
-        for host in ["192.168.1.21", "192.168.1.10", "plug.home.arpa", "fd12::1"] {
+        for host in ["192.168.1.21", "192.168.1.10", "plug.home.arpa"] {
             let settings = load(serde_json::json!({ "known_hosts": [host] }))
                 .unwrap_or_else(|error| panic!("{host} should be local: {error}"));
             assert_eq!(settings.known_hosts.len(), 1, "{host}");
         }
-        for host in ["8.8.8.8", "plug.example.com", "plug", "192.168.1.21:80", ""] {
+        for host in [
+            "8.8.8.8",
+            "plug.example.com",
+            "plug",
+            "192.168.1.21:80",
+            "",
+            "fd12::1",
+            "[fd12::1]",
+        ] {
             let error = load(serde_json::json!({ "known_hosts": [host] }))
                 .expect_err("the host should be refused");
             assert!(!error.contains(host) || host.is_empty(), "{error}");

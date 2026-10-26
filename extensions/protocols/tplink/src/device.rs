@@ -22,13 +22,14 @@ const MAX_BACKOFF: Duration = Duration::from_secs(120);
 const REFUSED_RETRY: Duration = Duration::from_secs(600);
 /// A strip with more outlets than this isn't a strip.
 const MAX_CHILDREN: usize = 32;
-/// Polls in a row with no meter reading before a device is taken not to meter.
-const EMPTY_METERS: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
     pub info: Info,
+    /// This poll's reading; `None` when it missed.
     pub meter: Option<Meter>,
+    /// The meter's values the device has given: described even when a reading misses.
+    pub metered: Metered,
     pub led: Option<bool>,
     pub children: Vec<Child>,
 }
@@ -37,6 +38,28 @@ pub struct Snapshot {
 pub struct Child {
     pub info: Info,
     pub meter: Option<Meter>,
+    pub metered: Metered,
+}
+
+/// Which of a meter's values a device has given this session. They stay described while it
+/// meters, so a reading that misses shows them unknown instead of holding the last number.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Metered {
+    pub power: bool,
+    pub voltage: bool,
+    pub current: bool,
+    pub today: bool,
+    pub total: bool,
+}
+
+impl Metered {
+    fn add(&mut self, meter: &Meter) {
+        self.power |= meter.power.is_some();
+        self.voltage |= meter.voltage.is_some();
+        self.current |= meter.current.is_some();
+        self.today |= meter.today.is_some();
+        self.total |= meter.total.is_some();
+    }
 }
 
 #[derive(Debug)]
@@ -63,8 +86,8 @@ struct Plan {
     led: bool,
     children: bool,
     child_energy: BTreeSet<String>,
-    /// Polls in a row where neither meter method answered.
-    empty_meters: u32,
+    metered: Metered,
+    child_metered: BTreeMap<String, Metered>,
 }
 
 pub fn spawn(
@@ -176,7 +199,8 @@ async fn learn(session: &mut Session) -> Result<Plan, KlapError> {
         led: has("led"),
         children,
         child_energy: BTreeSet::new(),
-        empty_meters: 0,
+        metered: Metered::default(),
+        child_metered: BTreeMap::new(),
     };
     if plan.children {
         // Paged like the child list itself.
@@ -190,11 +214,13 @@ async fn learn(session: &mut Session) -> Result<Plan, KlapError> {
             else {
                 break;
             };
-            let page = smart::child_component_ids(&list);
-            if page.is_empty() {
+            // The next page starts after every entry in this one, read or not.
+            let entries = smart::entries(&list, "child_component_list");
+            if entries == 0 {
                 break;
             }
-            seen += page.len();
+            seen += entries;
+            let page = smart::child_component_ids(&list);
             plan.child_energy.extend(
                 page.into_iter()
                     .filter(|(_, ids)| ids.contains("energy_monitoring"))
@@ -213,6 +239,13 @@ fn meter_of(answers: &BTreeMap<String, smart::Answer>) -> Option<Meter> {
     let ok = |method: &str| answers.get(method).and_then(|answer| answer.as_ref().ok());
     let meter = smart::meter(ok(smart::EMETER_DATA), ok(smart::ENERGY_USAGE));
     (!meter.is_empty()).then_some(meter)
+}
+
+/// The device says it has neither meter method, rather than one reading failing.
+fn no_meter(answers: &BTreeMap<String, smart::Answer>) -> bool {
+    [smart::EMETER_DATA, smart::ENERGY_USAGE]
+        .iter()
+        .all(|method| answers.get(*method) == Some(&Err(smart::UNKNOWN_METHOD)))
 }
 
 async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapError> {
@@ -239,20 +272,13 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
     } else {
         None
     };
-    if plan.energy {
-        if meter.is_some() {
-            plan.empty_meters = 0;
-        } else {
-            // Stop asking once the device says it has neither method, or neither answers for a
-            // few polls in a row; one bad reading isn't enough.
-            plan.empty_meters += 1;
-            let unknown = [smart::EMETER_DATA, smart::ENERGY_USAGE]
-                .iter()
-                .all(|method| answers.get(*method) == Some(&Err(smart::UNKNOWN_METHOD)));
-            if unknown || plan.empty_meters >= EMPTY_METERS {
-                plan.energy = false;
-            }
-        }
+    // Any other miss is one bad reading: its values are unknown until the next.
+    if plan.energy && meter.is_none() && no_meter(&answers) {
+        plan.energy = false;
+        plan.metered = Metered::default();
+    }
+    if let Some(meter) = &meter {
+        plan.metered.add(meter);
     }
     let led = answers
         .get(smart::LED_INFO)
@@ -262,21 +288,27 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
     let mut children = Vec::new();
     if let Some(Ok(list)) = answers.get(smart::CHILD_LIST) {
         let mut listed = child_list(list);
+        // Pages are counted by their entries, so one that can't be read doesn't shift the next.
+        let mut offset = smart::entries(list, "child_device_list");
         let total = list.get("sum").and_then(Value::as_u64).unwrap_or(0) as usize;
-        while listed.len() < total.min(MAX_CHILDREN) {
-            let request =
-                smart::multiple(&[(smart::CHILD_LIST, json!({ "start_index": listed.len() }))]);
-            let more = match call(session, &request).await?.remove(smart::CHILD_LIST) {
-                Some(Ok(more)) => child_list(&more),
-                _ => Vec::new(),
+        while offset > 0 && offset < total.min(MAX_CHILDREN) {
+            let request = smart::multiple(&[(smart::CHILD_LIST, json!({ "start_index": offset }))]);
+            let Some(Ok(more)) = call(session, &request).await?.remove(smart::CHILD_LIST) else {
+                break;
             };
-            if more.is_empty() {
+            let entries = smart::entries(&more, "child_device_list");
+            if entries == 0 {
                 break;
             }
-            listed.extend(more);
+            offset += entries;
+            listed.extend(child_list(&more));
         }
+        let mut ids = BTreeSet::new();
+        listed.retain(|info| ids.insert(info.device_id.clone()));
+        listed.truncate(MAX_CHILDREN);
         for info in listed {
-            let meter = if plan.child_energy.contains(&info.device_id) {
+            let mut meter = None;
+            if plan.child_energy.contains(&info.device_id) {
                 let inner = smart::multiple(&[
                     (smart::ENERGY_USAGE, Value::Null),
                     (smart::EMETER_DATA, Value::Null),
@@ -284,14 +316,26 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
                 let response = session
                     .request(&smart::control_child(&info.device_id, inner))
                     .await?;
-                smart::child_answers(&response)
-                    .ok()
-                    .as_ref()
-                    .and_then(meter_of)
-            } else {
-                None
-            };
-            children.push(Child { info, meter });
+                let answers = smart::child_answers(&response).ok();
+                meter = answers.as_ref().and_then(meter_of);
+                if meter.is_none() && answers.as_ref().is_some_and(no_meter) {
+                    plan.child_energy.remove(&info.device_id);
+                    plan.child_metered.remove(&info.device_id);
+                }
+            }
+            let metered = plan
+                .child_metered
+                .entry(info.device_id.clone())
+                .or_default();
+            if let Some(meter) = &meter {
+                metered.add(meter);
+            }
+            let metered = *metered;
+            children.push(Child {
+                info,
+                meter,
+                metered,
+            });
         }
     }
     children.sort_by_key(|child| child.info.position.unwrap_or(u64::MAX));
@@ -299,6 +343,7 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
     Ok(Snapshot {
         info,
         meter,
+        metered: plan.metered,
         led,
         children,
     })

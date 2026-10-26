@@ -40,6 +40,7 @@ struct Log {
     availability: Vec<Availability>,
     devices: Vec<DeviceDescription>,
     entities: Vec<EntityDescription>,
+    removed: Vec<UniqueId>,
     waiting: Vec<Vec<Waiting>>,
 }
 
@@ -83,7 +84,11 @@ async fn world(settings: Settings) -> World {
                 host::Op::SetWaiting(waiting) => {
                     recorded.lock().expect("log").waiting.push(waiting);
                 }
-                host::Op::RemoveDevice(_, reply) | host::Op::RemoveEntity(_, reply) => {
+                host::Op::RemoveEntity(unique_id, reply) => {
+                    recorded.lock().expect("log").removed.push(unique_id);
+                    let _ = reply.send(Ok(()));
+                }
+                host::Op::RemoveDevice(_, reply) => {
                     let _ = reply.send(Ok(()));
                 }
                 host::Op::SetUnmodeled(_)
@@ -154,6 +159,25 @@ impl World {
             tokio::select! {
                 _ = self.reports.ready() => {}
                 _ = tokio::time::sleep_until(deadline) => panic!("missing reports; got {seen:?}"),
+            }
+        }
+    }
+
+    /// Collects reports until `id` is reported as `check` wants.
+    async fn until_state(&self, id: &str, check: impl Fn(&Option<State>) -> bool) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if self
+                .reports
+                .drain()
+                .into_iter()
+                .any(|report| report.unique_id.as_str() == id && check(&report.state))
+            {
+                return;
+            }
+            tokio::select! {
+                _ = self.reports.ready() => {}
+                _ = tokio::time::sleep_until(deadline) => panic!("{id} never reported as wanted"),
             }
         }
     }
@@ -311,6 +335,33 @@ async fn a_strip_has_an_outlet_device_per_socket_reached_through_it() {
 }
 
 #[tokio::test]
+async fn an_outlet_that_cant_be_read_doesnt_list_the_next_one_twice() {
+    let fake = fake::start(Kind::Strip, auth()).await;
+    fake.state.lock().expect("state").unreadable_outlet = true;
+    let world = world(settings(true)).await;
+    world.see(&fake, "02:00:00:00:00:03", "PS4(EU)").await;
+    world
+        .states(&[
+            "02:00:00:00:00:03-outlet1-switch",
+            "02:00:00:00:00:03-outlet2-switch",
+        ])
+        .await;
+    {
+        let log = world.log.lock().expect("log");
+        let ids: Vec<&str> = log.devices.iter().map(|d| d.unique_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "02:00:00:00:00:03",
+                "02:00:00:00:00:03-outlet1",
+                "02:00:00:00:00:03-outlet2"
+            ]
+        );
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
 async fn switching_is_refused_while_read_only() {
     let world = world(settings(true)).await;
     let (incoming, answer) = irori_protocol::host::incoming_call(ServiceCall {
@@ -401,23 +452,79 @@ async fn a_fresh_session_that_is_refused_waits_before_logging_in_again() {
 }
 
 #[tokio::test]
-async fn one_bad_meter_reading_doesnt_stop_metering() {
+async fn a_missed_meter_reading_is_unknown_until_the_next() {
     let fake = fake::start(Kind::Plug, auth()).await;
     let world = world(settings(true)).await;
     world.see(&fake, "02:00:00:00:00:01", "PP1(EU)").await;
     world.states(&["02:00:00:00:00:01-power"]).await;
+    let described = world.log.lock().expect("log").entities.len();
     {
         let mut state = fake.state.lock().expect("state");
         state.meter_misses = 1;
         state.power_mw = 2_000;
     }
+    // During the miss: unknown, not the last number.
     world
-        .until("a new power reading", |_| {
-            fake.state.lock().expect("state").meter_misses == 0
+        .until_state("02:00:00:00:00:01-power", Option::is_none)
+        .await;
+    world
+        .until_state("02:00:00:00:00:01-power", |state| {
+            state.is_some() && number(state) == 2.0
         })
         .await;
-    let states = world.states(&["02:00:00:00:00:01-power"]).await;
-    assert_eq!(number(&states["02:00:00:00:00:01-power"]), 2.0);
+    // The sensors were never described again or taken away.
+    {
+        let log = world.log.lock().expect("log");
+        assert_eq!(log.entities.len(), described);
+        assert!(log.removed.is_empty());
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_missed_outlet_reading_is_unknown_until_the_next() {
+    let fake = fake::start(Kind::Strip, auth()).await;
+    let world = world(settings(true)).await;
+    world.see(&fake, "02:00:00:00:00:03", "PS4(EU)").await;
+    world.states(&["02:00:00:00:00:03-outlet2-power"]).await;
+    let described = world.log.lock().expect("log").entities.len();
+    fake.state.lock().expect("state").outlet_meter_misses = 1;
+    world
+        .until_state("02:00:00:00:00:03-outlet2-power", Option::is_none)
+        .await;
+    world
+        .until_state("02:00:00:00:00:03-outlet2-power", |state| {
+            state.is_some() && number(state) == 2900.0
+        })
+        .await;
+    {
+        let log = world.log.lock().expect("log");
+        assert_eq!(log.entities.len(), described);
+        assert!(log.removed.is_empty());
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plug_that_says_it_has_no_meter_loses_its_sensors() {
+    let fake = fake::start(Kind::Plug, auth()).await;
+    let world = world(settings(true)).await;
+    world.see(&fake, "02:00:00:00:00:01", "PP1(EU)").await;
+    world.states(&["02:00:00:00:00:01-power"]).await;
+    fake.state.lock().expect("state").no_meter = true;
+    world
+        .until("the meter's sensors removed", |log| log.removed.len() == 5)
+        .await;
+    let removed: Vec<String> = world
+        .log
+        .lock()
+        .expect("log")
+        .removed
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect();
+    assert!(removed.contains(&"02:00:00:00:00:01-power".to_owned()));
+    assert!(!removed.contains(&"02:00:00:00:00:01-switch".to_owned()));
     world.shutdown().await;
 }
 

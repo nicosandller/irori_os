@@ -106,6 +106,14 @@ pub fn component_ids(list: &Value) -> BTreeSet<String> {
 }
 
 /// `get_child_device_component_list`: each outlet's components, by its device id.
+/// How many entries a page of a paged list holds, whether or not each one can be read.
+pub fn entries(result: &Value, key: &str) -> usize {
+    result
+        .get(key)
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len)
+}
+
 pub fn child_component_ids(result: &Value) -> BTreeMap<String, BTreeSet<String>> {
     result
         .get("child_component_list")

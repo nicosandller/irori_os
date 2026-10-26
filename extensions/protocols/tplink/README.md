@@ -41,9 +41,10 @@ known_hosts = ["192.168.30.21", "plug.home.arpa"]
 poll_seconds = 15   # 5 to 300
 ```
 
-A known host has to be a private, loopback, or link-local address, or a name under `.local`,
-`.home.arpa`, `.internal`, `.lan`, or `.home`. A port, a public address, or an internet name is
-refused, and no refusal repeats the value.
+A known host has to be a private, loopback, or link-local IPv4 address, or a name under
+`.local`, `.home.arpa`, `.internal`, `.lan`, or `.home`. A port, an IPv6 address, a public
+address, or an internet name is refused, and no refusal repeats the value. TP-Link devices are
+found and read over IPv4 only.
 
 Without an account, each device found is listed as waiting for one. A device that refuses the
 account is listed the same way and tried again every ten minutes, so a wrong password doesn't

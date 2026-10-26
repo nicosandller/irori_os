@@ -219,8 +219,9 @@ fn adopt(
     if !found.readable() {
         if !devices.unsupported.contains_key(&found.mac) {
             tracing::info!(
-                "a {} ({}) speaks a TP-Link protocol this extension doesn't read yet",
+                "a {} ({}, {}) speaks a TP-Link protocol this extension doesn't read yet",
                 found.model,
+                found.device_type,
                 found.encryption
             );
             devices.unsupported.insert(found.mac.clone(), found);
@@ -291,6 +292,9 @@ async fn apply(ctx: &ProtocolContext, devices: &mut Devices, event: Event) {
             if device.described.as_ref() != Some(&described) {
                 if !describe(ctx, &described).await {
                     return;
+                }
+                if let Some(before) = &device.described {
+                    remove_gone(ctx, before, &described, &mut device.states).await;
                 }
                 // Describing marks everything available.
                 device.online = true;
@@ -363,6 +367,30 @@ async fn describe(ctx: &ProtocolContext, described: &Described) -> bool {
         }
     }
     true
+}
+
+/// Takes away the entities an earlier description had and this one doesn't, such as a meter the
+/// device turned out not to have: the host keeps an entity until it's removed.
+async fn remove_gone(
+    ctx: &ProtocolContext,
+    before: &Described,
+    now: &Described,
+    states: &mut BTreeMap<UniqueId, Option<State>>,
+) {
+    let kept: BTreeSet<&UniqueId> = now
+        .entities
+        .iter()
+        .map(|entity| &entity.unique_id)
+        .collect();
+    for entity in &before.entities {
+        if kept.contains(&entity.unique_id) {
+            continue;
+        }
+        if let Err(error) = ctx.remove_entity(entity.unique_id.clone()).await {
+            tracing::warn!("a TP-Link entity couldn't be removed: {}", error.0);
+        }
+        states.remove(&entity.unique_id);
+    }
 }
 
 async fn mark_unavailable(ctx: &ProtocolContext, device: &mut Device) {

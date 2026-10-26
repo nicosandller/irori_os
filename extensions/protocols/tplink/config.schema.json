@@ -4,7 +4,7 @@
   "type": "object",
   "properties": {
     "known_hosts": {
-      "description": "Devices to ask by address, as well as anything that answers the broadcast. Each one has to\nbe a private, loopback, or link-local address, or a name under `.local`, `.home.arpa`,\n`.internal`, `.lan`, or `.home`. A port, a bare name, a public address, or an internet\nhostname is refused.",
+      "description": "Devices to ask by address, as well as anything that answers the broadcast. Each one has to\nbe a private, loopback, or link-local IPv4 address, or a name under `.local`, `.home.arpa`,\n`.internal`, `.lan`, or `.home`. A port, a bare name, an IPv6 address, a public address, or\nan internet hostname is refused: TP-Link devices are found over IPv4.",
       "type": "array",
       "default": [],
       "items": {

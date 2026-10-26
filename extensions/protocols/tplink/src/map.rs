@@ -15,7 +15,7 @@ use irori_types::{
     SwitchClass, SwitchState, UniqueId,
 };
 
-use crate::device::{Child, Snapshot};
+use crate::device::{Child, Metered, Snapshot};
 use crate::smart::{Info, Meter};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,14 +127,22 @@ fn outlet_key(mac: &str, child: &Child, index: usize) -> String {
     format!("{mac}-outlet{position}")
 }
 
-fn readings(meter: &Meter) -> [(&'static SensorKind, Option<f64>); 5] {
+/// The sensors a device meters, with this reading's value for each: unknown when it missed.
+fn readings(
+    meter: Option<&Meter>,
+    metered: Metered,
+) -> impl Iterator<Item = (&'static SensorKind, Option<f64>)> {
+    let value = |read: fn(&Meter) -> Option<f64>| meter.and_then(read);
     [
-        (&POWER, meter.power),
-        (&VOLTAGE, meter.voltage),
-        (&CURRENT, meter.current),
-        (&TODAY, meter.today),
-        (&TOTAL, meter.total),
+        (&POWER, metered.power, value(|m| m.power)),
+        (&VOLTAGE, metered.voltage, value(|m| m.voltage)),
+        (&CURRENT, metered.current, value(|m| m.current)),
+        (&TODAY, metered.today, value(|m| m.today)),
+        (&TOTAL, metered.total, value(|m| m.total)),
     ]
+    .into_iter()
+    .filter(|(_, has, _)| *has)
+    .map(|(kind, _, value)| (kind, value))
 }
 
 fn sensor(device: &UniqueId, key: &str, kind: &SensorKind) -> Result<EntityDescription, String> {
@@ -186,12 +194,8 @@ pub fn describe(mac: &str, snapshot: &Snapshot) -> Result<Described, String> {
     if info.on.is_some() {
         entities.push(relay(&parent, mac)?);
     }
-    if let Some(meter) = &snapshot.meter {
-        for (kind, value) in readings(meter) {
-            if value.is_some() {
-                entities.push(sensor(&parent, mac, kind)?);
-            }
-        }
+    for (kind, _) in readings(snapshot.meter.as_ref(), snapshot.metered) {
+        entities.push(sensor(&parent, mac, kind)?);
     }
     if snapshot.led.is_some() {
         entities.push(EntityDescription {
@@ -227,12 +231,8 @@ pub fn describe(mac: &str, snapshot: &Snapshot) -> Result<Described, String> {
         if child.info.on.is_some() {
             entities.push(relay(&device, &key)?);
         }
-        if let Some(meter) = &child.meter {
-            for (kind, value) in readings(meter) {
-                if value.is_some() {
-                    entities.push(sensor(&device, &key, kind)?);
-                }
-            }
+        for (kind, _) in readings(child.meter.as_ref(), child.metered) {
+            entities.push(sensor(&device, &key, kind)?);
         }
     }
     Ok(Described { devices, entities })
@@ -255,10 +255,8 @@ pub fn states(mac: &str, snapshot: &Snapshot) -> Result<BTreeMap<UniqueId, Optio
     if let Some(on) = info.on {
         out.insert(id(format!("{mac}-switch"))?, Some(switch(on)));
     }
-    if let Some(meter) = &snapshot.meter {
-        for (kind, value) in readings(meter) {
-            out.insert(id(format!("{mac}-{}", kind.suffix))?, value.map(number));
-        }
+    for (kind, value) in readings(snapshot.meter.as_ref(), snapshot.metered) {
+        out.insert(id(format!("{mac}-{}", kind.suffix))?, value.map(number));
     }
     if let Some(led) = snapshot.led {
         out.insert(id(format!("{mac}-led"))?, Some(switch(led)));
@@ -271,10 +269,8 @@ pub fn states(mac: &str, snapshot: &Snapshot) -> Result<BTreeMap<UniqueId, Optio
         if let Some(on) = child.info.on {
             out.insert(id(format!("{key}-switch"))?, Some(switch(on)));
         }
-        if let Some(meter) = &child.meter {
-            for (kind, value) in readings(meter) {
-                out.insert(id(format!("{key}-{}", kind.suffix))?, value.map(number));
-            }
+        for (kind, value) in readings(child.meter.as_ref(), child.metered) {
+            out.insert(id(format!("{key}-{}", kind.suffix))?, value.map(number));
         }
     }
     Ok(out)
@@ -305,6 +301,7 @@ mod tests {
                 ..info(None, None, None)
             },
             meter: None,
+            metered: Metered::default(),
             led: Some(true),
             children: vec![
                 Child {
@@ -314,10 +311,16 @@ mod tests {
                         today: Some(0.4),
                         ..Meter::default()
                     }),
+                    metered: Metered {
+                        power: true,
+                        today: true,
+                        ..Metered::default()
+                    },
                 },
                 Child {
                     info: info(None, Some(false), Some(1)),
                     meter: None,
+                    metered: Metered::default(),
                 },
             ],
         }
@@ -391,11 +394,26 @@ mod tests {
             states[&UniqueId::try_from("02:00:00:00:00:03-outlet2-power").expect("id")],
             Some(number(2900.0))
         );
-        // A meter value the outlet doesn't give is unknown, not a stale number.
-        assert_eq!(
-            states[&UniqueId::try_from("02:00:00:00:00:03-outlet2-voltage").expect("id")],
-            None
+        // A meter value the outlet has never given isn't a sensor at all.
+        assert!(
+            !states.contains_key(
+                &UniqueId::try_from("02:00:00:00:00:03-outlet2-voltage").expect("id")
+            )
         );
+    }
+
+    #[test]
+    fn a_missed_reading_keeps_the_sensors_and_makes_them_unknown() {
+        let mac = "02:00:00:00:00:03";
+        let read = strip();
+        let mut missed = strip();
+        missed.children[0].meter = None;
+        assert_eq!(
+            describe(mac, &missed).expect("valid"),
+            describe(mac, &read).expect("valid")
+        );
+        let power = UniqueId::try_from("02:00:00:00:00:03-outlet2-power").expect("id");
+        assert_eq!(states(mac, &missed).expect("valid")[&power], None);
     }
 
     #[test]
@@ -409,6 +427,13 @@ mod tests {
                 today: Some(1.2),
                 total: Some(300.0),
             }),
+            metered: Metered {
+                power: true,
+                voltage: true,
+                current: true,
+                today: true,
+                total: true,
+            },
             led: None,
             children: Vec::new(),
         };

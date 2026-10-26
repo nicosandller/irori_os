@@ -39,6 +39,12 @@ pub struct State {
     pub refuse_requests: bool,
     /// This many readings answer neither meter method.
     pub meter_misses: u32,
+    /// This many outlet readings answer neither meter method.
+    pub outlet_meter_misses: u32,
+    /// The plug says it has no meter methods at all.
+    pub no_meter: bool,
+    /// The strip lists an entry first that has no `device_id`, so it can't be read.
+    pub unreadable_outlet: bool,
     pub handshakes: u32,
 }
 
@@ -84,6 +90,9 @@ pub async fn start(kind: Kind, auth: AuthHash) -> Fake {
         gone: false,
         refuse_requests: false,
         meter_misses: 0,
+        outlet_meter_misses: 0,
+        no_meter: false,
+        unreadable_outlet: false,
         handshakes: 0,
     }));
     let shared = Arc::clone(&state);
@@ -182,6 +191,9 @@ fn respond(
         .is_some_and(|requests| requests.iter().any(|r| r["method"] == "get_emeter_data"));
     if reads_meter && state.meter_misses > 0 {
         state.meter_misses -= 1;
+    }
+    if request["method"] == "control_child" && state.outlet_meter_misses > 0 {
+        state.outlet_meter_misses -= 1;
     }
     let plain = serde_json::to_vec(&response).expect("json");
     (200, false, keys.seal_at(seq, &plain))
@@ -289,6 +301,7 @@ fn answer(
             "rssi": -61, "mac": "02-00-00-00-00-03",
             "fw_ver": "1.0.0", "hw_ver": "1.0"
         })),
+        (Kind::Plug, None, "get_energy_usage" | "get_emeter_data") if state.no_meter => Err(-1002),
         (Kind::Plug, None, "get_energy_usage" | "get_emeter_data") if state.meter_misses > 0 => {
             Err(-1)
         }
@@ -303,11 +316,9 @@ fn answer(
         (Kind::Strip, None, "get_child_device_list") => {
             // One outlet per page, so paging is exercised.
             let start = params["start_index"].as_u64().unwrap_or(0) as usize;
-            let page: Vec<Value> = state
+            let mut entries: Vec<Value> = state
                 .outlets
                 .iter()
-                .skip(start)
-                .take(1)
                 .map(|outlet| {
                     json!({
                         "device_id": outlet.id, "nickname": b64(outlet.name),
@@ -316,9 +327,12 @@ fn answer(
                     })
                 })
                 .collect();
-            Ok(json!({
-                "child_device_list": page, "start_index": start, "sum": state.outlets.len()
-            }))
+            if state.unreadable_outlet {
+                entries.insert(0, json!({ "device_on": true, "position": 3 }));
+            }
+            let sum = entries.len();
+            let page: Vec<Value> = entries.into_iter().skip(start).take(1).collect();
+            Ok(json!({ "child_device_list": page, "start_index": start, "sum": sum }))
         }
         (Kind::Strip, None, "get_child_device_component_list") => {
             // Paged one outlet at a time too.
@@ -340,6 +354,7 @@ fn answer(
             }))
         }
         // An outlet here meters through `get_energy_usage` only.
+        (Kind::Strip, Some(_), "get_energy_usage") if state.outlet_meter_misses > 0 => Err(-1),
         (Kind::Strip, Some(_), "get_energy_usage") => Ok(json!({
             "today_energy": 400, "current_power": 2_900_000
         })),
