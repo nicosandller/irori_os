@@ -1813,6 +1813,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-protocol-tplink"
+version = "0.0.0"
+dependencies = [
+ "aes",
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "irori-protocol",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.11.0",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "irori-protocol-zigbee"
 version = "0.0.0"
 dependencies = [
@@ -4622,6 +4641,7 @@ dependencies = [
  "irori-protocol-cast",
  "irori-protocol-matter",
  "irori-protocol-mqtt",
+ "irori-protocol-tplink",
  "irori-protocol-zigbee",
  "irori-rules",
  "irori-types",

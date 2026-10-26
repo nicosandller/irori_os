@@ -43,6 +43,16 @@ crate = "irori-protocol-mqtt"
 bin = "irori-ext-mqtt"
 
 [[extension]]
+id = "tplink"
+name = "TP-Link Tapo and Kasa"
+category = "protocol"
+description = "TP-Link Tapo and Kasa plugs and power strips on the local network: each outlet, and power, voltage, current and energy where the device meters."
+version = "0.1.0"
+source = "extensions/protocols/tplink"
+crate = "irori-protocol-tplink"
+bin = "irori-ext-tplink"
+
+[[extension]]
 id = "zigbee"
 name = "Zigbee"
 category = "protocol"
