@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use irori_types::{ExtensionId, Name};
+use irori_types::{ExtensionId, Name, Version};
 use serde::{Deserialize, Serialize};
 
 const CATALOG: &str = include_str!("../../../extensions/official.toml");
@@ -25,7 +25,11 @@ pub struct Official {
     pub name: Name,
     pub category: String,
     pub description: String,
-    pub version: String,
+    /// The extension's own version, not Irori's: the one its manifest declares, raised when its
+    /// package changes. Install fetches the package this build of Irori shipped, so this is the
+    /// version that arrives; an installed copy with another version is offered the update. Kept in step
+    /// with the manifest by `the_catalog_has_the_version_each_manifest_declares`.
+    pub version: Version,
     pub source: String,
     #[serde(rename = "crate")]
     pub crate_name: String,
@@ -532,24 +536,50 @@ mod tests {
     use super::*;
     use std::os::unix::fs::symlink;
 
+    /// Each official extension's manifest, read from this checkout.
+    fn manifests() -> Vec<(Official, irori_types::ExtensionManifest)> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        official()
+            .into_iter()
+            .map(|item| {
+                let path = root.join(&item.source).join("irori-extension.toml");
+                let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                    panic!("no manifest for {} at {}: {e}", item.id, path.display())
+                });
+                let manifest = irori_protocol::parse_manifest(&text)
+                    .unwrap_or_else(|e| panic!("{}'s manifest doesn't parse: {e}", item.id));
+                (item, manifest)
+            })
+            .collect()
+    }
+
     /// The catalog is what the Extensions page knows before anything is installed, and the
     /// manifest is what the extension actually declares. They are written in two files; this is
     /// what stops `full_access` drifting from `host_shell`.
     #[test]
     fn the_catalog_says_full_access_exactly_when_the_manifest_does() {
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for item in official() {
-            let path = root.join(&item.source).join("irori-extension.toml");
-            let text = std::fs::read_to_string(&path).unwrap_or_else(|e| {
-                panic!("no manifest for {} at {}: {e}", item.id, path.display())
-            });
-            let manifest = irori_protocol::parse_manifest(&text)
-                .unwrap_or_else(|e| panic!("{}'s manifest doesn't parse: {e}", item.id));
+        for (item, manifest) in manifests() {
             assert_eq!(
                 item.full_access,
                 manifest.permissions.full_access(),
                 "{}",
                 item.id
+            );
+        }
+    }
+
+    /// The catalog's version is what an installed copy is compared with, and the manifest's is
+    /// what an installed copy reports. If they differ, an extension that was just updated is
+    /// offered the same update again, or a newer package is never offered at all. Both files
+    /// once said different things for Zigbee (0.2.0 and 0.3.0).
+    #[test]
+    fn the_catalog_has_the_version_each_manifest_declares() {
+        for (item, manifest) in manifests() {
+            assert_eq!(
+                item.version, manifest.extension.version,
+                "{}: extensions/official.toml and {}/irori-extension.toml must give the same \
+                 version; raise both",
+                item.id, item.source
             );
         }
     }
@@ -721,7 +751,7 @@ mod tests {
             name: Name::try_from("Demo").expect("a valid name"),
             category: "demo".to_owned(),
             description: String::new(),
-            version: "9.9.9".to_owned(),
+            version: Version::try_from("9.9.9").expect("a valid version"),
             source: "extensions/demo".to_owned(),
             crate_name: "irori-protocol-demo".to_owned(),
             bin: "irori-ext-demo".to_owned(),
