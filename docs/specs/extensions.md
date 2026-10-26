@@ -62,6 +62,13 @@ the old package had that the new one doesn't (what it downloaded for itself) is 
 Updating Irori doesn't update installed extensions. A third-party tarball URL uses the same machinery
 (`POST /api/extensions/install`); how those URLs are discovered is later.
 
+An official extension's version is its own, not Irori's: the one in its manifest, which the
+catalog (`extensions/official.toml`) repeats so the page knows it before anything is installed. A
+test fails when the two differ. Raise it in both files when the extension's package changes, or
+an installed copy is never offered the change. The package itself still comes from the Irori
+release that built it (`<bin>-<target>.tar.gz` under that release's tag), so each release ships
+every official extension at the version its catalog names.
+
 One extension is installed, updated or uninstalled by one request at a time, and the work
 finishes even if the page that asked is closed. While it's underway the catalog
 (`GET /api/catalog`) gives that extension `"busy": "installing"`, `"updating"` or
