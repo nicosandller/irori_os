@@ -30,6 +30,8 @@ pub struct Found {
     pub address: SocketAddr,
     /// Set when this came from `known_hosts`, so a later success clears that host's failure.
     pub known_host: Option<String>,
+    /// Its mDNS host name, as [`irori_types::host_name`] keeps it, for the network map.
+    pub host: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,7 +121,7 @@ async fn recv_browse(browse: &mut Option<mdns_sd::Receiver<ServiceEvent>>) -> Op
 }
 
 pub(crate) fn from_resolved(service: &mdns_sd::ResolvedService) -> Option<Found> {
-    identify(
+    let mut found = identify(
         service.get_port(),
         service
             .get_addresses()
@@ -127,7 +129,9 @@ pub(crate) fn from_resolved(service: &mdns_sd::ResolvedService) -> Option<Found>
             .map(mdns_sd::ScopedIp::to_ip_addr),
         |key| service.get_property_val_str(key).map(str::to_owned),
         None,
-    )
+    )?;
+    found.host = irori_types::host_name(service.get_hostname());
+    Some(found)
 }
 
 /// `port` 0 is the Cast default, 8009. An unspecified address is skipped. IPv4 wins when both
@@ -154,6 +158,7 @@ pub(crate) fn identify(
         version: txt("ve").unwrap_or_default(),
         address: SocketAddr::new(ip, port),
         known_host,
+        host: None,
     })
 }
 
@@ -163,6 +168,31 @@ pub(crate) async fn fetch_eureka(host: &str) -> Option<Found> {
 }
 
 async fn read_eureka(host: &str, port: u16) -> Option<Found> {
+    let (ip, body) = eureka_body(host, port).await?;
+    let info = parse_eureka(&body)?;
+    Some(Found {
+        uuid: info.uuid,
+        name: info.name,
+        model: String::new(),
+        version: info.version,
+        address: SocketAddr::new(ip, CAST_PORT),
+        known_host: Some(host.to_owned()),
+        // A host typed as a name is the receiver's own, the one mDNS would give.
+        host: host_ip(host)
+            .is_none()
+            .then(|| irori_types::host_name(host))
+            .flatten(),
+    })
+}
+
+/// Asks a receiver how it's connected, for the network map. `None` when it didn't answer.
+pub(crate) async fn fetch_wifi(ip: IpAddr) -> Option<crate::network::Wifi> {
+    let (_, body) = eureka_body(&ip.to_string(), EUREKA_PORT).await?;
+    crate::network::wifi_of(&body)
+}
+
+/// `GET /setup/eureka_info` from `host`: who answered, and what it said.
+async fn eureka_body(host: &str, port: u16) -> Option<(IpAddr, String)> {
     let exchange = async {
         let stream = connect_eureka(host, port).await.ok()?;
         let ip = stream.peer_addr().ok()?.ip();
@@ -186,16 +216,9 @@ async fn read_eureka(host: &str, port: u16) -> Option<Found> {
             .split_once("\r\n\r\n")
             .or_else(|| text.split_once("\n\n"))
             .map(|(_, body)| body)
-            .unwrap_or(&text);
-        let info = parse_eureka(body)?;
-        Some(Found {
-            uuid: info.uuid,
-            name: info.name,
-            model: String::new(),
-            version: info.version,
-            address: SocketAddr::new(ip, CAST_PORT),
-            known_host: Some(host.to_owned()),
-        })
+            .unwrap_or(&text)
+            .to_owned();
+        Some((ip, body))
     };
     tokio::time::timeout(EXCHANGE, exchange)
         .await

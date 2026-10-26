@@ -187,6 +187,7 @@ pub fn describe(mac: &str, snapshot: &Snapshot) -> Result<Described, String> {
         model: model(info),
         sw_version: info.fw_ver.clone(),
         hw_version: info.hw_ver.clone(),
+        serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
     }];
@@ -225,6 +226,7 @@ pub fn describe(mac: &str, snapshot: &Snapshot) -> Result<Described, String> {
             model: model(&child.info).or_else(|| model(info)),
             sw_version: child.info.fw_ver.clone(),
             hw_version: child.info.hw_ver.clone(),
+            serial_number: None,
             suggested_area: None,
             via_device_unique_id: Some(parent.clone()),
         });

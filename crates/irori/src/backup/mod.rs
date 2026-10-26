@@ -72,6 +72,10 @@ pub struct Manifest {
     pub encrypted: bool,
     /// Whether entity history was put in.
     pub history: bool,
+    /// Whether the activity log is in the database: who did what in the home, as it stood. A
+    /// restore leaves the one the home has unless it is asked to bring this one.
+    #[serde(default)]
+    pub activity: bool,
 }
 
 /// What a listing shows about a file, without opening it.
@@ -195,6 +199,9 @@ pub fn create_named(
         extensions: installed_extensions(data),
         encrypted: plan.key.is_some(),
         history: plan.include_history,
+        // It is in the database snapshot whole: unlike history, it is small, and it is the one
+        // record of who changed the home.
+        activity: true,
     };
     fs::write(
         root.join("manifest.json"),
@@ -595,15 +602,34 @@ pub struct Parts {
     pub state: bool,
     /// Entity history.
     pub history: bool,
+    /// The activity log (`docs/specs/access.md` §3). Like history it stays as it is now unless
+    /// asked for: a backup from last month would otherwise take the last month out of the
+    /// record of who changed the home.
+    #[serde(default)]
+    pub activity: bool,
 }
 
 impl Parts {
+    /// Everything there is, the activity log included: a home with nothing yet (the welcome's
+    /// restore), and the way back to a safety copy.
     pub const ALL: Parts = Parts {
         settings: true,
         extensions: true,
         state: true,
         history: true,
+        activity: true,
     };
+
+    /// What a restore puts back when nothing is chosen: all of the home, and the log of what
+    /// has been done to it stays.
+    pub const USUAL: Parts = Parts {
+        activity: false,
+        ..Parts::ALL
+    };
+
+    pub fn any(self) -> bool {
+        self.settings || self.extensions || self.state || self.history || self.activity
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -639,6 +665,9 @@ pub struct Restored {
     /// Whether the extensions above have been looked after yet.
     #[serde(default)]
     pub extensions_handled: bool,
+    /// Whether the activity log has been told about it yet.
+    #[serde(default)]
+    pub audited: bool,
 }
 
 /// Opens `archive`, checks it, and leaves it in `<data>/restore-pending` for the next start.
@@ -733,6 +762,7 @@ pub fn apply_pending(config: &Path, data: &Path) -> Option<Restored> {
         awaiting_approval: Vec::new(),
         reinstall_failed: Vec::new(),
         extensions_handled: false,
+        audited: false,
     };
     match swap_in(&pending.join("tree"), config, data, plan.parts) {
         Ok(safety) => {
@@ -835,16 +865,17 @@ fn put_back(tree: &Path, config: &Path, data: &Path, parts: Parts) -> anyhow::Re
             replace_entry(&tree.join("data").join(&name), &data.join(&name))?;
         }
     }
-    if parts.state || parts.history {
+    if parts.state || parts.history || parts.activity {
         compose_database(&data.join("irori.db"), &tree.join("data/irori.db"), parts)?;
     }
     Ok(())
 }
 
-/// Builds `irori.db` from the backup's and the current one: the state from one, the history
-/// from the other, as the parts say. Nothing is replaced until the new file is whole.
+/// Builds `irori.db` from the backup's and the current one: each of the three kinds of thing in
+/// it (state, history, the activity log) from whichever the parts say. Nothing is replaced until
+/// the new file is whole.
 fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Result<()> {
-    if !(parts.state || parts.history) || !staged.exists() {
+    if !(parts.state || parts.history || parts.activity) || !staged.exists() {
         return Ok(());
     }
     let out = current.with_file_name("irori.db.restoring");
@@ -854,33 +885,53 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
             .context("the path isn't UTF-8")?
             .replace('\'', "''"))
     };
-    if (parts.state && parts.history) || !current.exists() {
+    if (parts.state && parts.history && parts.activity) || !current.exists() {
         // The backup's database is a finished file of its own (it was written by VACUUM INTO).
         fs::copy(staged, &out)?;
+        // A backup from before the activity log existed has no table for it, and must not take
+        // the home's own rows with it.
+        if current.exists() {
+            let conn = Connection::open(&out)?;
+            conn.execute_batch(&format!(
+                "ATTACH DATABASE '{}' AS other",
+                sql_path(current)?
+            ))?;
+            for table in crate::audit::TABLES {
+                let in_backup: i64 = conn.query_row(
+                    "SELECT count(*) FROM main.sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )?;
+                if in_backup == 0 {
+                    copy_table(&conn, table)?;
+                }
+            }
+            conn.execute_batch("DETACH DATABASE other")?;
+        }
     } else {
-        // One half from each. The base is whichever has the half that is more than a table or
-        // two; the history tables are then copied across from the other.
+        // The base is the file that has the rest (everything but the two kinds below), which is
+        // the backup's when the state is asked for. The tables of a kind the base is not the
+        // source of are then copied across from the other file.
         let (base, other) = if parts.state {
             (staged, current)
         } else {
             (current, staged)
         };
+        let base_is_staged = parts.state;
         let conn = Connection::open_with_flags(base, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         conn.execute_batch(&format!("VACUUM INTO '{}'", sql_path(&out)?))?;
         drop(conn);
         let conn = Connection::open(&out)?;
         conn.execute_batch(&format!("ATTACH DATABASE '{}' AS other", sql_path(other)?))?;
-        for table in irori_recorder::HISTORY_TABLES {
-            let both: i64 = conn.query_row(
-                "SELECT (SELECT count(*) FROM main.sqlite_master WHERE name = ?1) \
-                      * (SELECT count(*) FROM other.sqlite_master WHERE name = ?1)",
-                [table],
-                |row| row.get(0),
-            )?;
-            if both > 0 {
-                conn.execute_batch(&format!(
-                    "DELETE FROM main.{table}; INSERT INTO main.{table} SELECT * FROM other.{table};"
-                ))?;
+        for (wanted_from_staged, tables) in [
+            (parts.history, irori_recorder::HISTORY_TABLES),
+            (parts.activity, crate::audit::TABLES),
+        ] {
+            if wanted_from_staged == base_is_staged {
+                continue;
+            }
+            for table in tables {
+                copy_table(&conn, table)?;
             }
         }
         conn.execute_batch("DETACH DATABASE other")?;
@@ -889,6 +940,41 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
         let _ = fs::remove_file(current.with_file_name(stale));
     }
     fs::rename(&out, current)?;
+    Ok(())
+}
+
+/// Replaces `table` in `main` with the one in `other`, making it first if `main` has none (a
+/// backup from before the table existed must not take the home's own rows with it).
+fn copy_table(conn: &Connection, table: &str) -> anyhow::Result<()> {
+    let has = |schema: &str| -> anyhow::Result<bool> {
+        let n: i64 = conn.query_row(
+            &format!(
+                "SELECT count(*) FROM {schema}.sqlite_master WHERE type = 'table' AND name = ?1"
+            ),
+            [table],
+            |row| row.get(0),
+        )?;
+        Ok(n > 0)
+    };
+    if !has("other")? {
+        // Nothing to bring across; what `main` has stays.
+        return Ok(());
+    }
+    if !has("main")? {
+        let mut schema = conn.prepare(
+            "SELECT sql FROM other.sqlite_master WHERE tbl_name = ?1 AND sql IS NOT NULL \
+             ORDER BY (type = 'table') DESC",
+        )?;
+        let statements: Vec<String> = schema
+            .query_map([table], |row| row.get(0))?
+            .collect::<Result<_, _>>()?;
+        for statement in statements {
+            conn.execute_batch(&statement)?;
+        }
+    }
+    conn.execute_batch(&format!(
+        "DELETE FROM main.{table}; INSERT INTO main.{table} SELECT * FROM other.{table};"
+    ))?;
     Ok(())
 }
 
@@ -903,6 +989,51 @@ fn replace_entry(from: &Path, to: &Path) -> anyhow::Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// After a restore, writes the row that says it was done, or why it wasn't, into the activity log
+/// as it now stands (`docs/specs/access.md` §3). It is Irori that did it, at the start after the
+/// one that was asked: the row for the asking is in the log the home had then, which a restore
+/// that brings the backup's log back replaces. Once.
+pub fn record_restore(audit: &crate::audit::Audit, data: &Path) {
+    use irori_types::{AuditActor, Outcome};
+    let Some(mut done) = last_restore(data) else {
+        return;
+    };
+    if done.audited {
+        return;
+    }
+    let put_back: Vec<&str> = [
+        (done.parts.settings, "settings"),
+        (done.parts.extensions, "extension data"),
+        (done.parts.state, "sessions and chats"),
+        (done.parts.history, "history"),
+        (done.parts.activity, "the activity log"),
+    ]
+    .into_iter()
+    .filter_map(|(on, name)| on.then_some(name))
+    .collect();
+    let mut detail = format!("{}: {}", done.archive, put_back.join(", "));
+    if !done.parts.activity {
+        detail.push_str("; the activity log was left as it was");
+    }
+    if let Some(error) = &done.error {
+        detail = format!("{}: {error}", done.archive);
+    }
+    let outcome = if done.ok {
+        Outcome::Ok
+    } else {
+        Outcome::Failed
+    };
+    audit.record(
+        crate::audit::Row::new(AuditActor::Irori, "restore_applied", outcome)
+            .target(done.archive.clone())
+            .detail(detail),
+    );
+    done.audited = true;
+    if let Ok(bytes) = serde_json::to_vec_pretty(&done) {
+        let _ = fs::write(data.join(RESULT), bytes);
+    }
 }
 
 /// After a restore, fetches again the official extensions the backup's home had installed. One
@@ -931,21 +1062,22 @@ pub async fn reinstall_extensions(host: irori_core::ExtensionHost, data: PathBuf
             done.awaiting_approval.push(name);
             continue;
         }
-        let stage = host.packages_dir().join(crate::server::staging_dir());
-        let fetched = tokio::task::spawn_blocking({
-            let stage = stage.clone();
-            let item = item.clone();
-            move || crate::packages::install_official(&item, &stage)
-        })
-        .await
-        .unwrap_or_else(|e| Err(e.to_string()))
-        .and_then(|()| host.install_package(stage.clone()).map(|_| ()));
-        match fetched {
+        // One somebody is installing right now (the Extensions page, the CLI), or has just
+        // installed, isn't a failure: it's on its way, by a different hand.
+        match crate::server::place_official(host.clone(), item.clone(), false, false).await {
             Ok(()) => done.reinstalled.push(name),
-            Err(why) => {
-                let _ = fs::remove_dir_all(&stage);
-                done.reinstall_failed.push(format!("{name}: {why}"));
-            }
+            Err(crate::server::NotPlaced::Underway(underway)) => done.warnings.push(format!(
+                "{name} was already being {} at the same time, and was left to finish that",
+                match underway.work {
+                    irori_core::PackageWork::Installing => "installed",
+                    irori_core::PackageWork::Updating => "updated",
+                    irori_core::PackageWork::Uninstalling => "uninstalled",
+                }
+            )),
+            Err(crate::server::NotPlaced::Installed(_)) => done
+                .warnings
+                .push(format!("{name} was installed meanwhile")),
+            Err(why) => done.reinstall_failed.push(format!("{name}: {}", why.why())),
         }
     }
     done.extensions_handled = true;

@@ -65,6 +65,17 @@
         }
       }
     },
+    "owner": {
+      "description": "Whose it is: a regular user's flow is checked against their rooms and what they may send\n(`docs/specs/access.md` §4). Absent means the home's own. Not part of the version.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/UserId"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "wires": {
       "type": "array",
       "items": {
@@ -1152,6 +1163,13 @@
           "type": "null"
         }
       ]
+    },
+    "UserId": {
+      "description": "Format of a slug (user id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "Values": {
       "description": "A typed value, or a list of 1 to 16 of them: any one matches.",

@@ -12,6 +12,7 @@ irori-types.workspace = true
 irori-rules.workspace = true
 irori-flow-types.workspace = true
 irori-protocol-cast.workspace = true
+irori-protocol-matter.workspace = true
 irori-protocol-mqtt.workspace = true
 irori-protocol-tplink.workspace = true
 irori-protocol-zigbee.workspace = true

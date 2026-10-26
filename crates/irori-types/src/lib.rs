@@ -11,6 +11,7 @@ pub const VERSION: &str = env!("IRORI_VERSION");
 mod id;
 
 mod api;
+mod audit;
 mod context;
 mod extension;
 mod floorplan;
@@ -18,6 +19,7 @@ pub mod format;
 mod home;
 mod kind;
 mod kinds;
+mod network;
 mod num;
 mod protocol;
 mod registry;
@@ -31,12 +33,14 @@ pub mod units;
 mod users;
 
 pub use api::LiveMessage;
+pub use audit::{AuditActor, AuditEntry, AuditPage, MOST_ROWS as MOST_AUDIT_ROWS, Named, Outcome};
 pub use context::{Context, Origin};
 pub use extension::{
-    ApiScope, AppContribution, AppPlacement, AutomationContribution, Contributions,
-    CoreRequirement, ExtensionInfo, ExtensionManifest, HostPath, IotClass, NetworkHost,
-    PackagePath, Permissions, ProtocolAction, ProtocolContribution, ReservedContribution,
-    RunCommand, SerialPath, Version,
+    ActionField, ActionPlace, ActionWay, ApiScope, AppContribution, AppPlacement,
+    AutomationContribution, Contributions, CoreRequirement, ExtensionInfo, ExtensionManifest,
+    HostPath, IotClass, MAX_ACTION_ANSWER_SECONDS, MAX_ACTION_INPUT, MAX_ACTION_WAYS,
+    MAX_WAY_FIELDS, MAX_WAY_SETTINGS, NetworkHost, PackagePath, Permissions, ProtocolAction,
+    ProtocolContribution, ReservedContribution, RunCommand, SerialPath, Version,
 };
 pub use floorplan::{
     Floorplan, Glyph, Hinge, Level, Marked, Opening, OpeningKind, PlacedArea, PlacedDevice,
@@ -102,6 +106,10 @@ pub use kinds::water_heater::{
     WaterHeaterState,
 };
 pub use kinds::{Field, Typed, ValueShape, mode_to_turn_on};
+pub use network::{
+    LinkQuality, MAX_NETWORK_LINKS, MAX_NETWORK_NODES, MAX_NETWORK_READING, MAX_NETWORKS, Network,
+    NetworkLink, NetworkMedium, NetworkNode, NetworkRole, access_point_id, host_name,
+};
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
     StateReport, Unmodeled, Waiting,

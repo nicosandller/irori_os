@@ -77,6 +77,7 @@ impl EngineLink {
                         id,
                         method: call.method,
                         params: call.params,
+                        caller: call.caller,
                     });
                 }
                 event = next_event(&mut self.events) => match event {
@@ -223,6 +224,25 @@ impl EngineLink {
                 });
                 self.answer(id, result);
             }
+            FromExt::GetReach { id, user } => {
+                // Who can reach what is the home's to say, and an extension that doesn't
+                // limit what a regular user can do has no use for it.
+                let result = if core.limits_people(extension) {
+                    serde_json::to_value(core.person_reach(&user)).map_err(|e| e.to_string())
+                } else {
+                    Err("this extension isn't one that limits what people can do".to_owned())
+                };
+                self.answer(id, result);
+            }
+            FromExt::Note {
+                action,
+                target,
+                detail,
+            } => {
+                if core.limits_people(extension) {
+                    core.note(extension, &action, &target, &detail);
+                }
+            }
             FromExt::CallService {
                 id,
                 entity_id,
@@ -330,6 +350,7 @@ pub(crate) fn app_info(manifest: &ExtensionManifest) -> Option<AppInfo> {
         entry: app.entry.clone(),
         api: manifest.permissions.api.clone(),
         entity_format: manifest.extension.entity_format,
+        users: app.users,
     })
 }
 

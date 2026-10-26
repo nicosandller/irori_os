@@ -68,25 +68,10 @@ pub async fn update(id: &ExtensionId) -> Result<(), String> {
         .ok_or("Irori is still starting; try again in a moment")?;
     let item = crate::packages::official_by_id(id)
         .ok_or_else(|| format!("`{id}` isn't an official extension"))?;
-    let stage = host.packages_dir().join(crate::server::staging_dir());
-    let staged = tokio::task::spawn_blocking({
-        let stage = stage.clone();
-        move || crate::packages::install_official(&item, &stage)
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()))
     // What was fetched is what would run. If it asks for full access, a person approves that.
-    .and_then(|()| {
-        crate::server::unapproved_full_access(&stage, Some(id), false).map_err(|(_, why)| why)
-    });
-    let placed = match staged {
-        Ok(()) => host.update_package(stage.clone()).await.map(|_| ()),
-        Err(why) => Err(why),
-    };
-    if placed.is_err() {
-        let _ = std::fs::remove_dir_all(&stage);
-    }
-    placed
+    crate::server::place_official(host.clone(), item, false, true)
+        .await
+        .map_err(|why| why.why())
 }
 
 #[cfg(test)]

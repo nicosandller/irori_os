@@ -23,6 +23,8 @@ pub enum Icon {
     /// A program's access token.
     Key,
     Logs,
+    /// Who did what: a clipboard with a tick.
+    Activity,
     /// How long history is kept: a clock.
     History,
     /// Backups: a box with an arrow down into it.
@@ -340,6 +342,9 @@ fn drawing(icon: Icon) -> &'static str {
         ),
         Icon::Users => r#"<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>"#,
         Icon::Key => r#"<circle cx="8" cy="12" r="4"/><path d="M12 12h9M18 12v3M21 12v2"/>"#,
+        Icon::Activity => {
+            r#"<rect x="5" y="4.5" width="14" height="16.5" rx="2"/><path d="M9 4.5V3h6v1.5M9 12.5l2 2 4-4.5M9 18h6"/>"#
+        }
         Icon::Logs => {
             r#"<rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/>"#
         }

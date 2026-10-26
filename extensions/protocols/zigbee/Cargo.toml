@@ -11,13 +11,13 @@ license.workspace = true
 irori-types.workspace = true
 irori-protocol.workspace = true
 irori-ha-discovery.workspace = true
+irori-node-runtime.workspace = true
 
 rumqttc.workspace = true
 rumqttd.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 tokio = { workspace = true, features = ["fs"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true

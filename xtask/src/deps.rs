@@ -66,8 +66,16 @@ const ALLOWED_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
     ("irori-recorder", &["irori-types"]),
     (
         "irori-protocol-*",
-        &["irori-types", "irori-protocol", "irori-ha-discovery"],
+        &[
+            "irori-types",
+            "irori-protocol",
+            "irori-ha-discovery",
+            "irori-node-runtime",
+        ],
     ),
+    // A managed Node.js for protocols that wrap a Node program (Zigbee2MQTT, the Matter
+    // server). Knows nothing of Irori itself.
+    ("irori-node-runtime", &[]),
     // Pure HA-discovery logic shared by the mqtt and zigbee protocols. No protocol libraries of
     // its own, and it never talks to a broker itself (that's each protocol's own broker.rs).
     ("irori-ha-discovery", &["irori-types"]),

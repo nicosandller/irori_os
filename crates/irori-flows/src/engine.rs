@@ -20,7 +20,7 @@ use irori_flow_types::{
 use irori_rules::clock::{self, Place};
 use irori_rules::cron::CronSpec;
 use irori_rules::eval::{self, Evaluator, Snapshot};
-use irori_types::{Availability, ContextId, EntityId, EntityState, RuleId, Timestamp};
+use irori_types::{Availability, ContextId, EntityId, EntityState, RuleId, Timestamp, UserId};
 
 /// The most steps one run may take: fan-out can't loop, but it can multiply.
 pub const MAX_STEPS: u32 = 256;
@@ -95,6 +95,9 @@ struct Firing {
     trigger: NodeId,
     cause: Option<ContextId>,
     test: Option<TestKind>,
+    /// The person who started it by hand, if one did. Carried with the firing, not read when it
+    /// starts: one that waits its turn in a queue starts long after the call that made it.
+    by: Option<UserId>,
     note: String,
     reads: Vec<Read>,
 }
@@ -182,6 +185,8 @@ pub struct Engine {
     flows: BTreeMap<RuleId, Loaded>,
     states: Arc<BTreeMap<EntityId, EntityState>>,
     runs: BTreeMap<ContextId, Run>,
+    /// Who a test started by hand is for, while it is being started.
+    by_hand: Option<UserId>,
     timers: BTreeSet<(Timestamp, u64, Timer)>,
     ready: VecDeque<(ContextId, u32)>,
     effects: Vec<Effect>,
@@ -209,6 +214,7 @@ impl Engine {
             flows: BTreeMap::new(),
             states: Arc::default(),
             runs: BTreeMap::new(),
+            by_hand: None,
             timers: BTreeSet::new(),
             ready: VecDeque::new(),
             effects: Vec::new(),
@@ -419,6 +425,7 @@ impl Engine {
                     trigger: node,
                     cause: None,
                     test: None,
+                    by: None,
                     note: "Irori started".into(),
                     reads: Vec::new(),
                 },
@@ -426,6 +433,21 @@ impl Engine {
             );
         }
         self.drive(now);
+    }
+
+    /// As [`Engine::fire`], for a test a regular user started: the run's record says who.
+    pub fn fire_by(
+        &mut self,
+        flow: &RuleId,
+        trigger: &NodeId,
+        test: Option<TestKind>,
+        by: Option<UserId>,
+        now: Timestamp,
+    ) -> Result<Option<ContextId>, String> {
+        self.by_hand = by;
+        let started = self.fire(flow, trigger, test, now);
+        self.by_hand = None;
+        started
     }
 
     /// Fires `trigger` by hand, as if it just happened. Answers the run's id, or why it can't.
@@ -455,6 +477,7 @@ impl Engine {
                 trigger: trigger.clone(),
                 cause: None,
                 test,
+                by: self.by_hand.clone().filter(|_| test.is_some()),
                 note: "fired by hand".into(),
                 reads: Vec::new(),
             },
@@ -790,6 +813,7 @@ impl Engine {
                             trigger: node.clone(),
                             cause: Some(new.context.id.clone()),
                             test: None,
+                            by: None,
                             note,
                             reads: vec![read],
                         },
@@ -937,6 +961,7 @@ impl Engine {
             version: loaded.version.clone(),
             trigger: firing.trigger.clone(),
             cause: firing.cause,
+            started_by: firing.by.clone(),
             test: firing.test,
             started_at: now,
             finished_at: None,
@@ -1773,6 +1798,7 @@ impl Engine {
                         trigger: node,
                         cause: None,
                         test: None,
+                        by: None,
                         note: clock_note(&place, &trigger, now),
                         reads: Vec::new(),
                     },
@@ -1813,6 +1839,7 @@ impl Engine {
                         trigger: node,
                         cause,
                         test: None,
+                        by: None,
                         note: format!("{entity} held {} for {hold}", words(&read.value)),
                         reads: vec![read],
                     },

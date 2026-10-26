@@ -106,7 +106,7 @@ const LOG_ANSWER: usize = 4_000;
 static LOCAL_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// What the Settings page and the sidebar need. The key itself is never in here.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Status {
     pub ready: bool,
     pub mode: Mode,
@@ -141,7 +141,49 @@ pub struct Status {
     pub instructions_max: usize,
 }
 
-#[derive(Debug, Serialize)]
+impl Status {
+    /// What somebody who isn't an owner is told: whether they can ask, and whether what they
+    /// ask leaves the house. How the model is set up, the machine it runs on and the standing
+    /// instructions are the owner's.
+    pub fn for_a_person(self) -> Status {
+        let detail = match (self.ready, self.cloud) {
+            (true, true) => "Answers come from a model outside the house. What you ask leaves it, \
+                with the names and states of the devices in your rooms and your own automations."
+                .to_owned(),
+            (true, false) => "Answers come from a model on this machine.".to_owned(),
+            (false, _) => "The assistant isn't set up yet. An owner of the home sets it up in \
+                Settings."
+                .to_owned(),
+        };
+        Status {
+            ready: self.ready,
+            mode: self.mode,
+            model: None,
+            detail,
+            credential: "",
+            local_tag: String::new(),
+            library: String::new(),
+            library_index: "",
+            ollama: "",
+            managed: false,
+            pulled: Vec::new(),
+            preset: self.preset,
+            base_url: String::new(),
+            cloud_model: String::new(),
+            cloud: self.cloud,
+            memory_free: 0,
+            memory_total: 0,
+            local_context: 0,
+            context_min: 0,
+            context_max: 0,
+            context: self.context,
+            instructions: String::new(),
+            instructions_max: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct Pulled {
     pub name: String,
     pub size: u64,
@@ -253,6 +295,55 @@ struct Env<'a> {
     log: &'a syslog::Log,
     /// Whether whoever is asking may change how the home is set up.
     owner: bool,
+    /// Who is asking, when somebody signed in is.
+    user: Option<irori_types::UserId>,
+    /// What they have of the home: everything the model is told, and everything a tool finds,
+    /// is only this (`docs/specs/access.md` §2).
+    reach: irori_core::Reach,
+}
+
+impl Env<'_> {
+    fn devices(&self) -> Vec<irori_types::Device> {
+        self.core.seen(&self.reach).devices()
+    }
+
+    fn entities(&self) -> Vec<irori_types::Entity> {
+        self.core.seen(&self.reach).entities()
+    }
+
+    fn states(&self) -> Vec<EntityState> {
+        self.core.seen(&self.reach).states()
+    }
+
+    fn areas(&self) -> Vec<irori_types::Area> {
+        self.core.seen(&self.reach).areas()
+    }
+
+    fn floors(&self) -> Vec<irori_types::Floor> {
+        self.core.seen(&self.reach).floors()
+    }
+
+    fn floorplan(&self) -> Floorplan {
+        self.core.seen(&self.reach).floorplan()
+    }
+
+    /// Where this person's conversation in `scope` is kept: owners share theirs, and anybody
+    /// else has their own.
+    fn memory(&self, scope: &str) -> String {
+        remembered_in(scope, !self.owner, self.user.as_ref())
+    }
+
+    /// Who the Automations extension is told is asking: the flows it shows are the asker's.
+    fn caller(&self) -> irori_protocol::engine::Caller {
+        if self.owner {
+            irori_protocol::engine::Caller::owner()
+        } else {
+            irori_protocol::engine::Caller {
+                user: self.user.clone(),
+                owner: false,
+            }
+        }
+    }
 }
 
 async fn status(env: &Env<'_>, data_dir: &Path) -> Status {
@@ -495,25 +586,124 @@ async fn room_for(data_dir: &Path, tag: &str, had: u64, asked: u64) -> Result<()
     }
 }
 
-/// What was said in `scope`, and how much of the model's context its last answer took.
-pub fn transcript(db: &Path, scope: &str) -> Result<(Vec<Remembered>, Option<Usage>), String> {
-    check_scope(scope)?;
-    let turns = load_turns(db, scope)?;
+/// Where the conversation `scope` is kept for somebody: the one the owners share, or, for
+/// anybody who is not an owner (`own`), theirs alone. What the model says to an owner is drawn
+/// from Settings and the logs, and what it says to a person with some rooms from those rooms, so
+/// neither is for anybody else to read, clear or stop. `scope` is checked by [`check_scope`]
+/// first; a scope with a `#` in it never passes, so a key can't be asked for by its name.
+pub fn remembered_in(scope: &str, own: bool, user: Option<&irori_types::UserId>) -> String {
+    if own {
+        format!("{scope}#{}", user.map_or("", |user| user.as_str()))
+    } else {
+        scope.to_owned()
+    }
+}
+
+/// The scope a key from [`remembered_in`] is a conversation of.
+fn scope_of(key: &str) -> &str {
+    key.split_once('#').map_or(key, |(scope, _)| scope)
+}
+
+/// Forgets every conversation a person had, and what is known of what they could reach.
+pub fn forget_conversations_of(db: &Path, user: &irori_types::UserId) -> Result<(), String> {
+    let conn = open_db(db)?;
+    conn.execute(
+        "DELETE FROM assistant_reach WHERE user = ?1",
+        [user.as_str()],
+    )
+    .map_err(|error| error.to_string())?;
+    let suffix = format!("#{user}");
+    for table in ["assistant_message", "assistant_usage"] {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE substr(scope, -length(?1)) = ?1"),
+            [&suffix],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+/// Keeps a person's chats only while everything they were told in them is still theirs. What
+/// they could reach (rooms, floors, devices and entities) is written down with the chats; when
+/// anything of it is gone (a room taken away, a device moved out, the whole home become some of
+/// it) the chats go, whichever way that happened, and this says `true`. A person who only gains
+/// reach keeps theirs: what was said is still within it.
+pub fn keep_to_reach(
+    db: &Path,
+    user: &irori_types::UserId,
+    reach: &irori_core::Reach,
+) -> Result<bool, String> {
+    let now: Option<std::collections::BTreeSet<String>> =
+        reach.marks().map(|marks| marks.into_iter().collect());
+    let current = match &now {
+        None => "*".to_owned(),
+        Some(marks) => marks.iter().cloned().collect::<Vec<_>>().join("\n"),
+    };
+    use rusqlite::OptionalExtension as _;
+    let conn = open_db(db)?;
+    let before: Option<String> = conn
+        .query_row(
+            "SELECT entities FROM assistant_reach WHERE user = ?1",
+            [user.as_str()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if before.as_deref() == Some(current.as_str()) {
+        return Ok(false);
+    }
+    let lost = match (&before, &now) {
+        // Nothing is known of what they could reach, so nothing can be said to be theirs still.
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(before), Some(now)) => {
+            before == "*"
+                || before
+                    .split('\n')
+                    .any(|mark| !mark.is_empty() && !now.contains(mark))
+        }
+    };
+    if lost {
+        forget_conversations_of(db, user)?;
+    }
+    conn.execute(
+        "INSERT INTO assistant_reach (user, entities) VALUES (?1, ?2)
+         ON CONFLICT (user) DO UPDATE SET entities = excluded.entities",
+        [user.as_str(), current.as_str()],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(lost)
+}
+
+/// What a person has of the home as it is now, not as it was when they asked.
+async fn reach_now(env: &Env<'_>, user: &irori_types::UserId) -> irori_core::Reach {
+    match env.config.people().await.user(user) {
+        Some(person) if person.role.runs_the_home() => irori_core::Reach::Whole,
+        Some(person) => env.core.reach_for(person.areas.as_deref()),
+        None => irori_core::Reach::nothing(),
+    }
+}
+
+/// What was said in the conversation kept as `key` (see [`remembered_in`]), and how much of
+/// the model's context its last answer took.
+pub fn transcript(db: &Path, key: &str) -> Result<(Vec<Remembered>, Option<Usage>), String> {
+    check_scope(scope_of(key))?;
+    let turns = load_turns(db, key)?;
     // A conversation with nothing left in it takes nothing.
     let used = if turns.is_empty() {
         None
     } else {
-        load_usage(db, scope)?
+        load_usage(db, key)?
     };
     Ok((turns, used))
 }
 
-pub fn clear(db: &Path, scope: &str) -> Result<(), String> {
-    check_scope(scope)?;
+pub fn clear(db: &Path, key: &str) -> Result<(), String> {
+    check_scope(scope_of(key))?;
     let conn = open_db(db)?;
-    conn.execute("DELETE FROM assistant_message WHERE scope = ?1", [scope])
+    conn.execute("DELETE FROM assistant_message WHERE scope = ?1", [key])
         .map_err(|error| error.to_string())?;
-    conn.execute("DELETE FROM assistant_usage WHERE scope = ?1", [scope])
+    conn.execute("DELETE FROM assistant_usage WHERE scope = ?1", [key])
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -850,8 +1040,12 @@ async fn answer(
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
-    // A picture is for drawing a floor from, so it is taken where a floor can be drawn.
+    // A picture is for drawing a floor from, so it is taken where a floor can be drawn, by
+    // somebody who may draw one.
     let refused = match &attachment {
+        Some(_) if !env.owner => {
+            Some("Only an owner of the home can draw its floors from a picture.".to_owned())
+        }
         Some(_) if floor_of(&scope).is_none() => {
             Some("A picture can be given on the Floorplan page, to draw from.".to_owned())
         }
@@ -867,7 +1061,7 @@ async fn answer(
     // this copy of it, and what it drew goes back to the page to keep or undo. A plan sent to
     // any other conversation is nobody's business, and one that couldn't be saved as it stands
     // is no ground to draw on.
-    let plan = plan.filter(|_| floor_of(&scope).is_some());
+    let plan = plan.filter(|_| floor_of(&scope).is_some() && env.owner);
     // Why the plan sent can't be drawn on, when it can't: said to the model, so that it says
     // so, and doesn't tell somebody who is already editing to go and press Edit.
     let unsound = plan
@@ -919,7 +1113,15 @@ async fn answer(
             return;
         }
     };
-    let turns = match load_turns(env.db, &scope) {
+    let memory = env.memory(&scope);
+    if !env.owner
+        && let Some(user) = &env.user
+        && let Err(error) = keep_to_reach(env.db, user, &env.reach).map(drop)
+    {
+        let _ = tx.send(ChatEvent::Error(error)).await;
+        return;
+    }
+    let turns = match load_turns(env.db, &memory) {
         Ok(turns) => turns,
         Err(error) => {
             let _ = tx.send(ChatEvent::Error(error)).await;
@@ -1027,7 +1229,7 @@ async fn answer(
         match complete(
             &provider,
             &conversation,
-            with_tools.then_some((scope.as_str(), drawing.is_some())),
+            with_tools.then_some((scope.as_str(), drawing.is_some(), env.owner)),
             &tx,
         )
         .await
@@ -1138,7 +1340,30 @@ async fn answer(
         used,
         size: provider.context(),
     });
-    if let Err(error) = store_turns(env.db, &scope, said, used) {
+    // The answer was drawn from what they had when they asked. If something of it has stopped
+    // being theirs in the meantime, it is not kept, and nor is what came before.
+    if !env.owner
+        && let Some(user) = &env.user
+    {
+        match keep_to_reach(env.db, user, &reach_now(&env, user).await) {
+            Ok(false) => {}
+            Ok(true) => {
+                let _ = tx
+                    .send(ChatEvent::Error(
+                        "Your rooms changed while this was being answered, so it isn't kept. \
+                         Ask again."
+                            .to_owned(),
+                    ))
+                    .await;
+                return;
+            }
+            Err(error) => {
+                let _ = tx.send(ChatEvent::Error(error)).await;
+                return;
+            }
+        }
+    }
+    if let Err(error) = store_turns(env.db, &memory, said, used) {
         let _ = tx.send(ChatEvent::Error(error)).await;
         return;
     }
@@ -1328,9 +1553,9 @@ pub struct Usage {
 async fn complete(
     provider: &Provider,
     conversation: &Conversation,
-    // The conversation whose tools are offered, when any are, and whether the person asking
-    // sent a plan to draw on.
-    tools_for: Option<(&str, bool)>,
+    // The conversation whose tools are offered, when any are, whether the person asking sent
+    // a plan to draw on, and whether they are an owner.
+    tools_for: Option<(&str, bool, bool)>,
     tx: &mpsc::Sender<ChatEvent>,
 ) -> Result<(Outcome, u64), String> {
     let client = client();
@@ -1346,8 +1571,8 @@ async fn complete(
             if url.starts_with("https://api.openai.com/") || url.starts_with("https://api.x.ai/") {
                 body["stream_options"] = json!({ "include_usage": true });
             }
-            if let Some((scope, drawing)) = tools_for {
-                body["tools"] = openai_tools(scope, drawing);
+            if let Some((scope, drawing, owner)) = tools_for {
+                body["tools"] = openai_tools(scope, drawing, owner);
             }
             (client.post(url).bearer_auth(key).json(&body), key.as_str())
         }
@@ -1355,13 +1580,13 @@ async fn complete(
             let mut body = json!({
                 "model": model,
                 // A whole floor is a long list of walls: drawing gets room to finish one.
-                "max_tokens": if tools_for.is_some_and(|(_, drawing)| drawing) { 4096 } else { 1024 },
+                "max_tokens": if tools_for.is_some_and(|(_, drawing, _)| drawing) { 4096 } else { 1024 },
                 "stream": true,
                 "system": conversation.system,
                 "messages": anthropic_messages(conversation),
             });
-            if let Some((scope, drawing)) = tools_for {
-                body["tools"] = anthropic_tools(scope, drawing);
+            if let Some((scope, drawing, owner)) = tools_for {
+                body["tools"] = anthropic_tools(scope, drawing, owner);
             }
             (
                 client
@@ -1388,8 +1613,8 @@ async fn complete(
             if *think {
                 body["think"] = json!(false);
             }
-            if let Some((scope, drawing)) = tools_for {
-                body["tools"] = openai_tools(scope, drawing);
+            if let Some((scope, drawing, owner)) = tools_for {
+                body["tools"] = openai_tools(scope, drawing, owner);
             }
             (client.post(format!("{OLLAMA}/api/chat")).json(&body), "")
         }
@@ -1601,11 +1826,15 @@ async fn run_tool(
     } = asked;
     let args: Value = serde_json::from_str(&call.arguments).unwrap_or(json!({}));
     // A model may ask for a tool it wasn't offered. It gets what it was offered, no more.
-    if !irori_assist::tool_offered(scope, drawing.is_some(), &call.name) {
+    if !irori_assist::tool_offered(scope, drawing.is_some(), env.owner, &call.name) {
         return format!("there is no tool `{}`", call.name);
     }
     let text = match call.name.as_str() {
-        "list_devices" => home_brief(&lines(env.core, None), HOME_CAP),
+        // Offered only to an owner (the check above); held to it here too.
+        name if !env.owner && irori_assist::owner_only(name) => {
+            return format!("there is no tool `{name}`");
+        }
+        "list_devices" => home_brief(&lines(env, None), HOME_CAP),
         "read_settings" => settings_brief(&settings_picture(env, status).await, TOOL_ANSWER, false),
         "list_automations" => automations_brief(
             automations(env).await.as_deref().map_err(String::as_str),
@@ -1624,26 +1853,15 @@ async fn run_tool(
             let Ok(id) = id.parse::<DeviceId>() else {
                 return format!("there's no device `{id}`");
             };
-            match env
-                .core
-                .devices()
-                .into_iter()
-                .find(|device| device.id == id)
-            {
+            match env.devices().into_iter().find(|device| device.id == id) {
                 Some(device) => {
                     let area = device
                         .area_id
                         .as_ref()
-                        .and_then(|area| {
-                            env.core.areas().into_iter().find(|known| &known.id == area)
-                        })
+                        .and_then(|area| env.areas().into_iter().find(|known| &known.id == area))
                         .map(|area| area.name.to_string())
                         .unwrap_or_default();
-                    device_brief(
-                        device.name.as_ref(),
-                        &area,
-                        &lines(env.core, Some(&device.id)),
-                    )
+                    device_brief(device.name.as_ref(), &area, &lines(env, Some(&device.id)))
                 }
                 None => format!("there's no device `{id}`"),
             }
@@ -1655,7 +1873,12 @@ async fn run_tool(
             let Ok(id) = id.parse::<EntityId>() else {
                 return format!("there's no entity `{id}`");
             };
-            let states = env.history.for_entity(&id);
+            // A thing outside their rooms has no changes to tell, like one that isn't there.
+            let states = if env.reach.sees_entity(&id) {
+                env.history.for_entity(&id)
+            } else {
+                Vec::new()
+            };
             if states.is_empty() {
                 format!("{id} has no changes in the last 24 hours.")
             } else {
@@ -1670,19 +1893,14 @@ async fn run_tool(
         }
         "read_floorplan" => {
             // What the person is drawing, when they are: that is the plan in front of them.
-            let plan = drawing.clone().unwrap_or_else(|| env.core.floorplan());
+            let plan = drawing.clone().unwrap_or_else(|| env.floorplan());
             let asked = args.get("floor").and_then(|floor| floor.as_str());
             let floors: Vec<FloorId> = match asked.map(str::parse::<FloorId>) {
                 Some(Ok(floor)) => vec![floor],
                 Some(Err(_)) => return format!("there's no floor `{}`", asked.unwrap_or("")),
                 None => match floor_of(scope) {
                     Some(floor) => vec![floor],
-                    None => env
-                        .core
-                        .floors()
-                        .into_iter()
-                        .map(|floor| floor.id)
-                        .collect(),
+                    None => env.floors().into_iter().map(|floor| floor.id).collect(),
                 },
             };
             if floors.is_empty() {
@@ -1690,12 +1908,12 @@ async fn run_tool(
             }
             floors
                 .iter()
-                .map(|floor| plan_brief(env.core, &plan, floor))
+                .map(|floor| plan_brief(env, &plan, floor))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
-        "edit_floorplan" => return draw(env.core, scope, &args, drawing),
-        "list_entities" => entities_brief(env.core),
+        "edit_floorplan" => return draw(env, scope, &args, drawing),
+        "list_entities" => entities_brief(env),
         "list_helpers" => helpers_brief(env).await,
         "helper_kinds" => irori_helpers::guide(),
         "propose_helper" => return propose(env, &args, proposed).await,
@@ -1904,6 +2122,7 @@ async fn arrange(
                 }
             }
             HomeOp::RemoveArea { area } => {
+                // whole-home: removing a room is an owner's
                 match env.core.areas().into_iter().find(|known| known.id == area) {
                     Some(known) => {
                         removals.push(Removal {
@@ -1954,13 +2173,13 @@ const MOST_CHANGES: usize = 200;
 /// to the config directory from here. The page is sent the plan and keeps it or undoes it.
 /// Every entity, a line each: id, name, kind, the shape of its value, its other values by
 /// name, and what it reports now. What a helper is made from.
-fn entities_brief(core: &Core) -> String {
-    let states: std::collections::BTreeMap<_, _> = core
+fn entities_brief(env: &Env<'_>) -> String {
+    let states: std::collections::BTreeMap<_, _> = env
         .states()
         .into_iter()
         .map(|state| (state.entity_id.clone(), state))
         .collect();
-    let mut lines: Vec<String> = core
+    let mut lines: Vec<String> = env
         .entities()
         .iter()
         .map(|entity| {
@@ -2218,13 +2437,13 @@ async fn propose_flow(
     }
 }
 
-fn draw(core: &Core, scope: &str, args: &Value, drawing: &mut Option<Floorplan>) -> String {
+fn draw(env: &Env<'_>, scope: &str, args: &Value, drawing: &mut Option<Floorplan>) -> String {
     let (Some(plan), Some(floor)) = (drawing.as_mut(), floor_of(scope)) else {
         return "The plan isn't open for editing. Ask the person to press Edit on the Floorplan \
                 page, then ask again."
             .to_owned();
     };
-    if !core.floors().iter().any(|known| known.id == floor) {
+    if !env.floors().iter().any(|known| known.id == floor) {
         return format!("there's no floor `{floor}`");
     }
     // The array itself, or the array written out as text: models send either.
@@ -2243,7 +2462,7 @@ fn draw(core: &Core, scope: &str, args: &Value, drawing: &mut Option<Floorplan>)
     if ops.len() > MOST_CHANGES {
         return format!("That is more than {MOST_CHANGES} changes at once. Nothing was changed.");
     }
-    let areas = core.areas();
+    let areas = env.areas();
     for op in &ops {
         if let PlanOp::TraceArea { area, .. } = op
             && !areas.iter().any(|known| &known.id == area)
@@ -2270,16 +2489,16 @@ fn draw(core: &Core, scope: &str, args: &Value, drawing: &mut Option<Floorplan>)
     *plan = next;
     format!(
         "Done, and showing on the person's plan. It is not saved until they press Save.\n{}",
-        plan_brief(core, plan, &floor)
+        plan_brief(env, plan, &floor)
     )
 }
 
 /// One floor as it is drawn, in words: its walls by number, the rooms traced on it and the
 /// ones that aren't yet, and where each device stands.
-fn plan_brief(core: &Core, plan: &Floorplan, floor: &FloorId) -> String {
-    let floors = core.floors();
-    let areas = core.areas();
-    let devices = core.devices();
+fn plan_brief(env: &Env<'_>, plan: &Floorplan, floor: &FloorId) -> String {
+    let floors = env.floors();
+    let areas = env.areas();
+    let devices = env.devices();
     let name = floors
         .iter()
         .find(|known| &known.id == floor)
@@ -2401,7 +2620,12 @@ fn automation_of(scope: &str) -> Option<&str> {
 /// Asks the Automations engine. The core does not read a flow file.
 async fn automations_call(env: &Env<'_>, method: &str, params: Value) -> Result<Value, String> {
     env.core
-        .app_request(&automations_extension(), method.to_owned(), params)
+        .app_request(
+            &automations_extension(),
+            method.to_owned(),
+            params,
+            env.caller(),
+        )
         .await
         .map_err(|error| match error {
             irori_core::AppRequestError::NotRunning(_) => {
@@ -2419,6 +2643,7 @@ async fn automation_brief(env: &Env<'_>, id: &str, budget: usize) -> String {
             &automations_extension(),
             "flow.brief".to_owned(),
             json!({ "id": id, "budget": budget }),
+            env.caller(),
         )
         .await
     {
@@ -2432,7 +2657,12 @@ async fn automation_brief(env: &Env<'_>, id: &str, budget: usize) -> String {
 async fn automations(env: &Env<'_>) -> Result<Vec<AutomationLine>, String> {
     let listed = env
         .core
-        .app_request(&automations_extension(), "flows.list".to_owned(), json!({}))
+        .app_request(
+            &automations_extension(),
+            "flows.list".to_owned(),
+            json!({}),
+            env.caller(),
+        )
         .await
         .map_err(|error| match error {
             irori_core::AppRequestError::NotRunning(_) => {
@@ -2649,8 +2879,10 @@ async fn settings_picture(env: &Env<'_>, status: &Status) -> SettingsPicture {
         ));
     }
 
+    // whole-home: the Settings chat is an owner's
     let mut floors = env.core.floors();
     floors.sort_by_key(|floor| floor.level);
+    // whole-home: the Settings chat is an owner's
     let devices = env.core.devices();
     let named = |area: Option<&irori_types::AreaId>| -> Vec<String> {
         devices
@@ -2783,7 +3015,14 @@ async fn system_prompt(
     // and `full` for a cloud model.
     // The person's instructions come out of the same room, so a model on this machine is
     // handed that much less of the picture, down to a quarter of it.
-    let spent = status.instructions.chars().count();
+    // The standing instructions are the owner's, who may name things a person with rooms has no
+    // room for: they go to the owner's questions and nobody else's.
+    let instructions = if env.owner {
+        status.instructions.as_str()
+    } else {
+        ""
+    };
+    let spent = instructions.chars().count();
     let within = |tight: usize, full: usize| match local {
         Some(context) => {
             let room = roomy(tight, context, full);
@@ -2797,12 +3036,32 @@ async fn system_prompt(
          Keep answers short. Put every value or state you report in backticks, like `on` or \
          `21.5 °C`, and use **bold** for a device's name. Short lists are fine.\n",
     );
-    if !status.instructions.is_empty() {
+    if !instructions.is_empty() {
         prompt.push_str(&format!(
             "The person has left you these standing instructions. Keep to them in every \
-             answer:\n{}\n\n",
-            status.instructions
+             answer:\n{instructions}\n\n"
         ));
+    }
+    if scope == "general" && !env.owner {
+        // Somebody who is not an owner is told about their own rooms and their own
+        // automations, and not about how the home is set up.
+        prompt.push_str(
+            "Below are the devices in this person's rooms and their own automations, so you \
+             can answer about those. That is all of the home they have: if they ask about \
+             anything else, say you can't see it. Never guess at what is not written here.\n",
+        );
+        if local.is_none() {
+            prompt.push_str(
+                "Tools read more than is pasted here: `list_automations` and `get_automation` \
+                 for an automation's logic, its last run, and what is wrong with it.\n",
+            );
+        }
+        prompt.push_str(&home_brief(&lines(env, None), within(LOCAL_HOME, HOME_CAP)));
+        prompt.push_str(&automations_brief(
+            automations(env).await.as_deref().map_err(String::as_str),
+            within(LOCAL_GENERAL_AUTOMATIONS, GENERAL_AUTOMATIONS),
+        ));
+        return Ok(prompt);
     }
     if scope == "general" {
         prompt.push_str(
@@ -2816,10 +3075,7 @@ async fn system_prompt(
                  logic, its last run, and what is wrong with it.\n",
             );
         }
-        prompt.push_str(&home_brief(
-            &lines(env.core, None),
-            within(LOCAL_HOME, HOME_CAP),
-        ));
+        prompt.push_str(&home_brief(&lines(env, None), within(LOCAL_HOME, HOME_CAP)));
         prompt.push_str(&settings_brief(
             &settings_picture(env, status).await,
             within(LOCAL_GENERAL_SETTINGS, GENERAL_SETTINGS),
@@ -2830,6 +3086,10 @@ async fn system_prompt(
             within(LOCAL_GENERAL_AUTOMATIONS, GENERAL_AUTOMATIONS),
         ));
         return Ok(prompt);
+    }
+    // Helpers and Settings are how the home is set up: an owner's.
+    if matches!(scope, "helpers" | "settings") && !env.owner {
+        return Err("that conversation doesn't exist".into());
     }
     if scope == "helpers" {
         prompt.push_str(
@@ -2873,7 +3133,6 @@ async fn system_prompt(
             .parse()
             .map_err(|_| format!("there's no device `{id}`"))?;
         let device = env
-            .core
             .devices()
             .into_iter()
             .find(|device| device.id == id)
@@ -2881,13 +3140,13 @@ async fn system_prompt(
         let area = device
             .area_id
             .as_ref()
-            .and_then(|area| env.core.areas().into_iter().find(|known| &known.id == area))
+            .and_then(|area| env.areas().into_iter().find(|known| &known.id == area))
             .map(|area| area.name.to_string())
             .unwrap_or_default();
         prompt.push_str(&device_brief(
             device.name.as_ref(),
             &area,
-            &lines(env.core, Some(&device.id)),
+            &lines(env, Some(&device.id)),
         ));
         return Ok(prompt);
     }
@@ -2973,14 +3232,11 @@ async fn system_prompt(
                  logic.\n",
             );
         }
-        let plan = drawing.cloned().unwrap_or_else(|| env.core.floorplan());
-        let brief = plan_brief(env.core, &plan, &floor);
+        let plan = drawing.cloned().unwrap_or_else(|| env.floorplan());
+        let brief = plan_brief(env, &plan, &floor);
         prompt.extend(brief.chars().take(within(LOCAL_BRIEF, PLAN_BRIEF)));
         prompt.push('\n');
-        prompt.push_str(&home_brief(
-            &lines(env.core, None),
-            within(LOCAL_HOME, HOME_CAP),
-        ));
+        prompt.push_str(&home_brief(&lines(env, None), within(LOCAL_HOME, HOME_CAP)));
         prompt.push_str(&automations_brief(
             automations(env).await.as_deref().map_err(String::as_str),
             within(LOCAL_GENERAL_AUTOMATIONS, GENERAL_AUTOMATIONS),
@@ -2990,12 +3246,12 @@ async fn system_prompt(
     Err("that conversation doesn't exist".into())
 }
 
-fn lines(core: &Core, only: Option<&DeviceId>) -> Vec<BriefLine> {
-    let devices = core.devices();
-    let areas = core.areas();
-    let floors = core.floors();
-    let entities = core.entities();
-    let states = core.states();
+fn lines(env: &Env<'_>, only: Option<&DeviceId>) -> Vec<BriefLine> {
+    let devices = env.devices();
+    let areas = env.areas();
+    let floors = env.floors();
+    let entities = env.entities();
+    let states = env.states();
     let mut lines = Vec::new();
     for device in &devices {
         if only.is_some_and(|id| &device.id != id) {
@@ -3269,6 +3525,10 @@ fn open_db(db: &Path) -> Result<rusqlite::Connection, String> {
             created_at TEXT NOT NULL,
             PRIMARY KEY (scope, seq)
         );
+        CREATE TABLE IF NOT EXISTS assistant_reach (
+            user TEXT PRIMARY KEY,
+            entities TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS assistant_usage (
             scope TEXT PRIMARY KEY,
             used INTEGER NOT NULL,
@@ -3425,10 +3685,17 @@ fn trim_global(tx: &rusqlite::Transaction<'_>) -> Result<(), String> {
         if total <= irori_assist::LIMIT_GLOBAL_BYTES as i64 {
             return Ok(());
         }
+        // From the conversation that holds the most, so that one long chat is cut before it
+        // pushes out anybody else's.
         let removed = tx
             .execute(
                 "DELETE FROM assistant_message WHERE rowid = (
-                    SELECT rowid FROM assistant_message ORDER BY created_at, scope, seq LIMIT 1
+                    SELECT rowid FROM assistant_message
+                    WHERE scope = (
+                        SELECT scope FROM assistant_message
+                        GROUP BY scope ORDER BY SUM(LENGTH(body)) DESC, scope LIMIT 1
+                    )
+                    ORDER BY created_at, seq LIMIT 1
                  )",
                 [],
             )
@@ -3503,6 +3770,12 @@ pub struct Turn<'a> {
     /// Whether whoever is asking may change how the home is set up: what adding a floor or a
     /// room from the Floorplan's chat is held to, the same as adding one in Settings.
     pub owner: bool,
+    /// Who is asking, when somebody signed in is: the flows the assistant reads and suggests
+    /// are theirs (`docs/specs/access.md` §4).
+    pub user: Option<irori_types::UserId>,
+    /// What they have of the home. Anything that isn't set from who is asking gets
+    /// [`irori_core::Reach::nothing`].
+    pub reach: irori_core::Reach,
 }
 
 impl<'a> Turn<'a> {
@@ -3514,6 +3787,8 @@ impl<'a> Turn<'a> {
             db: self.db,
             log: self.log,
             owner: self.owner,
+            user: self.user.clone(),
+            reach: self.reach.clone(),
         }
     }
 }
@@ -3521,6 +3796,37 @@ impl<'a> Turn<'a> {
 pub async fn read_status(turn: Turn<'_>, data_dir: &Path) -> Status {
     let env = turn.env();
     status(&env, data_dir).await
+}
+
+/// What anybody who is not an owner is told, kept for a few seconds: working it out asks the
+/// model runner what it has, and every browser signed in asks every few seconds.
+#[derive(Debug, Default)]
+pub struct Readiness(Mutex<Option<(Instant, Status)>>);
+
+impl Readiness {
+    const FRESH: Duration = Duration::from_secs(5);
+
+    pub async fn of(&self, turn: Turn<'_>, data_dir: &Path) -> Status {
+        let kept = self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .filter(|(at, _)| at.elapsed() < Self::FRESH)
+            .map(|(_, status)| status.clone());
+        if let Some(status) = kept {
+            return status;
+        }
+        let status = read_status(turn, data_dir).await.for_a_person();
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some((Instant::now(), status.clone()));
+        status
+    }
+
+    /// The owner changed how it is set up: the next question is answered afresh.
+    pub fn forget(&self) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
 }
 
 /// `plan` is the floorplan the person is editing, when they asked from the Floorplan page with
@@ -3704,7 +4010,7 @@ impl Turns {
     /// Takes a question for `scope`. Refused while that conversation's last question is still
     /// being answered; a failed one makes way.
     pub fn begin(&self, scope: &str, question: &str) -> Result<Arc<Pending>, String> {
-        check_scope(scope)?;
+        check_scope(scope_of(scope))?;
         let mut held = self.held();
         if held.get(scope).is_some_and(|pending| pending.running()) {
             return Err("The last question here is still being answered.".to_owned());
@@ -3887,6 +4193,31 @@ mod tests {
         store(&db, "two", "second")?;
         let bodies: Vec<String> = kept(&db)?.into_iter().map(|turn| turn.body).collect();
         assert_eq!(bodies, ["one", "first", "two", "second"]);
+        Ok(())
+    }
+
+    #[test]
+    fn one_long_chat_is_cut_before_it_pushes_out_somebody_elses() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = dir.path().join("irori.db");
+        store_turns(&db, "general#leo", exchange("hello", "hi"), None)
+            .map_err(anyhow::Error::msg)?;
+        // Past the cap for everything kept, by chats that were all said after Leo's.
+        let big = "x".repeat(irori_assist::LIMIT_BYTES / 2 - 8);
+        for who in 0..40 {
+            store_turns(&db, &format!("general#p{who}"), exchange(&big, &big), None)
+                .map_err(anyhow::Error::msg)?;
+        }
+        let left: Vec<String> = load_turns(&db, "general#leo")
+            .map_err(anyhow::Error::msg)?
+            .into_iter()
+            .map(|turn| turn.body)
+            .collect();
+        assert_eq!(
+            left,
+            ["hello", "hi"],
+            "the short chat is not the oldest to go"
+        );
         Ok(())
     }
 

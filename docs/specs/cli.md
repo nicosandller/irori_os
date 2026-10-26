@@ -87,10 +87,11 @@ refuses unless `--yes` is set. `--yes` does not skip the full-access sentence.
 | `extensions` | Catalog, install, install from a URL, uninstall, settings, secrets, actions, log. |
 | `helpers` | The values Irori keeps itself. `list`; `add <kind> <name>` with that kind's settings (`--min`, `--max`, `--step`, `--unit`, `--option`, `--initial`…); `set <kind> <id>` to change them; `remove <kind> <id>`. Kinds: `toggle`, `number`, `counter`, `choice`, `text`, `button`, `date`, `time`, `datetime`, `timer` (its length is `--step`, in seconds), `schedule`, `group`, `threshold`, `trend`, `meter`, `integral`, `derivative`, `statistics`, `history`. Any setting can be given as `--set key=value`, a value reading as JSON where it does: `irori helpers add threshold "Too warm" --set source=sensor.lounge --set above=26`. `helpers toggle add|remove` still works. |
 | `token` | List, create, revoke. The secret is printed once. |
-| `users` | List, add, edit, remove. |
+| `users` | List, add, edit, remove. A person may be given only some rooms: `add Leo --areas hall,study`; `edit leo --areas hall`, `--no-rooms` (can sign in and sees nothing), `--whole-home` (all of it again). `list` says which rooms each person has. See `docs/specs/access.md`. |
 | `place` | Show, or set coordinates, an optional label, and a time zone. No map search. |
 | `recorder` | How long history is kept. |
-| `backup` | `create`, `list`, `verify`, `restore`, `key`. Works on the files of a home (`--config`, `--data`), not the API, so it runs with no server; `restore` needs it stopped (`--keep-history`, or `--only settings,extensions,state,history`). A encrypted backup asks for its key (`--key`, `IRORI_BACKUP_KEY`). See `docs/specs/backup.md`. |
+| `audit` | Who did what, for an owner. `list` is the newest rows first: `--user <id>` (a person, and the programs made for them), `--kind <name>` (`command`, `sign_in`, `person_changed`…), `--outcome ok\|denied\|failed`, `--since <time>` (an RFC 3339 time, or a span back from now: `12h`, `7d`), `--limit <n>` (50). `--json` gives the page the API does. A token cannot read it. |
+| `backup` | `create`, `list`, `verify`, `restore`, `key`. Works on the files of a home (`--config`, `--data`), not the API, so it runs with no server; `restore` needs it stopped (`--keep-history`, or `--only settings,extensions,state,history,activity`; without `--only` the activity log stays as it is). A encrypted backup asks for its key (`--key`, `IRORI_BACKUP_KEY`). See `docs/specs/backup.md`. |
 | `logs` | What this Irori has said since it started. |
 | `restart` | Start this Irori again. It stays where it runs. |
 | `automations` | Flows. Also `rules`. The extension has to be installed. |

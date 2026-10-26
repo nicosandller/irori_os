@@ -72,7 +72,7 @@ fn matches_device(home: &Home, device: &Device, needle: &str) -> bool {
 /// rather than anything Irori needs to know.
 const VIEW_KEY: &str = "irori.devices.view";
 
-/// The three ways to look at what's in the home.
+/// The ways to look at what's in the home.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Showing {
     /// One row per device. The default: a device is the thing a person bought and put somewhere.
@@ -81,16 +81,25 @@ enum Showing {
     Entities,
     /// Values Irori keeps itself, rather than a device reporting them.
     Helpers,
+    /// Every protocol's network, drawn as one around Irori (`network_map.rs`). The whole home's,
+    /// so not offered to someone who has only some of its rooms.
+    Network,
 }
 
 impl Showing {
-    const ALL: [Showing; 3] = [Showing::Devices, Showing::Entities, Showing::Helpers];
+    const ALL: [Showing; 4] = [
+        Showing::Devices,
+        Showing::Entities,
+        Showing::Helpers,
+        Showing::Network,
+    ];
 
     fn key(self) -> &'static str {
         match self {
             Showing::Devices => "devices",
             Showing::Entities => "entities",
             Showing::Helpers => "helpers",
+            Showing::Network => "network",
         }
     }
 
@@ -99,6 +108,7 @@ impl Showing {
             Showing::Devices => "Devices",
             Showing::Entities => "Entities",
             Showing::Helpers => "Helpers",
+            Showing::Network => "Network map",
         }
     }
 }
@@ -106,6 +116,9 @@ impl Showing {
 #[component]
 pub fn Devices() -> impl IntoView {
     let live = expect_context::<crate::Live>();
+    let crate::Session(session) = expect_context::<crate::Session>();
+    let owner = move || session.with(|session| session.as_ref().is_none_or(|s| s.owner));
+    let limited = move || session.with(|s| s.as_ref().is_some_and(crate::api::Session::limited));
     let filter = RwSignal::new(String::new());
     let adding = RwSignal::new(false);
     let adding_helper = RwSignal::new(false);
@@ -123,20 +136,33 @@ pub fn Devices() -> impl IntoView {
     });
 
     Effect::new(move |_| remember(VIEW_KEY, showing.get().key()));
+    // Someone with only some rooms can't read the networks, which name devices in every room.
+    Effect::new(move |_| {
+        if limited() && showing.get() == Showing::Network {
+            showing.set(Showing::Devices);
+        }
+    });
 
     view! {
         <div class="page-head">
             <h1>"Devices"</h1>
-            {crate::segmented::segmented(
+            {move || crate::segmented::segmented(
                 "What to show",
-                Showing::ALL.into_iter().map(|view| (view, view.label())).collect(),
+                Showing::ALL
+                    .into_iter()
+                    .filter(|view| *view != Showing::Network || !limited())
+                    .map(|view| (view, view.label()))
+                    .collect(),
                 showing.into(),
                 move |view| showing.set(view),
             )}
             // Helpers aren't devices and don't arrive through an extension — making one is a
             // name and nothing else — so the Helpers tab gets its own button, not a card in the
             // add-a-device flow pretending a helper is something an extension found.
-            {move || if showing.get() == Showing::Helpers {
+            {move || if !owner() {
+                // Bringing devices in and making helpers is setup: the owner's.
+                ().into_any()
+            } else if showing.get() == Showing::Helpers {
                 view! {
                     <button
                         type="button"
@@ -193,9 +219,10 @@ pub fn Devices() -> impl IntoView {
             </crate::modal::Modal>
         })}
 
-        {move || (showing.get() != Showing::Helpers).then(|| view! { <updates::Updates /> })}
+        {move || matches!(showing.get(), Showing::Devices | Showing::Entities)
+            .then(|| view! { <updates::Updates /> })}
 
-        {move || view! {
+        {move || (showing.get() != Showing::Network).then(|| view! {
             <input
                 class="filter"
                 type="search"
@@ -208,7 +235,7 @@ pub fn Devices() -> impl IntoView {
                 prop:value=filter
                 on:input:target=move |ev| filter.set(ev.target().value())
             />
-        }}
+        })}
 
         // The two lists watch the home themselves, and only what they're made of (`tables.rs`).
         // Helpers are redrawn when a helper changes and not with every reading in the home, so
@@ -223,6 +250,10 @@ pub fn Devices() -> impl IntoView {
                 <tables::HelperTable filter=filter />
             }
             .into_any(),
+            // Only for someone with the whole home; the effect above moves anyone else off it.
+            Showing::Network => (!limited())
+                .then(|| view! { <crate::network_map::NetworkMap /> })
+                .into_any(),
         }}
         {move || adding_helper.get().then(|| view! {
             <crate::modal::Modal
@@ -456,7 +487,7 @@ struct HelperTrouble(RwSignal<Option<String>>);
 /// A device's battery, if one of its entities reports one: a percentage from a battery sensor,
 /// or low/ok from a battery binary sensor. `None` when it doesn't have one, which is most
 /// mains-powered things.
-fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
+pub(crate) fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
     home.entities
         .iter()
         .filter(|entity| entity.device_id.as_ref() == Some(device))
@@ -480,7 +511,7 @@ fn battery_of(home: &Home, device: &DeviceId) -> Option<String> {
         })
 }
 
-fn battery_reading(entity: &Entity, state: &EntityState) -> Option<String> {
+pub(crate) fn battery_reading(entity: &Entity, state: &EntityState) -> Option<String> {
     match (&entity.capabilities, state.state.as_ref()) {
         (
             Capabilities::Sensor(SensorCapabilities {
@@ -724,6 +755,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
         })
     };
     let closing = closing_times(live, id.clone());
+    let forms = ActionForms::new();
     // Whether it opens its network for a while to find devices (Zigbee's permit join), rather
     // than hearing them announce themselves all the time. Only the first kind has a moment
     // when it's listening and a moment when it isn't.
@@ -896,7 +928,12 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                 }))}
             </div>
             {move || extension.get().map(|extension| view! {
-                <ProtocolActions id=for_actions.clone() extension=extension closing=closing />
+                <ProtocolActions
+                    id=for_actions.clone()
+                    extension=extension
+                    closing=closing
+                    forms=forms.clone()
+                />
             })}
             {move || unpairing.get().map(|device| view! {
                 <crate::removal::RemoveDevice
@@ -1216,7 +1253,17 @@ fn closing_times(live: crate::Live, id: ExtensionId) -> RwSignal<BTreeMap<String
             home.extensions
                 .iter()
                 .find(|(known, _)| **known == id)
-                .map(|(_, extension)| extension.open_actions.clone())
+                // A network map's own action (Zigbee's scan) stays open while it runs, but it
+                // isn't the network listening for new devices.
+                .map(|(_, extension)| {
+                    let mut open = extension.open_actions.clone();
+                    open.retain(|action, _| {
+                        !extension.actions.iter().any(|known| {
+                            &known.id == action && known.place == irori_types::ActionPlace::Network
+                        })
+                    });
+                    open
+                })
                 .unwrap_or_default()
         });
         let now = web_sys::js_sys::Date::now();
@@ -1255,19 +1302,26 @@ fn ProtocolActions(
     extension: crate::api::Extension,
     /// When each open action closes (`closing_times`).
     closing: RwSignal<BTreeMap<String, f64>>,
+    /// What its forms hold, kept across redraws.
+    forms: ActionForms,
 ) -> impl IntoView {
     let sending = RwSignal::new(None::<String>);
     let trouble = RwSignal::new(None::<String>);
     let live = expect_context::<crate::Live>();
 
-    if extension.actions.is_empty() {
-        return ().into_any();
-    }
-    let (usable, waiting_on): (Vec<_>, Vec<_>) = extension
+    // The network map's buttons are on the map, not here.
+    let actions: Vec<_> = extension
         .actions
         .iter()
+        .filter(|action| action.place != irori_types::ActionPlace::Network)
         .cloned()
-        .partition(|action| extension.available_actions.contains(&action.id));
+        .collect();
+    if actions.is_empty() {
+        return ().into_any();
+    }
+    let (usable, waiting_on): (Vec<_>, Vec<_>) = actions.into_iter().partition(|action| {
+        extension.available_actions.contains(&action.id) || forms.holding(&action.id)
+    });
 
     let not_yet = (!waiting_on.is_empty()).then(|| {
         let names = waiting_on
@@ -1307,9 +1361,22 @@ fn ProtocolActions(
         }
     });
 
+    // An action with ways is a small form of its own rather than a button.
+    let (with_ways, usable): (Vec<_>, Vec<_>) = usable
+        .into_iter()
+        .partition(|action| !action.ways.is_empty());
+    let fields = with_ways
+        .into_iter()
+        .map(|action| {
+            let state = forms.of(&id, &action);
+            view! { <ActionForm id=id.clone() action=action state=state /> }
+        })
+        .collect_view();
+
     view! {
         <div class="protocol-actions">
             {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+            {fields}
             {usable
                 .into_iter()
                 .map(|action| {
@@ -1465,6 +1532,319 @@ fn ProtocolActions(
         </div>
     }
         .into_any()
+}
+
+/// What an action's form holds: the way picked, what's typed, whether it's waiting, and how it
+/// went. Kept by the add-device screen rather than by the form, which is drawn again whenever
+/// its extension changes; and a way that changes settings restarts the extension, so the answer
+/// comes back to a form drawn after the one that asked.
+#[derive(Debug, Clone)]
+struct FormState {
+    chosen: RwSignal<String>,
+    /// One box per field id, shared by the ways that ask for it: switching ways keeps the code.
+    typed: BTreeMap<String, RwSignal<String>>,
+    sending: RwSignal<bool>,
+    trouble: RwSignal<Option<String>>,
+    done: RwSignal<bool>,
+    /// The settings its ways change, once read from the catalog.
+    rows: RwSignal<Option<crate::settings_form::SettingRows>>,
+}
+
+impl FormState {
+    fn new(id: &ExtensionId, action: &crate::api::ProtocolActionInfo) -> Self {
+        let ways = &action.ways;
+        let state = Self {
+            chosen: RwSignal::new(ways.first().map(|way| way.id.clone()).unwrap_or_default()),
+            typed: ways
+                .iter()
+                .flat_map(|way| way.fields.iter())
+                .map(|field| (field.id.clone(), RwSignal::new(String::new())))
+                .collect(),
+            sending: RwSignal::new(false),
+            trouble: RwSignal::new(None),
+            done: RwSignal::new(false),
+            rows: RwSignal::new(None),
+        };
+        // The settings a way changes come from the catalog, which has the schema and what's
+        // saved.
+        if ways.iter().any(|way| !way.settings.is_empty()) {
+            let wanted = id.to_string();
+            let keys: Vec<String> = ways
+                .iter()
+                .flat_map(|way| way.settings.iter().cloned())
+                .collect();
+            let (rows, trouble) = (state.rows, state.trouble);
+            spawn_local(async move {
+                match crate::api::fetch_catalog().await {
+                    Ok(catalog) => {
+                        if let Some(entry) = catalog.into_iter().find(|entry| entry.id == wanted)
+                            && let Some(schema) = entry.config_schema
+                        {
+                            rows.set(Some(crate::settings_form::SettingRows::new(
+                                &schema,
+                                &entry.settings,
+                                &entry.secrets_set,
+                                &keys,
+                            )));
+                        }
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+            });
+        }
+        state
+    }
+}
+
+/// The add-device screen's action forms, by action id, made under the screen's own owner so
+/// they last as long as it does.
+#[derive(Debug, Clone)]
+struct ActionForms {
+    owner: Owner,
+    forms: StoredValue<BTreeMap<String, FormState>>,
+}
+
+impl ActionForms {
+    fn new() -> Self {
+        Self {
+            owner: Owner::current().unwrap_or_default(),
+            forms: StoredValue::new(BTreeMap::new()),
+        }
+    }
+
+    fn of(&self, id: &ExtensionId, action: &crate::api::ProtocolActionInfo) -> FormState {
+        if let Some(state) = self
+            .forms
+            .with_value(|forms| forms.get(&action.id).cloned())
+        {
+            return state;
+        }
+        let state = self.owner.with(|| FormState::new(id, action));
+        self.forms.update_value(|forms| {
+            forms.insert(action.id.clone(), state.clone());
+        });
+        state
+    }
+
+    /// Whether this action's form has something to show even when the extension doesn't offer
+    /// the action: it's waiting for its answer, through the extension's restart, or the answer
+    /// was why it failed (the extension stopped with the new settings, say).
+    fn holding(&self, action_id: &str) -> bool {
+        self.forms.with_value(|forms| {
+            forms.get(action_id).is_some_and(|state| {
+                state.sending.get_untracked() || state.trouble.with_untracked(Option::is_some)
+            })
+        })
+    }
+}
+
+/// An action with ways — Matter's "Add with a pairing code". A choice of way when there's more
+/// than one, the settings that way changes (Bluetooth and Wi-Fi for a new device), its fields,
+/// and the button. The press saves the settings, waits for the extension to start again with
+/// them, and then for its answer, which for adding a device takes a while. A refusal is shown
+/// under the form and what was typed is kept so it can be corrected; success clears the fields
+/// and reads the home again, which is where the new device shows up.
+#[component]
+fn ActionForm(
+    id: ExtensionId,
+    action: crate::api::ProtocolActionInfo,
+    /// What's in it, kept by the screen (`ActionForms`).
+    state: FormState,
+) -> impl IntoView {
+    let live = expect_context::<crate::Live>();
+    let ways = action.ways.clone();
+    let FormState {
+        chosen,
+        typed,
+        sending,
+        trouble,
+        done,
+        rows,
+    } = state;
+
+    let way_of = {
+        let ways = ways.clone();
+        move |picked: &str| ways.iter().find(|way| way.id == picked).cloned()
+    };
+    let send = {
+        let typed = typed.clone();
+        let way_of = way_of.clone();
+        let action_id = action.id.clone();
+        move || {
+            if sending.get_untracked() {
+                return;
+            }
+            let Some(way) = way_of(&chosen.get_untracked()) else {
+                return;
+            };
+            let mut fields = BTreeMap::new();
+            for field in &way.fields {
+                let text = typed
+                    .get(&field.id)
+                    .map(|value| value.get_untracked().trim().to_owned())
+                    .unwrap_or_default();
+                if text.is_empty() {
+                    trouble.set(Some(format!("Fill in \"{}\" first.", field.label)));
+                    return;
+                }
+                fields.insert(field.id.clone(), text);
+            }
+            let settings = match rows.with_untracked(|rows| {
+                rows.as_ref()
+                    .map(|rows| rows.changed(&way.settings))
+                    .unwrap_or_else(|| Ok(serde_json::Map::new()))
+            }) {
+                Ok(settings) => settings,
+                Err(why) => {
+                    trouble.set(Some(why));
+                    return;
+                }
+            };
+            let request = crate::api::ActionRequest {
+                way: way.id.clone(),
+                fields,
+                settings,
+            };
+            let id = id.clone();
+            let action_id = action_id.clone();
+            let typed = typed.clone();
+            sending.set(true);
+            done.set(false);
+            trouble.set(None);
+            spawn_local(async move {
+                match crate::api::trigger_action_with(&id, &action_id, &request).await {
+                    Ok(()) => {
+                        for value in typed.values() {
+                            value.set(String::new());
+                        }
+                        rows.with_untracked(|rows| {
+                            if let Some(rows) = rows {
+                                rows.saved();
+                            }
+                        });
+                        done.set(true);
+                        crate::refresh(live);
+                    }
+                    Err(why) => trouble.set(Some(why)),
+                }
+                sending.set(false);
+            });
+        }
+    };
+
+    let picker = (ways.len() > 1).then(|| {
+        let options = ways
+            .iter()
+            .map(|way| (way.id.clone(), way.label.clone()))
+            .collect();
+        crate::choices::choices(
+            action.label.clone(),
+            options,
+            move || Some(chosen.get()),
+            move || sending.get(),
+            move |picked| {
+                chosen.set(picked);
+                trouble.set(None);
+                done.set(false);
+            },
+        )
+    });
+    let way_hint = {
+        let way_of = way_of.clone();
+        move || {
+            way_of(&chosen.get())
+                .and_then(|way| way.hint)
+                .map(|hint| view! { <p class="muted small">{hint}</p> })
+        }
+    };
+    let way_settings = {
+        let way_of = way_of.clone();
+        move || {
+            let way = way_of(&chosen.get())?;
+            if way.settings.is_empty() {
+                return None;
+            }
+            Some(match rows.get() {
+                Some(rows) => view! {
+                    <div class="action-settings">{rows.view(&way.settings)}</div>
+                }
+                .into_any(),
+                None => view! { <p class="muted small">"Reading its settings…"</p> }.into_any(),
+            })
+        }
+    };
+    let way_fields = {
+        let way_of = way_of.clone();
+        let typed = typed.clone();
+        move || {
+            let way = way_of(&chosen.get())?;
+            Some(
+                way.fields
+                    .into_iter()
+                    .map(|field| {
+                        let value = typed.get(&field.id).copied().unwrap_or_default();
+                        let placeholder = field
+                            .placeholder
+                            .clone()
+                            .unwrap_or_else(|| field.label.clone());
+                        view! {
+                            <label class="settings-field">
+                                <span>{field.label.clone()}</span>
+                                <input
+                                    type="text"
+                                    autocomplete="off"
+                                    spellcheck="false"
+                                    placeholder=placeholder
+                                    prop:value=value
+                                    disabled=move || sending.get()
+                                    on:input:target=move |ev| value.set(ev.target().value())
+                                />
+                                {field.hint.clone().map(|hint| view! {
+                                    <span class="settings-help">{hint}</span>
+                                })}
+                            </label>
+                        }
+                    })
+                    .collect_view(),
+            )
+        }
+    };
+    let label = action.label.clone();
+    view! {
+        <form
+            class="action-form"
+            on:submit=move |ev| {
+                ev.prevent_default();
+                send();
+            }
+        >
+            {picker}
+            {way_hint}
+            {way_settings}
+            {way_fields}
+            <button
+                type="submit"
+                class="add"
+                class:join-waiting=move || sending.get()
+                aria-busy=move || sending.get().to_string()
+                disabled=move || sending.get()
+            >
+                {move || if sending.get() {
+                    view! {
+                        <span class="join-wait" aria-hidden="true"></span>
+                        "Working…"
+                    }
+                        .into_any()
+                } else {
+                    label.clone().into_any()
+                }}
+            </button>
+            {move || trouble.get().map(|why| view! { <p class="why">{why}</p> })}
+            {move || done.get().then(|| view! {
+                <p class="muted small" role="status">"Done. It's listed under what was found."</p>
+            })}
+        </form>
+    }
 }
 
 /// Waits for an extension to say its action is open (or no longer is), reading the home again

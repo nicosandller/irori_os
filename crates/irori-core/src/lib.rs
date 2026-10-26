@@ -9,18 +9,21 @@ mod home;
 mod home_access;
 mod host;
 mod installs;
+mod people;
+mod reach;
 mod services;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use std::time::Duration;
 
 use irori_protocol::host::{Op, incoming_call};
 use irori_protocol::{IncomingAction, IncomingCall, Rejected, ServiceErrorCode};
 use irori_types::{
-    ApiScope, Area, Context, ContextId, Description, Device, DeviceId, Entity, EntityId,
+    ApiScope, Area, AreaId, Context, ContextId, Description, Device, DeviceId, Entity, EntityId,
     EntityKind, EntityState, ExtensionId, ExtensionSettings, IotClass, Name, Origin, PackagePath,
     ProtocolId, Service, ServiceCall, Settings, SettingsKey, StateReport, Timestamp, UniqueId,
     Version, Waiting,
@@ -30,7 +33,9 @@ use tokio::sync::{broadcast, mpsc, watch};
 
 pub use clock::{Clock, SystemClock};
 pub use events::Event;
-pub use host::{ExtensionHost, InboundLink, Timing};
+pub use host::{ExtensionHost, InboundLink, PackageClaim, PackageWork, Timing, Underway};
+pub use people::{NOTE_ACTIONS, Notes, Person};
+pub use reach::{Reach, Rooms, Seen};
 pub use services::{CallError, Command};
 
 pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};
@@ -79,6 +84,8 @@ pub trait HistorySource: Send + Sync + fmt::Debug {
 pub struct AppCall {
     pub method: String,
     pub params: serde_json::Value,
+    /// Who asked. Only sent on to an engine that limits what a regular user can do.
+    pub caller: Option<irori_protocol::engine::Caller>,
     pub reply: tokio::sync::oneshot::Sender<Result<serde_json::Value, String>>,
 }
 
@@ -189,6 +196,9 @@ pub struct AppInfo {
     pub api: Vec<ApiScope>,
     /// The entity format its page reads, as its manifest says (`irori_types::format`).
     pub entity_format: u32,
+    /// Whether its manifest asks for regular users to open it (`docs/specs/access.md` §4.1).
+    /// The home honours that only for the extensions it trusts with it: [`Core::limits_people`].
+    pub users: bool,
 }
 
 fn is_present<S: serde::Serializer>(
@@ -230,6 +240,10 @@ pub struct ExtensionOverview {
     /// when each closes.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub open_actions: BTreeMap<String, OpenAction>,
+    /// How many times it has been started since Irori started: the first start, and every
+    /// restart after a failure or a change to its settings. Something that changed its settings
+    /// and waits for it to be back watches this go up.
+    pub starts: u64,
 }
 
 /// A timed action that's open: Zigbee's network accepting new devices.
@@ -335,6 +349,9 @@ pub struct Retired {
     pub entities: Vec<(ProtocolId, UniqueId)>,
 }
 
+/// What each list of rooms holds, with the revision of the home it was worked out at.
+type ReachCache = BTreeMap<Vec<AreaId>, (u64, Arc<Rooms>)>;
+
 /// A handle to the core. Cheap to clone; all clones share the same home.
 #[derive(Debug, Clone)]
 pub struct Core(Arc<Shared>);
@@ -356,6 +373,8 @@ struct Shared {
     /// When each extension's open actions close (`set_action_open`). On this process's own
     /// monotonic clock: the extension says how long is left, not what time it thinks it is.
     action_windows: RwLock<HashMap<ExtensionId, BTreeMap<String, std::time::Instant>>>,
+    /// Each running extension's last maps of its networks (`set_networks`).
+    networks: RwLock<HashMap<ExtensionId, Vec<irori_types::Network>>>,
     /// Running engines that have a page, keyed by extension id: where the page's questions go.
     app_links: RwLock<HashMap<ExtensionId, mpsc::Sender<AppCall>>>,
     /// Where `history:read` is answered from; nothing until the binary provides it.
@@ -381,6 +400,19 @@ struct Shared {
     /// fails says why in its own words and nowhere else; keeping the tail is what lets the card
     /// show a real reason instead of an exit status, and what the log window reads.
     logs: RwLock<BTreeMap<ExtensionId, VecDeque<String>>>,
+    /// Counts the changes to the registry and to what a person said about it: what a person's
+    /// rooms are worked out from. Counted before the event that announces the change goes out,
+    /// so whoever hears it and asks gets an answer that includes it.
+    registry_revision: AtomicU64,
+    /// What each list of rooms holds, as of the revision it was worked out at.
+    reaches: Mutex<ReachCache>,
+    /// Who is in the home and what each can reach, as the one who reads `users.toml` said.
+    people: RwLock<Vec<Person>>,
+    /// Which extensions the home trusts to limit what a regular user can do with their page.
+    /// Asked each time, so a package that is replaced stops being trusted at once.
+    trusted_with_people: RwLock<Option<people::Trust>>,
+    /// Where an engine's remarks go, for the activity log.
+    notes: RwLock<Option<Arc<dyn Notes>>>,
 }
 
 /// How many lines of an extension's own output are kept. Enough for a stack trace or a
@@ -400,7 +432,8 @@ pub enum CallActionError {
     NotRunning(ExtensionId),
     /// The extension says the action failed.
     Failed(String),
-    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`].
+    /// Didn't answer within [`SERVICE_CALL_TIMEOUT`], or the action's own
+    /// `answer_within_seconds`.
     Timeout,
 }
 
@@ -409,7 +442,7 @@ impl fmt::Display for CallActionError {
         match self {
             Self::NotRunning(extension) => write!(f, "`{extension}` isn't running"),
             Self::Failed(why) => f.write_str(why),
-            Self::Timeout => f.write_str("the action didn't finish within 10 seconds"),
+            Self::Timeout => f.write_str("the extension didn't answer in time"),
         }
     }
 }
@@ -442,6 +475,7 @@ impl Core {
             links: RwLock::default(),
             action_links: RwLock::default(),
             action_windows: RwLock::default(),
+            networks: RwLock::default(),
             app_links: RwLock::default(),
             history: RwLock::default(),
             config_dir: RwLock::default(),
@@ -453,6 +487,11 @@ impl Core {
             disabled: watch::Sender::new(BTreeSet::new()),
             storage: RwLock::new(Arc::new(irori_protocol::MemoryStorage::default())),
             logs: RwLock::new(BTreeMap::new()),
+            registry_revision: AtomicU64::new(0),
+            reaches: Mutex::default(),
+            people: RwLock::default(),
+            trusted_with_people: RwLock::default(),
+            notes: RwLock::default(),
         }))
     }
 
@@ -552,6 +591,37 @@ impl Core {
         read(&self.0.home).areas().to_vec()
     }
 
+    /// What a person can see and use. `rooms` is their list from `users.toml`: `None` is the
+    /// whole home, and so is anybody who isn't held to one (`docs/specs/access.md` §1).
+    ///
+    /// Worked out once per list and revision of the home, so asking again is a lookup.
+    pub fn reach_for(&self, rooms: Option<&[AreaId]>) -> Reach {
+        let Some(rooms) = rooms else {
+            return Reach::Whole;
+        };
+        let mut wanted = rooms.to_vec();
+        wanted.sort();
+        wanted.dedup();
+        // The revision first: a change that lands while this is worked out leaves the answer
+        // looking older than it is, which is asked again, never newer.
+        let revision = self.0.registry_revision.load(Ordering::SeqCst);
+        let mut cache = self
+            .0
+            .reaches
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((at, held)) = cache.get(&wanted)
+            && *at == revision
+        {
+            return Reach::Rooms(held.clone());
+        }
+        let held = Arc::new(Rooms::of(&read(&self.0.home), &wanted));
+        // A list nobody asks for any more is dropped with the rest of what is out of date.
+        cache.retain(|_, (at, _)| *at == revision);
+        cache.insert(wanted, (revision, held.clone()));
+        Reach::Rooms(held)
+    }
+
     /// The levels of the home, lowest first.
     pub fn floors(&self) -> Vec<irori_types::Floor> {
         let mut floors = read(&self.0.home).floors().to_vec();
@@ -605,6 +675,13 @@ impl Core {
     /// Where the home is and its time zone, as last said.
     pub fn place(&self) -> irori_types::HomeSettings {
         read(&self.0.place).clone()
+    }
+
+    /// What `extension` is started with now: its settings and its secrets, as one table. Compared
+    /// before and after a change, it says whether the change restarts it, by the same rule the
+    /// host uses. Never logged or sent anywhere: it holds secrets.
+    pub fn extension_settings_of(&self, extension: &ExtensionId) -> serde_json::Value {
+        self.0.extension_settings.borrow().of(extension)
     }
 
     /// Replaces every extension's settings. An extension whose own settings changed is restarted
@@ -1045,7 +1122,15 @@ impl Core {
         extension: &ExtensionId,
         method: String,
         params: serde_json::Value,
+        caller: irori_protocol::engine::Caller,
     ) -> Result<serde_json::Value, AppRequestError> {
+        // An engine that doesn't limit what a regular user can do is never told there is one
+        // asking: one that ignored the field would take them for the home.
+        if !caller.owner && !self.limits_people(extension) {
+            return Err(AppRequestError::Failed(format!(
+                "`{extension}` is not for regular users"
+            )));
+        }
         let sender = read(&self.0.app_links)
             .get(extension)
             .cloned()
@@ -1055,6 +1140,7 @@ impl Core {
         let call = AppCall {
             method,
             params,
+            caller: (!caller.owner).then_some(caller),
             reply,
         };
         let sent = tokio::time::timeout_at(deadline, sender.send(call)).await;
@@ -1096,16 +1182,35 @@ impl Core {
     }
 
     /// Triggers one of an extension's declared actions — the Zigbee `zigbee` protocol's
-    /// `permit_join`, say — and waits for its answer (at most [`SERVICE_CALL_TIMEOUT`]).
+    /// `permit_join`, say — and waits for its answer: at most [`SERVICE_CALL_TIMEOUT`], or the
+    /// action's own `answer_within_seconds` when it declares one (Matter's adding a device).
     /// Unlike a service call, there's no entity to resolve through: the extension id is all
-    /// that's needed.
+    /// that's needed. `filled` is the way the person picked and what they typed into its fields,
+    /// for an action with ways; empty for a plain button.
     pub async fn call_action(
         &self,
         extension: &ExtensionId,
         action_id: &str,
+        filled: irori_protocol::Filled,
     ) -> Result<(), CallActionError> {
-        let asked = irori_protocol::host::incoming_action(action_id.to_owned());
-        self.ask(extension, asked, SERVICE_CALL_TIMEOUT).await
+        let wait = self.action_wait(extension, action_id);
+        let asked = irori_protocol::host::incoming_action_with(action_id.to_owned(), filled);
+        self.ask(extension, asked, wait).await
+    }
+
+    /// How long to wait for an action's answer: what its manifest says, or the usual.
+    fn action_wait(&self, extension: &ExtensionId, action_id: &str) -> Duration {
+        read(&self.0.extensions)
+            .get(extension)
+            .and_then(|overview| overview.info.as_ref())
+            .and_then(|info| info.actions.iter().find(|action| action.id == action_id))
+            .and_then(|action| action.answer_within_seconds)
+            .map(|seconds| {
+                Duration::from_secs(u64::from(
+                    seconds.min(irori_types::MAX_ACTION_ANSWER_SECONDS),
+                ))
+            })
+            .unwrap_or(SERVICE_CALL_TIMEOUT)
     }
 
     /// Asks an extension to end early an action it said is open: close Zigbee's network
@@ -1238,6 +1343,18 @@ impl Core {
 
     fn publish(&self, events: Vec<Event>) {
         for event in events {
+            if matches!(
+                event,
+                Event::DeviceAdded { .. }
+                    | Event::DeviceUpdated { .. }
+                    | Event::DeviceRemoved { .. }
+                    | Event::EntityAdded { .. }
+                    | Event::EntityUpdated { .. }
+                    | Event::EntityRemoved { .. }
+                    | Event::SettingsChanged
+            ) {
+                self.0.registry_revision.fetch_add(1, Ordering::SeqCst);
+            }
             if let Event::StateChanged {
                 entity_id,
                 new_state,
@@ -1319,6 +1436,13 @@ impl Core {
             }
             Op::SetUnmodeled(unmodeled) => {
                 self.set_unmodeled(extension, unmodeled);
+                return;
+            }
+            Op::SetNetworks(networks) => {
+                match irori_types::Network::validate_all(&networks) {
+                    Ok(()) => self.set_networks(extension, networks),
+                    Err(why) => tracing::warn!(%extension, %why, "refused its network map"),
+                }
                 return;
             }
             Op::SetAvailableActions(actions) => {
@@ -1460,6 +1584,7 @@ impl Core {
                         unmodeled: Vec::new(),
                         available_actions: Vec::new(),
                         open_actions: BTreeMap::new(),
+                        starts: 0,
                     },
                 );
             }
@@ -1512,6 +1637,32 @@ impl Core {
             extension_id: extension.clone(),
             status,
         }]);
+    }
+
+    /// Keeps the maps an extension last drew of its networks; an empty list forgets them, as
+    /// when it stops. Not published: a map changes far more often than anything else on the
+    /// page, and only the network map asks for it, while it's showing.
+    pub(crate) fn set_networks(
+        &self,
+        extension: &ExtensionId,
+        networks: Vec<irori_types::Network>,
+    ) {
+        let mut all = write(&self.0.networks);
+        if networks.is_empty() {
+            all.remove(extension);
+        } else {
+            all.insert(extension.clone(), networks);
+        }
+    }
+
+    /// Every running extension's networks, by extension, in the order of their ids.
+    pub fn networks(&self) -> Vec<(ExtensionId, Vec<irori_types::Network>)> {
+        let mut all: Vec<_> = read(&self.0.networks)
+            .iter()
+            .map(|(extension, networks)| (extension.clone(), networks.clone()))
+            .collect();
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        all
     }
 
     /// Records that one of an extension's actions is open for `remaining` more, or closed.
@@ -1577,10 +1728,18 @@ impl Core {
         let changed = {
             let mut extensions = write(&self.0.extensions);
             match extensions.get_mut(extension) {
-                Some(overview) if overview.status == status => false,
                 Some(overview) => {
-                    overview.status = status.clone();
-                    true
+                    // Every start counts, even one straight after another.
+                    let starting = status == ExtensionStatus::Starting;
+                    if starting {
+                        overview.starts += 1;
+                    }
+                    if overview.status == status {
+                        starting
+                    } else {
+                        overview.status = status.clone();
+                        true
+                    }
                 }
                 None => {
                     extensions.insert(
@@ -1594,6 +1753,7 @@ impl Core {
                             unmodeled: Vec::new(),
                             available_actions: Vec::new(),
                             open_actions: BTreeMap::new(),
+                            starts: u64::from(status == ExtensionStatus::Starting),
                         },
                     );
                     true
@@ -1691,6 +1851,35 @@ fn sanitize_waiting(extension: &ExtensionId, waiting: Vec<Waiting>) -> Vec<Waiti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a list of rooms holds is worked out once and kept, and a change to the home or to
+    /// what was said about it makes the next answer new.
+    #[test]
+    fn a_reach_follows_the_home_it_is_asked_of() {
+        let core = Core::new(Arc::new(SystemClock));
+        let study = AreaId::try_from("study").expect("valid");
+        let rooms = std::slice::from_ref(&study);
+        assert!(core.reach_for(None).is_whole());
+        assert!(
+            !core.reach_for(Some(rooms)).sees_area(&study),
+            "no such room yet"
+        );
+        core.apply_settings(Settings {
+            areas: vec![Area {
+                id: study.clone(),
+                name: Name::try_from("Study").expect("valid"),
+                floor_id: None,
+            }],
+            ..Settings::default()
+        });
+        assert!(core.reach_for(Some(rooms)).sees_area(&study));
+        assert!(
+            core.reach_for(Some(rooms)).sees_area(&study),
+            "asked again, the same"
+        );
+        core.apply_settings(Settings::default());
+        assert!(!core.reach_for(Some(rooms)).sees_area(&study));
+    }
 
     /// Whatever ends a call before it's delivered (an error, a timeout, or the caller walking
     /// away mid-send), the recorded context must not stay valid for `caused_by`.

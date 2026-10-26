@@ -708,6 +708,39 @@ fn queued_runs_take_their_turn() {
     );
 }
 
+/// A test a person started waits its turn in a queued flow; when it starts, the run still says
+/// who asked for it.
+#[test]
+fn a_test_that_waited_its_turn_still_says_who_started_it() {
+    let mut queued = hallway();
+    queued.mode =
+        serde_json::from_value(serde_json::json!({ "type": "queued", "max": 1 })).expect("a mode");
+    let flow_id = queued.id.clone();
+    let mut engine = engine_with(queued);
+    change(&mut engine, flag(OCCUPANCY, true, 1));
+    change(&mut engine, flag(MOTION, true, 10));
+    let leo: irori_types::UserId = "leo".parse().expect("a user id");
+    let motion = irori_flow_types::NodeId::try_from("motion").expect("a node id");
+    engine
+        .fire_by(
+            &flow_id,
+            &motion,
+            Some(irori_flow_types::trace::TestKind::Live),
+            Some(leo.clone()),
+            at(11),
+        )
+        .expect("it waits");
+    let _ = effects(&mut engine, at(14));
+    engine.advance(at(14 + 600));
+    let _ = effects(&mut engine, at(614));
+    let started: Vec<_> = engine
+        .active(None)
+        .into_iter()
+        .map(|run| run.record.started_by)
+        .collect();
+    assert_eq!(started, [Some(leo)], "the queued test is the one running");
+}
+
 #[test]
 fn a_join_that_timed_out_doesnt_go_on_again_when_the_late_path_arrives() {
     let late = flow(serde_json::json!({
@@ -1792,5 +1825,71 @@ fn a_backtest_over_days_still_finds_every_morning() {
             moment("2026-07-09T05:00:00Z"),
             moment("2026-07-10T05:00:00Z"),
         ]
+    );
+}
+
+/// A regular user's flow may not do what only an owner may do, however it is written: install an
+/// update, or wait for an event (which is not about any one room). The owner's may, and the
+/// checks are the same ones (`docs/specs/access.md` §4).
+#[test]
+fn a_regular_users_flow_may_not_install_an_update_or_wait_for_an_event() {
+    let mut home = registry();
+    let update = entity(
+        "update.irori",
+        Capabilities::Update(irori_types::UpdateCapabilities {
+            device_class: None,
+            install: true,
+            check: false,
+        }),
+    );
+    home.entities.insert(update.id.clone(), update);
+    let installs = flow(serde_json::json!({
+        "id": "updater", "name": "Updater",
+        "nodes": {
+            "motion": { "type": "trigger", "trigger": { "type": "state", "entity": MOTION, "to": true } },
+            "install": { "type": "call", "service": "update.install", "entity": "update.irori" }
+        },
+        "wires": [["motion", "install"]]
+    }));
+    assert!(
+        validate::check_for(&installs, &home, true).is_empty(),
+        "an owner's flow may"
+    );
+    let problems = validate::check_for(&installs, &home, false);
+    assert!(
+        problems.iter().any(|problem| problem.is_error()
+            && problem
+                .node
+                .as_ref()
+                .is_some_and(|node| node.as_str() == "install")
+            && problem.message.contains("only an owner")),
+        "{problems:#?}"
+    );
+    // The plain check is the owner's.
+    assert_eq!(
+        validate::check(&installs, &home),
+        validate::check_for(&installs, &home, true)
+    );
+
+    let waits = flow(serde_json::json!({
+        "id": "waits", "name": "Waits",
+        "nodes": {
+            "event": { "type": "trigger", "trigger": { "type": "event", "event": "mqtt.message" } },
+            "on": { "type": "call", "service": "light.turn_on", "entity": LIGHT }
+        },
+        "wires": [["event", "on"]]
+    }));
+    let problems = validate::check_for(&waits, &home, false);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.is_error() && problem.message.contains("wait for an event")),
+        "{problems:#?}"
+    );
+    assert!(
+        validate::check_for(&waits, &home, true)
+            .iter()
+            .all(|problem| !problem.is_error()),
+        "an owner's may"
     );
 }

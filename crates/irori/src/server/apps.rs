@@ -13,9 +13,12 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use irori_core::{AppRequestError, ExtensionStatus};
-use irori_types::{ApiScope, ExtensionId, Name, PackagePath};
+use irori_protocol::engine::Caller;
+use irori_types::{ApiScope, ExtensionId, Name, Outcome, PackagePath};
 use serde::{Deserialize, Serialize};
 
+use super::auth::Actor;
+use super::trail::Trail;
 use super::{AppState, refused};
 
 /// One sidebar entry.
@@ -31,10 +34,19 @@ pub(super) struct AppEntry {
     /// Whether the page's files are there. A package installed without its page built still
     /// gets an entry, which says so, rather than an empty frame.
     built: bool,
+    /// The entity format its page reads (`irori_types::format`).
+    entity_format: u32,
 }
 
 /// Running extensions that have a page, by name.
-pub(super) async fn list(State(state): State<AppState>) -> Json<Vec<AppEntry>> {
+pub(super) async fn list(
+    State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<Actor>,
+) -> Json<Vec<AppEntry>> {
+    // An extension's page is the owner's until it says it limits what a regular user can do
+    // with it and the home trusts it to (`docs/specs/access.md` §4.1). A program's token
+    // lists them all: it is limited by its scopes, not by a person's rooms.
+    let everything = who.owner || who.token.is_some();
     let packages = state.0.host.packages_dir().to_path_buf();
     let mut entries: Vec<AppEntry> = state
         .0
@@ -47,6 +59,7 @@ pub(super) async fn list(State(state): State<AppState>) -> Json<Vec<AppEntry>> {
                 ExtensionStatus::Running | ExtensionStatus::Degraded { .. }
             )
         })
+        .filter(|(id, _)| everything || state.0.core.limits_people(id))
         .filter_map(|(id, overview)| {
             let info = overview.info?;
             let app = info.app?;
@@ -59,6 +72,7 @@ pub(super) async fn list(State(state): State<AppState>) -> Json<Vec<AppEntry>> {
                 label: app.label,
                 api: app.api,
                 has_engine: info.engine,
+                entity_format: app.entity_format,
                 built,
                 extension: id,
             })
@@ -75,18 +89,92 @@ pub(super) struct RpcRequest {
     params: serde_json::Value,
 }
 
+/// What a question to an engine's page changes, when it changes something: what the row in the
+/// activity log is called, and what it was about (`docs/specs/access.md` §3). The questions that
+/// only look are not written down.
+pub(super) fn change_of(
+    method: &str,
+    params: &serde_json::Value,
+) -> Option<(&'static str, Option<String>)> {
+    // A flow's id, if what the page sent is one. Anything else is not a name worth writing down.
+    let named = |value: Option<&serde_json::Value>| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| irori_types::RuleId::try_from(*id).is_ok())
+            .map(str::to_owned)
+    };
+    match method {
+        "flows.save" => Some(("flow_saved", named(params.pointer("/flow/id")))),
+        "flows.enable" => {
+            let on = params.get("enabled").and_then(serde_json::Value::as_bool) == Some(true);
+            Some((
+                if on {
+                    "flow_turned_on"
+                } else {
+                    "flow_turned_off"
+                },
+                named(params.get("id")),
+            ))
+        }
+        "flows.delete" => Some(("flow_deleted", named(params.get("id")))),
+        "versions.restore" => Some(("flow_restored", named(params.get("id")))),
+        // Stopping a run that is going: it may be in the middle of switching things.
+        "runs.cancel" => Some((
+            "flow_run_cancelled",
+            params
+                .get("run_id")
+                .and_then(serde_json::Value::as_str)
+                .filter(|run| irori_types::ContextId::try_from(*run).is_ok())
+                .map(str::to_owned),
+        )),
+        // How a flow is tested is kept with it, and is the test's own record of what was tried.
+        "tests.save" => Some(("flow_test_saved", named(params.get("id")))),
+        // A live test makes real calls. A dry run only imagines them.
+        "test" if params.get("dry").and_then(serde_json::Value::as_bool) != Some(true) => {
+            Some(("flow_test_run", named(params.get("id"))))
+        }
+        _ => None,
+    }
+}
+
 /// A page's question for its engine.
 pub(super) async fn rpc(
     State(state): State<AppState>,
+    axum::Extension(who): axum::Extension<Actor>,
+    axum::Extension(trail): axum::Extension<Trail>,
     Path(id): Path<ExtensionId>,
     Json(request): Json<RpcRequest>,
 ) -> Response {
-    match state
+    // A regular user asks only an extension that limits what they can do. Any other answers as
+    // if it had no page, the way a room they don't have answers as no room.
+    if !who.owner && !state.0.core.limits_people(&id) {
+        return refused(StatusCode::NOT_FOUND, format!("`{id}` has no page"));
+    }
+    let caller = if who.owner {
+        Caller::owner()
+    } else {
+        Caller {
+            user: who.user.as_ref().map(|user| user.id.clone()),
+            owner: false,
+        }
+    };
+    let change = change_of(&request.method, &request.params);
+    let result = state
         .0
         .core
-        .app_request(&id, request.method, request.params)
-        .await
-    {
+        .app_request(&id, request.method, request.params, caller)
+        .await;
+    if let Some((action, target)) = change {
+        trail.said(action);
+        if let Some(target) = target {
+            trail.target(target);
+        }
+        if let Err(error) = &result {
+            trail.outcome(Outcome::Failed);
+            trail.detail(error.to_string());
+        }
+    }
+    match result {
         Ok(value) => Json(serde_json::json!({ "value": value })).into_response(),
         Err(error) => refused(
             match error {
@@ -289,6 +377,105 @@ mod tests {
             None,
         ] {
             assert!(!asked_as(inside), "{inside:?}");
+        }
+    }
+
+    #[test]
+    fn only_a_real_flow_id_is_written_down_as_what_was_changed() {
+        let big = "x".repeat(5_000);
+        for not_an_id in [
+            serde_json::json!(big),
+            serde_json::json!("Has Spaces"),
+            serde_json::json!(""),
+            serde_json::json!(7),
+        ] {
+            assert_eq!(
+                change_of("flows.delete", &serde_json::json!({ "id": not_an_id })),
+                Some(("flow_deleted", None)),
+                "{not_an_id}"
+            );
+        }
+    }
+
+    #[test]
+    fn only_a_change_to_a_flow_is_written_down() {
+        let named = |method: &str, params: serde_json::Value| change_of(method, &params);
+        assert_eq!(
+            named(
+                "flows.save",
+                serde_json::json!({ "flow": { "id": "hall" } })
+            ),
+            Some(("flow_saved", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "flows.enable",
+                serde_json::json!({ "id": "hall", "enabled": false })
+            ),
+            Some(("flow_turned_off", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "flows.enable",
+                serde_json::json!({ "id": "hall", "enabled": true })
+            ),
+            Some(("flow_turned_on", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named("flows.delete", serde_json::json!({ "id": "hall" })),
+            Some(("flow_deleted", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "versions.restore",
+                serde_json::json!({ "id": "hall", "version": "ab" })
+            ),
+            Some(("flow_restored", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "tests.save",
+                serde_json::json!({ "id": "hall", "settings": {} })
+            ),
+            Some(("flow_test_saved", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "runs.cancel",
+                serde_json::json!({ "run_id": "01JABCDEFGHJKMNPQRSTVWXYZ0" })
+            )
+            .map(|(action, _)| action),
+            Some("flow_run_cancelled")
+        );
+        // A test that makes real calls is a change; one that imagines them is not.
+        assert_eq!(
+            named(
+                "test",
+                serde_json::json!({ "id": "hall", "trigger": "t", "dry": false })
+            ),
+            Some(("flow_test_run", Some("hall".to_owned())))
+        );
+        assert_eq!(
+            named(
+                "test",
+                serde_json::json!({ "id": "hall", "trigger": "t", "dry": true })
+            ),
+            None
+        );
+        // Looking is not written down.
+        for method in [
+            "flows.list",
+            "flows.get",
+            "flows.validate",
+            "backtest",
+            "live",
+            "runs.get",
+        ] {
+            assert_eq!(
+                named(method, serde_json::json!({ "id": "hall" })),
+                None,
+                "{method}"
+            );
         }
     }
 

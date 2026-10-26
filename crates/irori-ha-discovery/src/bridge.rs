@@ -86,6 +86,16 @@ pub fn ieee_address(device_identifier: &str) -> Result<&str, String> {
     Ok(rest)
 }
 
+/// The discovery identifier Z2M gives the device at `ieee`, the other way from
+/// [`ieee_address`]; with `bridge`, the one it gives its own coordinator.
+pub fn device_identifier(ieee: &str, bridge: bool) -> String {
+    if bridge {
+        format!("{DEVICE_PREFIX}bridge_{ieee}")
+    } else {
+        format!("{DEVICE_PREFIX}{ieee}")
+    }
+}
+
 /// The request to take a device off Z2M's network. Plain, Z2M asks the device to leave and
 /// waits for it to agree; with `force` it only strikes the device from its own records, for
 /// one that doesn't answer. `transaction` comes back in the response, to tell answers apart.
@@ -136,6 +146,33 @@ pub fn response(payload: &[u8]) -> Option<Response> {
     })
 }
 
+/// The topic a Z2M bridge publishes every device it has paired to, retained: their addresses,
+/// whether each routes, what powers it. What the network map is drawn from until a scan says
+/// who hears whom.
+pub fn devices_topic(base_topic: &str) -> String {
+    format!("{base_topic}/bridge/devices")
+}
+
+/// The request for Z2M's network map: every router asked who it hears and how well. Raw, so
+/// the answer is the links themselves rather than a picture; without routes, which take much
+/// longer and the map doesn't draw. It's slow and busy on the radio, so it's asked for rarely.
+pub fn network_map(base_topic: &str, transaction: &str) -> Publish {
+    Publish {
+        topic: format!("{base_topic}/bridge/request/networkmap"),
+        payload: serde_json::to_vec(&serde_json::json!({
+            "type": "raw",
+            "routes": false,
+            "transaction": transaction,
+        }))
+        .expect("a json! body always serializes"),
+    }
+}
+
+/// Where Z2M answers a [`network_map`] request.
+pub fn network_map_response_topic(base_topic: &str) -> String {
+    format!("{base_topic}/bridge/response/networkmap")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +189,21 @@ mod tests {
         let publish = permit_join("zigbee2mqtt", 60);
         assert_eq!(publish.topic, "zigbee2mqtt/bridge/request/permit_join");
         assert_eq!(publish.payload, br#"{"time":60,"value":true}"#);
+    }
+
+    #[test]
+    fn asks_for_the_raw_network_map_without_routes_and_says_which_request() {
+        let publish = network_map("zigbee2mqtt", "irori-scan-1");
+        assert_eq!(publish.topic, "zigbee2mqtt/bridge/request/networkmap");
+        assert_eq!(
+            publish.payload,
+            br#"{"routes":false,"transaction":"irori-scan-1","type":"raw"}"#
+        );
+        assert_eq!(
+            network_map_response_topic("zigbee2mqtt"),
+            "zigbee2mqtt/bridge/response/networkmap"
+        );
+        assert_eq!(devices_topic("zigbee2mqtt"), "zigbee2mqtt/bridge/devices");
     }
 
     #[test]
@@ -192,6 +244,14 @@ mod tests {
         assert!(ieee_address("zigbee2mqtt_bridge_0x00124b0001020304").is_err());
         assert!(ieee_address("zigbee2mqtt_zigbee2mqtt_3").is_err());
         assert!(ieee_address("tasmota_ABC123").is_err());
+        assert_eq!(
+            device_identifier("0x00158d0001a2b3c4", false),
+            "zigbee2mqtt_0x00158d0001a2b3c4"
+        );
+        assert_eq!(
+            device_identifier("0x00124b0001020304", true),
+            "zigbee2mqtt_bridge_0x00124b0001020304"
+        );
     }
 
     #[test]

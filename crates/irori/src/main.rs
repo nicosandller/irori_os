@@ -2,6 +2,7 @@
 
 #[cfg(feature = "assist")]
 mod assistant;
+mod audit;
 mod backup;
 mod banner;
 mod build_info;
@@ -182,6 +183,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
 
     let db = db::open(&data)?;
     let recorder_settings = store.irori().recorder.clone();
+    let audit_keep = audit::Keep::from_settings(&store.irori().audit, &recorder_settings);
     let _ = self_update::LOOKS.set(store.irori().updates.check);
     // Before anything can replace it: an update moves this file, and the restart after it
     // must run what took its place.
@@ -271,15 +273,32 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                 history.clone(),
                 core.subscribe(),
             ));
+            // Who did what: a table of its own in the same file, written by a thread of its own,
+            // so a person's change never waits on the recorder or the other way round.
+            let audit = audit::Audit::open(&db.path, audit_keep)
+                .context("failed to open the activity log")?;
+            // After a restore, the log says it was done; before the extensions are looked after,
+            // which rewrite the same result.
+            backup::record_restore(&audit, &data);
             // Engines that ask for history (`history:read`) read the same shelf, and engines
             // whose permissions name the config directory are told where it is.
             core.use_history(Arc::new(history.clone()));
+            core.use_notes(Arc::new(audit::EngineNotes(audit.clone())));
+            // Until permissions are approved one by one (ROADMAP C26), only the official
+            // extensions are trusted to limit what a regular user can do with their page: the
+            // packages put there by an official install, not whatever has the same id.
+            let installed = packages::packages_dir(&data);
+            core.trust_with_people_if(move |id| packages::is_official_install(&installed, id));
             core.use_config_dir(config.clone());
             // Before the extensions, so a device that arrives in the first second already has
             // the name and the room its owner gave it, rather than appearing under its old name
             // and moving a moment later.
             let settings = config::Config::open(store, &problems, &core);
-            tokio::spawn(settings.clone().watch(core.clone(), history.clone()));
+            tokio::spawn(
+                settings
+                    .clone()
+                    .watch(core.clone(), history.clone(), audit.clone()),
+            );
             tokio::spawn(settings.clone().forget_retired(core.clone()));
             // Reads backup.toml every time it wakes, so a change from the page applies at once.
             tokio::spawn(backup::schedule::run(config.clone(), data.clone()));
@@ -320,6 +339,7 @@ fn serve(config: PathBuf, flags: Flags) -> anyhow::Result<()> {
                 settings,
                 host.clone(),
                 history,
+                audit,
                 log,
                 restart.clone(),
                 restarting.clone(),

@@ -353,6 +353,7 @@ mod tests {
             extensions: vec![],
             encrypted: true,
             history: true,
+            activity: true,
         }
     }
 

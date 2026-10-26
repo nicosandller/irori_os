@@ -12,3 +12,5 @@ data
 .qa-shots-*
 **/.DS_Store
 .claude
+# The lab image installs its own (npm ci); one installed on the host is for running it there.
+dev/lab/matter/node_modules

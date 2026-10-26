@@ -29,6 +29,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+use super::trail::{self, Trail};
 use super::{AppState, UI_HEADER, refused};
 use crate::config::{EditError, People, Refused};
 use crate::db::Database;
@@ -79,11 +80,55 @@ pub struct Actor {
 #[derive(Debug, Clone)]
 pub struct TokenGrant {
     pub id: TokenId,
+    /// What it was called when it was made, for the activity log.
+    pub name: String,
     /// Set when the token exists only to connect this extension.
     pub extension: Option<ExtensionId>,
 }
 
 impl Actor {
+    /// How much of the home this request may see and use (`docs/specs/access.md` §1).
+    ///
+    /// An owner has all of it, so does a token (it is limited by its scopes, not its person's
+    /// rooms: `docs/specs/access.md` §5), and so does anybody in an open home. A person signed in
+    /// gets what their rooms hold. Nobody gets nothing, so a request without anyone behind it
+    /// can't turn into the whole home by a mistake somewhere else.
+    pub fn reach(&self, core: &irori_core::Core) -> irori_core::Reach {
+        if self.owner || self.token.is_some() {
+            return irori_core::Reach::Whole;
+        }
+        match &self.user {
+            Some(user) => core.reach_for(user.areas.as_deref()),
+            None => irori_core::Reach::nothing(),
+        }
+    }
+
+    /// Who the activity log says did it (`docs/specs/access.md` §3). A token is the program,
+    /// with the person it was made for; a request with nobody behind it is nobody.
+    pub fn audit(&self) -> irori_types::AuditActor {
+        use irori_types::{AuditActor, Named};
+        if let Some(token) = &self.token {
+            return match &token.extension {
+                Some(id) => AuditActor::Extension { id: id.clone() },
+                None => AuditActor::Token {
+                    id: token.id.clone(),
+                    name: token.name.clone(),
+                    person: self.user.as_ref().map(|user| Named {
+                        id: user.id.clone(),
+                        name: user.name.as_str().to_owned(),
+                    }),
+                },
+            };
+        }
+        match &self.user {
+            Some(user) => AuditActor::Person {
+                id: user.id.clone(),
+                name: user.name.as_str().to_owned(),
+            },
+            None => AuditActor::Nobody,
+        }
+    }
+
     /// Who a command is attributed to.
     pub fn user_id(&self) -> UserId {
         self.user
@@ -97,8 +142,12 @@ impl Actor {
 pub enum Needs {
     /// Open to anyone who can reach Irori: the page itself, and what it takes to sign in.
     Nothing,
-    /// Using the home: seeing it, and controlling devices.
+    /// Using the home: seeing it, and controlling devices. What it answers is only what the
+    /// person has of the home (`docs/specs/access.md` §2).
     Use,
+    /// Using the home, but only the whole of it: what describes the home as a whole or the
+    /// machine it runs on. A person who has some rooms is told it is not for them.
+    Whole,
     /// Running the home: changing how it is set up.
     Run,
 }
@@ -141,19 +190,37 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
             return Needs::Nothing;
         }
         // A path nobody has named is closed. A new read has to be added to `named_read`.
-        return if named_read(rest) {
-            Needs::Use
-        } else {
+        return if !named_read(rest) {
             Needs::Run
+        } else if whole_home_only(rest) {
+            Needs::Whole
+        } else {
+            Needs::Use
         };
     }
     let using = rest == "command"
-        // Asking the assistant, and stopping an answer. Setting it up is running the home.
+        // Asking the assistant, stopping an answer and clearing a chat: whoever asks is
+        // answered from what they have of the home, and the chat is theirs. Setting it up is
+        // running the home.
         || rest == "assistant/turns"
         || (rest.starts_with("assistant/turns/") && rest.ends_with("/stop"))
+        || (method == Method::DELETE && rest.starts_with("assistant/transcript/"))
         // A person's own name and password; the handler refuses anybody else's.
-        || (method == Method::PATCH && rest.starts_with("users/"));
+        || (method == Method::PATCH && rest.starts_with("users/"))
+        // A question to an extension's engine. A regular user asks only one that limits what
+        // they can do with it, and the handler says which (`docs/specs/access.md` §4.1).
+        || (method == Method::POST && rest.starts_with("apps/") && rest.ends_with("/rpc"));
     if using { Needs::Use } else { Needs::Run }
+}
+
+/// The reads that describe the whole home or the machine rather than a thing in a room: where
+/// the home is, what can be installed, how the machine is doing and how history is kept
+/// (`docs/specs/access.md` §2). The assistant is not here: it answers from what the person has.
+fn whole_home_only(rest: &str) -> bool {
+    matches!(
+        rest,
+        "place" | "catalog" | "system" | "system/usage" | "serial-ports" | "recorder" | "network"
+    )
 }
 
 /// A GET that reads the home, as opposed to one that runs it.
@@ -178,13 +245,13 @@ fn named_read(rest: &str) -> bool {
             | "apps"
             | "system"
             | "system/usage"
-            | "system/log"
             | "serial-ports"
             | "assistant"
-            | "assistant/log"
             | "recorder"
+            | "network"
     ) || rest.starts_with("history/")
-        || (rest.starts_with("extensions/") && rest.ends_with("/log"))
+        // A picture is the camera's face on the page: an `<img>` that carries the cookie.
+        || (rest.starts_with("entities/") && rest.ends_with("/picture"))
         || rest.starts_with("assistant/turns/")
         || rest.starts_with("assistant/transcript/")
 }
@@ -596,12 +663,52 @@ fn actor(auth: &Auth, people: &People, headers: &HeaderMap) -> Option<Actor> {
 
 /// Lets a request through, or says why not. Over every route.
 ///
+/// Every request also gets a [`Trail`], and a change leaves its row in the activity log when it
+/// is over, whoever answered it (`server/trail.rs`).
+pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let pattern = request
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|matched| matched.as_str().to_owned());
+    let trail = Trail::default();
+    request.extensions_mut().insert(trail.clone());
+    let response = admit(&state, request, next, &trail).await;
+    if let Some(pattern) = pattern {
+        trail::record(
+            &state.0.audit,
+            &trail,
+            &method,
+            &pattern,
+            &path,
+            response.status(),
+        )
+        .await;
+    }
+    response
+}
+
+/// Says no, and keeps why for the activity log, which the owner reads and the person asking
+/// does not.
+fn turned_away(trail: &Trail, status: StatusCode, why: &str) -> Response {
+    trail.detail(why);
+    refused(status, why.to_owned())
+}
+
+/// The part of the guard that decides.
+///
 /// A bearer token is that token, even when a cookie came along too. Any other
 /// `Authorization` scheme is the page's cookie, so a proxy's `Basic` header doesn't
 /// lock the page out. An extension's socket takes only the token made for that extension.
-pub async fn guard(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
+async fn admit(state: &AppState, mut request: Request, next: Next, trail: &Trail) -> Response {
     let path = request.uri().path().to_owned();
     let people = state.0.config.people().await;
+    let from = request
+        .extensions()
+        .get::<axum::extract::ConnectInfo<crate::tls::ClientAddr>>()
+        .map(|info| info.0.0.ip());
+    trail.from(from);
     let who = if path == "/api/extension" {
         match super::tokens::extension_actor(&state.0.auth, &people, request.headers()) {
             Ok(who) => Some(who),
@@ -614,6 +721,7 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
             request.headers(),
             request.method(),
             &path,
+            trail,
         ) {
             Ok(who) => Some(who),
             Err(response) => return *response,
@@ -621,17 +729,29 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
     } else {
         let who = actor(&state.0.auth, &people, request.headers());
         let needed = needs(request.method(), &path);
+        if let Some(who) = &who {
+            trail.actor(who.audit());
+        }
         if needed != Needs::Nothing {
             let Some(who) = &who else {
-                return refused(
+                return turned_away(
+                    trail,
                     StatusCode::UNAUTHORIZED,
-                    "sign in first: this home asks who is there".to_owned(),
+                    "sign in first: this home asks who is there",
                 );
             };
             if needed == Needs::Run && !who.owner {
-                return refused(
+                return turned_away(
+                    trail,
                     StatusCode::FORBIDDEN,
-                    "only an owner can change how the home is set up".to_owned(),
+                    "only an owner can change how the home is set up",
+                );
+            }
+            if needed == Needs::Whole && !who.reach(&state.0.core).is_whole() {
+                return turned_away(
+                    trail,
+                    StatusCode::FORBIDDEN,
+                    "this is for people who have the whole home, and you have some of its rooms",
                 );
             }
             // A cookie is sent by the browser whoever wrote the page, so a change also has to
@@ -645,9 +765,10 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
                     .get(UI_HEADER)
                     .is_some_and(|value| value == "1")
             {
-                return refused(
+                return turned_away(
+                    trail,
                     StatusCode::FORBIDDEN,
-                    format!(
+                    &format!(
                         "a change needs the `{UI_HEADER}: 1` header, which only the page sends"
                     ),
                 );
@@ -655,17 +776,20 @@ pub async fn guard(State(state): State<AppState>, mut request: Request, next: Ne
         }
         who
     };
-    let from = request
-        .extensions()
-        .get::<axum::extract::ConnectInfo<crate::tls::ClientAddr>>()
-        .map(|info| info.0.0.ip());
+    if let Some(who) = who.as_ref().filter(|who| who.token.is_some()) {
+        trail.actor(who.audit());
+    }
     request.extensions_mut().insert(Client(from));
     // Open addresses get whoever it is too, or nobody: the session endpoints read it.
-    request.extensions_mut().insert(who.unwrap_or(Actor {
+    let who = who.unwrap_or(Actor {
         user: None,
         owner: false,
         token: None,
-    }));
+    });
+    // Worked out once, here, and handed to whatever answers: no address decides for itself how
+    // much of the home a person has (`docs/specs/access.md` §1.2).
+    request.extensions_mut().insert(who.reach(&state.0.core));
+    request.extensions_mut().insert(who);
     next.run(request).await
 }
 
@@ -781,6 +905,7 @@ pub async fn check_current(
 pub async fn sign_in(
     State(state): State<AppState>,
     Extension(Client(from)): Extension<Client>,
+    Extension(trail): Extension<Trail>,
     Json(ask): Json<SignIn>,
 ) -> Response {
     let auth = &state.0.auth;
@@ -793,7 +918,18 @@ pub async fn sign_in(
         .find(|user| user.id.as_str() == typed || user.name.as_str().trim().to_lowercase() == typed)
         .cloned();
     let trier: Trier = (found.as_ref().map(|user| user.id.clone()), from);
+    // What was typed is written down only when it is somebody: a name that isn't anybody's may
+    // be a password typed into the wrong box.
+    let known = found.is_some();
+    match &found {
+        Some(user) => trail.target(user.id.as_str()),
+        None => trail.detail("a name nobody has"),
+    }
     if let Err(wait) = auth.try_now(&trier) {
+        trail.detail(format!(
+            "locked out after too many wrong passwords; waiting {} seconds",
+            wait.as_secs().max(1)
+        ));
         return too_many(wait);
     }
     let hash = found
@@ -805,6 +941,9 @@ pub async fn sign_in(
         auth.got_in(&trier);
     }
     let Some(user) = found.filter(|_| right) else {
+        if known {
+            trail.detail("wrong password");
+        }
         return refused(
             StatusCode::UNAUTHORIZED,
             "that name and password don't go together".to_owned(),
@@ -817,6 +956,7 @@ pub async fn sign_in(
         user: Some(user),
         token: None,
     };
+    trail.actor(who.audit());
     let mut response = Json(view(&state, &who).await).into_response();
     response
         .headers_mut()
@@ -861,7 +1001,11 @@ impl std::fmt::Debug for FirstOwner {
 ///
 /// A home from before passwords were required may already have an owner without one. They
 /// are the one set up: they keep their id and take the name and password given.
-pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) -> Response {
+pub async fn set_up(
+    State(state): State<AppState>,
+    Extension(trail): Extension<Trail>,
+    Json(ask): Json<FirstOwner>,
+) -> Response {
     // Looked at before any hashing: this address is open to anyone, and a home that is
     // already locked mustn't be made to do slow work for whoever asks.
     const DONE: &str = "this home already has an owner; people are added in Settings";
@@ -911,6 +1055,7 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
                         id: fresh.clone(),
                         name: name.clone(),
                         role: Role::Owner,
+                        areas: None,
                     };
                     people.users.push(user.clone());
                     people.users.sort_by(|a, b| a.id.cmp(&b.id));
@@ -940,6 +1085,7 @@ pub async fn set_up(State(state): State<AppState>, Json(ask): Json<FirstOwner>) 
         owner: true,
         token: None,
     };
+    trail.actor(who.audit());
     let mut response = (StatusCode::CREATED, Json(view(&state, &who).await)).into_response();
     response
         .headers_mut()
@@ -979,7 +1125,7 @@ mod tests {
 
     #[test]
     fn the_table_says_who_may_ask_for_what() {
-        use Needs::{Nothing, Run, Use};
+        use Needs::{Nothing, Run, Use, Whole};
         let cases = [
             (Method::GET, "/", Nothing),
             (Method::GET, "/settings", Nothing),
@@ -990,12 +1136,32 @@ mod tests {
             (Method::GET, "/api/extensions/demo/icon.svg", Nothing),
             (Method::GET, "/api/home", Use),
             (Method::GET, "/api/users", Use),
-            (Method::GET, "/api/system", Use),
+            (Method::GET, "/api/system", Whole),
+            (Method::GET, "/api/system/usage", Whole),
+            (Method::GET, "/api/place", Whole),
+            (Method::GET, "/api/catalog", Whole),
+            (Method::GET, "/api/serial-ports", Whole),
+            (Method::GET, "/api/assistant", Use),
+            (Method::GET, "/api/assistant/transcript/general", Use),
+            (Method::GET, "/api/assistant/turns/general", Use),
+            (Method::DELETE, "/api/assistant/transcript/general", Use),
             (Method::GET, "/api/history/light.hall", Use),
             (Method::GET, "/api/history/sensor.temp/summary", Use),
-            (Method::GET, "/api/recorder", Use),
+            (Method::GET, "/api/recorder", Whole),
+            // The networks reach every room, and name what's in each.
+            (Method::GET, "/api/network", Whole),
             (Method::PUT, "/api/recorder", Run),
-            (Method::GET, "/api/extensions/demo/log", Use),
+            (
+                Method::GET,
+                "/api/entities/camera.garden_camera_1/picture",
+                Use,
+            ),
+            // The logs hold everybody's sign-ins and what the owner did.
+            (Method::GET, "/api/system/log", Run),
+            (Method::GET, "/api/audit", Run),
+            (Method::GET, "/api/audit?user=leo&outcome=denied", Run),
+            (Method::GET, "/api/assistant/log", Run),
+            (Method::GET, "/api/extensions/demo/log", Run),
             (Method::POST, "/api/command", Use),
             (Method::POST, "/api/assistant/turns", Use),
             (Method::POST, "/api/assistant/turns/general/stop", Use),
@@ -1020,7 +1186,7 @@ mod tests {
             (Method::POST, "/api/setup/backup/upload", Nothing),
             (Method::POST, "/api/setup/backup/restore", Nothing),
             (Method::PUT, "/api/assistant", Run),
-            (Method::POST, "/api/apps/automations/rpc", Run),
+            (Method::POST, "/api/apps/automations/rpc", Use),
             (Method::PUT, "/api/extensions/mqtt/secrets", Run),
             (Method::GET, "/api/ws", Use),
             // HEAD is not a read. A token still needs the home's scopes for this path.

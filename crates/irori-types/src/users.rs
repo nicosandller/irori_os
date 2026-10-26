@@ -7,7 +7,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{InvariantError, Name, UserId};
+use crate::{AreaId, InvariantError, Name, UserId};
 
 /// The shortest password Irori takes.
 pub const PASSWORD_MIN_LEN: usize = 8;
@@ -35,7 +35,8 @@ pub const PASSWORD_MAX_LEN: usize = 256;
 pub enum Role {
     /// Runs the home: everything, including who else is let in.
     Owner,
-    /// Uses the home: sees everything and controls devices.
+    /// Uses the home: sees and controls what is theirs. The whole home, unless they have been
+    /// given some rooms (`User::areas`).
     #[default]
     User,
 }
@@ -61,6 +62,19 @@ pub struct User {
     pub id: UserId,
     pub name: Name,
     pub role: Role,
+    /// The rooms this person has (`docs/specs/access.md` §1): outside them, nothing in the home
+    /// exists for them. Absent means the whole home, which is what every file written before
+    /// rooms means. An empty list is a person with no rooms. An owner has none: the whole home
+    /// is what being an owner is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub areas: Option<Vec<AreaId>>,
+}
+
+impl User {
+    /// Whether this person is held to some rooms rather than the whole home.
+    pub fn has_rooms(&self) -> bool {
+        self.areas.is_some() && !self.role.runs_the_home()
+    }
 }
 
 /// Why a set of users can't stand, checked the same way for a hand-edited file and for the API.
@@ -69,6 +83,22 @@ pub fn check_users(users: &[User]) -> Result<(), InvariantError> {
         return Err(InvariantError::new(
             "a home with people in it needs an owner: give one of them `role = \"owner\"`",
         ));
+    }
+    for user in users {
+        let Some(areas) = &user.areas else { continue };
+        if user.role.runs_the_home() {
+            return Err(InvariantError::new(format!(
+                "`{}` is an owner, who has the whole home: take `areas` out",
+                user.id
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        if let Some(twice) = areas.iter().find(|area| !seen.insert(*area)) {
+            return Err(InvariantError::new(format!(
+                "`{}` has the room `{twice}` twice",
+                user.id
+            )));
+        }
     }
     Ok(())
 }
@@ -123,6 +153,19 @@ mod tests {
             id: UserId::try_from(id).expect("a valid id"),
             name: Name::try_from(id).expect("a valid name"),
             role,
+            areas: None,
+        }
+    }
+
+    fn with_rooms(id: &str, role: Role, rooms: &[&str]) -> User {
+        User {
+            areas: Some(
+                rooms
+                    .iter()
+                    .map(|room| AreaId::try_from(*room).expect("a valid id"))
+                    .collect(),
+            ),
+            ..person(id, role)
         }
     }
 
@@ -132,6 +175,25 @@ mod tests {
         assert!(check_users(&[person("nico", Role::Owner)]).is_ok());
         let why = check_users(&[person("guest", Role::User)]).expect_err("no owner");
         assert!(why.to_string().contains("needs an owner"), "{why}");
+    }
+
+    #[test]
+    fn rooms_are_for_a_user_and_not_for_an_owner_and_not_twice() {
+        let owner = person("nico", Role::Owner);
+        let leo = with_rooms("leo", Role::User, &["hall", "study"]);
+        assert!(check_users(&[owner.clone(), leo.clone()]).is_ok());
+        assert!(leo.has_rooms());
+        // No rooms at all is a person who is let in and sees nothing, not the whole home.
+        let nobody_home = with_rooms("ana", Role::User, &[]);
+        assert!(check_users(&[owner.clone(), nobody_home.clone()]).is_ok());
+        assert!(nobody_home.has_rooms());
+        assert!(!person("guest", Role::User).has_rooms());
+
+        let why = check_users(&[with_rooms("nico", Role::Owner, &["hall"])]).expect_err("an owner");
+        assert!(why.to_string().contains("take `areas` out"), "{why}");
+        let twice = with_rooms("leo", Role::User, &["hall", "hall"]);
+        let why = check_users(&[owner, twice]).expect_err("twice");
+        assert!(why.to_string().contains("`hall` twice"), "{why}");
     }
 
     #[test]

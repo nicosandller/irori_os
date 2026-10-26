@@ -78,6 +78,7 @@ impl Config {
         );
         core.apply_settings(store.settings());
         core.apply_extension_settings(store.extension_settings());
+        core.apply_people(people_of(&store.users()));
         let disabled = store.irori().extensions.disabled;
         if !disabled.is_empty() {
             tracing::info!(extensions = ?disabled, "turned off in irori.toml");
@@ -242,6 +243,29 @@ impl Config {
         let mut store = self.0.lock().await;
         report(&store.reload());
         store.extension_file(extension)
+    }
+
+    /// Which settings `secrets.toml` holds a value for, by extension: the keys only, never what
+    /// they hold, so a form can say a password is saved without showing it. One read for every
+    /// extension, so a page listing them all doesn't read the file once each.
+    pub async fn secrets_set(
+        &self,
+    ) -> std::collections::BTreeMap<irori_types::ExtensionId, Vec<String>> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        store
+            .secrets()
+            .tables()
+            .iter()
+            .map(|(extension, table)| {
+                let keys = table
+                    .iter()
+                    .filter(|(_, value)| !value.is_null())
+                    .map(|(key, _)| key.clone())
+                    .collect();
+                (extension.clone(), keys)
+            })
+            .collect()
     }
 
     /// Changes one extension's `extensions/<id>.toml`, writes it, and tells the core — which
@@ -414,6 +438,8 @@ impl Config {
             tracing::info!(files = "users.toml, secrets.toml", "config written");
         }
         core.apply_extension_settings(store.extension_settings());
+        // Whoever keeps flows for a person has to hear that their rooms or role changed.
+        core.apply_people(people_of(&people.users));
         Ok(made)
     }
 
@@ -494,7 +520,12 @@ impl Config {
         }
     }
 
-    pub async fn watch(self, core: Core, history: crate::history::History) {
+    pub async fn watch(
+        self,
+        core: Core,
+        history: crate::history::History,
+        audit: crate::audit::Audit,
+    ) {
         let irori = self.0.lock().await.irori();
         let started = Started {
             server: irori.server,
@@ -505,7 +536,7 @@ impl Config {
             tokio::time::sleep(POLL).await;
             // The recorder is told after the lock is dropped. Summarizing can take a moment,
             // and an edit of some other file should not wait on it.
-            let (recorder, server) = {
+            let (recorder, server, audit_section) = {
                 let mut store = self.0.lock().await;
                 let problems = store.reload();
                 report(&problems);
@@ -513,10 +544,15 @@ impl Config {
                 // overwhelming majority of ticks.
                 core.apply_settings(store.settings());
                 core.apply_extension_settings(store.extension_settings());
+                core.apply_people(people_of(&store.users()));
                 let irori = store.irori();
                 core.apply_disabled_extensions(irori.extensions.disabled.clone());
                 core.apply_home(store.home());
-                (irori.recorder.clone(), irori.server.clone())
+                (
+                    irori.recorder.clone(),
+                    irori.server.clone(),
+                    irori.audit.clone(),
+                )
             };
             // Where Irori listens can't change under a running server. Say so, once per edit,
             // rather than leaving someone wondering why their change did nothing.
@@ -526,6 +562,8 @@ impl Config {
                 );
                 warned_server = Some(server);
             }
+            // Applying what is already applied does nothing, so this costs a comparison.
+            audit.keep(crate::audit::Keep::from_settings(&audit_section, &recorder));
             if recorder != applied {
                 // The file was parsed, so this is a retention the recorder can apply. Doing it
                 // here as well as from the Settings page means an edit of the file itself
@@ -544,6 +582,20 @@ impl Config {
             }
         }
     }
+}
+
+/// The people, as the core is told of them (`docs/specs/access.md` §4): who they are, whether
+/// they run the home, and their rooms.
+fn people_of(users: &[User]) -> Vec<irori_core::Person> {
+    users
+        .iter()
+        .map(|user| irori_core::Person {
+            id: user.id.clone(),
+            name: user.name.as_str().to_owned(),
+            owner: user.role.runs_the_home(),
+            rooms: user.areas.clone(),
+        })
+        .collect()
 }
 
 /// The table of `secrets.toml` that people's password hashes are kept in.

@@ -23,8 +23,8 @@ more than volume: one verified finding beats five guesses.
   then drops that listener so rumqttd can take it. The gap between the drop and rumqttd's bind
   is real. Don't ask to hold the socket, pass the file descriptor, or add a readiness channel
   unless rumqttd grows an API for it.
-- **Zigbee's full access is shown, and install refuses to proceed without an acknowledgement.**
-  `host_shell = true` in `extensions/protocols/zigbee/irori-extension.toml` is the declaration.
+- **Zigbee's and Matter's full access is shown, and install refuses to proceed without an
+  acknowledgement.** `host_shell = true` in each one's `irori-extension.toml` is the declaration.
   The catalog carries `full_access` (`extensions/official.toml`, checked against the manifest by
   `the_catalog_says_full_access_exactly_when_the_manifest_does`). The Extensions card says
   "Full access to this machine" and Install asks first. Both install routes

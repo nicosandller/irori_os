@@ -21,6 +21,106 @@
     "extension"
   ],
   "$defs": {
+    "ActionField": {
+      "description": "A line of text an action's way asks for (`ActionWay::fields`).",
+      "type": "object",
+      "properties": {
+        "hint": {
+          "description": "A sentence under the field saying where to find what goes in it.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Its id, the key the text is sent under, e.g. `code`. A slug, unique within the way.",
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        "label": {
+          "description": "The field's label, e.g. \"Pairing code\".",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "placeholder": {
+          "description": "Example text shown in the empty field, e.g. \"3497-011-2332\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label"
+      ]
+    },
+    "ActionPlace": {
+      "description": "Where an action's button is.",
+      "oneOf": [
+        {
+          "description": "On \"+ Add device\", under the protocol's card.",
+          "type": "string",
+          "const": "add_device"
+        },
+        {
+          "description": "On the network map (the Devices page's Network map tab), beside the networks it draws.",
+          "type": "string",
+          "const": "network"
+        }
+      ]
+    },
+    "ActionWay": {
+      "description": "One way to do an action (`ProtocolAction::ways`): what the person picks at the top of its\nform, and what it asks for once picked.",
+      "type": "object",
+      "properties": {
+        "fields": {
+          "description": "What the person types for this way, sent with the call: a pairing code, say. Every\nfield must be filled in. At most [`MAX_WAY_FIELDS`].",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionField"
+          },
+          "maxItems": 4
+        },
+        "hint": {
+          "description": "A sentence under the choice saying when it's the one to pick.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "description": "Its id, sent with the call so the extension knows which way was picked, e.g. `new`. A\nslug, unique within the action.",
+          "type": "string",
+          "maxLength": 64,
+          "minLength": 1,
+          "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        "label": {
+          "description": "What the choice says, e.g. \"It's new, or reset\".",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "settings": {
+          "description": "The extension's own settings this way needs, by their name in its `config_schema`:\nBluetooth and the Wi-Fi network a new device joins, say. The form shows each as the\nsettings form does, with what's saved already, and saves what changed before the action\nruns; a change restarts the extension, and the action waits for it to be back. At most\n[`MAX_WAY_SETTINGS`].",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 8
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label"
+      ]
+    },
     "ApiScope": {
       "description": "Access to the Irori API beyond the extension's own devices and entities.",
       "oneOf": [
@@ -66,6 +166,10 @@
         "placement": {
           "description": "Where it appears. Only the sidebar in this version.",
           "$ref": "#/$defs/AppPlacement"
+        },
+        "users": {
+          "description": "Lets regular users open this page. That is trust handed to the extension, which says\n\"I limit what a person can do with this\": the shell tells it who is asking, and what a\nperson's own rooms hold is the extension's to enforce (`docs/specs/access.md` §4.1).\nUntil permissions are approved one by one (ROADMAP C26), only official extensions are\ngiven it.",
+          "type": "boolean"
         }
       },
       "additionalProperties": false,
@@ -506,6 +610,16 @@
       "description": "A UI-triggerable action a protocol declares — the other half of \"dedicated add-device path\nper protocol,\" alongside the passive `Waiting` list.",
       "type": "object",
       "properties": {
+        "answer_within_seconds": {
+          "description": "How long, in seconds, the action may take to answer — for one that does its work before\nreplying, like adding a device. The core waits this long instead of the usual ten\nseconds. At most [`MAX_ACTION_ANSWER_SECONDS`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 300,
+          "minimum": 1
+        },
         "id": {
           "description": "Its own id, unique within this protocol, e.g. `permit_join`.\n\nA slug — the same shape as an extension id — because the UI and the API place it in a\nURL as one path segment (`/api/extensions/{id}/actions/{action_id}`) without\nencoding. Anything with a `/`, `?`, or `#` would not round-trip through that route.\n\n`validate` is the authority: a manifest is always parsed through it, whatever a JSON\nSchema consumer independently accepts. The pattern here is the same slug, so the schema\nrejects the same ids. Uniqueness across `actions` can't be expressed in JSON Schema —\nthere is no keyword for \"unique by one field of an array item\" — so `validate` remains\nthe only place that catches a repeated id.",
           "type": "string",
@@ -519,6 +633,10 @@
           "minLength": 1,
           "pattern": "\\S"
         },
+        "place": {
+          "description": "Where its button is: on \"+ Add device\" (the default), or on the network map, for one\nthat's about the network rather than adding to it (Zigbee's scan).",
+          "$ref": "#/$defs/ActionPlace"
+        },
         "seconds": {
           "description": "A default duration in seconds, for a timed action — a hint the UI can show (e.g.\n\"for 60s\"), not enforced by the core.",
           "type": [
@@ -527,6 +645,14 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "ways": {
+          "description": "The ways to do it, for an action that asks a few things first: adding a device that is\nalready set up elsewhere, or one that's new, say. The page shows a choice between them\n(none when there's one), then the chosen way's settings and fields, and sends what was\nfilled in with the call. Without any, the action is a plain button and the call carries\nnothing. At most [`MAX_ACTION_WAYS`].",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActionWay"
+          },
+          "maxItems": 4
         }
       },
       "additionalProperties": false,

@@ -1,0 +1,17 @@
+[extension]
+id = "automations"
+name = "Automations"
+version = "0.1.0"
+irori = ">=0.1.0, <0.2.0"
+
+[[contributes.automation]]
+run = { command = "bin/irori-ext-automations" }
+
+# Regular users may open this page. It limits what they can do there.
+[[contributes.app]]
+label = "Automations"
+entry = "app/index.html"
+users = true
+
+[permissions]
+api = ["registry:read", "states:read", "events:read", "services:call"]

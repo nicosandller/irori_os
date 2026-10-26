@@ -4,7 +4,7 @@
 //! In the order someone setting a home up is likely to want them: the instance and the machine
 //! under it, how the page moves, whether a model answers, the floors and areas that say what's
 //! where, where the home is, the people allowed in, the programs that can reach the home,
-//! the history it keeps, and what Irori has been saying. Every row starts
+//! the history it keeps, who did what, and what Irori has been saying. Every row starts
 //! folded; what it says beside its name is usually all that was wanted.
 
 use std::collections::BTreeSet;
@@ -19,7 +19,7 @@ use crate::fold::{Head, fold};
 use crate::icons::{Icon, icon};
 
 /// The rows, by the id each goes by in the address (`/settings#assistant`).
-const SECTIONS: [&str; 10] = [
+const SECTIONS: [&str; 11] = [
     "system",
     "appearance",
     "assistant",
@@ -29,6 +29,7 @@ const SECTIONS: [&str; 10] = [
     "programs",
     "history",
     "backups",
+    "activity",
     "logs",
 ];
 
@@ -45,6 +46,9 @@ pub fn Settings() -> impl IntoView {
     // Whether this browser may change how the home is set up. Yes until told otherwise, so
     // nothing blinks out and back while the first answer is on its way.
     let owner = move || session.with(|session| session.as_ref().is_none_or(|s| s.owner));
+    // Whether this browser has only some rooms of the home. Those rows that are about the home
+    // as a whole (the machine, the assistant, where it is, how history is kept) aren't theirs.
+    let limited = move || session.with(|s| s.as_ref().is_some_and(api::Session::limited));
     let trouble = RwSignal::new(None::<String>);
     // Which rows are open. Nothing remembers this: the page opens folded every time.
     let open = RwSignal::new(BTreeSet::<&'static str>::new());
@@ -162,11 +166,14 @@ pub fn Settings() -> impl IntoView {
             });
         }
     });
-    spawn_local(async move {
-        if let Ok(lines) = api::fetch_system_log().await {
-            said.set(Some(crate::log_window::tally(&lines)));
-        }
-    });
+    // The log holds everybody's sign-ins and what the owner did: an owner's to read.
+    if owner() {
+        spawn_local(async move {
+            if let Ok(lines) = api::fetch_system_log().await {
+                said.set(Some(crate::log_window::tally(&lines)));
+            }
+        });
+    }
 
     // The home's arrangement in three numbers, and nothing that changes with a reading.
     let arrangement = Memo::new(move |_| {
@@ -234,14 +241,14 @@ pub fn Settings() -> impl IntoView {
         {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
 
         <div class="settings-table">
-            {row(
+            {move || (!limited()).then(|| row(
                 "system",
                 Icon::System,
                 "System",
                 (move || live.health.with(|health| crate::machine::state(health.as_ref())))
                     .into_any(),
                 view! { <crate::machine::Panel open=is_open("system") /> }.into_any(),
-            )}
+            ))}
             {row(
                 "appearance",
                 Icon::Appearance,
@@ -270,14 +277,14 @@ pub fn Settings() -> impl IntoView {
                 }
                 .into_any(),
             )}
-            {row(
+            {move || (!limited()).then(|| row(
                 "assistant",
                 Icon::Assistant,
                 "Assistant",
                 crate::assistant::state(),
                 view! { <crate::assistant::Section /> }.into_any(),
-            )}
-            {row(
+            ))}
+            {move || (!limited()).then(|| row(
                 "location",
                 Icon::Place,
                 "Location and time zone",
@@ -287,14 +294,14 @@ pub fn Settings() -> impl IntoView {
                 }))
                 .into_any(),
                 view! { <crate::place::Section /> }.into_any(),
-            )}
-            {row(
+            ))}
+            {move || (!limited()).then(|| row(
                 "floors-and-areas",
                 Icon::Places,
                 "Floors and areas",
                 (move || arrangement.get()).into_any(),
                 view! { <crate::places::Section /> }.into_any(),
-            )}
+            ))}
             {row(
                 "users",
                 Icon::Users,
@@ -309,7 +316,7 @@ pub fn Settings() -> impl IntoView {
                 (move || programs.with(|programs| crate::programs::summary(programs))).into_any(),
                 view! { <crate::programs::Section /> }.into_any(),
             ))}
-            {row(
+            {move || (!limited()).then(|| row(
                 "history",
                 Icon::History,
                 "History",
@@ -321,7 +328,7 @@ pub fn Settings() -> impl IntoView {
                     />
                 }
                 .into_any(),
-            )}
+            ))}
             {move || owner().then(|| row(
                 "backups",
                 Icon::Backup,
@@ -329,7 +336,14 @@ pub fn Settings() -> impl IntoView {
                 (move || backups.with(|o| crate::backups::summary(o.as_ref()))).into_any(),
                 view! { <crate::backups::Section /> }.into_any(),
             ))}
-            {row(
+            {move || owner().then(|| row(
+                "activity",
+                Icon::Activity,
+                "Activity",
+                crate::activity::summary().into_any(),
+                view! { <crate::activity::Section open=is_open("activity") /> }.into_any(),
+            ))}
+            {move || owner().then(|| row(
                 "logs",
                 Icon::Logs,
                 "Logs",
@@ -351,7 +365,7 @@ pub fn Settings() -> impl IntoView {
                     />
                 }
                 .into_any(),
-            )}
+            ))}
         </div>
 
         // The welcome's two questions are the two rows above; this is the way back to being

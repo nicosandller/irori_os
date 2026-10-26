@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "allow_test_devices": {
+      "description": "Accept devices made with development certificates: samples from Matter SDKs, the dev lab's\nemulated devices, a prototype. A shop-bought device never needs this. Turn it on only for\ndevices you made or trust.",
+      "type": "boolean",
+      "default": false
+    },
+    "bluetooth": {
+      "title": "Add over Bluetooth",
+      "description": "Add new devices over Bluetooth: one fresh out of its box that isn't on a network yet.\nIrori hands it the Wi-Fi or Thread network below. On Linux the Matter server's Node.js\nneeds `cap_net_raw` and `cap_net_admin` to reach the adapter; on a Mac, Bluetooth\npermission for the app Irori runs in.",
+      "type": "boolean",
+      "default": false,
+      "x-irori-group": "Bluetooth"
+    },
+    "bluetooth_adapter": {
+      "description": "Which Bluetooth adapter, on Linux: 0 for `hci0`. A Mac has one, and ignores this.",
+      "type": "integer",
+      "format": "uint8",
+      "default": 0,
+      "maximum": 255,
+      "minimum": 0,
+      "x-irori-group": "Bluetooth"
+    },
+    "firmware_updates": {
+      "description": "Offer each device's firmware updates, from the Matter DCL (the CSA's register of devices\nand their firmware). An update is only installed when someone installs it.",
+      "type": "boolean",
+      "default": true
+    },
+    "matter_server_version": {
+      "description": "Pins the Open Home Foundation Matter Server to one version, e.g. `1.5.0`. Left out, the\nfirst start installs the version this extension was tested with, and keeps it.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "port": {
+      "description": "The port the Matter server listens on for this extension. It only listens on this\nmachine's loopback address, never the network. Change it only if something else here\nalready uses it. Not 5580, which a Home Assistant Matter server on this machine may use.",
+      "type": "integer",
+      "format": "uint16",
+      "default": 15580,
+      "maximum": 65535,
+      "minimum": 1
+    },
+    "primary_interface": {
+      "description": "The network interface Matter devices are on, e.g. `eth0` or `wlan0`, for a machine with\nmore than one. Left out, the server picks.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "thread_dataset": {
+      "title": "Thread dataset",
+      "description": "The Thread network a new Thread device joins when it's added over Bluetooth: its active\noperational dataset, as hex, which holds the network's key. Home Assistant shows it in\nits Thread settings (the network's ⓘ, \"Thread dataset TLV\"); an OpenThread border router\nprints it with `ot-ctl dataset active -x`. Apple's and Google's border routers keep theirs\nto themselves: add their Thread devices in their own apps first, then share them.",
+      "format": "hex",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-irori-group": "Thread"
+    },
+    "wifi_password": {
+      "title": "Wi-Fi password",
+      "description": "That Wi-Fi network's password.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "x-irori-group": "Wi-Fi"
+    },
+    "wifi_ssid": {
+      "title": "Wi-Fi network",
+      "description": "The Wi-Fi network a new Wi-Fi device joins when it's added over Bluetooth. 2.4 GHz: most\nMatter devices can't join a 5 GHz network.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-irori-group": "Wi-Fi"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}

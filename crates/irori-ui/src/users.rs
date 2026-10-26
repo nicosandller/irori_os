@@ -1,10 +1,12 @@
 //! The Users row of Settings: who is allowed in, and what each may do.
 //!
-//! Two kinds of person. An owner runs the home; a user sees everything and controls devices.
-//! Everybody has a password of their own: the owner's is set in the welcome and is what makes
-//! IroriOS ask who is there, and everyone added after has one too.
+//! Two kinds of person. An owner runs the home; a user uses it, and may be given only some of
+//! its rooms. Everybody has a password of their own: the owner's is set in the welcome and is
+//! what makes IroriOS ask who is there, and everyone added after has one too.
 
-use irori_types::{Name, Role, UserId};
+use std::collections::BTreeSet;
+
+use irori_types::{Area, AreaId, Name, Role, UserId};
 use leptos::ev;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -49,6 +51,75 @@ pub fn initial(name: &str) -> String {
         .next()
         .map(|c| c.to_uppercase().collect())
         .unwrap_or_else(|| "?".to_owned())
+}
+
+/// Which rooms a person has, in words: the whole home, none, or the rooms by name. A room the
+/// home no longer has is left out, as it is for the person.
+pub fn rooms_words(role: Role, rooms: Option<&[AreaId]>, known: &[Area]) -> String {
+    match rooms {
+        _ if role == Role::Owner => "the whole home".to_owned(),
+        None => "the whole home".to_owned(),
+        Some(rooms) => {
+            let names: Vec<&str> = rooms
+                .iter()
+                .filter_map(|room| known.iter().find(|area| &area.id == room))
+                .map(|area| area.name.as_str())
+                .collect();
+            if names.is_empty() {
+                "no rooms".to_owned()
+            } else {
+                names.join(", ")
+            }
+        }
+    }
+}
+
+/// The rooms to choose from, as buttons: the whole home, or any of the rooms there are. `picked`
+/// is `None` for the whole home. Choosing the last room off leaves none, which is a person who can
+/// sign in and sees nothing, and the form says so.
+fn rooms_picker(
+    picked: RwSignal<Option<BTreeSet<AreaId>>>,
+    known: Signal<Vec<Area>>,
+) -> impl IntoView {
+    view! {
+        <div class="choices" role="group" aria-label="The rooms they have">
+            <button
+                type="button"
+                aria-pressed=move || picked.with(Option::is_none).to_string()
+                on:click=move |_| picked.set(None)
+            >
+                "The whole home"
+            </button>
+            <For each=move || known.get() key=|area| area.id.clone() let:area>
+                {
+                    let (shown, toggled) = (area.id.clone(), area.id.clone());
+                    view! {
+                        <button
+                            type="button"
+                            aria-pressed=move || {
+                                picked
+                                    .with(|rooms| rooms.as_ref().is_some_and(|r| r.contains(&shown)))
+                                    .to_string()
+                            }
+                            on:click=move |_| {
+                                picked.update(|rooms| {
+                                    let rooms = rooms.get_or_insert_with(BTreeSet::new);
+                                    if !rooms.remove(&toggled) {
+                                        rooms.insert(toggled.clone());
+                                    }
+                                })
+                            }
+                        >
+                            {area.name.as_str().to_owned()}
+                        </button>
+                    }
+                }
+            </For>
+        </div>
+        {move || picked.with(|rooms| rooms.as_ref().is_some_and(BTreeSet::is_empty)).then(|| view! {
+            <p class="muted small">"No rooms: they can sign in and see nothing."</p>
+        })}
+    }
 }
 
 /// Everyone, as last fetched. Kept above the row so its folded state can say how it stands.
@@ -118,6 +189,12 @@ pub fn Section() -> impl IntoView {
     let adding = RwSignal::new(false);
     let new_name = RwSignal::new(String::new());
     let new_role = RwSignal::new(Role::User);
+    // The rooms to give a new person, and whose rooms are being chosen again, and what is chosen.
+    let live = expect_context::<crate::Live>();
+    let known = Signal::derive(move || live.home.with(|home| home.areas.clone()));
+    let new_rooms = RwSignal::new(None::<BTreeSet<AreaId>>);
+    let roomed = RwSignal::new(None::<UserId>);
+    let chosen = RwSignal::new(None::<BTreeSet<AreaId>>);
 
     let after = move |result: Result<Vec<UserRow>, String>| match result {
         Ok(users) => {
@@ -130,6 +207,8 @@ pub fn Section() -> impl IntoView {
             again.set(String::new());
             current.set(String::new());
             new_name.set(String::new());
+            new_rooms.set(None);
+            roomed.set(None);
             refresh(people, session);
         }
         Err(why) => trouble.set(Some(why)),
@@ -151,6 +230,12 @@ pub fn Section() -> impl IntoView {
             after(api::edit_user(&id, &edit).await);
         });
     };
+    let set_rooms = move |id: UserId, rooms: Option<BTreeSet<AreaId>>| {
+        spawn_local(async move {
+            let edit = serde_json::json!({ "areas": rooms });
+            after(api::edit_user(&id, &edit).await);
+        });
+    };
     let remove = move |id: UserId| {
         spawn_local(async move { after(api::remove_user(&id).await) });
     };
@@ -166,6 +251,9 @@ pub fn Section() -> impl IntoView {
             return;
         }
         let role = new_role.get_untracked();
+        let rooms = new_rooms
+            .get_untracked()
+            .map(|rooms| rooms.into_iter().collect::<Vec<_>>());
         spawn_local(async move {
             if first {
                 // The first person is the owner, and setting them up is what the welcome does.
@@ -177,7 +265,7 @@ pub fn Section() -> impl IntoView {
                     Err(why) => trouble.set(Some(why)),
                 }
             } else {
-                after(api::add_user(&name, role, &typed).await);
+                after(api::add_user(&name, role, &typed, rooms.as_deref()).await);
             }
         });
     };
@@ -196,6 +284,14 @@ pub fn Section() -> impl IntoView {
         let may_key = owner() || mine;
         let (key_id, ask_id, role_id, gone_id, save_id) =
             (id.clone(), id.clone(), id.clone(), id.clone(), id.clone());
+        let (room_id, rooms_open, rooms_drawer, rooms_save) =
+            (id.clone(), id.clone(), id.clone(), id.clone());
+        let rooms_now = user.areas.clone();
+        let rooms_words_here = {
+            let (role, rooms) = (user.role, user.areas.clone());
+            move || known.with(|known| rooms_words(role, rooms.as_deref(), known))
+        };
+        let may_room = owner() && user.role == Role::User;
         let (keying_here, asking_here) = (id.clone(), id.clone());
         let has_password = user.has_password;
         let role = user.role;
@@ -209,6 +305,8 @@ pub fn Section() -> impl IntoView {
                     </span>
                     <span class="muted small">
                         {if has_password { "has a password" } else { "no password" }}
+                        " · "
+                        {rooms_words_here}
                     </span>
                 </span>
                 {if owner() {
@@ -228,6 +326,21 @@ pub fn Section() -> impl IntoView {
                 } else {
                     view! { <span class="person-role">{role.label()}</span> }.into_any()
                 }}
+                {may_room.then(|| view! {
+                    <button
+                        type="button"
+                        class="press"
+                        aria-expanded=move || (roomed.get().as_ref() == Some(&rooms_open)).to_string()
+                        on:click=move |_| {
+                            trouble.set(None);
+                            let opening = roomed.get_untracked().as_ref() != Some(&room_id);
+                            chosen.set(rooms_now.as_ref().map(|r| r.iter().cloned().collect()));
+                            roomed.set(opening.then(|| room_id.clone()));
+                        }
+                    >
+                        "Rooms"
+                    </button>
+                })}
                 {may_key.then(|| view! {
                     <button
                         type="button"
@@ -265,6 +378,34 @@ pub fn Section() -> impl IntoView {
                         <span class="asking-words">"Remove?"</span>
                     </button>
                 })}
+                <div
+                    class="drawer person-key"
+                    class:open={
+                        let id = rooms_drawer.clone();
+                        move || roomed.get().as_ref() == Some(&id)
+                    }
+                    inert={
+                        let id = rooms_drawer.clone();
+                        move || (roomed.get().as_ref() != Some(&id)).then_some("")
+                    }
+                >
+                    <form
+                        class="drawer-inner person-form"
+                        on:submit=move |event: ev::SubmitEvent| {
+                            event.prevent_default();
+                            set_rooms(rooms_save.clone(), chosen.get_untracked());
+                        }
+                    >
+                        <div class="settings-field">
+                            <span>"The rooms they have"</span>
+                            {rooms_picker(chosen, known)}
+                        </div>
+                        <div class="settings-form-actions">
+                            <button type="button" on:click=move |_| roomed.set(None)>"Cancel"</button>
+                            <button type="submit" class="add">"Save rooms"</button>
+                        </div>
+                    </form>
+                </div>
                 <div
                     class="drawer person-key"
                     class:open={
@@ -317,9 +458,10 @@ pub fn Section() -> impl IntoView {
                 if !locked() {
                     "This home has no owner with a password yet. The welcome sets one up."
                 } else {
-                    "IroriOS asks who is there. An owner runs the home; a user sees everything \
-                     and controls devices, and changes nothing else. Everybody has a password \
-                     of their own."
+                    "IroriOS asks who is there. An owner runs the home; a user uses it, and \
+                     changes nothing else. A user has the whole home, or only the rooms they \
+                     are given: what is not in them is not there for them. Everybody has a \
+                     password of their own."
                 }
             }}
         </p>
@@ -328,7 +470,15 @@ pub fn Section() -> impl IntoView {
             // unchanged one keeps the form somebody is typing in.
             <For
                 each=move || people.get()
-                key=|user| (user.id.clone(), user.name.clone(), user.role, user.has_password)
+                key=|user| {
+                    (
+                        user.id.clone(),
+                        user.name.clone(),
+                        user.role,
+                        user.has_password,
+                        user.areas.clone(),
+                    )
+                }
                 children=row
             />
         </ul>
@@ -390,6 +540,12 @@ pub fn Section() -> impl IntoView {
                                     )}
                                 </div>
                             })}
+                            {move || (!first && new_role.get() == Role::User).then(|| view! {
+                                <div class="settings-field">
+                                    <span>"The rooms they have"</span>
+                                    {rooms_picker(new_rooms, known)}
+                                </div>
+                            })}
                             {password_fields(
                                 password,
                                 again,
@@ -432,6 +588,7 @@ mod tests {
             id: UserId::try_from(name.to_lowercase()).expect("an id"),
             name: Name::try_from(name).expect("a name"),
             role,
+            areas: None,
             has_password,
         }
     }
@@ -450,6 +607,36 @@ mod tests {
                 person("Guest", Role::User, true)
             ]),
             "2 people · 1 owner"
+        );
+    }
+
+    #[test]
+    fn a_persons_rooms_read_as_names() {
+        let room = |id: &str, name: &str| Area {
+            id: AreaId::try_from(id).expect("an id"),
+            name: Name::try_from(name).expect("a name"),
+            floor_id: None,
+        };
+        let known = [room("hall", "Hall"), room("study", "Study")];
+        let ids = |ids: &[&str]| -> Vec<AreaId> {
+            ids.iter()
+                .map(|id| AreaId::try_from(*id).expect("an id"))
+                .collect()
+        };
+        assert_eq!(rooms_words(Role::User, None, &known), "the whole home");
+        assert_eq!(
+            rooms_words(Role::Owner, Some(&ids(&["hall"])), &known),
+            "the whole home"
+        );
+        assert_eq!(rooms_words(Role::User, Some(&[]), &known), "no rooms");
+        assert_eq!(
+            rooms_words(Role::User, Some(&ids(&["study", "hall"])), &known),
+            "Study, Hall"
+        );
+        // A room taken away is no room at all, as it is for the person.
+        assert_eq!(
+            rooms_words(Role::User, Some(&ids(&["garage"])), &known),
+            "no rooms"
         );
     }
 

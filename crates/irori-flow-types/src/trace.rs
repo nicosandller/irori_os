@@ -1,7 +1,7 @@
 //! What a run leaves behind (`docs/specs/flows.md` §6): its record, step by step, and the
 //! near-misses of firings that didn't become runs.
 
-use irori_types::{Availability, ContextId, EntityId, ObjectId, RuleId, Timestamp};
+use irori_types::{Availability, ContextId, EntityId, ObjectId, RuleId, Timestamp, UserId};
 use serde::{Deserialize, Serialize};
 
 use crate::{NodeId, Port, Wire};
@@ -123,6 +123,9 @@ pub struct RunRecord {
     pub cause: Option<ContextId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test: Option<TestKind>,
+    /// Who started it by hand (a test or a dry run), when a regular user did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<UserId>,
     pub started_at: Timestamp,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<Timestamp>,

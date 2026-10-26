@@ -243,18 +243,34 @@ fn schema(tool: &Tool) -> Value {
 
 /// Whether the conversation `scope` is offered the tool `name`. `drawing` is whether the
 /// person asking sent the plan they are editing.
-pub fn tool_offered(scope: &str, drawing: bool, name: &str) -> bool {
-    TOOLS
-        .iter()
-        .any(|tool| tool.name == name && (tool.offered)(scope, drawing))
+pub fn tool_offered(scope: &str, drawing: bool, owner: bool, name: &str) -> bool {
+    TOOLS.iter().any(|tool| {
+        tool.name == name && (owner || !owner_only(tool.name)) && (tool.offered)(scope, drawing)
+    })
+}
+
+/// The tools that read or change how the home is set up rather than what is in it: its logs
+/// (which hold everybody's sign-ins), its settings, its helpers, its floors and its plan. A
+/// person who isn't an owner is not offered them (`docs/specs/access.md` §2).
+pub fn owner_only(name: &str) -> bool {
+    matches!(
+        name,
+        "read_logs"
+            | "read_settings"
+            | "list_helpers"
+            | "helper_kinds"
+            | "propose_helper"
+            | "edit_floorplan"
+            | "edit_home"
+    )
 }
 
 /// The tools the conversation `scope` is offered, in OpenAI's shape. Anthropic uses
 /// [`anthropic_tools`].
-pub fn openai_tools(scope: &str, drawing: bool) -> Value {
+pub fn openai_tools(scope: &str, drawing: bool, owner: bool) -> Value {
     TOOLS
         .iter()
-        .filter(|tool| (tool.offered)(scope, drawing))
+        .filter(|tool| (owner || !owner_only(tool.name)) && (tool.offered)(scope, drawing))
         .map(|tool| {
             json!({
                 "type": "function",
@@ -268,10 +284,10 @@ pub fn openai_tools(scope: &str, drawing: bool) -> Value {
         .collect()
 }
 
-pub fn anthropic_tools(scope: &str, drawing: bool) -> Value {
+pub fn anthropic_tools(scope: &str, drawing: bool, owner: bool) -> Value {
     TOOLS
         .iter()
-        .filter(|tool| (tool.offered)(scope, drawing))
+        .filter(|tool| (owner || !owner_only(tool.name)) && (tool.offered)(scope, drawing))
         .map(|tool| {
             json!({
                 "name": tool.name,
@@ -427,15 +443,18 @@ mod tests {
             "propose_helper",
         ];
         assert_eq!(
-            names(&openai_tools("helpers", false), "/function/name"),
+            names(&openai_tools("helpers", false, true), "/function/name"),
             builder
         );
-        assert!(!tool_offered("general", false, "propose_helper"));
+        assert!(!tool_offered("general", false, true, "propose_helper"));
         assert_eq!(
-            names(&openai_tools("device:lamp", false), "/function/name"),
+            names(&openai_tools("device:lamp", false, true), "/function/name"),
             home
         );
-        assert_eq!(names(&anthropic_tools("device:lamp", false), "/name"), home);
+        assert_eq!(
+            names(&anthropic_tools("device:lamp", false, true), "/name"),
+            home
+        );
         // The automation's own chat can read that flow and suggest a new version of it.
         let editing = [
             "list_devices",
@@ -445,17 +464,28 @@ mod tests {
             "propose_flow",
         ];
         assert_eq!(
-            names(&openai_tools("automation:kettle", false), "/function/name"),
+            names(
+                &openai_tools("automation:kettle", false, true),
+                "/function/name"
+            ),
             editing
         );
         assert_eq!(
-            names(&anthropic_tools("automation:kettle", false), "/name"),
+            names(&anthropic_tools("automation:kettle", false, true), "/name"),
             editing
         );
-        assert!(tool_offered("automation:kettle", false, "propose_flow"));
+        assert!(tool_offered(
+            "automation:kettle",
+            false,
+            true,
+            "propose_flow"
+        ));
         // A new automation has nothing saved to read, but can still be drawn.
         assert_eq!(
-            names(&openai_tools("new-automation", false), "/function/name"),
+            names(
+                &openai_tools("new-automation", false, true),
+                "/function/name"
+            ),
             [
                 "list_devices",
                 "get_device",
@@ -463,32 +493,36 @@ mod tests {
                 "propose_flow"
             ]
         );
-        assert!(!tool_offered("new-automation", false, "read_flow"));
-        assert!(!tool_offered("general", false, "propose_flow"));
-        assert!(!tool_offered("general", false, "read_flow"));
-        assert!(!tool_offered("helpers", false, "propose_flow"));
-        assert!(!tool_offered("device:lamp", false, "read_flow"));
-        let all = |scope| names(&openai_tools(scope, false), "/function/name");
+        assert!(!tool_offered("new-automation", false, true, "read_flow"));
+        assert!(!tool_offered("general", false, true, "propose_flow"));
+        assert!(!tool_offered("general", false, true, "read_flow"));
+        assert!(!tool_offered("helpers", false, true, "propose_flow"));
+        assert!(!tool_offered("device:lamp", false, true, "read_flow"));
+        let all = |scope| names(&openai_tools(scope, false, true), "/function/name");
         assert_eq!(all("general"), general);
-        assert_eq!(names(&anthropic_tools("general", false), "/name"), general);
+        assert_eq!(
+            names(&anthropic_tools("general", false, true), "/name"),
+            general
+        );
         assert_eq!(all("settings"), settings);
         assert_eq!(
-            names(&anthropic_tools("settings", false), "/name"),
+            names(&anthropic_tools("settings", false, true), "/name"),
             settings
         );
-        let logs = &anthropic_tools("settings", false)[2];
+        let logs = &anthropic_tools("settings", false, true)[2];
         assert_eq!(logs["input_schema"]["required"], json!(["source"]));
-        assert!(tool_offered("settings", false, "read_logs"));
-        assert!(tool_offered("general", false, "read_logs"));
-        assert!(tool_offered("general", false, "get_automation"));
-        assert!(!tool_offered("device:lamp", false, "read_logs"));
+        assert!(tool_offered("settings", false, true, "read_logs"));
+        assert!(tool_offered("general", false, true, "read_logs"));
+        assert!(tool_offered("general", false, true, "get_automation"));
+        assert!(!tool_offered("device:lamp", false, true, "read_logs"));
         assert!(!tool_offered(
             "automation:kettle",
             false,
+            true,
             "list_automations"
         ));
-        assert!(!tool_offered("settings", false, "read_settings"));
-        assert!(!tool_offered("settings", false, "recent_states"));
+        assert!(!tool_offered("settings", false, true, "read_settings"));
+        assert!(!tool_offered("settings", false, true, "recent_states"));
         assert!(logs["input_schema"]["properties"]["contains"].is_object());
     }
 
@@ -505,10 +539,13 @@ mod tests {
             "read_floorplan",
         ];
         assert_eq!(
-            names(&anthropic_tools("floorplan:ground", false), "/name"),
+            names(&anthropic_tools("floorplan:ground", false, true), "/name"),
             reading
         );
-        let drawing = names(&openai_tools("floorplan:ground", true), "/function/name");
+        let drawing = names(
+            &openai_tools("floorplan:ground", true, true),
+            "/function/name",
+        );
         assert_eq!(drawing[..reading.len()], reading);
         assert_eq!(
             drawing[reading.len()..],
@@ -516,13 +553,21 @@ mod tests {
             "the two that change anything"
         );
         for scope in ["general", "settings", "device:lamp", "automation:kettle"] {
-            assert!(!tool_offered(scope, true, "edit_floorplan"), "{scope}");
-            assert!(!tool_offered(scope, true, "edit_home"), "{scope}");
+            assert!(
+                !tool_offered(scope, true, true, "edit_floorplan"),
+                "{scope}"
+            );
+            assert!(!tool_offered(scope, true, true, "edit_home"), "{scope}");
         }
-        assert!(!tool_offered("floorplan:ground", false, "edit_home"));
-        assert!(!tool_offered("floorplan:ground", false, "edit_floorplan"));
-        assert!(tool_offered("general", false, "read_floorplan"));
-        let edit = &anthropic_tools("floorplan:ground", true)[6];
+        assert!(!tool_offered("floorplan:ground", false, true, "edit_home"));
+        assert!(!tool_offered(
+            "floorplan:ground",
+            false,
+            true,
+            "edit_floorplan"
+        ));
+        assert!(tool_offered("general", false, true, "read_floorplan"));
+        let edit = &anthropic_tools("floorplan:ground", true, true)[6];
         assert_eq!(edit["input_schema"]["required"], json!(["ops"]));
     }
 
@@ -531,5 +576,49 @@ mod tests {
         assert!(execute_round(0));
         assert!(execute_round(1));
         assert!(!execute_round(2));
+    }
+
+    /// A person who isn't an owner is offered what reads the home, and not what reads or
+    /// changes how it is set up.
+    #[test]
+    fn a_person_who_is_not_an_owner_is_not_offered_the_setup() {
+        for scope in [
+            "general",
+            "device:lamp",
+            "automation:kettle",
+            "floorplan:ground",
+        ] {
+            for tool in TOOLS.iter().filter(|tool| owner_only(tool.name)) {
+                assert!(
+                    !tool_offered(scope, true, false, tool.name),
+                    "{scope} {}",
+                    tool.name
+                );
+            }
+            let offered = names(&openai_tools(scope, true, false), "/function/name");
+            assert!(
+                offered.iter().all(|name| !owner_only(name)),
+                "{scope}: {offered:?}"
+            );
+        }
+        let general = names(&openai_tools("general", false, false), "/function/name");
+        for wanted in [
+            "list_devices",
+            "get_device",
+            "recent_states",
+            "list_automations",
+            "get_automation",
+            "read_floorplan",
+            "list_entities",
+        ] {
+            assert!(general.iter().any(|name| name == wanted), "{wanted}");
+        }
+        assert!(tool_offered(
+            "automation:kettle",
+            false,
+            false,
+            "propose_flow"
+        ));
+        assert!(tool_offered("automation:kettle", false, false, "read_flow"));
     }
 }

@@ -21,7 +21,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use irori_types::{ContextId, Entity, EntityId, EntityState, Timestamp};
+use irori_types::{ContextId, Entity, EntityId, EntityState, Timestamp, UserId};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncWrite, BufReader};
 use tokio::sync::{mpsc, oneshot};
@@ -71,6 +71,44 @@ impl Place {
     }
 }
 
+/// Who is asking on the engine's page, as the core saw it (`docs/specs/access.md` §4.1). The
+/// core puts this on every question; the page cannot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Caller {
+    /// The person signed in. Absent while Irori is open and nobody has been set up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user: Option<UserId>,
+    /// Whether they may change how the home is set up. A regular user's flows are theirs alone.
+    pub owner: bool,
+}
+
+impl Caller {
+    /// The home's own: an owner, or anybody in a home that has no sign-in.
+    pub fn owner() -> Self {
+        Self {
+            user: None,
+            owner: true,
+        }
+    }
+}
+
+/// What `get_reach` answers: where a person stands now, so a flow of theirs can be checked
+/// against it (`docs/specs/access.md` §4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonReach {
+    /// Whether they are still in the home. A person who was removed leaves their flows behind.
+    pub here: bool,
+    /// What they are called now.
+    #[serde(default)]
+    pub name: String,
+    /// Whether they may change how the home is set up.
+    #[serde(default)]
+    pub owner: bool,
+    /// The entities they can see; absent means the whole home.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entities: Option<Vec<EntityId>>,
+}
+
 /// Why an engine request didn't work, as the core said it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineError(pub String);
@@ -88,6 +126,9 @@ impl std::error::Error for EngineError {}
 pub struct AppRequest {
     pub method: String,
     pub params: serde_json::Value,
+    /// Who asked. From a core that says nothing about it, the home's own: such a core only ever
+    /// lets an owner ask.
+    pub caller: Caller,
     id: u64,
     out: Outbox,
 }
@@ -194,6 +235,23 @@ impl EngineClient {
             since,
         })
         .await
+    }
+
+    /// Where a person stands in the home now. Only an extension that limits what people can do
+    /// is answered (`docs/specs/access.md` §4.1).
+    pub async fn get_reach(&self, user: UserId) -> Result<PersonReach, EngineError> {
+        self.ask_as(|id| FromExt::GetReach { id, user }).await
+    }
+
+    /// Tells the core something that happened to the home by the engine's doing, for the
+    /// activity log: a flow turned off because the home changed under it. The core only takes
+    /// the actions it names (`docs/specs/access.md` §3).
+    pub fn note(&self, action: &str, target: &str, detail: &str) {
+        self.out.send(FromExt::Note {
+            action: action.to_owned(),
+            target: target.to_owned(),
+            detail: detail.to_owned(),
+        });
     }
 
     pub async fn subscribe(&self, states: bool, registry: bool) -> Result<(), EngineError> {
@@ -320,9 +378,15 @@ where
                     new_state,
                 },
                 ToExt::RegistryChanged {} => Incoming::RegistryChanged,
-                ToExt::AppRequest { id, method, params } => Incoming::App(AppRequest {
+                ToExt::AppRequest {
+                    id,
                     method,
                     params,
+                    caller,
+                } => Incoming::App(AppRequest {
+                    method,
+                    params,
+                    caller: caller.unwrap_or_else(Caller::owner),
                     id,
                     out: out.clone(),
                 }),
