@@ -212,7 +212,10 @@ pub struct Reading {
     /// Energy used today, Wh. SwitchBot starts it again every day.
     pub energy_today: Option<f64>,
     pub energy_today_2: Option<f64>,
+    /// How open: 0 closed, 100 open. A Blind Tilt's slats, how far from shut.
     pub position: Option<f64>,
+    /// Which way a Blind Tilt's slats lean: up (`true`) or down. It closes either way.
+    pub tilt_up: Option<bool>,
     pub moving: Option<bool>,
     /// A Bot's mode: `pressMode`, `switchMode`, `customizeMode`.
     pub bot_mode: Option<String>,
@@ -312,7 +315,17 @@ impl Reading {
                     number(status, "slidePosition").map(|p| 100.0 - p.clamp(0.0, 100.0));
             }
             Family::BlindTilt => {
-                reading.position = number(status, "slidePosition").map(|p| p.clamp(0.0, 100.0));
+                if let Some((open, up)) = number(status, "slidePosition").map(blind_tilt) {
+                    reading.position = Some(open);
+                    reading.tilt_up = up;
+                }
+                // Which way it opens, when the cloud says, over what the position suggests.
+                let direction = text(status, "direction").map(str::to_ascii_lowercase);
+                match direction.as_deref() {
+                    Some("up") => reading.tilt_up = Some(true),
+                    Some("down") => reading.tilt_up = Some(false),
+                    _ => {}
+                }
             }
             Family::Garage => {
                 // `doorStatus` 0 is "on": open.
@@ -370,6 +383,7 @@ impl Reading {
             energy_today,
             energy_today_2,
             position,
+            tilt_up,
             moving,
             bot_mode,
             humidifier_auto,
@@ -390,6 +404,21 @@ fn number(status: &Map<String, Value>, key: &str) -> Option<f64> {
         _ => None,
     }
     .filter(|value: &f64| value.is_finite())
+}
+
+/// A Blind Tilt's position as SwitchBot reports it, over Bluetooth and in the cloud alike: 0
+/// closed down, 50 open, 100 closed up. Irori counts how open (0 closed, 100 open, either way),
+/// with which way the slats lean (`Some(true)` up), as `setPosition` takes it back.
+pub fn blind_tilt(raw: f64) -> (f64, Option<bool>) {
+    let raw = raw.clamp(0.0, 100.0);
+    let side = if raw > 50.0 {
+        Some(true)
+    } else if raw < 50.0 {
+        Some(false)
+    } else {
+        None
+    };
+    (100.0 - 2.0 * (raw - 50.0).abs(), side)
 }
 
 fn text<'a>(status: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
@@ -551,11 +580,28 @@ mod tests {
             &status(serde_json::json!({ "slidePosition": "80", "moving": false })),
         );
         assert_eq!(curtain.position, Some(20.0));
-        let tilt = Reading::from_status(
-            Family::BlindTilt,
-            &status(serde_json::json!({ "slidePosition": 80 })),
+        // A Blind Tilt counts 0 closed down, 50 open, 100 closed up, as Home Assistant's
+        // SwitchBot Cloud integration reads it.
+        let tilt = |status_: serde_json::Value| {
+            let reading = Reading::from_status(Family::BlindTilt, &status(status_));
+            (reading.position, reading.tilt_up)
+        };
+        assert_eq!(
+            tilt(serde_json::json!({ "slidePosition": 50 })),
+            (Some(100.0), None)
         );
-        assert_eq!(tilt.position, Some(80.0));
+        assert_eq!(
+            tilt(serde_json::json!({ "slidePosition": 80 })),
+            (Some(40.0), Some(true))
+        );
+        assert_eq!(
+            tilt(serde_json::json!({ "slidePosition": 0, "direction": "Down" })),
+            (Some(0.0), Some(false))
+        );
+        assert_eq!(
+            tilt(serde_json::json!({ "slidePosition": 100, "direction": "up" })),
+            (Some(0.0), Some(true))
+        );
     }
 
     #[test]

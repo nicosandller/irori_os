@@ -61,8 +61,25 @@ impl Advert {
             .get(&COMPANY)
             .filter(|data| data.len() >= 6)
             .map(|data| <[u8; 6]>::try_from(&data[..6]).expect("six bytes"));
-        let bytes = from_advert.or(self.address.filter(|a| a.iter().any(|&b| b != 0)))?;
+        let bytes = from_advert.or(self.radio_address())?;
         Some(bytes.iter().map(|b| format!("{b:02X}")).collect())
+    }
+
+    /// The address the radio heard it from, when it says (macOS gives zeros).
+    fn radio_address(&self) -> Option<[u8; 6]> {
+        self.address.filter(|a| a.iter().any(|&b| b != 0))
+    }
+
+    /// The advert names one device's MAC but came from another address. Anything can broadcast
+    /// SwitchBot's data with a device's MAC in it; where the radio says who sent it, the two
+    /// must match.
+    pub fn claims_another_address(&self) -> bool {
+        let claimed = self
+            .manufacturer
+            .get(&COMPANY)
+            .filter(|data| data.len() >= 6)
+            .map(|data| &data[..6]);
+        matches!((claimed, self.radio_address()), (Some(claimed), Some(from)) if claimed != from)
     }
 }
 
@@ -450,7 +467,9 @@ fn read(model: Model, svc: &[u8], mfr: &[u8]) -> Option<Reading> {
                 return None;
             }
             let d = &mfr[6..];
-            reading.position = Some(f64::from((d[2] & 0x7f).min(100)));
+            let (open, up) = crate::model::blind_tilt(f64::from((d[2] & 0x7f).min(100)));
+            reading.position = Some(open);
+            reading.tilt_up = up;
             reading.moving = Some(d[2] & 0x80 != 0);
             reading.calibrated = Some(d[1] & 0x01 != 0);
             reading.battery = battery();

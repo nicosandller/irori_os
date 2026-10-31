@@ -134,7 +134,8 @@ impl Budget {
         if rounds == 0 {
             return Duration::from_secs(left).max(floor);
         }
-        Duration::from_secs(left / rounds).max(floor)
+        // In milliseconds: once fewer seconds are left than rounds, whole seconds round to 0.
+        Duration::from_millis(left.saturating_mul(1_000) / rounds).max(floor)
     }
 }
 
@@ -212,6 +213,17 @@ mod tests {
         assert_eq!(
             spent.pace(NOON, 1, 0, Duration::from_secs(1)),
             Duration::from_secs(43_200)
+        );
+    }
+
+    #[test]
+    fn late_in_the_day_polling_is_paced_in_fractions_of_a_second() {
+        let budget = Budget::new(Period::Day, 5_000, NOON);
+        // 100 s to midnight and 4 500 rounds left: one every 22 ms, not every 0 s.
+        let late = budget.resets_at() - 100;
+        assert_eq!(
+            budget.pace(late, 1, 500, Duration::ZERO),
+            Duration::from_millis(22)
         );
     }
 

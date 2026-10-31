@@ -817,6 +817,42 @@ fn blind_tilt_passive() {
     assert_eq!(reading.position, Some(0.0), "position");
 }
 
+/// A Blind Tilt advert whose tilt byte is `tilt`.
+fn blind_tilt(tilt: u8) -> Reading {
+    let data = format!("fc285c366c7f0b27{tilt:02x}a184");
+    parse(&advert(&[(2409, &data)], &[]), Some("Blind Tilt"))
+        .expect("read")
+        .reading
+}
+
+#[test]
+fn blind_tilt_counts_how_open_and_which_way() {
+    let open = blind_tilt(0x32);
+    assert_eq!(
+        (open.position, open.tilt_up),
+        (Some(100.0), None),
+        "50 is open"
+    );
+    let up = blind_tilt(0x64);
+    assert_eq!(
+        (up.position, up.tilt_up),
+        (Some(0.0), Some(true)),
+        "100 is closed up"
+    );
+    let down = blind_tilt(0x00);
+    assert_eq!(
+        (down.position, down.tilt_up),
+        (Some(0.0), Some(false)),
+        "0 is closed down"
+    );
+    let half = blind_tilt(0x4b);
+    assert_eq!(
+        (half.position, half.tilt_up),
+        (Some(50.0), Some(true)),
+        "75 is half up"
+    );
+}
+
 #[test]
 fn blind_tilt_with_empty_data() {
     let advert = advert(&[], &[("0000fd3d-0000-1000-8000-00805f9b34fb", "780048")]);
@@ -860,6 +896,20 @@ fn heard_on_a_mac(mfr: &str, svc: &str) -> Advert {
         address: Some([0; 6]),
         ..advert(&[(2409, mfr)], &[(SERVICE, svc)])
     }
+}
+
+#[test]
+fn an_advert_naming_another_devices_mac_is_caught() {
+    let mfr = "a1b2c3d4e5f63f4c09963c001a044d20";
+    let from = |address| Advert {
+        address,
+        ..advert(&[(2409, mfr)], &[(SERVICE, "35004c")])
+    };
+    assert!(!from(Some([0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf6])).claims_another_address());
+    assert!(from(Some([0xa1, 0xb2, 0xc3, 0xd4, 0xe5, 0xf7])).claims_another_address());
+    // No address to check against: macOS, or a radio that didn't say.
+    assert!(!from(Some([0; 6])).claims_another_address());
+    assert!(!from(None).claims_another_address());
 }
 
 #[test]

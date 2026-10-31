@@ -30,7 +30,14 @@ const FAST: Timing = Timing {
     per_device: Duration::ZERO,
     refused: Duration::from_secs(3600),
     heard: Duration::from_secs(600),
+    confirm: Duration::from_secs(3600),
+    now: noon,
 };
+
+/// 2026-10-24T12:00:00Z: the time of day doesn't change how the tests pace.
+fn noon() -> u64 {
+    1_792_843_200
+}
 
 #[derive(Debug, Default)]
 struct Log {
@@ -432,9 +439,9 @@ async fn a_token_that_never_worked_is_reported_as_refused() {
 async fn a_refusal_after_the_token_worked_today_means_the_calls_ran_out() {
     let fake = Fake::start().await;
     fake.with(|state| state.devices = Some(Answer::http(401)));
-    let today = crate::unix_now() / 86_400;
+    let today = noon() / 86_400;
     let ledger = json!({
-        "budget": irori_cloud::Budget::new(irori_cloud::Period::Day, 5_000, crate::unix_now()),
+        "budget": irori_cloud::Budget::new(irori_cloud::Period::Day, 5_000, noon()),
         "worked_on": today,
     });
     let world = world(
@@ -472,8 +479,8 @@ async fn a_restart_on_a_spent_day_still_shows_the_last_readings() {
         (
             "ledger".to_owned(),
             json!({
-                "budget": irori_cloud::Budget::new(irori_cloud::Period::Day, 5_000, crate::unix_now()),
-                "worked_on": crate::unix_now() / 86_400,
+                "budget": irori_cloud::Budget::new(irori_cloud::Period::Day, 5_000, noon()),
+                "worked_on": noon() / 86_400,
             }),
         ),
         (
@@ -716,7 +723,7 @@ async fn without_an_account_bluetooth_alone_finds_and_reads_devices() {
 
 #[tokio::test]
 async fn a_device_only_bluetooth_knew_is_forgotten_after_a_day_unheard() {
-    let now = crate::unix_now();
+    let now = noon();
     let stored = BTreeMap::from([(
         "devices".to_owned(),
         json!([
@@ -751,4 +758,114 @@ async fn a_device_only_bluetooth_knew_is_forgotten_after_a_day_unheard() {
     let kept = &log.stored["devices"];
     assert_eq!(kept.as_array().map(Vec::len), Some(1), "{kept:#}");
     assert_eq!(kept[0]["listed"]["id"], "AABBCCDDEE08");
+}
+
+#[tokio::test]
+async fn a_device_that_keeps_answering_152_asks_for_one_fresh_list_not_one_each_time() {
+    let fake = home().await;
+    fake.with(|state| {
+        state.status.insert(LOCK.into(), Answer::code(152));
+    });
+    let world = world(Some(&fake), BTreeMap::new(), FAST).await;
+    let lock = format!("{LOCK}:main");
+    let reads = || {
+        fake.requests()
+            .iter()
+            .filter(|r| r.method == "GET" && r.path.contains(LOCK))
+            .count()
+    };
+    world
+        .until("the first read", |_| (reads() >= 1).then_some(()))
+        .await;
+    // Each command is followed by a read, which SwitchBot answers with 152 again.
+    for _ in 0..3 {
+        world
+            .ask(&lock, Service::LockLock(LockCode::default()))
+            .await
+            .expect("SwitchBot took it");
+    }
+    world
+        .until("the re-reads", |_| (reads() >= 4).then_some(()))
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let lists = fake
+        .requests()
+        .iter()
+        .filter(|r| r.path == "/v1.1/devices")
+        .count();
+    assert_eq!(
+        lists, 2,
+        "the first list, and one more for the missing device"
+    );
+    world.shutdown().await;
+}
+
+/// An advert from the front door's Lock Pro saying it's locked and the door closed, from no
+/// address the radio could check: what anyone nearby could broadcast on a Mac.
+fn locked_advert() -> crate::ble::Advert {
+    let mut data: Vec<u8> = (0..6)
+        .map(|i| u8::from_str_radix(&LOCK[i * 2..i * 2 + 2], 16).expect("hex"))
+        .collect();
+    data.extend([0x1d, 0x82, 0x08, 0x64, 0x00, 0x00]);
+    crate::ble::Advert {
+        address: Some([0; 6]),
+        manufacturer: BTreeMap::from([(crate::ble::advert::COMPANY, data)]),
+        service: BTreeMap::from([(
+            crate::ble::advert::SERVICE.to_owned(),
+            vec![0x24, 0x80, 0x64],
+        )]),
+        rssi: Some(-60),
+    }
+}
+
+#[tokio::test]
+async fn a_lock_whose_adverts_the_cloud_contradicts_goes_by_the_cloud() {
+    // The cloud says the front door is unlocked.
+    let fake = home().await;
+    let (radio, heard) = mpsc::channel(8);
+    // Ten seconds before midnight UTC, so the day's calls allow polling every few milliseconds.
+    fn late() -> u64 {
+        noon() + 43_190
+    }
+    let timing = Timing {
+        confirm: Duration::from_millis(300),
+        now: late,
+        ..FAST
+    };
+    let mut world = world_hearing(Some(&fake), BTreeMap::new(), timing, Some(heard)).await;
+    let lock = format!("{LOCK}:main");
+    world
+        .state(&lock, |r| lock_status(r) == Some(LockStatus::Unlocked))
+        .await;
+
+    // Something nearby says it's locked: believed at first.
+    radio
+        .send(crate::ble::Radio::Advert(locked_advert()))
+        .await
+        .expect("listening");
+    world
+        .state(&lock, |r| lock_status(r) == Some(LockStatus::Locked))
+        .await;
+    // Though heard nearby, the lock is still read from the cloud, which wins.
+    world
+        .state(&lock, |r| lock_status(r) == Some(LockStatus::Unlocked))
+        .await;
+
+    // The same advert again changes nothing now. (The cloud is slowed down so that only the
+    // advert could change what's reported meanwhile.)
+    fake.with(|state| state.status_delay = Duration::from_secs(2));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    radio
+        .send(crate::ble::Radio::Advert(locked_advert()))
+        .await
+        .expect("listening");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let reports = world.reports.drain();
+    assert!(
+        !reports
+            .iter()
+            .any(|r| r.unique_id.as_str() == lock && lock_status(r) == Some(LockStatus::Locked)),
+        "an advert the cloud contradicted is left out"
+    );
+    world.shutdown().await;
 }

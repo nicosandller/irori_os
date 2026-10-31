@@ -83,7 +83,12 @@ fn percent(value: f64) -> u8 {
     value.round().clamp(0.0, 100.0) as u8
 }
 
-pub fn command(family: Family, key: &str, service: &Service) -> Result<Vec<Command>, ServiceError> {
+pub fn command(
+    family: Family,
+    key: &str,
+    service: &Service,
+    reading: &Reading,
+) -> Result<Vec<Command>, ServiceError> {
     if key != "main" {
         return Err(unsupported());
     }
@@ -103,9 +108,18 @@ pub fn command(family: Family, key: &str, service: &Service) -> Result<Vec<Comma
         }
         (Family::BlindTilt, Service::CoverOpen) => Command::plain("fullyOpen"),
         (Family::BlindTilt, Service::CoverClose) => Command::plain("closeDown"),
-        // SwitchBot takes only even tilts.
+        // How open, on the side the slats lean now (up when unknown). SwitchBot takes only even
+        // tilts.
         (Family::BlindTilt, Service::CoverSetTilt(to)) => {
-            Command::with("setPosition", format!("up;{}", to.tilt.min(100) / 2 * 2))
+            let side = if reading.tilt_up == Some(false) {
+                "down"
+            } else {
+                "up"
+            };
+            Command::with(
+                "setPosition",
+                format!("{side};{}", to.tilt.min(100) / 2 * 2),
+            )
         }
         (Family::Garage, Service::CoverOpen) => Command::plain("turnOn"),
         (Family::Garage, Service::CoverClose) => Command::plain("turnOff"),
@@ -125,7 +139,8 @@ mod tests {
             command(
                 Family::Curtain,
                 "main",
-                &Service::CoverSetPosition(SetPosition { position: 30 })
+                &Service::CoverSetPosition(SetPosition { position: 30 }),
+                &Reading::default()
             )
             .expect("supported"),
             [Command::with("setPosition", "0,ff,70")]
@@ -150,10 +165,39 @@ mod tests {
             command(
                 Family::BlindTilt,
                 "main",
-                &Service::CoverSetTilt(SetTilt { tilt: 37 })
+                &Service::CoverSetTilt(SetTilt { tilt: 37 }),
+                &Reading::default()
             )
             .expect("supported"),
             [Command::with("setPosition", "up;36")]
+        );
+    }
+
+    #[test]
+    fn a_blind_tilted_down_is_set_on_its_own_side() {
+        let down = Reading {
+            position: Some(100.0),
+            tilt_up: Some(false),
+            ..Reading::default()
+        };
+        assert_eq!(
+            command(
+                Family::BlindTilt,
+                "main",
+                &Service::CoverSetTilt(SetTilt { tilt: 50 }),
+                &down
+            )
+            .expect("supported"),
+            [Command::with("setPosition", "down;50")]
+        );
+        assert_eq!(
+            state(Family::BlindTilt, "main", &down),
+            Some(State::Cover(CoverState {
+                state: OpenState::Open,
+                position: None,
+                tilt: Some(100)
+            })),
+            "fully open is 100"
         );
     }
 

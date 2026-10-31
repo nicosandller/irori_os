@@ -109,7 +109,7 @@ pub fn command(
         Family::Lock { deadbolt, .. } => lock::command(deadbolt, key, service),
         Family::Bot | Family::Plug { .. } | Family::Relay2 => power::command(family, key, service),
         Family::Curtain | Family::RollerShade | Family::BlindTilt | Family::Garage => {
-            cover::command(family, key, service)
+            cover::command(family, key, service, reading)
         }
         Family::Humidifier | Family::Evaporative => {
             humidifier::command(family, key, service, reading)

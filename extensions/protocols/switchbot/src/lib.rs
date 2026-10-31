@@ -4,8 +4,11 @@
 //! `deviceId` and the address its Bluetooth adverts carry. The cloud is polled one device at a
 //! time, paced so the day's share of SwitchBot's 10 000 calls lasts until midnight UTC, with
 //! doors, leaks and locks polled twice as often as the rest. A device heard over Bluetooth lately
-//! isn't polled at all: its adverts say the same, sooner. Everything said about a device, by
-//! either route, is merged into one reading per device, which outlives a restart.
+//! isn't polled: its adverts say the same, sooner. Locks, doors and leak sensors are the
+//! exception, read every ten minutes even while heard, since anyone in range can broadcast an
+//! advert; when the cloud contradicts their adverts, the cloud wins until the two agree again.
+//! Everything said about a device, by either route, is merged into one reading per device,
+//! which outlives a restart.
 
 mod ble;
 mod cloud;
@@ -37,7 +40,7 @@ use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::cloud::{Cloud, CloudError, DeviceList, Listed};
-use crate::model::{Family, Reading};
+use crate::model::{Bolt, Family, Reading};
 use crate::settings::Settings;
 
 /// The SwitchBot protocol.
@@ -87,6 +90,13 @@ pub(crate) struct Timing {
     /// How long a device counts as nearby after its last Bluetooth advert. Nearby devices aren't
     /// polled; one that only Bluetooth knows is unavailable once it's been quiet this long.
     pub heard: Duration,
+    /// How often a lock, door or leak sensor heard nearby is still read from the cloud. Anyone
+    /// in range can broadcast an advert, so what keeps a home safe is checked where it can't be
+    /// faked.
+    pub confirm: Duration,
+    /// The time, in seconds since 1970. Tests fix it, so a test run near midnight UTC paces
+    /// like one at noon.
+    pub now: fn() -> u64,
 }
 
 impl Timing {
@@ -97,6 +107,8 @@ impl Timing {
         per_device: Duration::from_secs(60),
         refused: Duration::from_secs(3600),
         heard: Duration::from_secs(600),
+        confirm: Duration::from_secs(600),
+        now: unix_now,
     };
 }
 
@@ -153,6 +165,11 @@ struct Known {
     last_read: Option<Instant>,
     /// When it was last heard over Bluetooth (Unix seconds), to the hour.
     heard_at: Option<u64>,
+    /// What its last advert said about its bolt, door, contact and leak.
+    advert_said: Reading,
+    /// The cloud contradicted its adverts on those: they're left out, and the cloud polled as if
+    /// the device weren't nearby, until the two agree again.
+    distrusted: bool,
 }
 
 impl Known {
@@ -167,6 +184,8 @@ impl Known {
             available: true,
             last_read: None,
             heard_at: None,
+            advert_said: Reading::default(),
+            distrusted: false,
         }
     }
 }
@@ -214,6 +233,8 @@ enum Done {
     },
     /// A call failed in a way that says something about the account (refused, too many).
     Failed(CloudError),
+    /// Calls made off the loop beyond what was counted when they started (a command's retry).
+    Spent(u64),
     Recheck {
         id: String,
         caused_by: ContextId,
@@ -228,6 +249,9 @@ struct World {
     devices: BTreeMap<String, Known>,
     /// A device list is on its way.
     listing: bool,
+    /// When a device SwitchBot said it doesn't know last asked for a fresh list. One device that
+    /// stays listed but keeps answering 152 asks at most once per relist interval.
+    relisted_for_missing: Option<Instant>,
     /// The order devices are polled in; urgent ones appear twice.
     rotation: Vec<String>,
     next_in_rotation: usize,
@@ -249,6 +273,8 @@ struct World {
     map_dirty: bool,
     /// Devices heard nearby that the account doesn't list, each logged once.
     strangers: std::collections::BTreeSet<String>,
+    /// Devices whose MAC came in an advert from another address, each logged once.
+    impostors: BTreeSet<String>,
     done: mpsc::Sender<Done>,
 }
 
@@ -259,7 +285,7 @@ pub(crate) async fn drive(
     mut radio: Option<mpsc::Receiver<ble::Radio>>,
     timing: Timing,
 ) -> Result<(), ProtocolError> {
-    let now = unix_now();
+    let now = (timing.now)();
     let ledger: Option<Ledger> = load(&ctx, LEDGER_KEY).await;
     let limit = u64::from(settings.daily_calls);
     let ledger = Ledger {
@@ -281,6 +307,7 @@ pub(crate) async fn drive(
         ledger,
         devices: BTreeMap::new(),
         listing: false,
+        relisted_for_missing: None,
         rotation: Vec::new(),
         next_in_rotation: 0,
         sweep: VecDeque::new(),
@@ -296,6 +323,7 @@ pub(crate) async fn drive(
         ears: BTreeMap::new(),
         map_dirty: false,
         strangers: std::collections::BTreeSet::new(),
+        impostors: BTreeSet::new(),
         done,
     };
     world.restore(saved).await;
@@ -357,6 +385,11 @@ pub(crate) async fn drive(
                     world.read(&id, Some(caused_by)).await;
                 }
                 Done::Failed(error) => world.failed(error).await,
+                Done::Spent(calls) => {
+                    let now = world.now();
+                    world.ledger.budget.spend(calls, now);
+                    world.ledger_dirty = true;
+                }
             },
             event = next_radio(&mut radio) => match event {
                 Some(ble::Radio::Listening) => world.listening(),
@@ -374,13 +407,17 @@ pub(crate) async fn drive(
 }
 
 impl World {
+    fn now(&self) -> u64 {
+        (self.timing.now)()
+    }
+
     fn worked_today(&self) -> bool {
-        self.ledger.worked_on == Some(unix_now() / 86_400)
+        self.ledger.worked_on == Some(self.now() / 86_400)
     }
 
     /// A call went through: the token is good today.
     async fn worked(&mut self) {
-        let today = unix_now() / 86_400;
+        let today = self.now() / 86_400;
         if matches!(
             self.trouble,
             Some(Trouble::Refused | Trouble::Spent | Trouble::Unreachable(_))
@@ -399,7 +436,7 @@ impl World {
         match error {
             CloudError::TooMany(after) => after.unwrap_or(Duration::from_secs(60)),
             CloudError::Unauthorized => {
-                Duration::from_secs(self.ledger.budget.resets_at().saturating_sub(unix_now()) + 60)
+                Duration::from_secs(self.ledger.budget.resets_at().saturating_sub(self.now()) + 60)
             }
             _ => Duration::ZERO,
         }
@@ -409,7 +446,7 @@ impl World {
         match &error {
             CloudError::Unauthorized if self.worked_today() => {
                 // It worked earlier today: the day's calls are spent, maybe by another app.
-                self.ledger.budget.exhaust(unix_now());
+                self.ledger.budget.exhaust(self.now());
                 self.save_ledger().await;
                 self.trouble = Some(Trouble::Spent);
                 self.quiet_until = Some(Instant::now() + self.wait_for(&error));
@@ -439,7 +476,7 @@ impl World {
             return;
         }
         self.listing = true;
-        self.ledger.budget.spend(1, unix_now());
+        self.ledger.budget.spend(1, self.now());
         self.ledger_dirty = true;
         let done = self.done.clone();
         tokio::spawn(async move {
@@ -450,7 +487,7 @@ impl World {
     /// Describes the devices the last run knew and reports their last readings, before SwitchBot
     /// has answered anything. Each is read again first thing once SwitchBot answers.
     async fn restore(&mut self, saved: Vec<Saved>) {
-        let now = unix_now();
+        let now = self.now();
         let before = saved.len();
         let saved: Vec<Saved> = saved
             .into_iter()
@@ -520,7 +557,7 @@ impl World {
                 self.set_available(&id, false).await;
             }
         }
-        let now = unix_now();
+        let now = self.now();
         let forget: Vec<String> = self
             .devices
             .iter()
@@ -559,6 +596,14 @@ impl World {
         let Some(mac) = advert.mac() else {
             return;
         };
+        if advert.claims_another_address() {
+            if self.impostors.insert(mac.clone()) {
+                tracing::warn!(
+                    "heard an advert naming SwitchBot device {mac} from a different Bluetooth address; ignoring adverts like it"
+                );
+            }
+            return;
+        }
         let hint = self
             .devices
             .get(&mac)
@@ -615,7 +660,7 @@ impl World {
         let Some(mut known) = self.devices.remove(&mac) else {
             return;
         };
-        let now = unix_now();
+        let now = self.now();
         if known
             .heard_at
             .is_none_or(|at| now.saturating_sub(at) >= 3_600)
@@ -624,7 +669,12 @@ impl World {
             self.readings_dirty = true;
         }
         let before = known.reading.clone();
-        known.reading.merge(heard.reading);
+        let mut said = heard.reading;
+        known.advert_said = guarded(&said);
+        if known.distrusted {
+            unguard(&mut said);
+        }
+        known.reading.merge(said);
         if known.reading != before {
             self.readings_dirty = true;
             let keys = map::entities(known.family, &known.reading);
@@ -810,8 +860,22 @@ impl World {
                 .filter(|(_, known)| known.family.urgent())
                 .map(|(id, _)| (*id).clone()),
         );
+        if rotation == self.rotation {
+            return;
+        }
+        // Carry on from the device that was next, so a fresh list doesn't send the rotation back
+        // to the top and leave the devices near the end unread.
+        let next = self
+            .rotation
+            .get(self.next_in_rotation)
+            .and_then(|id| rotation.iter().position(|other| other == id))
+            .unwrap_or(self.next_in_rotation);
+        self.next_in_rotation = if rotation.is_empty() {
+            0
+        } else {
+            next % rotation.len()
+        };
         self.rotation = rotation;
-        self.next_in_rotation = 0;
     }
 
     /// The wait before the next status call: what the day's budget allows, never faster than
@@ -822,7 +886,7 @@ impl World {
             self.timing.per_device / u32::try_from(self.rotation.len().max(1)).unwrap_or(u32::MAX);
         let floor = self.timing.min_gap.max(per_device);
         let pace = if self.sweep.is_empty() {
-            self.ledger.budget.pace(unix_now(), 1, reserve, floor)
+            self.ledger.budget.pace(self.now(), 1, reserve, floor)
         } else {
             self.timing.min_gap
         };
@@ -840,7 +904,7 @@ impl World {
             return;
         }
         // A new day starts a new count, even when nothing was spent since midnight.
-        self.ledger.budget.roll(unix_now());
+        self.ledger.budget.roll(self.now());
         let reserve = self.ledger.budget.limit() * COMMAND_RESERVE_PERCENT / 100;
         if self.ledger.budget.remaining() <= reserve {
             return;
@@ -869,9 +933,19 @@ impl World {
     }
 
     /// Whether the cloud should be asked about `id`: the account lists it, and Bluetooth hasn't
-    /// heard it lately.
+    /// heard it lately, or its adverts aren't trusted. A lock, door or leak sensor heard nearby
+    /// is still read now and then, to check its adverts.
     fn wants_reading(&self, id: &str) -> bool {
-        self.devices.get(id).is_some_and(|known| known.from_cloud) && !self.heard_lately(id)
+        let Some(known) = self.devices.get(id).filter(|known| known.from_cloud) else {
+            return false;
+        };
+        if !self.heard_lately(id) || known.distrusted {
+            return true;
+        }
+        known.family.urgent()
+            && known
+                .last_read
+                .is_none_or(|at| at.elapsed() >= self.timing.confirm)
     }
 
     /// Reads one device's status, off the loop.
@@ -883,7 +957,7 @@ impl World {
             return;
         };
         known.last_read = Some(Instant::now());
-        self.ledger.budget.spend(1, unix_now());
+        self.ledger.budget.spend(1, self.now());
         self.ledger_dirty = true;
         let done = self.done.clone();
         let id = id.to_owned();
@@ -920,6 +994,23 @@ impl World {
                 };
                 let reading = Reading::from_status(known.family, &status);
                 let online = reading.online.unwrap_or(true);
+                // Only against adverts heard lately: one from hours ago may just be out of date.
+                let heard = self.heard_lately(id);
+                let contradicted = heard && contradicts(&reading, &known.advert_said);
+                if contradicted != known.distrusted {
+                    if contradicted {
+                        tracing::warn!(
+                            "{}'s Bluetooth adverts disagree with SwitchBot's cloud; going by the cloud until they agree",
+                            known.listed.name
+                        );
+                    } else if heard {
+                        tracing::info!(
+                            "{}'s Bluetooth adverts agree with SwitchBot's cloud again",
+                            known.listed.name
+                        );
+                    }
+                    known.distrusted = contradicted;
+                }
                 known.reading.merge(reading);
                 self.readings_dirty = true;
                 let keys = map::entities(known.family, &known.reading);
@@ -938,9 +1029,16 @@ impl World {
                 Some(false)
             }
             Err(CloudError::NotFound) => {
-                // Gone from the account: a fresh list removes it properly.
+                // Gone from the account: a fresh list removes it properly. Not more often than the
+                // lists come anyway, in case the account still lists it.
                 self.worked().await;
-                self.list();
+                if self
+                    .relisted_for_missing
+                    .is_none_or(|at| at.elapsed() >= self.timing.relist)
+                {
+                    self.relisted_for_missing = Some(Instant::now());
+                    self.list();
+                }
                 None
             }
             Err(error @ CloudError::Refused { .. }) => {
@@ -1018,7 +1116,7 @@ impl World {
                 return;
             }
         };
-        let now = unix_now();
+        let now = self.now();
         self.ledger
             .budget
             .spend(u64::try_from(commands.len()).unwrap_or(u64::MAX), now);
@@ -1032,6 +1130,8 @@ impl World {
                 // 190 is SwitchBot's "something went wrong on our side": worth one more try.
                 if matches!(sent, Err(CloudError::Refused { code: 190, .. })) {
                     tokio::time::sleep(Duration::from_secs(1)).await;
+                    // The retry is a call too, counted against the day's allowance.
+                    let _ = done.send(Done::Spent(1)).await;
                     sent = cloud.command(&id, command).await;
                 }
                 if let Err(error) = sent {
@@ -1161,6 +1261,38 @@ fn platform(device_type: &str) -> ObjectId {
     let slug = slug.trim_end_matches('_');
     ObjectId::try_from(if slug.is_empty() { "device" } else { slug })
         .unwrap_or_else(|_| ObjectId::try_from("device").expect("a valid object id"))
+}
+
+/// What a reading says about a home's safety: its bolt, door, contact and leak.
+fn guarded(reading: &Reading) -> Reading {
+    Reading {
+        bolt: reading.bolt,
+        door_open: reading.door_open,
+        contact_open: reading.contact_open,
+        leak: reading.leak,
+        ..Reading::default()
+    }
+}
+
+/// Leaves out of `reading` what [`guarded`] keeps.
+fn unguard(reading: &mut Reading) {
+    reading.bolt = None;
+    reading.door_open = None;
+    reading.contact_open = None;
+    reading.leak = None;
+}
+
+/// Whether the cloud's reading contradicts what the adverts said on what [`guarded`] keeps. A
+/// lock caught turning says nothing either way.
+fn contradicts(cloud: &Reading, adverts: &Reading) -> bool {
+    fn differ<T: PartialEq>(a: Option<T>, b: Option<T>) -> bool {
+        matches!((a, b), (Some(a), Some(b)) if a != b)
+    }
+    let turning = matches!(adverts.bolt, Some(Bolt::Locking | Bolt::Unlocking));
+    (!turning && differ(cloud.bolt, adverts.bolt))
+        || differ(cloud.door_open, adverts.door_open)
+        || differ(cloud.contact_open, adverts.contact_open)
+        || differ(cloud.leak, adverts.leak)
 }
 
 /// Whether a device only Bluetooth knows, last heard at `heard_at`, is to be forgotten.
