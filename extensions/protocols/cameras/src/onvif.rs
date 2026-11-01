@@ -7,7 +7,9 @@
 use hyper::Method;
 
 use crate::discover::Found;
+use crate::events::{self, Detects};
 use crate::http::{Camera, HttpError, Target};
+use crate::ptz::{self, Abilities};
 use crate::settings::Login;
 use crate::soap::{self, ClockOffset, Soap, attribute, find, find_all, text};
 
@@ -26,7 +28,11 @@ pub struct Info {
     pub serial: Option<String>,
     pub media: Option<Target>,
     pub events: Option<Target>,
-    pub ptz: Option<Target>,
+    pub ptz_service: Option<Target>,
+    /// What it says it can notice.
+    pub detects: Vec<Detects>,
+    /// How it turns, and with which profile, if it does.
+    pub turns: Option<Turning>,
     /// Video profiles, largest first.
     pub profiles: Vec<Profile>,
     /// Where a picture comes from: the smallest profile that has one.
@@ -45,6 +51,13 @@ impl Info {
             .then(|| self.profiles.last())
             .flatten()
     }
+}
+
+/// A camera that turns: the profile its moves go through, and what it can do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Turning {
+    pub token: String,
+    pub abilities: Abilities,
 }
 
 /// One way the camera can send its video.
@@ -113,7 +126,7 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
     let (media, events, ptz) = capabilities(&answer);
     info.media = media;
     info.events = events;
-    info.ptz = ptz;
+    info.ptz_service = ptz;
 
     if let Some(media) = info.media.clone() {
         let answer = soap
@@ -135,6 +148,21 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
             }
         }
         info.profiles = profiles;
+    }
+    if let Some(events) = info.events.clone() {
+        info.detects = events::properties(&soap, &events).await?;
+    }
+    if let (Some(service), Some(profile)) = (
+        info.ptz_service.clone(),
+        info.profiles.iter().find(|profile| profile.ptz),
+    ) {
+        let abilities = ptz::ask_abilities(&soap, &service).await?;
+        if abilities.pan_tilt || abilities.zoom || abilities.presets {
+            info.turns = Some(Turning {
+                token: profile.token.clone(),
+                abilities,
+            });
+        }
     }
     Ok((soap, info))
 }

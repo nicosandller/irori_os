@@ -8,7 +8,9 @@
 //! on the user's network use. They are synthetic, and get replaced by captured ones once a real
 //! camera has been logged into.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use base64::Engine as _;
 use md5::{Digest as _, Md5};
@@ -35,12 +37,21 @@ pub struct Seen {
     /// SOAP actions, in order, by their element name.
     pub actions: Vec<String>,
     pub pictures: u32,
+    /// Each `ContinuousMove`'s pan and tilt speeds, as sent.
+    pub moves: Vec<String>,
+    pub stops: u32,
+    /// The presets it was sent to.
+    pub went_to: Vec<String>,
 }
+
+/// Something the camera notices: a topic, the value's name, and whether it's on.
+type Notice = (&'static str, &'static str, bool);
 
 #[derive(Debug, Clone)]
 pub struct FakeCamera {
     pub port: u16,
     seen: Arc<Mutex<Seen>>,
+    noticed: Arc<Mutex<VecDeque<Notice>>>,
 }
 
 impl FakeCamera {
@@ -49,12 +60,14 @@ impl FakeCamera {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("a port");
         let port = listener.local_addr().expect("an address").port();
         let seen = Arc::new(Mutex::new(Seen::default()));
+        let noticed = Arc::new(Mutex::new(VecDeque::new()));
         let camera = Arc::new(Camera {
             port,
             username: username.to_owned(),
             password: password.to_owned(),
             pictures,
             seen: Arc::clone(&seen),
+            noticed: Arc::clone(&noticed),
         });
         tokio::spawn(async move {
             while let Ok((stream, _)) = listener.accept().await {
@@ -62,11 +75,23 @@ impl FakeCamera {
                 tokio::spawn(async move { camera.serve(stream).await });
             }
         });
-        Self { port, seen }
+        Self {
+            port,
+            seen,
+            noticed,
+        }
     }
 
     pub fn seen(&self) -> Seen {
         self.seen.lock().expect("seen").clone()
+    }
+
+    /// Makes the camera notice something; the next pull of its events carries it.
+    pub fn notice(&self, topic: &'static str, item: &'static str, on: bool) {
+        self.noticed
+            .lock()
+            .expect("noticed")
+            .push_back((topic, item, on));
     }
 }
 
@@ -76,6 +101,7 @@ struct Camera {
     password: String,
     pictures: bool,
     seen: Arc<Mutex<Seen>>,
+    noticed: Arc<Mutex<VecDeque<Notice>>>,
 }
 
 struct Asked {
@@ -90,7 +116,7 @@ impl Camera {
         let Some(asked) = read(&mut stream).await else {
             return;
         };
-        let (status, extra, content_type, body) = self.answer(&asked);
+        let (status, extra, content_type, body) = self.answer(&asked).await;
         let head = format!(
             "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\n{extra}Connection: close\r\n\r\n",
             body.len()
@@ -99,9 +125,12 @@ impl Camera {
         let _ = stream.write_all(&body).await;
     }
 
-    fn answer(&self, asked: &Asked) -> (&'static str, String, &'static str, Vec<u8>) {
+    async fn answer(&self, asked: &Asked) -> (&'static str, String, &'static str, Vec<u8>) {
         if asked.method == "GET" && asked.path == "/snap.jpg" {
             return self.picture(asked);
+        }
+        if let Some(answer) = self.events_and_turns(asked).await {
+            return answer;
         }
         let Ok(doc) = roxmltree::Document::parse(&asked.body) else {
             return ("400 Bad Request", String::new(), "text/plain", Vec::new());
@@ -150,6 +179,103 @@ impl Camera {
             _ => return soap("500 Internal Server Error", NOT_SUPPORTED.to_owned()),
         };
         soap("200 OK", body)
+    }
+
+    /// The events and PTZ services, once the login is checked; `None` for anything else.
+    async fn events_and_turns(
+        &self,
+        asked: &Asked,
+    ) -> Option<(&'static str, String, &'static str, Vec<u8>)> {
+        let doc = roxmltree::Document::parse(&asked.body).ok()?;
+        let request = find(doc.root(), "Body")?
+            .children()
+            .find(roxmltree::Node::is_element)?;
+        let action = request.tag_name().name().to_owned();
+        let known = [
+            "GetEventProperties",
+            "CreatePullPointSubscription",
+            "PullMessages",
+            "Renew",
+            "Unsubscribe",
+            "GetNodes",
+            "GetPresets",
+            "ContinuousMove",
+            "Stop",
+            "GotoPreset",
+        ];
+        if !known.contains(&action.as_str()) {
+            return None;
+        }
+        {
+            let mut seen = self.seen.lock().expect("seen");
+            seen.actions.push(action.clone());
+            seen.logins += 1;
+        }
+        if self.token_ok(&doc) != Some(true) {
+            self.seen.lock().expect("seen").refused += 1;
+            return Some(soap("400 Bad Request", NOT_AUTHORIZED.to_owned()));
+        }
+        let base = format!("http://127.0.0.1:{}", self.port);
+        let body = match action.as_str() {
+            "GetEventProperties" => EVENT_PROPERTIES.to_owned(),
+            "CreatePullPointSubscription" => format!(
+                "<tev:CreatePullPointSubscriptionResponse><tev:SubscriptionReference>\
+                 <wsa:Address>{base}/onvif/subscription?Idx=1</wsa:Address>\
+                 </tev:SubscriptionReference></tev:CreatePullPointSubscriptionResponse>"
+            ),
+            "PullMessages" => {
+                // A long poll, kept short: an answer as soon as something's noticed.
+                let mut noticed = Vec::new();
+                for _ in 0..10 {
+                    noticed.extend(self.noticed.lock().expect("noticed").drain(..));
+                    if !noticed.is_empty() {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                let messages: String = noticed
+                    .into_iter()
+                    .map(|(topic, item, on)| {
+                        format!(
+                            "<wsnt:NotificationMessage><wsnt:Topic Dialect=\"x\">{topic}</wsnt:Topic>\
+                             <wsnt:Message><tt:Message UtcTime=\"2026-11-01T10:00:00Z\" \
+                             PropertyOperation=\"Changed\"><tt:Source><tt:SimpleItem \
+                             Name=\"Source\" Value=\"000\"/></tt:Source><tt:Data><tt:SimpleItem \
+                             Name=\"{item}\" Value=\"{on}\"/></tt:Data></tt:Message></wsnt:Message>\
+                             </wsnt:NotificationMessage>"
+                        )
+                    })
+                    .collect();
+                format!("<tev:PullMessagesResponse>{messages}</tev:PullMessagesResponse>")
+            }
+            "Renew" => "<wsnt:RenewResponse/>".to_owned(),
+            "Unsubscribe" => "<wsnt:UnsubscribeResponse/>".to_owned(),
+            "GetNodes" => NODES.to_owned(),
+            "GetPresets" => PRESETS.to_owned(),
+            "ContinuousMove" => {
+                let speeds = find(request, "PanTilt")
+                    .map(|node| {
+                        format!(
+                            "{},{}",
+                            node.attribute("x").unwrap_or_default(),
+                            node.attribute("y").unwrap_or_default()
+                        )
+                    })
+                    .unwrap_or_default();
+                self.seen.lock().expect("seen").moves.push(speeds);
+                "<tptz:ContinuousMoveResponse/>".to_owned()
+            }
+            "Stop" => {
+                self.seen.lock().expect("seen").stops += 1;
+                "<tptz:StopResponse/>".to_owned()
+            }
+            _ => {
+                let preset = text(request, &["PresetToken"]).unwrap_or_default();
+                self.seen.lock().expect("seen").went_to.push(preset);
+                "<tptz:GotoPresetResponse/>".to_owned()
+            }
+        };
+        Some(soap("200 OK", body))
     }
 
     /// Whether the WS-Security token is right; `None` when there isn't one.
@@ -216,6 +342,12 @@ fn soap(status: &'static str, body: String) -> (&'static str, String, &'static s
          xmlns:tds=\"http://www.onvif.org/ver10/device/wsdl\" \
          xmlns:trt=\"http://www.onvif.org/ver10/media/wsdl\" \
          xmlns:tt=\"http://www.onvif.org/ver10/schema\" \
+         xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\" \
+         xmlns:tptz=\"http://www.onvif.org/ver20/ptz/wsdl\" \
+         xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\" \
+         xmlns:wstop=\"http://docs.oasis-open.org/wsn/t-1\" \
+         xmlns:tns1=\"http://www.onvif.org/ver10/topics\" \
+         xmlns:wsa=\"http://www.w3.org/2005/08/addressing\" \
          xmlns:ter=\"http://www.onvif.org/ver10/error\"><s:Body>{body}</s:Body></s:Envelope>"
     );
     (
@@ -308,6 +440,7 @@ const CAPABILITIES: &str = "<tds:GetCapabilitiesResponse><tds:Capabilities>\
     <tt:Device><tt:XAddr>{base}/onvif/device_service</tt:XAddr></tt:Device>\
     <tt:Events><tt:XAddr>{base}/onvif/event_service</tt:XAddr></tt:Events>\
     <tt:Media><tt:XAddr>{base}/onvif/media_service</tt:XAddr></tt:Media>\
+    <tt:PTZ><tt:XAddr>{base}/onvif/ptz_service</tt:XAddr></tt:PTZ>\
     </tds:Capabilities></tds:GetCapabilitiesResponse>";
 
 const PROFILES: &str = "<trt:GetProfilesResponse>\
@@ -316,9 +449,30 @@ const PROFILES: &str = "<trt:GetProfilesResponse>\
     <tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>4608</tt:Width>\
     <tt:Height>1728</tt:Height></tt:Resolution></tt:VideoEncoderConfiguration>\
     <tt:AudioEncoderConfiguration token=\"000\"><tt:Encoding>AAC</tt:Encoding>\
-    </tt:AudioEncoderConfiguration></trt:Profiles>\
+    </tt:AudioEncoderConfiguration><tt:PTZConfiguration token=\"p0\"/></trt:Profiles>\
     <trt:Profiles token=\"001\" fixed=\"true\"><tt:Name>SubStream</tt:Name>\
     <tt:VideoEncoderConfiguration token=\"001\"><tt:Name>sub</tt:Name>\
     <tt:Encoding>H264</tt:Encoding><tt:Resolution><tt:Width>896</tt:Width>\
     <tt:Height>336</tt:Height></tt:Resolution></tt:VideoEncoderConfiguration>\
     </trt:Profiles></trt:GetProfilesResponse>";
+
+/// Motion, the way a Tapo names it, and people, the way a Reolink does.
+const EVENT_PROPERTIES: &str = "<tev:GetEventPropertiesResponse><wstop:TopicSet>\
+    <tns1:RuleEngine><CellMotionDetector><Motion wstop:topic=\"true\"><tt:MessageDescription>\
+    <tt:Data><tt:SimpleItemDescription Name=\"IsMotion\" Type=\"xs:boolean\"/></tt:Data>\
+    </tt:MessageDescription></Motion></CellMotionDetector>\
+    <MyRuleDetector><PeopleDetect wstop:topic=\"true\"><tt:MessageDescription><tt:Data>\
+    <tt:SimpleItemDescription Name=\"State\" Type=\"xs:boolean\"/></tt:Data>\
+    </tt:MessageDescription></PeopleDetect></MyRuleDetector></tns1:RuleEngine>\
+    </wstop:TopicSet></tev:GetEventPropertiesResponse>";
+
+const NODES: &str = "<tptz:GetNodesResponse><tptz:PTZNode token=\"node\">\
+    <tt:SupportedPTZSpaces><tt:ContinuousPanTiltVelocitySpace><tt:URI>x</tt:URI>\
+    </tt:ContinuousPanTiltVelocitySpace></tt:SupportedPTZSpaces>\
+    <tt:MaximumNumberOfPresets>8</tt:MaximumNumberOfPresets></tptz:PTZNode>\
+    </tptz:GetNodesResponse>";
+
+const PRESETS: &str = "<tptz:GetPresetsResponse>\
+    <tptz:Preset token=\"1\"><tt:Name>Driveway</tt:Name></tptz:Preset>\
+    <tptz:Preset token=\"2\"><tt:Name>Gate</tt:Name></tptz:Preset>\
+    </tptz:GetPresetsResponse>";

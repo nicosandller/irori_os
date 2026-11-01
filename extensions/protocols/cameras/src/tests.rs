@@ -5,10 +5,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use irori_protocol::host::{self, Reports};
-use irori_protocol::{Picture, ProtocolError};
+use irori_protocol::{Picture, ProtocolError, ServiceError};
 use irori_types::{
-    Availability, CameraStatus, Capabilities, DeviceDescription, EntityDescription, State,
-    UniqueId, Waiting,
+    Availability, BinarySensorClass, CameraGoToPreset, CameraMove, CameraPreset, CameraStatus,
+    Capabilities, Context, ContextId, DeviceDescription, EntityDescription, Origin, Service,
+    ServiceCall, State, StateReport, UniqueId, Waiting,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -36,8 +37,8 @@ struct World {
     actions: mpsc::Sender<irori_protocol::IncomingAction>,
     reports: Reports,
     log: Arc<Mutex<Log>>,
-    /// Kept so `next` doesn't see the core's end close and stop the run.
-    _calls: mpsc::Sender<irori_protocol::IncomingCall>,
+    /// Also kept so `next` doesn't see the core's end close and stop the run.
+    calls: mpsc::Sender<irori_protocol::IncomingCall>,
     _stop: watch::Sender<bool>,
     drive: tokio::task::JoinHandle<Result<(), ProtocolError>>,
 }
@@ -110,7 +111,7 @@ async fn world(settings: Settings, store: &Store) -> World {
         actions: host.actions,
         reports: host.reports,
         log,
-        _calls: host.calls,
+        calls: host.calls,
         _stop: host.stop,
         drive,
     }
@@ -155,6 +156,39 @@ impl World {
             .await
             .expect("an answer in time")
             .expect("an answer")
+    }
+
+    async fn call(&self, service: Service) -> Result<(), ServiceError> {
+        let (call, reply) = host::incoming_call(ServiceCall {
+            unique_id: UniqueId::try_from(format!("camera:{ID}")).expect("id"),
+            service,
+            context: Context {
+                id: ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9").expect("context"),
+                parent_id: None,
+                origin: Origin::System,
+            },
+        });
+        self.calls.send(call).await.expect("running");
+        tokio::time::timeout(Duration::from_secs(5), reply)
+            .await
+            .expect("an answer in time")
+            .expect("an answer")
+    }
+
+    /// Waits for a state report that `check` accepts, keeping every report seen.
+    async fn report(&self, what: &str, check: impl Fn(&StateReport) -> bool) -> StateReport {
+        for _ in 0..200 {
+            if let Some(found) = self
+                .reports
+                .drain()
+                .into_iter()
+                .find(|report| check(report))
+            {
+                return found;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("never reported: {what}");
     }
 
     async fn stop(self) {
@@ -340,5 +374,149 @@ async fn a_camera_that_cant_be_reached_spends_no_login() {
         store.lock().expect("store").is_empty(),
         "nothing remembered as refused"
     );
+    world.stop().await;
+}
+
+#[tokio::test]
+async fn a_camera_s_sensors_follow_what_it_notices() {
+    let camera = FakeCamera::start("admin", "right", true).await;
+    let store = Store::default();
+    let world = world(settings(Some(("admin", "right"))), &store).await;
+    world.sees(&camera).await;
+    world
+        .until("its sensors are added", |log| log.entities.len() == 3)
+        .await;
+    {
+        let log = world.log.lock().expect("log");
+        let class = |handle: String| {
+            log.entities
+                .iter()
+                .find(|entity| entity.unique_id.as_str() == handle)
+                .map(|entity| match &entity.capabilities {
+                    Capabilities::BinarySensor(sensor) => sensor.device_class,
+                    other => panic!("not a sensor: {other:?}"),
+                })
+        };
+        assert_eq!(
+            class(format!("motion:{ID}")),
+            Some(Some(BinarySensorClass::Motion))
+        );
+        assert_eq!(
+            class(format!("person:{ID}")),
+            Some(Some(BinarySensorClass::Occupancy))
+        );
+    }
+    let motion = format!("motion:{ID}");
+    camera.notice(
+        "tns1:RuleEngine/CellMotionDetector/Motion",
+        "IsMotion",
+        true,
+    );
+    let report = world
+        .report("motion", |report| report.unique_id.as_str() == motion)
+        .await;
+    assert!(matches!(report.state, Some(State::BinarySensor(state)) if state.on));
+    camera.notice(
+        "tns1:RuleEngine/CellMotionDetector/Motion",
+        "IsMotion",
+        false,
+    );
+    let report = world
+        .report("no motion", |report| report.unique_id.as_str() == motion)
+        .await;
+    assert!(matches!(report.state, Some(State::BinarySensor(state)) if !state.on));
+
+    // Something it didn't list gets a sensor when it's first noticed.
+    let vehicle = format!("vehicle:{ID}");
+    camera.notice(
+        "tns1:RuleEngine/MyRuleDetector/VehicleDetect",
+        "State",
+        true,
+    );
+    world
+        .report("a vehicle", |report| report.unique_id.as_str() == vehicle)
+        .await;
+    assert!(
+        world
+            .log
+            .lock()
+            .expect("log")
+            .entities
+            .iter()
+            .any(|entity| entity.unique_id.as_str() == vehicle)
+    );
+    assert_eq!(camera.seen().refused, 0);
+    world.stop().await;
+}
+
+#[tokio::test]
+async fn a_camera_turns_stops_on_its_own_and_goes_to_presets() {
+    let camera = FakeCamera::start("admin", "right", true).await;
+    let store = Store::default();
+    let world = world(settings(Some(("admin", "right"))), &store).await;
+    world.sees(&camera).await;
+    world
+        .until("the camera is added", |log| !log.entities.is_empty())
+        .await;
+    {
+        let log = world.log.lock().expect("log");
+        let Capabilities::Camera(camera) = &log.entities[0].capabilities else {
+            panic!("not a camera");
+        };
+        assert!(camera.pan_tilt && camera.presets && !camera.zoom);
+    }
+    let report = world
+        .report("its presets", |report| {
+            matches!(&report.state, Some(State::Camera(state))
+                if state.presets.as_ref().is_some_and(|presets| !presets.is_empty()))
+        })
+        .await;
+    let Some(State::Camera(state)) = report.state else {
+        panic!("a camera's state");
+    };
+    assert_eq!(
+        state.presets,
+        Some(vec![
+            CameraPreset {
+                id: "1".into(),
+                name: "Driveway".into()
+            },
+            CameraPreset {
+                id: "2".into(),
+                name: "Gate".into()
+            },
+        ])
+    );
+
+    let moving: CameraMove = serde_json::from_value(serde_json::json!({
+        "pan": 0.5,
+        "seconds": 0.2
+    }))
+    .expect("a move");
+    world
+        .call(Service::CameraMove(moving))
+        .await
+        .expect("it moves");
+    assert_eq!(camera.seen().moves, ["0.500,0.000"]);
+    assert_eq!(camera.seen().stops, 0, "still moving");
+    // A lost "stop" doesn't leave it turning.
+    for _ in 0..50 {
+        if camera.seen().stops > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(camera.seen().stops, 1, "it stopped on its own");
+
+    world
+        .call(Service::CameraGoToPreset(CameraGoToPreset {
+            preset: "2".into(),
+        }))
+        .await
+        .expect("it goes there");
+    assert_eq!(camera.seen().went_to, ["2"]);
+    world.call(Service::CameraStop).await.expect("it stops");
+    assert_eq!(camera.seen().stops, 2);
+    assert_eq!(camera.seen().refused, 0);
     world.stop().await;
 }

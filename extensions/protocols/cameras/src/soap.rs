@@ -42,7 +42,31 @@ impl Soap {
         action: &str,
         body: &str,
     ) -> Result<String, HttpError> {
-        let envelope = envelope(self.login.as_ref(), self.offset, body);
+        self.call_to(target, action, body, None).await
+    }
+
+    /// The same, with WS-Addressing's `Action` and `To` in the header: an event subscription
+    /// is told apart from the rest of the camera's service by the address it was given.
+    pub async fn call_to(
+        &self,
+        target: &Target,
+        action: &str,
+        body: &str,
+        to: Option<&str>,
+    ) -> Result<String, HttpError> {
+        let addressing = to.map(|to| {
+            format!(
+                "<wsa:Action>{}</wsa:Action><wsa:To>{}</wsa:To>",
+                escape(action),
+                escape(to)
+            )
+        });
+        let envelope = envelope(
+            self.login.as_ref(),
+            self.offset,
+            addressing.as_deref().unwrap_or_default(),
+            body,
+        );
         let content_type = format!("{CONTENT_TYPE}; action=\"{action}\"");
         let response = self
             .camera
@@ -68,9 +92,10 @@ impl Soap {
     }
 }
 
-/// A whole SOAP 1.2 envelope around `body`, with the login's token when there is one.
-pub fn envelope(login: Option<&Login>, offset: ClockOffset, body: &str) -> String {
-    let header = match login {
+/// A whole SOAP 1.2 envelope around `body`, with the login's token when there is one, and
+/// `extra` in the header too.
+pub fn envelope(login: Option<&Login>, offset: ClockOffset, extra: &str, body: &str) -> String {
+    let security = match login {
         Some(login) => {
             let mut nonce = [0u8; 16];
             // A failed draw leaves zeros; `created` still makes the digest one-off.
@@ -88,8 +113,9 @@ pub fn envelope(login: Option<&Login>, offset: ClockOffset, body: &str) -> Strin
          xmlns:tptz=\"http://www.onvif.org/ver20/ptz/wsdl\" \
          xmlns:tev=\"http://www.onvif.org/ver10/events/wsdl\" \
          xmlns:tt=\"http://www.onvif.org/ver10/schema\" \
+         xmlns:wsnt=\"http://docs.oasis-open.org/wsn/b-2\" \
          xmlns:wsa=\"http://www.w3.org/2005/08/addressing\">\
-         <s:Header>{header}</s:Header><s:Body>{body}</s:Body></s:Envelope>"
+         <s:Header>{security}{extra}</s:Header><s:Body>{body}</s:Body></s:Envelope>"
     )
 }
 
@@ -241,10 +267,6 @@ pub fn escape(text: &str) -> String {
 }
 
 /// An ONVIF duration (`PT0.5S`), for a timeout or a move's length.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "moves and event pulls use it; they come next")
-)]
 pub fn duration(value: Duration) -> String {
     let millis = value.as_millis();
     format!("PT{}.{:03}S", millis / 1000, millis % 1000)

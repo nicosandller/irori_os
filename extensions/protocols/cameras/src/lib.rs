@@ -13,10 +13,12 @@
 //! can't be reached is safe to try again.
 
 mod discover;
+mod events;
 mod fmp4;
 mod http;
 mod live;
 mod onvif;
+mod ptz;
 mod refused;
 pub mod settings;
 mod soap;
@@ -31,17 +33,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use irori_protocol::{
-    AvailabilityTarget, Health, Incoming, Protocol, ProtocolContext, ProtocolError, ServiceError,
+    AvailabilityTarget, Health, Incoming, IncomingCall, Protocol, ProtocolContext, ProtocolError,
+    ServiceError,
 };
 use irori_types::{
-    Availability, CameraCapabilities, CameraState, CameraStatus, Capabilities, DeviceDescription,
-    EntityDescription, LiveQuality, Name, SecretRequest, State, StateReport, UniqueId,
+    Availability, BinarySensorCapabilities, BinarySensorClass, BinarySensorState,
+    CameraCapabilities, CameraPreset, CameraState, CameraStatus, Capabilities, DeviceDescription,
+    EntityDescription, LiveQuality, Name, SecretRequest, Service, State, StateReport, UniqueId,
     UsernameRequest, Waiting,
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
 use crate::discover::Found;
+use crate::events::Detects;
 use crate::http::HttpError;
 use crate::onvif::Info;
 use crate::refused::Refusals;
@@ -104,6 +109,24 @@ struct Cam {
     described: bool,
     /// How many of its streams are running: it's `streaming` while any are.
     watched: u32,
+    /// What follows its events and turns it, while it's logged into. Stopped when that ends.
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Its moves go here, when it turns.
+    ptz: Option<mpsc::Sender<IncomingCall>>,
+    /// Its presets as last read, when it has any.
+    presets: Option<Vec<CameraPreset>>,
+    /// The sensors described for it.
+    sensors: Vec<Detects>,
+}
+
+impl Cam {
+    /// Stops what was running for the last login.
+    fn stop_tasks(&mut self) {
+        for task in self.tasks.drain(..) {
+            task.abort();
+        }
+        self.ptz = None;
+    }
 }
 
 /// What a background task found out.
@@ -126,6 +149,18 @@ enum Event {
     Watched {
         id: String,
         started: bool,
+    },
+    /// One of its sensors changed.
+    Detected {
+        id: String,
+        generation: u64,
+        change: events::Change,
+    },
+    /// Its presets, as just read.
+    Presets {
+        id: String,
+        generation: u64,
+        presets: Vec<CameraPreset>,
     },
 }
 
@@ -155,7 +190,7 @@ pub(crate) async fn drive(
                 arrive(found, &settings, &refusals, &mut cams, &mut generations, &events_tx);
             }
             Some(event) = events.recv() => {
-                apply(event, &settings, &ctx, &mut refusals, &mut cams).await?;
+                apply(event, &settings, &ctx, &mut refusals, &mut cams, &events_tx).await?;
             }
         }
         let health = health(&cams);
@@ -186,6 +221,10 @@ fn arrive(
         stage: Stage::NeedsLogin,
         described: false,
         watched: 0,
+        tasks: Vec::new(),
+        ptz: None,
+        presets: None,
+        sensors: Vec::new(),
     });
     let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
     cam.found = found;
@@ -207,6 +246,7 @@ fn arrive(
         Some(Err(why)) => Stage::BadLogin(why.clone()),
         Some(Ok(login)) if refusals.refused(&cam.found.id, login) => Stage::Refused,
         Some(Ok(login)) => {
+            cam.stop_tasks();
             *generations += 1;
             cam.generation = *generations;
             connect(
@@ -247,11 +287,14 @@ async fn apply(
     ctx: &ProtocolContext,
     refusals: &mut Refusals,
     cams: &mut BTreeMap<String, Cam>,
+    events_tx: &mpsc::Sender<Event>,
 ) -> Result<(), ProtocolError> {
     let (id, generation) = match &event {
         Event::Connected { id, generation, .. }
         | Event::Refused { id, generation }
-        | Event::Unreachable { id, generation, .. } => (id.clone(), *generation),
+        | Event::Unreachable { id, generation, .. }
+        | Event::Detected { id, generation, .. }
+        | Event::Presets { id, generation, .. } => (id.clone(), *generation),
         Event::Watched { id, started } => {
             if let Some(cam) = cams.get_mut(id) {
                 let before = cam.watched;
@@ -261,7 +304,7 @@ async fn apply(
                     cam.watched.saturating_sub(1)
                 };
                 if cam.described && (before == 0) != (cam.watched == 0) {
-                    report(ctx, id, cam.watched)?;
+                    report(ctx, id, cam)?;
                 }
             }
             return Ok(());
@@ -285,10 +328,12 @@ async fn apply(
                 pictures = info.snapshot.is_some(),
                 "logged into a camera"
             );
-            let (device, entity) = describe(&cam.found, info)?;
-            if ctx.describe_device(device).await.is_err()
-                || ctx.describe_entity(entity).await.is_err()
-            {
+            let (device, entities) = describe(&cam.found, info)?;
+            let mut added = ctx.describe_device(device).await.is_ok();
+            for entity in entities {
+                added = added && ctx.describe_entity(entity).await.is_ok();
+            }
+            if !added {
                 tracing::warn!(camera = %id, "a camera couldn't be added");
                 cam.stage = Stage::Unreachable {
                     why: "it couldn't be added".into(),
@@ -297,15 +342,24 @@ async fn apply(
                 return Ok(());
             }
             cam.described = true;
+            cam.sensors = info.detects.clone();
+            cam.presets = info
+                .turns
+                .as_ref()
+                .filter(|turning| turning.abilities.presets)
+                .map(|_| Vec::new());
             available(ctx, &id, Availability::Available).await;
-            report(ctx, &id, cam.watched)?;
-            cam.stage = Stage::Ready(Arc::new(*ready));
+            report(ctx, &id, cam)?;
+            let ready = Arc::new(*ready);
+            start_tasks(cam, &id, generation, &ready, events_tx);
+            cam.stage = Stage::Ready(ready);
         }
         Event::Refused { .. } => {
             tracing::warn!(camera = %id, "a camera refused its login; it won't be tried again until it's given a different one");
             if let Some(Ok(login)) = settings.cameras.get(&id).map(|given| &given.0) {
                 refusals.refuse(ctx, &id, login).await;
             }
+            cam.stop_tasks();
             if cam.described {
                 available(ctx, &id, Availability::Unavailable).await;
             }
@@ -313,6 +367,7 @@ async fn apply(
         }
         Event::Unreachable { why, .. } => {
             tracing::warn!(camera = %id, "a camera couldn't be set up: {why}");
+            cam.stop_tasks();
             if cam.described {
                 available(ctx, &id, Availability::Unavailable).await;
             }
@@ -321,30 +376,139 @@ async fn apply(
                 retry: Instant::now() + RETRY,
             };
         }
+        Event::Detected { change, .. } => {
+            if !cam.described || !matches!(cam.stage, Stage::Ready(_)) {
+                return Ok(());
+            }
+            // A camera can notice something it didn't list: its sensor is added then.
+            if !cam.sensors.contains(&change.detects) {
+                if ctx
+                    .describe_entity(sensor(&id, change.detects)?)
+                    .await
+                    .is_err()
+                {
+                    return Ok(());
+                }
+                cam.sensors.push(change.detects);
+            }
+            ctx.report_state(StateReport {
+                unique_id: sensor_entity(&id, change.detects)?,
+                state: Some(State::BinarySensor(BinarySensorState { on: change.on })),
+                attributes: BTreeMap::new(),
+                caused_by: None,
+                replayed: false,
+            });
+        }
+        Event::Presets { presets, .. } => {
+            if cam.presets.is_some() && cam.presets.as_ref() != Some(&presets) {
+                cam.presets = Some(presets);
+                report(ctx, &id, cam)?;
+            }
+        }
         // Handled above, before the generation check.
         Event::Watched { .. } => {}
     }
     Ok(())
 }
 
-/// The camera's state: `streaming` while anyone watches, else `idle`.
-fn report(ctx: &ProtocolContext, id: &str, watched: u32) -> Result<(), ProtocolError> {
+/// The camera's state: `streaming` while anyone watches, else `idle`, with its presets.
+fn report(ctx: &ProtocolContext, id: &str, cam: &Cam) -> Result<(), ProtocolError> {
     ctx.report_state(StateReport {
         unique_id: camera_entity(id)?,
         state: Some(State::Camera(CameraState {
-            state: if watched > 0 {
+            state: if cam.watched > 0 {
                 CameraStatus::Streaming
             } else {
                 CameraStatus::Idle
             },
             motion_detection: None,
-            presets: None,
+            presets: cam.presets.clone(),
         })),
         attributes: BTreeMap::new(),
         caused_by: None,
         replayed: false,
     });
     Ok(())
+}
+
+/// Follows a camera's events and starts its PTZ worker, for this login.
+fn start_tasks(
+    cam: &mut Cam,
+    id: &str,
+    generation: u64,
+    ready: &Arc<Ready>,
+    events_tx: &mpsc::Sender<Event>,
+) {
+    if let Some(target) = ready.info.events.clone()
+        && !ready.info.detects.is_empty()
+    {
+        let (changes_tx, mut changes) = mpsc::channel(32);
+        let soap = ready.soap.clone();
+        let tx = events_tx.clone();
+        let who = id.to_owned();
+        cam.tasks.push(tokio::spawn(async move {
+            if let Err(HttpError::Refused) = events::follow(&soap, &target, &changes_tx).await {
+                let _ = tx
+                    .send(Event::Refused {
+                        id: who,
+                        generation,
+                    })
+                    .await;
+            }
+        }));
+        let tx = events_tx.clone();
+        let who = id.to_owned();
+        cam.tasks.push(tokio::spawn(async move {
+            while let Some(change) = changes.recv().await {
+                let event = Event::Detected {
+                    id: who.clone(),
+                    generation,
+                    change,
+                };
+                if tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+        }));
+    }
+    if let (Some(turning), Some(service)) =
+        (ready.info.turns.clone(), ready.info.ptz_service.clone())
+    {
+        let (calls_tx, calls) = mpsc::channel(4);
+        let (reports_tx, mut reports) = mpsc::channel(4);
+        let worker = ptz::Ptz {
+            soap: ready.soap.clone(),
+            service,
+            token: turning.token,
+        };
+        cam.tasks.push(tokio::spawn(ptz::run(
+            worker,
+            turning.abilities.presets,
+            calls,
+            reports_tx,
+        )));
+        let tx = events_tx.clone();
+        let who = id.to_owned();
+        cam.tasks.push(tokio::spawn(async move {
+            while let Some(report) = reports.recv().await {
+                let event = match report {
+                    ptz::Report::Presets(presets) => Event::Presets {
+                        id: who.clone(),
+                        generation,
+                        presets,
+                    },
+                    ptz::Report::Refused => Event::Refused {
+                        id: who.clone(),
+                        generation,
+                    },
+                };
+                if tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+        }));
+        cam.ptz = Some(calls_tx);
+    }
 }
 
 async fn available(ctx: &ProtocolContext, id: &str, availability: Availability) {
@@ -364,7 +528,34 @@ async fn available(ctx: &ProtocolContext, id: &str, availability: Availability) 
 fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sender<Event>) {
     match incoming {
         Incoming::Call(call) => {
-            call.reply(Err(ServiceError::failed("this camera can't do that")));
+            let moves = matches!(
+                call.call.service,
+                Service::CameraMove(_) | Service::CameraStop | Service::CameraGoToPreset(_)
+            );
+            let worker = call
+                .call
+                .unique_id
+                .as_str()
+                .strip_prefix("camera:")
+                .and_then(|id| cams.get(id))
+                .and_then(|cam| cam.ptz.as_ref());
+            match (moves, worker) {
+                (true, Some(worker)) => {
+                    if let Err(error) = worker.try_send(call) {
+                        let call = match error {
+                            mpsc::error::TrySendError::Full(call)
+                            | mpsc::error::TrySendError::Closed(call) => call,
+                        };
+                        call.reply(Err(ServiceError::failed(
+                            "the camera is still busy with the last move",
+                        )));
+                    }
+                }
+                (true, None) => call.reply(Err(ServiceError::unavailable(
+                    "the camera can't be reached",
+                ))),
+                (false, _) => call.reply(Err(ServiceError::failed("this camera can't do that"))),
+            }
         }
         Incoming::Action(action) => action.reply(Err("this extension has no actions".into())),
         Incoming::Unpair(unpair) => unpair.reply(Err("cameras aren't paired".into())),
@@ -459,11 +650,11 @@ fn camera_entity(id: &str) -> Result<UniqueId, ProtocolError> {
         .map_err(|error| ProtocolError::new(error.to_string()))
 }
 
-/// The device and its camera entity.
+/// The device, its camera entity, and a sensor for each thing it notices.
 fn describe(
     found: &Found,
     info: &Info,
-) -> Result<(DeviceDescription, EntityDescription), ProtocolError> {
+) -> Result<(DeviceDescription, Vec<EntityDescription>), ProtocolError> {
     let device_id = UniqueId::try_from(found.id.as_str())
         .map_err(|error| ProtocolError::new(error.to_string()))?;
     let device = DeviceDescription {
@@ -485,7 +676,35 @@ fn describe(
         capabilities: Capabilities::Camera(capabilities(info)),
         entity_category: None,
     };
-    Ok((device, entity))
+    let mut entities = vec![entity];
+    for detects in &info.detects {
+        entities.push(sensor(&found.id, *detects)?);
+    }
+    Ok((device, entities))
+}
+
+fn sensor_entity(id: &str, detects: Detects) -> Result<UniqueId, ProtocolError> {
+    UniqueId::try_from(format!("{}:{id}", detects.key()))
+        .map_err(|error| ProtocolError::new(error.to_string()))
+}
+
+/// The binary sensor for one thing a camera notices.
+fn sensor(id: &str, detects: Detects) -> Result<EntityDescription, ProtocolError> {
+    let device = UniqueId::try_from(id).map_err(|error| ProtocolError::new(error.to_string()))?;
+    Ok(EntityDescription {
+        unique_id: sensor_entity(id, detects)?,
+        name: Some(name_of(detects.name())),
+        device_unique_id: Some(device),
+        suggested_object_id: None,
+        capabilities: Capabilities::BinarySensor(BinarySensorCapabilities {
+            device_class: match detects {
+                Detects::Motion => Some(BinarySensorClass::Motion),
+                Detects::Person => Some(BinarySensorClass::Occupancy),
+                Detects::Vehicle | Detects::Animal => None,
+            },
+        }),
+        entity_category: None,
+    })
 }
 
 /// What it can do: live video at the qualities it has a stream for.
@@ -498,9 +717,17 @@ fn capabilities(info: &Info) -> CameraCapabilities {
     if streams(info.high()) {
         qualities.push(LiveQuality::High);
     }
+    let abilities = info
+        .turns
+        .as_ref()
+        .map(|turning| turning.abilities)
+        .unwrap_or_default();
     CameraCapabilities {
         live: !qualities.is_empty(),
         qualities,
+        pan_tilt: abilities.pan_tilt,
+        zoom: abilities.zoom,
+        presets: abilities.presets,
         ..CameraCapabilities::default()
     }
 }
