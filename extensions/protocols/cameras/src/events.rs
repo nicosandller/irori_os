@@ -17,6 +17,8 @@ use tokio::sync::mpsc;
 use crate::http::{HttpError, Target};
 use crate::soap::{self, Soap, find, find_all, text};
 
+/// How many pulls in a row may go wrong before a subscription is given up.
+const PULL_TRIES: usize = 3;
 const EVENTS: &str = "http://www.onvif.org/ver10/events/wsdl";
 /// How long a subscription lasts unless renewed.
 const LIFETIME: Duration = Duration::from_secs(120);
@@ -203,11 +205,18 @@ pub async fn follow(
                 match pull(soap, &subscription, detects, &mut started, changes).await {
                     Err(HttpError::Refused) => return Err(HttpError::Refused),
                     Ok(()) => return Ok(()),
-                    Err(error) => tracing::debug!("a camera's events stopped: {error}"),
+                    Err(error) => {
+                        // Cameras hold only a few subscriptions (a Tapo, two or three): give
+                        // this one back before asking for another.
+                        unsubscribe(soap, &subscription).await;
+                        tracing::info!(ip = %soap.camera.ip, "a camera's events stopped: {error}")
+                    }
                 }
             }
             Err(HttpError::Refused) => return Err(HttpError::Refused),
-            Err(error) => tracing::debug!("a camera's events couldn't be followed: {error}"),
+            Err(error) => {
+                tracing::info!(ip = %soap.camera.ip, "a camera's events couldn't be followed: {error}")
+            }
         }
         let wait = BACKOFF[attempt.min(BACKOFF.len() - 1)];
         attempt += 1;
@@ -260,6 +269,7 @@ async fn pull(
         soap::duration(PULL)
     );
     let mut renew_at = tokio::time::Instant::now() + RENEW;
+    let mut failures = 0usize;
     loop {
         if changes.is_closed() {
             unsubscribe(soap, subscription).await;
@@ -279,14 +289,30 @@ async fn pull(
             .await?;
             renew_at = tokio::time::Instant::now() + RENEW;
         }
-        let answer = soap
+        // A pull that goes wrong once is asked again on the same subscription: only a few in a
+        // row end it.
+        let answer = match soap
             .call_to(
                 &subscription.target,
                 &pull_action,
                 &pull_body,
                 Some(&subscription.address),
             )
-            .await?;
+            .await
+        {
+            Ok(answer) => {
+                failures = 0;
+                answer
+            }
+            Err(HttpError::Refused) => return Err(HttpError::Refused),
+            Err(error) if failures + 1 < PULL_TRIES => {
+                failures += 1;
+                tracing::debug!("a camera's events didn't come this time: {error}");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
         let said = self::changes(&answer);
         let unsaid: Vec<Change> = if *started {
             Vec::new()

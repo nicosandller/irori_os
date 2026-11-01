@@ -120,10 +120,19 @@ async fn stream_to(
                     continue;
                 };
                 if frame.has_new_parameters() {
-                    // The init segment no longer describes it; a page has to start over.
-                    return Ended::Failed(
-                        "the camera changed its video settings; open it again".into(),
-                    );
+                    // Cameras (a Tapo every few seconds) resend their settings; only a change
+                    // of codec or size means the init segment no longer describes the video,
+                    // and a page has to start over.
+                    let now = video_shape(&demuxed, streams.video);
+                    if now.as_ref() != Some(&muxer.shape) {
+                        tracing::info!(
+                            "a camera's video changed from {:?} to {now:?}",
+                            muxer.shape
+                        );
+                        return Ended::Failed(
+                            "the camera changed its video settings; open it again".into(),
+                        );
+                    }
                 }
                 muxer.video(&frame, feed)
             }
@@ -174,6 +183,21 @@ struct Muxer {
     /// Where the latest video frame is, from the first keyframe.
     video_at: i64,
     audio: Option<AudioTrack>,
+    /// The codec and size the init segment describes.
+    shape: Shape,
+}
+
+/// A video stream's codec (RFC 6381) and size, in pixels.
+type Shape = (String, (u32, u32));
+
+fn video_shape(demuxed: &retina::client::Demuxed, index: usize) -> Option<Shape> {
+    match demuxed.streams()[index].parameters() {
+        Some(ParametersRef::Video(parameters)) => Some((
+            parameters.rfc6381_codec().to_owned(),
+            parameters.pixel_dimensions(),
+        )),
+        _ => None,
+    }
 }
 
 struct AudioTrack {
@@ -199,6 +223,7 @@ impl Muxer {
             return Err(Ended::Failed("the camera didn't describe its video".into()));
         };
         let codec = parameters.rfc6381_codec().to_owned();
+        let codec_name = codec.clone();
         let family = codec.get(..4).unwrap_or_default();
         if !accepts.iter().any(|accepted| accepted == family) {
             return Err(Ended::Failed(cant_play(family)));
@@ -286,6 +311,7 @@ impl Muxer {
             }),
             video_at: 0,
             audio,
+            shape: (codec_name, (width, height)),
         })
     }
 
