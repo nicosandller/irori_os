@@ -202,6 +202,7 @@ pub async fn follow(
         match subscribe(soap, events).await {
             Ok(subscription) => {
                 attempt = 0;
+                tracing::info!(ip = %soap.camera.ip, "following a camera's events");
                 match pull(soap, &subscription, detects, &mut started, changes).await {
                     Err(HttpError::Refused) => return Err(HttpError::Refused),
                     Ok(()) => return Ok(()),

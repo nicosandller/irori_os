@@ -63,17 +63,35 @@ pub fn abilities(answer: &str) -> Abilities {
     }
 }
 
-/// Reads presets from a `GetPresets` answer, skipping any without a token.
+/// Reads presets from a `GetPresets` answer, skipping any without a token and any empty slot.
+///
+/// A Tapo lists every slot whether or not anything was saved in it: an empty one keeps its
+/// default name (`Preset3`) and the same position as the other empty ones, and going to it
+/// fails. So a preset with its default name, at the same position as another with its default
+/// name, is left out.
 pub fn presets(answer: &str) -> Vec<CameraPreset> {
     let Ok(doc) = roxmltree::Document::parse(answer) else {
         return Vec::new();
     };
+    let unnamed_at = |preset: roxmltree::Node| -> Option<String> {
+        let id = attribute(preset, "token")?;
+        let name = text(preset, &["Name"]).unwrap_or_default();
+        (name.is_empty() || name == format!("Preset{id}")).then(|| position(preset))
+    };
+    let unnamed: Vec<String> = find_all(doc.root(), "Preset")
+        .filter_map(unnamed_at)
+        .collect();
     let mut out: Vec<CameraPreset> = Vec::new();
     for preset in find_all(doc.root(), "Preset") {
         let Some(id) = attribute(preset, "token").filter(|id| fits(id)) else {
             continue;
         };
         if out.iter().any(|known| known.id == id) {
+            continue;
+        }
+        if let Some(at) = unnamed_at(preset)
+            && unnamed.iter().filter(|other| **other == at).count() > 1
+        {
             continue;
         }
         let name = text(preset, &["Name"])
@@ -85,6 +103,25 @@ pub fn presets(answer: &str) -> Vec<CameraPreset> {
         }
     }
     out
+}
+
+/// Where a preset points, as text to compare.
+fn position(preset: roxmltree::Node) -> String {
+    let Some(at) = find(preset, "PTZPosition") else {
+        return String::new();
+    };
+    let pan_tilt = find(at, "PanTilt");
+    let zoom = find(at, "Zoom");
+    let get = |node: Option<roxmltree::Node>, name: &str| {
+        node.and_then(|node| attribute(node, name))
+            .unwrap_or_default()
+    };
+    format!(
+        "{} {} {}",
+        get(pan_tilt, "x"),
+        get(pan_tilt, "y"),
+        get(zoom, "x")
+    )
 }
 
 fn fits(text: &str) -> bool {
@@ -308,6 +345,38 @@ mod tests {
                     name: "2".into()
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn a_tapos_empty_slots_are_not_presets() {
+        let slot = |n: u32| {
+            format!(
+                "<Preset token=\"{n}\"><Name>Preset{n}</Name><PTZPosition>\
+                 <PanTilt space=\"s\" y=\"0\" x=\"-1\"></PanTilt></PTZPosition>\
+                 </Preset>"
+            )
+        };
+        let empty: String = (1..=8).map(slot).collect();
+        assert!(roxmltree::Document::parse(&format!("<a>{empty}</a>")).is_ok());
+        let answer = format!(
+            "<Envelope><Body><GetPresetsResponse>{empty}</GetPresetsResponse></Body></Envelope>"
+        );
+        assert_eq!(presets(&answer), []);
+
+        // One saved somewhere else, still with its default name, is kept.
+        let saved = "<Preset token=\"9\"><Name>Preset9</Name><PTZPosition>\
+                     <PanTilt space=\"s\" y=\"0.2\" x=\"0.4\"></PanTilt></PTZPosition>\
+                     </Preset>";
+        let answer = format!(
+            "<Envelope><Body><GetPresetsResponse>{empty}{saved}</GetPresetsResponse></Body></Envelope>"
+        );
+        assert_eq!(
+            presets(&answer),
+            [CameraPreset {
+                id: "9".into(),
+                name: "Preset9".into()
+            }]
         );
     }
 
