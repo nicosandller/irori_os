@@ -52,11 +52,21 @@ pub struct Found {
 }
 
 /// Starts probing in the background. Each answer goes to `found`, once per probe.
-pub fn start(settings: &Settings, found: mpsc::Sender<Found>) -> JoinHandle<()> {
+/// Looks for cameras now and every so often. `remembered` are where cameras were found before:
+/// each probe also goes straight to them, since multicast over Wi-Fi gets lost.
+pub fn start(
+    settings: &Settings,
+    remembered: Vec<IpAddr>,
+    found: mpsc::Sender<Found>,
+) -> JoinHandle<()> {
     let hosts = settings.hosts.clone();
     tokio::spawn(async move {
         // Cameras already found are also asked directly, in case multicast misses them.
-        let mut known: Vec<IpAddr> = Vec::new();
+        let mut known: Vec<IpAddr> = remembered
+            .into_iter()
+            .filter(|ip| is_lan_ip(*ip))
+            .take(MAX_FOUND)
+            .collect();
         let mut round = 0usize;
         loop {
             match probe(&hosts, &known).await {

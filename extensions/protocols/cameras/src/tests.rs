@@ -371,7 +371,7 @@ async fn a_camera_that_cant_be_reached_spends_no_login() {
         "nothing refused it"
     );
     assert!(
-        store.lock().expect("store").is_empty(),
+        !store.lock().expect("store").contains_key("refused_logins"),
         "nothing remembered as refused"
     );
     world.stop().await;

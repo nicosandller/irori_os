@@ -286,7 +286,12 @@ async fn pull(
                 &body,
                 Some(&subscription.address),
             )
-            .await?;
+            .await
+            .map_err(|error| match error {
+                HttpError::Failed(why) => HttpError::Failed(format!("renewing: {why}")),
+                HttpError::Unreachable(why) => HttpError::Unreachable(format!("renewing: {why}")),
+                HttpError::Refused => HttpError::Refused,
+            })?;
             renew_at = tokio::time::Instant::now() + RENEW;
         }
         // A pull that goes wrong once is asked again on the same subscription: only a few in a

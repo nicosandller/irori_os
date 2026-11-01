@@ -12,6 +12,7 @@
 //! ([`refused`]). Only the camera saying no to the login counts: a timeout or a camera that
 //! can't be reached is safe to try again.
 
+mod addresses;
 mod discover;
 mod events;
 mod flac;
@@ -65,7 +66,8 @@ impl Protocol for Cameras {
 
     async fn run(settings: Settings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         let (found, incoming) = mpsc::channel(32);
-        let discovery = discover::start(&settings, found);
+        let remembered = addresses::Addresses::load(&ctx).await.all();
+        let discovery = discover::start(&settings, remembered, found);
         let outcome = drive(settings, ctx, incoming).await;
         discovery.abort();
         outcome
@@ -175,6 +177,7 @@ pub(crate) async fn drive(
     mut discovery: mpsc::Receiver<Found>,
 ) -> Result<(), ProtocolError> {
     let mut refusals = Refusals::load(&ctx).await;
+    let mut addresses = addresses::Addresses::load(&ctx).await;
     let (events_tx, mut events) = mpsc::channel(EVENTS);
     let mut cams: BTreeMap<String, Cam> = BTreeMap::new();
     let mut generations = 0u64;
@@ -190,6 +193,7 @@ pub(crate) async fn drive(
             }
             found = discovery.recv() => {
                 let Some(found) = found else { break Ok(()) };
+                addresses.saw(&ctx, &found.id, found.ip).await;
                 arrive(found, &settings, &refusals, &mut cams, &mut generations, &events_tx);
             }
             Some(event) = events.recv() => {

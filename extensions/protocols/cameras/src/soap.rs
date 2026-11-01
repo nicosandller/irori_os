@@ -213,7 +213,19 @@ pub fn fault(answer: &str) -> Option<HttpError> {
         .map(|text| text.trim().chars().take(120).collect::<String>())
         .filter(|text| !text.is_empty())
         .unwrap_or_else(|| "the camera turned the request down".into());
-    Some(HttpError::Failed(reason))
+    // The codes say more than a camera's text does (a Tapo's is just "error").
+    let codes: Vec<&str> = codes
+        .iter()
+        .map(|code| code.rsplit(':').next().unwrap_or(code))
+        .filter(|code| !code.is_empty())
+        .collect();
+    if codes.is_empty() {
+        return Some(HttpError::Failed(reason));
+    }
+    Some(HttpError::Failed(format!(
+        "{reason} ({})",
+        codes.join(", ")
+    )))
 }
 
 /// The first element under `node` (itself included) with this local name.
@@ -269,6 +281,10 @@ pub fn escape(text: &str) -> String {
 /// An ONVIF duration (`PT0.5S`), for a timeout or a move's length.
 pub fn duration(value: Duration) -> String {
     let millis = value.as_millis();
+    // Whole seconds plainly: a Tapo C210 turns `PT120.000S` down as an invalid argument.
+    if millis.is_multiple_of(1000) {
+        return format!("PT{}S", millis / 1000);
+    }
     format!("PT{}.{:03}S", millis / 1000, millis % 1000)
 }
 
@@ -314,7 +330,9 @@ mod tests {
             </s:Fault></s:Body></s:Envelope>"#;
         assert_eq!(
             fault(other),
-            Some(HttpError::Failed("Optional Action Not Implemented".into()))
+            Some(HttpError::Failed(
+                "Optional Action Not Implemented (Receiver, ActionNotSupported)".into()
+            ))
         );
         assert_eq!(fault("<s:Envelope><s:Body/></s:Envelope>"), None);
     }
@@ -344,6 +362,7 @@ mod tests {
     #[test]
     fn durations_are_written_the_onvif_way() {
         assert_eq!(duration(Duration::from_millis(500)), "PT0.500S");
-        assert_eq!(duration(Duration::from_secs(10)), "PT10.000S");
+        assert_eq!(duration(Duration::from_secs(10)), "PT10S");
+        assert_eq!(duration(Duration::from_secs(120)), "PT120S");
     }
 }
