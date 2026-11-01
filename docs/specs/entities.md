@@ -319,7 +319,7 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `vacuum` | `activity` | `cleaning` \| `docked` \| `idle` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `VacuumActivity` |
 | | `fan_speed` | string | no | One of its `fan_speeds` (checked by the core) |
 | `lawn_mower` | `activity` | `mowing` \| `docked` \| `paused` \| `returning` \| `error` | yes | Its typed value, for rules (`text()`). Home Assistant's `LawnMowerActivity` |
-| `device_tracker` | `home` | bool | yes | Its typed value, for rules (`on()`): at home. Named places other than home wait for Irori to have zones; a tracker in one is not home |
+| `device_tracker` | `home` | bool | yes | Its typed value, for rules (`on()`): at home. Named places other than home wait for Irori to have zones; a tracker in one is not home. When a report has `latitude` and `longitude` and the home has a location, the core sets `home` itself: within 100 m of the home's point, widened by the report's `accuracy` up to 200 m more. The protocol's own `home` stands only when the home has no location. Moving the home's location takes effect at the tracker's next report |
 | | `latitude`, `longitude` | degrees, -90 to 90 and -180 to 180 | no | Where it is, from one that knows |
 | | `accuracy` | metres, 0 or more | no | How far off that may be |
 | `camera` | `state` | `off` \| `idle` \| `recording` \| `streaming` | yes | Its typed value, for rules (`text()`). `off` only for one with `on_off`. Its picture isn't state: a page asks for it ([protocols.md](protocols.md) §5.2) |

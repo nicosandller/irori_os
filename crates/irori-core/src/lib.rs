@@ -1513,7 +1513,19 @@ impl Core {
             );
         }
         let mut rejected_count = 0;
-        for report in reports {
+        let home_point = read(&self.0.place)
+            .location
+            .as_ref()
+            .map(|location| (location.latitude, location.longitude));
+        for mut report in reports {
+            // A tracker that says where it is is home by where the home is, which only the core
+            // knows: the protocol's own guess stands only when the home has no location.
+            if let (Some(point), Some(irori_types::State::DeviceTracker(tracker))) =
+                (home_point, report.state.as_mut())
+                && let Some(home) = tracker.is_at(point)
+            {
+                tracker.home = home;
+            }
             if let Err(rejected) =
                 self.change(|home, stamp| home.report_state(protocol, report, stamp))
             {
