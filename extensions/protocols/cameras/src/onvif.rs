@@ -42,14 +42,20 @@ pub struct Info {
 impl Info {
     /// Its full-size stream.
     pub fn high(&self) -> Option<&Profile> {
-        self.profiles.first()
+        self.playable().next()
     }
 
     /// Its small stream, when it has one apart from the full-size one.
     pub fn low(&self) -> Option<&Profile> {
-        (self.profiles.len() > 1)
-            .then(|| self.profiles.last())
-            .flatten()
+        let mut playable = self.playable();
+        let high = playable.next()?;
+        playable.last().filter(|low| low.token != high.token)
+    }
+
+    /// The profiles whose video a browser can be sent: H.264 and H.265, largest first. A
+    /// camera's JPEG profile (a Tapo has one) isn't live video.
+    fn playable(&self) -> impl Iterator<Item = &Profile> {
+        self.profiles.iter().filter(|profile| profile.plays())
     }
 }
 
@@ -75,6 +81,19 @@ pub struct Profile {
     pub ptz: bool,
     /// Its RTSP address, as the camera gave it.
     pub stream: Option<String>,
+}
+
+impl Profile {
+    /// Whether it's H.264 or H.265, however the camera spells it.
+    pub fn plays(&self) -> bool {
+        let encoding: String = self
+            .encoding
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .to_ascii_uppercase();
+        matches!(encoding.as_str(), "H264" | "H265" | "HEVC")
+    }
 }
 
 /// Measures the camera's clock. Needs no login, so it's also how a camera is checked to be
@@ -384,6 +403,30 @@ mod tests {
             one.low().is_none(),
             "one profile is only the full-size stream"
         );
+    }
+
+    /// A Tapo C210's three profiles: the smallest is JPEG, which isn't live video.
+    #[test]
+    fn a_jpeg_profile_is_never_the_small_stream() {
+        let answer = r#"<Envelope><Body><GetProfilesResponse>
+          <Profiles token="profile_1"><VideoEncoderConfiguration token="v1"><Encoding>H264</Encoding>
+            <Resolution><Width>2304</Width><Height>1296</Height></Resolution></VideoEncoderConfiguration></Profiles>
+          <Profiles token="profile_2"><VideoEncoderConfiguration token="v2"><Encoding>H264</Encoding>
+            <Resolution><Width>640</Width><Height>360</Height></Resolution></VideoEncoderConfiguration></Profiles>
+          <Profiles token="profile_3"><VideoEncoderConfiguration token="v3"><Encoding>JPEG</Encoding>
+            <Resolution><Width>320</Width><Height>240</Height></Resolution></VideoEncoderConfiguration></Profiles>
+        </GetProfilesResponse></Body></Envelope>"#;
+        let info = Info {
+            profiles: profiles(answer),
+            ..Info::default()
+        };
+        assert_eq!(info.high().map(|p| p.token.as_str()), Some("profile_1"));
+        assert_eq!(info.low().map(|p| p.token.as_str()), Some("profile_2"));
+        let jpeg_only = Info {
+            profiles: info.profiles[2..].to_vec(),
+            ..Info::default()
+        };
+        assert!(jpeg_only.high().is_none(), "no live video at all");
     }
 
     #[test]

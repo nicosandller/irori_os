@@ -337,7 +337,12 @@ async fn apply(
             }
             tracing::info!(
                 camera = %id,
-                profiles = info.profiles.len(),
+                profiles = %info
+                    .profiles
+                    .iter()
+                    .map(|profile| format!("{} {}x{}", profile.encoding, profile.width, profile.height))
+                    .collect::<Vec<_>>()
+                    .join(", "),
                 pictures = info.snapshot.is_some(),
                 "logged into a camera"
             );
