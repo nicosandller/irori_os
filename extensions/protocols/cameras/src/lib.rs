@@ -14,6 +14,7 @@
 
 mod discover;
 mod events;
+mod flac;
 mod fmp4;
 mod http;
 mod live;

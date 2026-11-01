@@ -17,6 +17,7 @@ use irori_protocol::{IncomingLive, LiveFeed};
 use retina::client::{Credentials, PlayOptions, Session, SessionOptions, SetupOptions};
 use retina::codec::{CodecItem, FrameFormat, ParametersRef};
 
+use crate::flac::{self, Law};
 use crate::fmp4::{self, Media, Sample, Track};
 use crate::settings::Login;
 
@@ -126,7 +127,9 @@ async fn stream_to(
                 }
                 muxer.video(&frame, feed)
             }
-            CodecItem::AudioFrame(frame) if Some(frame.stream_id()) == streams.audio => {
+            CodecItem::AudioFrame(frame)
+                if streams.audio.as_ref().map(|audio| audio.index) == Some(frame.stream_id()) =>
+            {
                 match muxer.as_mut() {
                     Some(muxer) => muxer.audio(&frame, feed),
                     None => continue,
@@ -143,8 +146,22 @@ async fn stream_to(
 /// Which of the session's streams are being played.
 struct Streams {
     video: usize,
-    /// AAC, when the camera sends it and the page can play it.
-    audio: Option<usize>,
+    /// The sound, when the camera sends some the page can play.
+    audio: Option<Audio>,
+}
+
+struct Audio {
+    index: usize,
+    sound: Sound,
+}
+
+/// How a camera's sound gets to the page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Sound {
+    /// AAC, as it comes.
+    Aac,
+    /// G.711, decoded and written as FLAC.
+    G711 { law: Law, rate: u32, channels: u8 },
 }
 
 /// Turns frames into fragments, once the init segment is out.
@@ -161,6 +178,8 @@ struct Muxer {
 
 struct AudioTrack {
     clock: i64,
+    /// Set for G.711, which is turned into FLAC on the way.
+    flac: Option<(Law, flac::Encoder)>,
     /// The audio clock's reading that lines up with the first keyframe; set by the first
     /// audio frame, from where the video is when it comes.
     zero: Option<i64>,
@@ -201,23 +220,56 @@ impl Muxer {
         }];
         let mut codecs = vec![codec];
         let mut audio = None;
-        if let Some(index) = streams.audio
-            && let Some(ParametersRef::Audio(parameters)) = demuxed.streams()[index].parameters()
-            && let Some(codec) = parameters.rfc6381_codec()
-            && let Ok(sample_entry) = parameters.mp4_sample_entry().build()
+        match streams
+            .audio
+            .as_ref()
+            .map(|audio| (audio.index, audio.sound))
         {
-            let clock = parameters.clock_rate();
-            tracks.push(Track {
-                id: AUDIO_TRACK,
-                timescale: clock,
-                media: Media::Audio,
-                sample_entry,
-            });
-            codecs.push(codec.to_owned());
-            audio = Some(AudioTrack {
-                clock: i64::from(clock),
-                zero: None,
-            });
+            Some((index, Sound::Aac)) => {
+                if let Some(ParametersRef::Audio(parameters)) =
+                    demuxed.streams()[index].parameters()
+                    && let Some(codec) = parameters.rfc6381_codec()
+                    && let Ok(sample_entry) = parameters.mp4_sample_entry().build()
+                {
+                    let clock = parameters.clock_rate();
+                    tracks.push(Track {
+                        id: AUDIO_TRACK,
+                        timescale: clock,
+                        media: Media::Audio,
+                        sample_entry,
+                    });
+                    codecs.push(codec.to_owned());
+                    audio = Some(AudioTrack {
+                        clock: i64::from(clock),
+                        flac: None,
+                        zero: None,
+                    });
+                }
+            }
+            Some((
+                _,
+                Sound::G711 {
+                    law,
+                    rate,
+                    channels,
+                },
+            )) => {
+                if let Some(encoder) = flac::Encoder::new(rate, channels) {
+                    tracks.push(Track {
+                        id: AUDIO_TRACK,
+                        timescale: rate,
+                        media: Media::Audio,
+                        sample_entry: encoder.sample_entry(),
+                    });
+                    codecs.push("flac".to_owned());
+                    audio = Some(AudioTrack {
+                        clock: i64::from(rate),
+                        flac: Some((law, encoder)),
+                        zero: None,
+                    });
+                }
+            }
+            None => {}
         }
         let codecs: Vec<&str> = codecs.iter().map(String::as_str).collect();
         if feed.init(fmp4::mime(&codecs), fmp4::init(&tracks)).is_err() {
@@ -295,16 +347,29 @@ impl Muxer {
         let Ok(at) = u64::try_from(reading - zero) else {
             return Ok(());
         };
-        let fragment = fmp4::fragment(
-            self.next_sequence(),
-            AUDIO_TRACK,
-            at,
-            &[Sample {
+        let samples = match audio.flac.as_mut() {
+            Some((law, encoder)) => {
+                let decoded: Vec<i16> = frame.data().iter().map(|byte| law.decode(*byte)).collect();
+                encoder
+                    .frames(&decoded)
+                    .into_iter()
+                    .map(|(duration, data)| Sample {
+                        duration,
+                        key: true,
+                        data,
+                    })
+                    .collect()
+            }
+            None => vec![Sample {
                 duration: frame.frame_length().get(),
                 key: true,
                 data: frame.data().to_vec(),
             }],
-        );
+        };
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let fragment = fmp4::fragment(self.next_sequence(), AUDIO_TRACK, at, &samples);
         // Not a place to start watching from: that's a video keyframe.
         feed.fragment(false, fragment)
             .map(|_| ())
@@ -334,17 +399,13 @@ async fn open(
             "the camera's stream has no H.264 or H.265 video".into(),
         ));
     };
-    let aac = accepts.iter().any(|accepted| accepted == "mp4a");
-    let audio = session.streams().iter().position(|stream| {
-        aac && stream.media() == "audio"
-            && stream.encoding_name().eq_ignore_ascii_case("mpeg4-generic")
-    });
+    let audio = pick_audio(session.streams(), accepts);
     let setup = || SetupOptions::default().frame_format(FrameFormat::MP4);
     session.setup(video, setup()).await.map_err(failed)?;
     let audio = match audio {
         // Sound is a bonus: a camera that won't send it still shows its video.
-        Some(index) => match session.setup(index, setup()).await {
-            Ok(()) => Some(index),
+        Some(audio) => match session.setup(audio.index, setup()).await {
+            Ok(()) => Some(audio),
             Err(error) if error.status_code() == Some(401) => return Err(Ended::Refused),
             Err(_) => None,
         },
@@ -353,6 +414,48 @@ async fn open(
     let playing = session.play(PlayOptions::default()).await.map_err(failed)?;
     let demuxed = playing.demuxed().map_err(failed)?;
     Ok((demuxed, Streams { video, audio }))
+}
+
+/// The sound to play: AAC as it comes, or G.711 as FLAC, whichever the page can play.
+fn pick_audio(streams: &[retina::client::Stream], accepts: &[String]) -> Option<Audio> {
+    let accepted = |family: &str| accepts.iter().any(|accepted| accepted == family);
+    streams.iter().enumerate().find_map(|(index, stream)| {
+        if stream.media() != "audio" {
+            return None;
+        }
+        let sound = sound_of(
+            stream.encoding_name(),
+            stream.clock_rate_hz(),
+            stream.channels().map_or(1, std::num::NonZeroU16::get),
+        )?;
+        let playable = match sound {
+            Sound::Aac => accepted("mp4a"),
+            Sound::G711 { .. } => accepted("flac"),
+        };
+        playable.then_some(Audio { index, sound })
+    })
+}
+
+/// What a stream's encoding name means here, if it's sound this can send.
+fn sound_of(encoding: &str, rate: u32, channels: u16) -> Option<Sound> {
+    let law = if encoding.eq_ignore_ascii_case("mpeg4-generic") {
+        return Some(Sound::Aac);
+    } else if encoding.eq_ignore_ascii_case("pcmu") {
+        Law::Mu
+    } else if encoding.eq_ignore_ascii_case("pcma") {
+        Law::A
+    } else {
+        return None;
+    };
+    let channels = u8::try_from(channels)
+        .ok()
+        .filter(|count| (1..=8).contains(count))?;
+    flac::Encoder::new(rate, channels)?;
+    Some(Sound::G711 {
+        law,
+        rate,
+        channels,
+    })
 }
 
 fn failed(error: retina::Error) -> Ended {
@@ -394,6 +497,29 @@ pub fn address(stream: &str, ip: IpAddr) -> Result<url::Url, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_is_aac_as_it_comes_or_g711_as_flac() {
+        assert_eq!(sound_of("MPEG4-GENERIC", 16_000, 1), Some(Sound::Aac));
+        assert_eq!(
+            sound_of("PCMU", 8_000, 1),
+            Some(Sound::G711 {
+                law: Law::Mu,
+                rate: 8_000,
+                channels: 1
+            })
+        );
+        assert_eq!(
+            sound_of("pcma", 8_000, 2),
+            Some(Sound::G711 {
+                law: Law::A,
+                rate: 8_000,
+                channels: 2
+            })
+        );
+        assert_eq!(sound_of("G726-32", 8_000, 1), None);
+        assert_eq!(sound_of("PCMU", 8_000, 9), None);
+    }
 
     #[test]
     fn the_video_address_goes_to_the_camera_with_no_login_in_it() {
