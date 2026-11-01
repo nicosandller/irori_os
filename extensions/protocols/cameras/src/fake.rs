@@ -104,11 +104,11 @@ struct Camera {
     noticed: Arc<Mutex<VecDeque<Notice>>>,
 }
 
-struct Asked {
-    method: String,
-    path: String,
-    authorization: Option<String>,
-    body: String,
+pub struct Asked {
+    pub method: String,
+    pub path: String,
+    pub authorization: Option<String>,
+    pub body: String,
 }
 
 impl Camera {
@@ -358,7 +358,7 @@ fn soap(status: &'static str, body: String) -> (&'static str, String, &'static s
     )
 }
 
-async fn read(stream: &mut TcpStream) -> Option<Asked> {
+pub async fn read<S: tokio::io::AsyncRead + Unpin>(stream: &mut S) -> Option<Asked> {
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 4096];
     let head_end = loop {

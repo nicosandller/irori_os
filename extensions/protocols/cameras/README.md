@@ -10,4 +10,12 @@ IP cameras on your network, over ONVIF and RTSP, with extras for Reolink.
   the Tapo app: the camera's Advanced settings, then Camera account.
 - **A wrong login is tried once.** Cameras lock an account after a few failed logins, so a login
   a camera refused is never sent again, even after a restart, until you type a different one.
+- **What you get.** Each camera's live video (SD and HD, with sound where the browser can play
+  it), a picture when it has one, a sensor for each thing it notices (motion, and on a Reolink
+  people, vehicles and animals), and arrows, zoom and presets on cameras that turn.
+- **Reolink extras.** A Reolink's spotlight (with brightness), siren, infrared lights and status
+  light, through its own API with the same login, over HTTPS. Each appears only when the camera
+  has it. The siren sounds for 10 seconds unless told how long, and never more than 5 minutes. If
+  the API turns the login down (an account allowed ONVIF but not the API, say), the camera still
+  works without them, and the login isn't tried there again until the extension restarts.
 - **Everything stays local.** No vendor account and no cloud call.

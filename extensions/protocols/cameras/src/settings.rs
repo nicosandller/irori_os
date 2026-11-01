@@ -40,6 +40,11 @@ pub struct Settings {
     #[serde(default, deserialize_with = "logins")]
     #[schemars(skip)]
     pub cameras: BTreeMap<String, GivenLogin>,
+    /// Where a Reolink's own API is: its HTTPS port unless a test says otherwise. Never read
+    /// from the settings.
+    #[serde(skip)]
+    #[schemars(skip)]
+    pub reolink_port: Option<u16>,
 }
 
 /// A camera's username and password.

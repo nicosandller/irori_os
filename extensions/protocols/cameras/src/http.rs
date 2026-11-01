@@ -11,6 +11,7 @@
 
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -167,15 +168,68 @@ impl Camera {
         body: Option<&(&str, Vec<u8>)>,
         authorization: Option<String>,
     ) -> Result<Exchange, HttpError> {
-        let address = SocketAddr::new(self.ip, target.port);
-        let stream = tokio::net::TcpStream::connect(address)
+        let stream = self.connect(target.port).await?;
+        self.exchange(
+            stream,
+            target.port,
+            method,
+            &target.path,
+            body,
+            authorization,
+        )
+        .await
+    }
+
+    /// POSTs `json` over HTTPS to `path` (with its query), with no HTTP login: for an API that
+    /// logs in inside the body.
+    pub async fn post_tls(
+        &self,
+        port: u16,
+        path: &str,
+        json: Vec<u8>,
+    ) -> Result<Response, HttpError> {
+        let exchange = async {
+            let stream = self.connect(port).await?;
+            let name = rustls::pki_types::ServerName::IpAddress(self.ip.into());
+            let stream = tokio_rustls::TlsConnector::from(Arc::clone(tls_config()))
+                .connect(name, stream)
+                .await
+                .map_err(|_| {
+                    HttpError::Unreachable("the camera's HTTPS couldn't be opened".into())
+                })?;
+            let body = ("application/json", json);
+            self.exchange(stream, port, &Method::POST, path, Some(&body), None)
+                .await
+        };
+        let exchange = tokio::time::timeout(TIMEOUT, exchange)
             .await
-            .map_err(|_| HttpError::Unreachable("the camera can't be reached".into()))?;
+            .unwrap_or_else(|_| Err(HttpError::Unreachable("the camera didn't answer".into())))?;
+        Ok(exchange.response)
+    }
+
+    async fn connect(&self, port: u16) -> Result<tokio::net::TcpStream, HttpError> {
+        tokio::net::TcpStream::connect(SocketAddr::new(self.ip, port))
+            .await
+            .map_err(|_| HttpError::Unreachable("the camera can't be reached".into()))
+    }
+
+    async fn exchange<S>(
+        &self,
+        stream: S,
+        port: u16,
+        method: &Method,
+        path: &str,
+        body: Option<&(&str, Vec<u8>)>,
+        authorization: Option<String>,
+    ) -> Result<Exchange, HttpError>
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    {
         let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
             .await
             .map_err(|_| HttpError::Unreachable("the camera can't be reached".into()))?;
         let driver = tokio::spawn(connection);
-        let host = match (self.ip, target.port) {
+        let host = match (self.ip, port) {
             (IpAddr::V6(ip), 80) => format!("[{ip}]"),
             (IpAddr::V6(ip), port) => format!("[{ip}]:{port}"),
             (ip, 80) => ip.to_string(),
@@ -183,7 +237,7 @@ impl Camera {
         };
         let mut request = Request::builder()
             .method(method.clone())
-            .uri(target.path.as_str())
+            .uri(path)
             .header(HOST, host);
         if let Some((content_type, _)) = body {
             request = request.header(CONTENT_TYPE, *content_type);
@@ -228,6 +282,174 @@ impl Camera {
                 body,
             },
         })
+    }
+}
+
+/// TLS for cameras: any certificate, since each camera signs its own, but a handshake signature
+/// that checks out against it.
+fn tls_config() -> &'static Arc<rustls::ClientConfig> {
+    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    CONFIG.get_or_init(|| {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = Arc::new(OwnCerts {
+            provider: Arc::clone(&provider),
+        });
+        let config = rustls::ClientConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("the ring provider supports TLS")
+            .dangerous()
+            .with_custom_certificate_verifier(verifier)
+            .with_no_client_auth();
+        Arc::new(config)
+    })
+}
+
+/// Checks a handshake signature against the certificate's key read straight out of it, for a
+/// certificate the usual parser won't take: Reolinks send X.509 version 1, which it refuses.
+fn verify_with_key(
+    message: &[u8],
+    cert: &rustls::pki_types::CertificateDer<'_>,
+    scheme: rustls::SignatureScheme,
+    signature: &[u8],
+    algorithms: &rustls::crypto::WebPkiSupportedAlgorithms,
+) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+    let bad = || rustls::Error::InvalidCertificate(rustls::CertificateError::BadSignature);
+    let (algorithm, key) = public_key(cert.as_ref()).ok_or(rustls::Error::InvalidCertificate(
+        rustls::CertificateError::BadEncoding,
+    ))?;
+    let candidates = algorithms
+        .mapping
+        .iter()
+        .find(|(known, _)| *known == scheme)
+        .map(|(_, candidates)| *candidates)
+        .ok_or_else(bad)?;
+    let verifier = candidates
+        .iter()
+        .find(|candidate| candidate.public_key_alg_id().as_ref() == algorithm)
+        .ok_or_else(bad)?;
+    verifier
+        .verify_signature(key, message, signature)
+        .map(|()| rustls::client::danger::HandshakeSignatureValid::assertion())
+        .map_err(|_| bad())
+}
+
+/// A certificate's public key: its algorithm (the inside of its `AlgorithmIdentifier`) and the
+/// key's own bytes. Reads any X.509 version.
+fn public_key(cert: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (0x30, cert, _) = der(cert)? else {
+        return None;
+    };
+    let (0x30, mut tbs, _) = der(cert)? else {
+        return None;
+    };
+    if tbs.first() == Some(&0xa0) {
+        tbs = der(tbs)?.2;
+    }
+    // Serial, signature algorithm, issuer, validity, subject.
+    for _ in 0..5 {
+        tbs = der(tbs)?.2;
+    }
+    let (0x30, info, _) = der(tbs)? else {
+        return None;
+    };
+    let (0x30, algorithm, rest) = der(info)? else {
+        return None;
+    };
+    let (0x03, [0, key @ ..], _) = der(rest)? else {
+        return None;
+    };
+    Some((algorithm, key))
+}
+
+/// One DER element: its tag, what's inside it, and what comes after it.
+fn der(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
+    let (&tag, rest) = input.split_first()?;
+    let (&first, rest) = rest.split_first()?;
+    let (length, rest) = match first {
+        0..=0x7f => (usize::from(first), rest),
+        0x81..=0x83 => {
+            let bytes = usize::from(first - 0x80);
+            let (length, rest) = rest.split_at_checked(bytes)?;
+            (
+                length
+                    .iter()
+                    .fold(0usize, |sum, byte| (sum << 8) | usize::from(*byte)),
+                rest,
+            )
+        }
+        _ => return None,
+    };
+    let (inside, after) = rest.split_at_checked(length)?;
+    Some((tag, inside, after))
+}
+
+#[derive(Debug)]
+struct OwnCerts {
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for OwnCerts {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        Ok(rustls::client::danger::ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+        .or_else(|_| {
+            verify_with_key(
+                message,
+                cert,
+                dss.scheme,
+                dss.signature(),
+                &self.provider.signature_verification_algorithms,
+            )
+        })
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+        .or_else(|_| {
+            verify_with_key(
+                message,
+                cert,
+                dss.scheme,
+                dss.signature(),
+                &self.provider.signature_verification_algorithms,
+            )
+        })
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -550,5 +772,23 @@ mod tests {
         assert!(Target::parse("https://cam/onvif").is_err());
         assert!(Target::parse("rtsp://cam/stream").is_err());
         assert!(Target::parse("http://cam:99999/").is_err());
+    }
+
+    #[test]
+    fn a_version_1_certificates_key_still_checks_a_handshake() {
+        let cert =
+            rustls::pki_types::CertificateDer::from(&include_bytes!("testdata/v1-cert.der")[..]);
+        let signature = include_bytes!("testdata/v1-pss-signature.bin");
+        let provider = rustls::crypto::ring::default_provider();
+        let algorithms = &provider.signature_verification_algorithms;
+        let scheme = rustls::SignatureScheme::RSA_PSS_SHA256;
+
+        // The usual parser won't read it, which is why this exists.
+        assert!(rustls::server::ParsedCertificate::try_from(&cert).is_err());
+        assert!(verify_with_key(b"a handshake", &cert, scheme, signature, algorithms).is_ok());
+        assert!(verify_with_key(b"another one", &cert, scheme, signature, algorithms).is_err());
+        let other = rustls::SignatureScheme::ECDSA_NISTP256_SHA256;
+        assert!(verify_with_key(b"a handshake", &cert, other, signature, algorithms).is_err());
+        assert_eq!(public_key(&[0x30, 0x05, 1]), None);
     }
 }

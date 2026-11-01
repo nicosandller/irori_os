@@ -30,6 +30,10 @@ url = "2.5.7"
 # ONVIF answers are SOAP. Matched by local name only: vendors put the same element in
 # different namespaces.
 roxmltree = "0.20.0"
+# Reolink's own API, over HTTPS so its login isn't sent in the clear. Cameras' certificates
+# are their own, so the handshake's signature is checked but not who signed the certificate.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

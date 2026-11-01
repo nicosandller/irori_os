@@ -22,11 +22,14 @@ mod live;
 mod onvif;
 mod ptz;
 mod refused;
+mod reolink;
 pub mod settings;
 mod soap;
 
 #[cfg(test)]
 mod fake;
+#[cfg(test)]
+mod fake_reolink;
 #[cfg(test)]
 mod tests;
 
@@ -41,8 +44,9 @@ use irori_protocol::{
 use irori_types::{
     Availability, BinarySensorCapabilities, BinarySensorClass, BinarySensorState,
     CameraCapabilities, CameraPreset, CameraState, CameraStatus, Capabilities, DeviceDescription,
-    EntityDescription, LiveQuality, Name, SecretRequest, Service, State, StateReport, UniqueId,
-    UsernameRequest, Waiting,
+    EntityCategory, EntityDescription, LightCapabilities, LightState, LiveQuality, Name,
+    SecretRequest, Service, SirenCapabilities, SirenState, State, StateReport, SwitchCapabilities,
+    SwitchState, UniqueId, UsernameRequest, Waiting,
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -122,6 +126,10 @@ struct Cam {
     presets: Option<Vec<CameraPreset>>,
     /// The sensors described for it.
     sensors: Vec<Detects>,
+    /// Calls for its Reolink extras go here, once it has said what it has.
+    extras: Option<mpsc::Sender<(reolink::Part, IncomingCall)>>,
+    /// The extras described for it.
+    parts: Vec<reolink::Part>,
 }
 
 impl Cam {
@@ -131,6 +139,8 @@ impl Cam {
             task.abort();
         }
         self.ptz = None;
+        // Its worker logs out once nothing can send it calls.
+        self.extras = None;
     }
 }
 
@@ -166,6 +176,12 @@ enum Event {
         id: String,
         generation: u64,
         presets: Vec<CameraPreset>,
+    },
+    /// What its Reolink extras have, or are doing.
+    Extras {
+        id: String,
+        generation: u64,
+        report: reolink::Report,
     },
 }
 
@@ -235,6 +251,8 @@ fn arrive(
         ptz: None,
         presets: None,
         sensors: Vec::new(),
+        extras: None,
+        parts: Vec::new(),
     });
     let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
     cam.found = found;
@@ -311,7 +329,8 @@ async fn apply(
         | Event::Refused { id, generation }
         | Event::Unreachable { id, generation, .. }
         | Event::Detected { id, generation, .. }
-        | Event::Presets { id, generation, .. } => (id.clone(), *generation),
+        | Event::Presets { id, generation, .. }
+        | Event::Extras { id, generation, .. } => (id.clone(), *generation),
         Event::Watched { id, started } => {
             if let Some(cam) = cams.get_mut(id) {
                 let before = cam.watched;
@@ -373,7 +392,7 @@ async fn apply(
             available(ctx, &id, Availability::Available).await;
             report(ctx, &id, cam)?;
             let ready = Arc::new(*ready);
-            start_tasks(cam, &id, generation, &ready, events_tx);
+            start_tasks(cam, &id, generation, &ready, settings, events_tx);
             cam.stage = Stage::Ready(ready);
         }
         Event::Refused { .. } => {
@@ -427,6 +446,35 @@ async fn apply(
                 report(ctx, &id, cam)?;
             }
         }
+        Event::Extras { report, .. } => {
+            if !cam.described || !matches!(cam.stage, Stage::Ready(_)) {
+                return Ok(());
+            }
+            match report {
+                reolink::Report::Offers(offers) => {
+                    for part in offers.parts {
+                        if ctx
+                            .describe_entity(extra(&id, part, offers.dimmable)?)
+                            .await
+                            .is_ok()
+                        {
+                            cam.parts.push(part);
+                        }
+                    }
+                }
+                reolink::Report::Now(part, now) => {
+                    if cam.parts.contains(&part) {
+                        ctx.report_state(StateReport {
+                            unique_id: extra_entity(&id, part)?,
+                            state: Some(extra_state(part, now)),
+                            attributes: BTreeMap::new(),
+                            caused_by: None,
+                            replayed: false,
+                        });
+                    }
+                }
+            }
+        }
         // Handled above, before the generation check.
         Event::Watched { .. } => {}
     }
@@ -459,8 +507,38 @@ fn start_tasks(
     id: &str,
     generation: u64,
     ready: &Arc<Ready>,
+    settings: &Settings,
     events_tx: &mpsc::Sender<Event>,
 ) {
+    let reolink = ready
+        .info
+        .manufacturer
+        .as_deref()
+        .is_some_and(|maker| maker.to_ascii_lowercase().contains("reolink"));
+    if reolink && let Some(login) = ready.soap.login.clone() {
+        let port = settings.reolink_port.unwrap_or(reolink::PORT);
+        let api = reolink::Api::new(ready.soap.camera.clone(), port, login);
+        let (calls_tx, calls) = mpsc::channel(4);
+        let (reports_tx, mut reports) = mpsc::channel(8);
+        // Not aborted with the others: it ends when `calls` closes, logging out first.
+        tokio::spawn(reolink::run(api, calls, reports_tx));
+        let tx = events_tx.clone();
+        let who = id.to_owned();
+        cam.tasks.push(tokio::spawn(async move {
+            while let Some(report) = reports.recv().await {
+                let event = Event::Extras {
+                    id: who.clone(),
+                    generation,
+                    report,
+                };
+                if tx.send(event).await.is_err() {
+                    return;
+                }
+            }
+        }));
+        cam.extras = Some(calls_tx);
+        cam.parts.clear();
+    }
     if let Some(target) = ready.info.events.clone()
         && !ready.info.detects.is_empty()
     {
@@ -553,6 +631,34 @@ async fn available(ctx: &ProtocolContext, id: &str, availability: Availability) 
 fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sender<Event>) {
     match incoming {
         Incoming::Call(call) => {
+            let extra = reolink::Part::ALL.into_iter().find_map(|part| {
+                let id = call
+                    .call
+                    .unique_id
+                    .as_str()
+                    .strip_prefix(part.key())?
+                    .strip_prefix(':')?;
+                Some((part, cams.get(id)?))
+            });
+            if let Some((part, cam)) = extra {
+                match cam.extras.as_ref().filter(|_| cam.parts.contains(&part)) {
+                    Some(worker) => {
+                        if let Err(error) = worker.try_send((part, call)) {
+                            let (_, call) = match error {
+                                mpsc::error::TrySendError::Full(pair)
+                                | mpsc::error::TrySendError::Closed(pair) => pair,
+                            };
+                            call.reply(Err(ServiceError::unavailable(
+                                "the camera is still busy with the last change",
+                            )));
+                        }
+                    }
+                    None => call.reply(Err(ServiceError::unavailable(
+                        "the camera can't be reached",
+                    ))),
+                }
+                return;
+            }
             let moves = matches!(
                 call.call.service,
                 Service::CameraMove(_) | Service::CameraStop | Service::CameraGoToPreset(_)
@@ -730,6 +836,63 @@ fn sensor(id: &str, detects: Detects) -> Result<EntityDescription, ProtocolError
         }),
         entity_category: None,
     })
+}
+
+fn extra_entity(id: &str, part: reolink::Part) -> Result<UniqueId, ProtocolError> {
+    UniqueId::try_from(format!("{}:{id}", part.key()))
+        .map_err(|error| ProtocolError::new(error.to_string()))
+}
+
+/// The entity for one of a Reolink's extras.
+fn extra(
+    id: &str,
+    part: reolink::Part,
+    dimmable: bool,
+) -> Result<EntityDescription, ProtocolError> {
+    use reolink::Part;
+    let device = UniqueId::try_from(id).map_err(|error| ProtocolError::new(error.to_string()))?;
+    let (capabilities, entity_category) = match part {
+        Part::Spotlight => (
+            Capabilities::Light(LightCapabilities {
+                brightness: dimmable,
+                ..LightCapabilities::default()
+            }),
+            None,
+        ),
+        Part::Siren => (
+            Capabilities::Siren(SirenCapabilities {
+                duration: true,
+                ..SirenCapabilities::default()
+            }),
+            None,
+        ),
+        Part::Infrared | Part::StatusLight => (
+            Capabilities::Switch(SwitchCapabilities::default()),
+            Some(EntityCategory::Config),
+        ),
+    };
+    Ok(EntityDescription {
+        unique_id: extra_entity(id, part)?,
+        name: Some(name_of(part.name())),
+        device_unique_id: Some(device),
+        suggested_object_id: None,
+        capabilities,
+        entity_category,
+    })
+}
+
+fn extra_state(part: reolink::Part, now: reolink::Now) -> State {
+    match (part, now) {
+        (_, reolink::Now::Light { on, brightness }) => State::Light(LightState {
+            on,
+            brightness,
+            color_mode: None,
+            color_temp_kelvin: None,
+            rgb: None,
+        }),
+        (reolink::Part::Siren, reolink::Now::On(on)) => State::Siren(SirenState { on }),
+        (_, reolink::Now::On(on)) => State::Switch(SwitchState { on }),
+    }
 }
 
 /// What it can do: live video at the qualities it has a stream for.

@@ -8,14 +8,15 @@ use irori_protocol::host::{self, Reports};
 use irori_protocol::{Picture, ProtocolError, ServiceError};
 use irori_types::{
     Availability, BinarySensorClass, CameraGoToPreset, CameraMove, CameraPreset, CameraStatus,
-    Capabilities, Context, ContextId, DeviceDescription, EntityDescription, Origin, Service,
-    ServiceCall, State, StateReport, UniqueId, Waiting,
+    Capabilities, Context, ContextId, DeviceDescription, EntityDescription, LightTurnOn, Origin,
+    Service, ServiceCall, SirenTurnOn, State, StateReport, UniqueId, Waiting,
 };
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::discover::Found;
 use crate::drive;
 use crate::fake::{FakeCamera, JPEG};
+use crate::fake_reolink::FakeReolink;
 use crate::http::Target;
 use crate::settings::Settings;
 
@@ -50,7 +51,12 @@ fn settings(login: Option<(&str, &str)>) -> Settings {
         }),
         None => serde_json::json!({}),
     };
-    serde_json::from_value(serde_json::json!({ "cameras": cameras })).expect("settings")
+    let mut settings: Settings =
+        serde_json::from_value(serde_json::json!({ "cameras": cameras })).expect("settings");
+    // The fake cameras say they're Reolinks: their own API is somewhere nothing listens,
+    // unless a test starts one.
+    settings.reolink_port = Some(1);
+    settings
 }
 
 async fn world(settings: Settings, store: &Store) -> World {
@@ -159,8 +165,13 @@ impl World {
     }
 
     async fn call(&self, service: Service) -> Result<(), ServiceError> {
+        self.call_to("camera", service).await
+    }
+
+    /// Calls the entity whose unique id is `key:` and the camera's id.
+    async fn call_to(&self, key: &str, service: Service) -> Result<(), ServiceError> {
         let (call, reply) = host::incoming_call(ServiceCall {
-            unique_id: UniqueId::try_from(format!("camera:{ID}")).expect("id"),
+            unique_id: UniqueId::try_from(format!("{key}:{ID}")).expect("id"),
             service,
             context: Context {
                 id: ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9").expect("context"),
@@ -526,5 +537,159 @@ async fn a_camera_turns_stops_on_its_own_and_goes_to_presets() {
     world.call(Service::CameraStop).await.expect("it stops");
     assert_eq!(camera.seen().stops, 2);
     assert_eq!(camera.seen().refused, 0);
+    world.stop().await;
+}
+
+fn reported(report: &StateReport, key: &str) -> bool {
+    report.unique_id.as_str() == format!("{key}:{ID}")
+}
+
+#[tokio::test]
+async fn a_reolinks_spotlight_siren_and_lights_do_what_they_re_told_and_say_so() {
+    let store = Store::default();
+    let camera = FakeCamera::start("admin", "right", true).await;
+    let api = FakeReolink::start("admin", "right").await;
+    let mut settings = settings(Some(("admin", "right")));
+    settings.reolink_port = Some(api.port);
+    let world = world(settings, &store).await;
+    world.sees(&camera).await;
+    world
+        .until("its extras are added", |log| {
+            ["spotlight", "siren", "infrared", "status_light"]
+                .iter()
+                .all(|key| {
+                    log.entities
+                        .iter()
+                        .any(|entity| entity.unique_id.as_str() == format!("{key}:{ID}"))
+                })
+        })
+        .await;
+    {
+        let log = world.log.lock().expect("log");
+        let spotlight = log
+            .entities
+            .iter()
+            .find(|entity| entity.unique_id.as_str() == format!("spotlight:{ID}"))
+            .expect("a spotlight");
+        assert!(matches!(&spotlight.capabilities, Capabilities::Light(light) if light.brightness));
+    }
+
+    // As the camera has them: the spotlight off at 85%, the others on.
+    world
+        .report("the spotlight as it is", |report| {
+            reported(report, "spotlight")
+                && matches!(&report.state, Some(State::Light(light))
+                    if !light.on && light.brightness == Some(217))
+        })
+        .await;
+
+    world
+        .call_to(
+            "spotlight",
+            Service::LightTurnOn(LightTurnOn {
+                brightness: Some(255),
+                ..LightTurnOn::default()
+            }),
+        )
+        .await
+        .expect("the spotlight turns on");
+    world
+        .report("the spotlight on, full", |report| {
+            reported(report, "spotlight")
+                && matches!(&report.state, Some(State::Light(light))
+                    if light.on && light.brightness == Some(255))
+        })
+        .await;
+
+    world
+        .call_to("infrared", Service::SwitchTurnOff)
+        .await
+        .expect("the infrared lights go off");
+    world
+        .report("the infrared lights off", |report| {
+            reported(report, "infrared")
+                && matches!(&report.state, Some(State::Switch(switch)) if !switch.on)
+        })
+        .await;
+
+    world
+        .call_to(
+            "siren",
+            Service::SirenTurnOn(SirenTurnOn {
+                duration: Some(1),
+                ..SirenTurnOn::default()
+            }),
+        )
+        .await
+        .expect("the siren sounds");
+    world
+        .report("the siren on", |report| {
+            reported(report, "siren")
+                && matches!(&report.state, Some(State::Siren(siren)) if siren.on)
+        })
+        .await;
+    world
+        .report("the siren off on its own", |report| {
+            reported(report, "siren")
+                && matches!(&report.state, Some(State::Siren(siren)) if !siren.on)
+        })
+        .await;
+
+    let changes = api.seen().changes;
+    assert_eq!(
+        changes,
+        [
+            r#"SetWhiteLed {"WhiteLed":{"bright":100,"channel":0,"state":1}}"#,
+            r#"SetIrLights {"IrLights":{"channel":0,"state":"Off"}}"#,
+            r#"AudioAlarmPlay {"alarm_mode":"manul","channel":0,"manual_switch":1}"#,
+            r#"AudioAlarmPlay {"alarm_mode":"manul","channel":0,"manual_switch":0}"#,
+        ]
+    );
+
+    // One login for all of it, given back when it stops.
+    world.stop().await;
+    for _ in 0..100 {
+        if api.seen().logouts == 1 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let seen = api.seen();
+    assert_eq!((seen.logins, seen.logouts), (1, 1));
+}
+
+#[tokio::test]
+async fn a_reolink_api_that_turns_its_login_down_is_asked_once() {
+    let store = Store::default();
+    let camera = FakeCamera::start("admin", "right", true).await;
+    // Its API wants something else: say, an account allowed ONVIF but not the API.
+    let api = FakeReolink::start("admin", "other").await;
+    let mut settings = settings(Some(("admin", "right")));
+    settings.reolink_port = Some(api.port);
+    let world = world(settings, &store).await;
+    world.sees(&camera).await;
+    world
+        .until("the camera is added", |log| {
+            log.availability.contains(&Availability::Available)
+        })
+        .await;
+    for _ in 0..100 {
+        if api.seen().logins > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(api.seen().logins, 1, "one try, never again");
+    {
+        let log = world.log.lock().expect("log");
+        assert!(
+            !log.entities
+                .iter()
+                .any(|entity| entity.unique_id.as_str().starts_with("spotlight:")),
+            "no extras without the API"
+        );
+        assert!(log.waiting.is_empty(), "the camera itself still works");
+    }
     world.stop().await;
 }

@@ -10,11 +10,12 @@ icon = "icon.svg"
 
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["camera", "binary_sensor", "light", "siren", "switch", "select"]
+entity_kinds = ["camera", "binary_sensor", "light", "siren", "switch"]
 run = { command = "bin/irori-ext-cameras" }
 
 # Finding cameras (WS-Discovery, UDP 3702), asking them things (ONVIF over HTTP), their pictures
 # and their video (RTSP) all stay on the local network. There is no vendor account and no cloud
 # call. Each camera's own login is asked for on the Add device screen and kept in secrets.toml.
+# A Reolink's own API (spotlight, siren, lights) is the same login, over the camera's HTTPS.
 [permissions]
 lan = true
