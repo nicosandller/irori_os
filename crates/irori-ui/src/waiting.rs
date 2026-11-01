@@ -109,6 +109,7 @@ pub fn WaitingFor(extension: ExtensionId) -> impl IntoView {
 fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let value = RwSignal::new(String::new());
+    let username = RwSignal::new(String::new());
     let sending = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
     let secret = item.secret.clone();
@@ -121,14 +122,27 @@ fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView
             if typed.trim().is_empty() {
                 return;
             }
+            // A login: the username is needed too, and the password goes as typed, since a
+            // space at either end can be part of it.
+            let login = secret.username.is_some();
+            let user = username.get_untracked().trim().to_owned();
+            if login && user.is_empty() {
+                return;
+            }
             let extension = extension.clone();
             sending.set(true);
             spawn_local(async move {
-                match api::give_secret(&extension, &secret.path, typed.trim()).await {
+                let (typed, user) = if login {
+                    (typed.as_str(), Some(user.as_str()))
+                } else {
+                    (typed.trim(), None)
+                };
+                match api::give_secret(&extension, &secret.path, typed, user).await {
                     Ok(()) => {
                         // Cleared straight away: the page shouldn't keep a key around any longer
                         // than it takes to send it.
                         value.set(String::new());
+                        username.set(String::new());
                         trouble.set(None);
                         crate::refresh(live);
                     }
@@ -149,6 +163,22 @@ fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView
             <p class="why-waiting">{item.reason.clone()}</p>
             {secret.map(|secret| {
                 let send = send.clone();
+                let asks_username = secret.username.is_some();
+                let user_field = secret.username.clone().map(|asked| {
+                    let placeholder = asked.placeholder.clone().unwrap_or_else(|| asked.label.clone());
+                    view! {
+                        <input
+                            type="text"
+                            autocomplete="off"
+                            autocapitalize="off"
+                            spellcheck="false"
+                            aria-label=asked.label.clone()
+                            placeholder=placeholder
+                            prop:value=username
+                            on:input:target=move |ev| username.set(ev.target().value())
+                        />
+                    }
+                });
                 view! {
                     <form
                         class="inline-form"
@@ -157,6 +187,7 @@ fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView
                             send();
                         }
                     >
+                        {user_field}
                         <input
                             type="password"
                             autocomplete="off"
@@ -169,7 +200,11 @@ fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView
                         <button
                             type="submit"
                             class="add"
-                            disabled=move || sending.get() || value.get().trim().is_empty()
+                            disabled=move || {
+                                sending.get()
+                                    || value.get().trim().is_empty()
+                                    || (asks_username && username.get().trim().is_empty())
+                            }
                         >
                             {move || if sending.get() { "Saving…" } else { "Use this" }}
                         </button>

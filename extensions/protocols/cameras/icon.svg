@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" role="img" aria-label="Cameras">
+  <!-- An original mark: a wall-mounted camera on its bracket, with its lens. -->
+  <path d="M8 8h4v10H8z" fill="#c4784a"/>
+  <path d="M10 13h8" stroke="#c4784a" stroke-width="3" stroke-linecap="round"/>
+  <rect x="16" y="8" width="26" height="14" rx="4" transform="rotate(14 29 15)" fill="#c4784a"/>
+  <circle cx="35" cy="18.5" r="4" fill="#fff"/>
+  <circle cx="35" cy="18.5" r="2" fill="#c4784a"/>
+  <path d="M14 32c3 3.5 7 5.5 11.5 5.5" fill="none" stroke="#c4784a" stroke-width="2.4" stroke-linecap="round"/>
+  <path d="M15 27c1.8 2.2 4.2 3.6 7 3.9" fill="none" stroke="#c4784a" stroke-width="2.4" stroke-linecap="round"/>
+</svg>

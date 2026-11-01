@@ -1,0 +1,41 @@
+[package]
+name = "irori-protocol-cameras"
+description = "IP cameras on the local network, over ONVIF and RTSP, with extras for Reolink."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-protocol.workspace = true
+
+base64.workspace = true
+bytes = "1.12.1"
+getrandom.workspace = true
+http-body-util.workspace = true
+jiff.workspace = true
+hyper = { version = "1.11.1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"] }
+# Camera logins: HTTP Digest (MD5) for pictures and RTSP, WS-Security's password digest (SHA-1)
+# for ONVIF. Both are what the cameras ask for, not choices made here.
+md-5 = "0.10.6"
+sha1 = "0.10.7"
+sha2.workspace = true
+# ONVIF answers are SOAP. Matched by local name only: vendors put the same element in
+# different namespaces.
+roxmltree = "0.20.0"
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "irori-ext-cameras"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -902,6 +902,9 @@ pub async fn remove_helper(table: &str, id: &str) -> Result<(), String> {
 struct SecretGiven<'a> {
     path: &'a [String],
     value: &'a str,
+    /// Only for a login (`SecretRequest::username`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<&'a str>,
 }
 
 /// Hands an extension a secret it asked for. Irori writes it to `secrets.toml`, restarts the
@@ -1151,9 +1154,14 @@ pub async fn give_secret(
     extension: &ExtensionId,
     path: &[String],
     value: &str,
+    username: Option<&str>,
 ) -> Result<(), String> {
     let response = put(&format!("/api/extensions/{extension}/secrets"))
-        .json(&SecretGiven { path, value })
+        .json(&SecretGiven {
+            path,
+            value,
+            username,
+        })
         .map_err(|e| e.to_string())?
         .send()
         .await

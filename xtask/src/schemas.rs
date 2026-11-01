@@ -63,6 +63,10 @@ pub fn run(check: bool) -> anyhow::Result<()> {
 fn extension_config_schemas() -> Vec<(&'static str, schemars::Schema)> {
     vec![
         (
+            "extensions/protocols/cameras",
+            schemars::schema_for!(irori_protocol_cameras::settings::Settings),
+        ),
+        (
             "extensions/protocols/cast",
             schemars::schema_for!(irori_protocol_cast::settings::Settings),
         ),

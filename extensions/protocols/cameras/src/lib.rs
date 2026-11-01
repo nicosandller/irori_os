@@ -1,0 +1,485 @@
+//! IP cameras on the local network, over ONVIF and RTSP.
+//!
+//! Cameras are found with WS-Discovery. Each one needs its own login before anything else can
+//! be asked of it, so a camera first shows up on the Add device screen asking for one
+//! ([`Waiting`]). Once it has one, it becomes a device with a camera entity, and a page can ask
+//! it for a picture.
+//!
+//! **A refused login is never sent again.** Cameras lock an account after a few failures, and
+//! giving any camera its login restarts this extension, so remembering for one run isn't
+//! enough. A fingerprint of each refused login is kept in the extension's store, and a camera
+//! whose login still matches it waits for a different one without being asked
+//! ([`refused`]). Only the camera saying no to the login counts: a timeout or a camera that
+//! can't be reached is safe to try again.
+
+mod discover;
+mod http;
+mod onvif;
+mod refused;
+pub mod settings;
+mod soap;
+
+#[cfg(test)]
+mod fake;
+#[cfg(test)]
+mod tests;
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use irori_protocol::{
+    AvailabilityTarget, Health, Incoming, Protocol, ProtocolContext, ProtocolError, ServiceError,
+};
+use irori_types::{
+    Availability, CameraCapabilities, CameraState, CameraStatus, Capabilities, DeviceDescription,
+    EntityDescription, Name, SecretRequest, State, StateReport, UniqueId, UsernameRequest, Waiting,
+};
+use tokio::sync::mpsc;
+use tokio::time::Instant;
+
+use crate::discover::Found;
+use crate::http::HttpError;
+use crate::onvif::Info;
+use crate::refused::Refusals;
+use crate::settings::{Login, Settings};
+use crate::soap::Soap;
+
+/// The Cameras protocol.
+#[derive(Debug)]
+pub struct Cameras;
+
+impl Protocol for Cameras {
+    type Config = Settings;
+    const MANIFEST: &'static str = include_str!("../irori-extension.toml");
+    const ICON: Option<&'static str> = Some(include_str!("../icon.svg"));
+
+    async fn run(settings: Settings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        let (found, incoming) = mpsc::channel(32);
+        let discovery = discover::start(&settings, found);
+        let outcome = drive(settings, ctx, incoming).await;
+        discovery.abort();
+        outcome
+    }
+}
+
+/// How long a camera that couldn't be reached is left before it's tried again, when it next
+/// answers discovery.
+const RETRY: Duration = Duration::from_secs(60);
+const EVENTS: usize = 32;
+
+/// Where one camera stands.
+enum Stage {
+    /// It has no login yet.
+    NeedsLogin,
+    /// Its login can't be read.
+    BadLogin(String),
+    /// It turned down the login it has. Waits for a different one.
+    Refused,
+    /// Being logged into now.
+    Connecting,
+    Ready(Arc<Ready>),
+    /// It couldn't be reached, or answered strangely. Tried again after `retry`.
+    Unreachable {
+        why: String,
+        retry: Instant,
+    },
+}
+
+/// A camera that's logged into.
+struct Ready {
+    soap: Soap,
+    info: Info,
+}
+
+struct Cam {
+    found: Found,
+    /// Bumped on each new login attempt, so an answer from an older one is ignored.
+    generation: u64,
+    stage: Stage,
+    /// Whether it has been described to the core in this run.
+    described: bool,
+}
+
+/// What a background task found out.
+enum Event {
+    Connected {
+        id: String,
+        generation: u64,
+        ready: Box<Ready>,
+    },
+    Refused {
+        id: String,
+        generation: u64,
+    },
+    Unreachable {
+        id: String,
+        generation: u64,
+        why: String,
+    },
+}
+
+/// Runs the protocol against an injected discovery stream. Tests use this so nothing probes the
+/// real network.
+pub(crate) async fn drive(
+    settings: Settings,
+    mut ctx: ProtocolContext,
+    mut discovery: mpsc::Receiver<Found>,
+) -> Result<(), ProtocolError> {
+    let mut refusals = Refusals::load(&ctx).await;
+    let (events_tx, mut events) = mpsc::channel(EVENTS);
+    let mut cams: BTreeMap<String, Cam> = BTreeMap::new();
+    let mut generations = 0u64;
+    let mut reported_health = Health::Running;
+    ctx.set_health(reported_health.clone()).await;
+    let mut reported_waiting: Vec<Waiting> = Vec::new();
+
+    loop {
+        tokio::select! {
+            incoming = ctx.next() => {
+                let Some(incoming) = incoming else { break Ok(()) };
+                handle(incoming, &cams, &events_tx);
+            }
+            found = discovery.recv() => {
+                let Some(found) = found else { break Ok(()) };
+                arrive(found, &settings, &refusals, &mut cams, &mut generations, &events_tx);
+            }
+            Some(event) = events.recv() => {
+                apply(event, &settings, &ctx, &mut refusals, &mut cams).await?;
+            }
+        }
+        let health = health(&cams);
+        if health != reported_health {
+            ctx.set_health(health.clone()).await;
+            reported_health = health;
+        }
+        let waiting = waiting(&cams);
+        if waiting != reported_waiting {
+            ctx.set_waiting(waiting.clone()).await;
+            reported_waiting = waiting;
+        }
+    }
+}
+
+/// A camera answered discovery.
+fn arrive(
+    found: Found,
+    settings: &Settings,
+    refusals: &Refusals,
+    cams: &mut BTreeMap<String, Cam>,
+    generations: &mut u64,
+    events: &mpsc::Sender<Event>,
+) {
+    let cam = cams.entry(found.id.clone()).or_insert_with(|| Cam {
+        found: found.clone(),
+        generation: 0,
+        stage: Stage::NeedsLogin,
+        described: false,
+    });
+    let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
+    cam.found = found;
+    let start = match &cam.stage {
+        // A first sighting, or one still without a usable login: see what the settings have.
+        Stage::NeedsLogin | Stage::BadLogin(_) => true,
+        // Waiting for a different login; this run's settings can't have one.
+        Stage::Refused => false,
+        // Already being logged into: one attempt at a time, however many probes it answers.
+        Stage::Connecting => false,
+        Stage::Ready(_) => moved,
+        Stage::Unreachable { retry, .. } => Instant::now() >= *retry || moved,
+    };
+    if !start {
+        return;
+    }
+    cam.stage = match settings.cameras.get(&cam.found.id).map(|given| &given.0) {
+        None => Stage::NeedsLogin,
+        Some(Err(why)) => Stage::BadLogin(why.clone()),
+        Some(Ok(login)) if refusals.refused(&cam.found.id, login) => Stage::Refused,
+        Some(Ok(login)) => {
+            *generations += 1;
+            cam.generation = *generations;
+            connect(
+                cam.found.clone(),
+                login.clone(),
+                cam.generation,
+                events.clone(),
+            );
+            Stage::Connecting
+        }
+    };
+}
+
+/// Logs into a camera in the background.
+fn connect(found: Found, login: Login, generation: u64, events: mpsc::Sender<Event>) {
+    tokio::spawn(async move {
+        let id = found.id.clone();
+        let event = match onvif::connect(&found, &login).await {
+            Ok((soap, info)) => Event::Connected {
+                id,
+                generation,
+                ready: Box::new(Ready { soap, info }),
+            },
+            Err(HttpError::Refused) => Event::Refused { id, generation },
+            Err(HttpError::Unreachable(why) | HttpError::Failed(why)) => Event::Unreachable {
+                id,
+                generation,
+                why,
+            },
+        };
+        let _ = events.send(event).await;
+    });
+}
+
+async fn apply(
+    event: Event,
+    settings: &Settings,
+    ctx: &ProtocolContext,
+    refusals: &mut Refusals,
+    cams: &mut BTreeMap<String, Cam>,
+) -> Result<(), ProtocolError> {
+    let (id, generation) = match &event {
+        Event::Connected { id, generation, .. }
+        | Event::Refused { id, generation }
+        | Event::Unreachable { id, generation, .. } => (id.clone(), *generation),
+    };
+    let Some(cam) = cams.get_mut(&id) else {
+        return Ok(());
+    };
+    if cam.generation != generation {
+        return Ok(());
+    }
+    match event {
+        Event::Connected { ready, .. } => {
+            let info = &ready.info;
+            if let Some(Ok(login)) = settings.cameras.get(&id).map(|given| &given.0) {
+                refusals.accepted(ctx, &id, login).await;
+            }
+            tracing::info!(
+                camera = %id,
+                profiles = info.profiles.len(),
+                pictures = info.snapshot.is_some(),
+                "logged into a camera"
+            );
+            let (device, entity) = describe(&cam.found, info)?;
+            if ctx.describe_device(device).await.is_err()
+                || ctx.describe_entity(entity).await.is_err()
+            {
+                tracing::warn!(camera = %id, "a camera couldn't be added");
+                cam.stage = Stage::Unreachable {
+                    why: "it couldn't be added".into(),
+                    retry: Instant::now() + RETRY,
+                };
+                return Ok(());
+            }
+            cam.described = true;
+            available(ctx, &id, Availability::Available).await;
+            ctx.report_state(StateReport {
+                unique_id: camera_entity(&id)?,
+                state: Some(State::Camera(CameraState {
+                    state: CameraStatus::Idle,
+                    motion_detection: None,
+                    presets: None,
+                })),
+                attributes: BTreeMap::new(),
+                caused_by: None,
+                replayed: false,
+            });
+            cam.stage = Stage::Ready(Arc::new(*ready));
+        }
+        Event::Refused { .. } => {
+            tracing::warn!(camera = %id, "a camera refused its login; it won't be tried again until it's given a different one");
+            if let Some(Ok(login)) = settings.cameras.get(&id).map(|given| &given.0) {
+                refusals.refuse(ctx, &id, login).await;
+            }
+            if cam.described {
+                available(ctx, &id, Availability::Unavailable).await;
+            }
+            cam.stage = Stage::Refused;
+        }
+        Event::Unreachable { why, .. } => {
+            tracing::warn!(camera = %id, "a camera couldn't be set up: {why}");
+            if cam.described {
+                available(ctx, &id, Availability::Unavailable).await;
+            }
+            cam.stage = Stage::Unreachable {
+                why,
+                retry: Instant::now() + RETRY,
+            };
+        }
+    }
+    Ok(())
+}
+
+async fn available(ctx: &ProtocolContext, id: &str, availability: Availability) {
+    let Ok(device) = UniqueId::try_from(id) else {
+        return;
+    };
+    if ctx
+        .set_availability(AvailabilityTarget::Device(device), availability)
+        .await
+        .is_err()
+    {
+        tracing::warn!(camera = %id, "a camera's availability couldn't be set");
+    }
+}
+
+/// Handles something from the core.
+fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sender<Event>) {
+    match incoming {
+        Incoming::Call(call) => {
+            call.reply(Err(ServiceError::failed("this camera can't do that")));
+        }
+        Incoming::Action(action) => action.reply(Err("this extension has no actions".into())),
+        Incoming::Unpair(unpair) => unpair.reply(Err("cameras aren't paired".into())),
+        Incoming::Picture(picture) => {
+            let ready = ready_for(cams, picture.unique_id.as_str());
+            let (id, ready) = match ready {
+                Ok(pair) => pair,
+                Err(why) => {
+                    picture.reply(Err(why));
+                    return;
+                }
+            };
+            let Some(snapshot) = ready.info.snapshot.clone() else {
+                picture.reply(Err("this camera only sends live video".into()));
+                return;
+            };
+            let generation = cams.get(&id).map_or(0, |cam| cam.generation);
+            let events = events.clone();
+            tokio::spawn(async move {
+                match onvif::picture(&ready.soap, &snapshot).await {
+                    Ok(taken) => picture.reply(Ok(taken)),
+                    Err(HttpError::Refused) => {
+                        picture.reply(Err("the camera refused its login".into()));
+                        let _ = events.send(Event::Refused { id, generation }).await;
+                    }
+                    Err(error) => picture.reply(Err(error.to_string())),
+                }
+            });
+        }
+        Incoming::Live(live) => {
+            live.feed
+                .end(Some("live video from this camera isn't ready yet".into()));
+        }
+    }
+}
+
+/// The logged-in camera an entity belongs to, or why there isn't one.
+fn ready_for(cams: &BTreeMap<String, Cam>, entity: &str) -> Result<(String, Arc<Ready>), String> {
+    let id = entity
+        .strip_prefix("camera:")
+        .ok_or_else(|| "no camera has that entity".to_owned())?;
+    let cam = cams
+        .get(id)
+        .ok_or_else(|| "no camera has that entity".to_owned())?;
+    match &cam.stage {
+        Stage::Ready(ready) => Ok((id.to_owned(), Arc::clone(ready))),
+        Stage::Refused => Err("the camera refused its login".into()),
+        _ => Err("the camera can't be reached".into()),
+    }
+}
+
+fn camera_entity(id: &str) -> Result<UniqueId, ProtocolError> {
+    UniqueId::try_from(format!("camera:{id}"))
+        .map_err(|error| ProtocolError::new(error.to_string()))
+}
+
+/// The device and its camera entity.
+fn describe(
+    found: &Found,
+    info: &Info,
+) -> Result<(DeviceDescription, EntityDescription), ProtocolError> {
+    let device_id = UniqueId::try_from(found.id.as_str())
+        .map_err(|error| ProtocolError::new(error.to_string()))?;
+    let device = DeviceDescription {
+        unique_id: device_id.clone(),
+        name: device_name(found, info),
+        manufacturer: info.manufacturer.clone(),
+        model: info.model.clone().or_else(|| found.hardware.clone()),
+        sw_version: info.firmware.clone(),
+        hw_version: None,
+        serial_number: info.serial.clone(),
+        suggested_area: None,
+        via_device_unique_id: None,
+    };
+    let entity = EntityDescription {
+        unique_id: camera_entity(&found.id)?,
+        name: None,
+        device_unique_id: Some(device_id),
+        suggested_object_id: None,
+        capabilities: Capabilities::Camera(CameraCapabilities::default()),
+        entity_category: None,
+    };
+    Ok((device, entity))
+}
+
+/// What to call it: its maker and model, which is what cameras' own names rarely are
+/// (a Reolink announces itself as `IPC-BO`).
+fn device_name(found: &Found, info: &Info) -> Name {
+    let maker = info.manufacturer.as_deref().unwrap_or_default().trim();
+    let text = match info.model.as_deref().or(found.hardware.as_deref()) {
+        Some(model)
+            if !maker.is_empty()
+                && !model
+                    .to_ascii_lowercase()
+                    .contains(&maker.to_ascii_lowercase()) =>
+        {
+            format!("{maker} {model}")
+        }
+        Some(model) => model.to_owned(),
+        None => found.name.clone(),
+    };
+    name_of(&text)
+}
+
+fn name_of(text: &str) -> Name {
+    let short: String = text.trim().chars().take(100).collect();
+    Name::try_from(short.trim()).unwrap_or_else(|_| Name::try_from("Camera").expect("a name"))
+}
+
+/// What the Add device screen shows for cameras that need a login.
+fn waiting(cams: &BTreeMap<String, Cam>) -> Vec<Waiting> {
+    cams.values()
+        .filter_map(|cam| {
+            let reason = match &cam.stage {
+                Stage::NeedsLogin => "it needs the camera's login".to_owned(),
+                Stage::BadLogin(why) => why.clone(),
+                Stage::Refused => "the camera refused that login".to_owned(),
+                _ => return None,
+            };
+            Some(Waiting {
+                unique_id: UniqueId::try_from(cam.found.id.as_str()).ok()?,
+                name: name_of(cam.found.hardware.as_deref().unwrap_or(&cam.found.name)),
+                reason,
+                secret: Some(SecretRequest {
+                    path: vec!["cameras".to_owned(), cam.found.id.clone()],
+                    label: "Password".to_owned(),
+                    hint: Some(
+                        "the camera's own login; for a Tapo camera, make one in the Tapo app, \
+                         under the camera's Advanced settings, then Camera account"
+                            .to_owned(),
+                    ),
+                    username: Some(UsernameRequest {
+                        label: "Username".to_owned(),
+                        placeholder: Some("admin".to_owned()),
+                    }),
+                }),
+            })
+        })
+        .collect()
+}
+
+fn health(cams: &BTreeMap<String, Cam>) -> Health {
+    let unreachable: Vec<&str> = cams
+        .values()
+        .filter_map(|cam| match &cam.stage {
+            Stage::Unreachable { why, .. } => Some(why.as_str()),
+            _ => None,
+        })
+        .collect();
+    match unreachable.as_slice() {
+        [] => Health::Running,
+        [why] => Health::Degraded(format!("a camera can't be set up: {why}")),
+        many => Health::Degraded(format!("{} cameras can't be set up", many.len())),
+    }
+}

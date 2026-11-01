@@ -23,6 +23,16 @@ crate = "irori-protocol-esphome"
 bin = "irori-ext-esphome"
 
 [[extension]]
+id = "cameras"
+name = "Cameras"
+category = "protocol"
+description = "IP cameras on your network, over ONVIF and RTSP, with extras for Reolink."
+version = "0.1.0"
+source = "extensions/protocols/cameras"
+crate = "irori-protocol-cameras"
+bin = "irori-ext-cameras"
+
+[[extension]]
 id = "cast"
 name = "Google Cast"
 category = "protocol"
