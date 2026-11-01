@@ -681,8 +681,11 @@ fn handle_host_line(
             params,
             caller,
         } => {
-            let (incoming, result) =
-                host::incoming_page(method, params, caller.unwrap_or_else(crate::engine::Caller::owner));
+            let (incoming, result) = host::incoming_page(
+                method,
+                params,
+                caller.unwrap_or_else(crate::engine::Caller::owner),
+            );
             match actions.try_send(incoming) {
                 Ok(()) => {
                     let out = out.clone();

@@ -79,6 +79,117 @@ pub struct Waiting {
     /// Where a secret that would unlock it goes, if a secret is what it needs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub secret: Option<SecretRequest>,
+    /// A page to open for the step, if the person has to do it somewhere else: signing in to a
+    /// vendor's account, adding a key to a car in its app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<WaitingLink>,
+    /// Text to put somewhere else, shown with a Copy button: a public key a vendor wants on the
+    /// person's own website, say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<WaitingCopy>,
+}
+
+/// The most text a waiting item can hand over to copy.
+pub const MAX_WAITING_COPY: usize = 4096;
+
+/// A page a waiting step sends the person to. Always `https`; the UI opens it in a new tab.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitingLink {
+    /// What the link says, e.g. "Sign in to Tesla".
+    pub label: String,
+    pub url: String,
+}
+
+/// Text a waiting step asks the person to put somewhere else.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WaitingCopy {
+    /// What it is, e.g. "Public key".
+    pub label: String,
+    /// At most [`MAX_WAITING_COPY`] bytes.
+    pub text: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWaitingLink {
+    label: String,
+    url: String,
+}
+
+impl<'de> Deserialize<'de> for WaitingLink {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawWaitingLink::deserialize(deserializer)?;
+        let link = WaitingLink {
+            label: raw.label,
+            url: raw.url,
+        };
+        link.validate().map_err(serde::de::Error::custom)?;
+        Ok(link)
+    }
+}
+
+impl WaitingLink {
+    /// Deserialization runs this; call it yourself when building a link in code.
+    pub fn validate(&self) -> Result<(), InvariantError> {
+        if self.label.trim().is_empty() {
+            return Err(InvariantError("a waiting link needs a label".into()));
+        }
+        let rest = self
+            .url
+            .strip_prefix("https://")
+            .ok_or_else(|| InvariantError("a waiting link is an https:// address".into()))?;
+        if rest.is_empty()
+            || rest.starts_with('/')
+            || self.url.len() > 2048
+            || self
+                .url
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err(InvariantError(
+                "a waiting link is one https:// address with a host, up to 2048 characters".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawWaitingCopy {
+    label: String,
+    text: String,
+}
+
+impl<'de> Deserialize<'de> for WaitingCopy {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawWaitingCopy::deserialize(deserializer)?;
+        let copy = WaitingCopy {
+            label: raw.label,
+            text: raw.text,
+        };
+        copy.validate().map_err(serde::de::Error::custom)?;
+        Ok(copy)
+    }
+}
+
+impl WaitingCopy {
+    /// Deserialization runs this; call it yourself when building one in code.
+    pub fn validate(&self) -> Result<(), InvariantError> {
+        if self.label.trim().is_empty() || self.text.trim().is_empty() {
+            return Err(InvariantError(
+                "text to copy needs a label and some text".into(),
+            ));
+        }
+        if self.text.len() > MAX_WAITING_COPY {
+            return Err(InvariantError(format!(
+                "text to copy is at most {MAX_WAITING_COPY} bytes"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// Where a secret goes: a path inside the extension's table in `secrets.toml`
@@ -1301,5 +1412,61 @@ mod secret_request_tests {
             "label": "Key"
         }));
         assert!(err.is_err(), "{err:?}");
+    }
+}
+
+#[cfg(test)]
+mod waiting_tests {
+    use super::*;
+
+    fn waiting(extra: serde_json::Value) -> Result<Waiting, serde_json::Error> {
+        let mut value = serde_json::json!({
+            "unique_id": "account",
+            "name": "Tesla account",
+            "reason": "Sign in to Tesla",
+        });
+        for (key, field) in extra.as_object().expect("an object") {
+            value[key] = field.clone();
+        }
+        serde_json::from_value(value)
+    }
+
+    #[test]
+    fn a_step_done_elsewhere_carries_a_link_and_text_to_copy() {
+        let item = waiting(serde_json::json!({
+            "link": { "label": "Sign in to Tesla", "url": "https://auth.tesla.com/oauth2/v3/authorize?x=1" },
+            "copy": { "label": "Public key", "text": "-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n" },
+        }))
+        .expect("valid");
+        assert_eq!(item.link.expect("a link").label, "Sign in to Tesla");
+        assert!(
+            item.copy.expect("text").text.contains('\n'),
+            "line breaks are kept"
+        );
+    }
+
+    #[test]
+    fn a_link_is_one_https_address_and_text_to_copy_is_small() {
+        for url in [
+            "http://example.com",
+            "javascript:alert(1)",
+            "https://",
+            "https:///path",
+            "https://a b",
+        ] {
+            assert!(
+                waiting(serde_json::json!({ "link": { "label": "Go", "url": url } })).is_err(),
+                "{url}"
+            );
+        }
+        assert!(
+            waiting(serde_json::json!({ "link": { "label": " ", "url": "https://x.y" } })).is_err()
+        );
+        let big = "k".repeat(MAX_WAITING_COPY + 1);
+        assert!(waiting(serde_json::json!({ "copy": { "label": "Key", "text": big } })).is_err());
+        assert!(
+            waiting(serde_json::json!({ "copy": { "label": "Key", "text": "k".repeat(MAX_WAITING_COPY) } }))
+                .is_ok()
+        );
     }
 }

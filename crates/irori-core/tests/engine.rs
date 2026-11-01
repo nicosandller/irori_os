@@ -675,7 +675,11 @@ done
         .expect("answered");
     assert_eq!(answer, serde_json::json!({"spent": 1.5}));
     let said = |what: &str| core.log(&meter).iter().any(|line| line.contains(what));
-    assert!(said(r#""method":"usage.summary""#), "{:?}", core.log(&meter));
+    assert!(
+        said(r#""method":"usage.summary""#),
+        "{:?}",
+        core.log(&meter)
+    );
 
     host.shutdown().await;
 }

@@ -4641,6 +4641,8 @@ mod tests {
                         label: "Code".into(),
                         hint: None,
                     }),
+                    link: None,
+                    copy: None,
                 }])
                 .await;
             }

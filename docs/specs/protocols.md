@@ -287,10 +287,17 @@ stopped protocol is out of date.
 | `name` | `Name` | yes | What it announced itself as |
 | `reason` | string | yes | What's needed, in a sentence: `it wants an encryption key`, `the encryption key doesn't match` |
 | `secret` | `{ path, label, hint? }` | no | Where a secret that would unlock it goes |
+| `link` | `{ label, url }` | no | A page to open for the step, when it's done somewhere else: signing in to a vendor, adding a key to a car in its app. `https://` only, up to 2048 characters; opened in a new tab |
+| `copy` | `{ label, text }` | no | Text the person puts somewhere else, shown with a Copy button and its line breaks kept: a public key for their website. Up to 4 KB |
 
 Waiting items are **not** devices in the registry. Nothing is known about them beyond what they
 announced, and a device with no entities that can't do anything is worse to show than a clear
 "found, needs a key".
+
+**Account steps.** A cloud protocol's setup (sign in, put a key on a website, pair a car) is a
+waiting item too, keyed by the account rather than a device, with `link` and `copy` for the
+parts done elsewhere. Every vendor's setup then looks the same, beside its actions on the
+"+ Add device" step, instead of a page of its own per vendor.
 
 **Secrets.** `secret.path` is a list of table keys inside the protocol's own table in
 `secrets.toml`, e.g. `["keys", "00:11:22:33:44:55"]`. The UI can take a secret for any

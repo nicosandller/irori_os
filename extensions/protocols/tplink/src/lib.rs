@@ -132,6 +132,8 @@ impl Devices {
                     name: Name::try_from(name.as_str()).ok()?,
                     reason: reason.to_owned(),
                     secret: None,
+                    link: None,
+                    copy: None,
                 })
             })
             .collect()

@@ -111,8 +111,8 @@ pub use network::{
     NetworkLink, NetworkMedium, NetworkNode, NetworkRole, access_point_id, host_name,
 };
 pub use protocol::{
-    DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
-    StateReport, Unmodeled, Waiting,
+    DeviceDescription, EntityDescription, MAX_WAITING_COPY, SecretRequest, Service, ServiceCall,
+    ServiceName, StateReport, Unmodeled, Waiting, WaitingCopy, WaitingLink,
 };
 pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};

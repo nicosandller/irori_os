@@ -1043,6 +1043,8 @@ impl Protocol for Keyed {
                     label: "Key".into(),
                     hint: None,
                 }),
+                link: None,
+                copy: None,
             }])
             .await;
         }
