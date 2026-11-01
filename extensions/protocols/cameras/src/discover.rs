@@ -21,10 +21,18 @@ const MULTICAST: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(239, 255,
 const PORT: u16 = 3702;
 /// How long answers to one probe are waited for.
 const LISTEN: Duration = Duration::from_secs(3);
-/// When the network is asked again: soon after starting, for a camera that missed the first
-/// probe, then every few minutes for new ones and changed addresses.
-const AGAIN_FIRST: Duration = Duration::from_secs(30);
+/// When to look again after the first probe: soon at first, since a camera's answer can go
+/// missing on Wi-Fi, then every few minutes.
+const AGAIN_FIRST: [Duration; 3] = [
+    Duration::from_secs(10),
+    Duration::from_secs(20),
+    Duration::from_secs(30),
+];
 const AGAIN: Duration = Duration::from_secs(5 * 60);
+/// How many times each probe's multicast is sent, and how far apart: UDP is lost, and some
+/// cameras answer only some probes.
+const REPEAT: usize = 3;
+const REPEAT_GAP: Duration = Duration::from_millis(250);
 /// The most cameras one probe takes answers from.
 const MAX_FOUND: usize = 64;
 
@@ -47,12 +55,16 @@ pub struct Found {
 pub fn start(settings: &Settings, found: mpsc::Sender<Found>) -> JoinHandle<()> {
     let hosts = settings.hosts.clone();
     tokio::spawn(async move {
-        let mut wait = Duration::ZERO;
+        // Cameras already found are also asked directly, in case multicast misses them.
+        let mut known: Vec<IpAddr> = Vec::new();
+        let mut round = 0usize;
         loop {
-            tokio::time::sleep(wait).await;
-            match probe(&hosts).await {
+            match probe(&hosts, &known).await {
                 Ok(answers) => {
                     for answer in answers {
+                        if !known.contains(&answer.ip) && known.len() < MAX_FOUND {
+                            known.push(answer.ip);
+                        }
                         if found.send(answer).await.is_err() {
                             return;
                         }
@@ -60,20 +72,31 @@ pub fn start(settings: &Settings, found: mpsc::Sender<Found>) -> JoinHandle<()> 
                 }
                 Err(why) => tracing::warn!("couldn't look for cameras: {why}"),
             }
-            wait = if wait.is_zero() { AGAIN_FIRST } else { AGAIN };
+            tokio::time::sleep(AGAIN_FIRST.get(round).copied().unwrap_or(AGAIN)).await;
+            round += 1;
         }
     })
 }
 
 /// One probe: everything that answers within [`LISTEN`], by id.
-async fn probe(hosts: &[String]) -> Result<Vec<Found>, String> {
+async fn probe(hosts: &[String], known: &[IpAddr]) -> Result<Vec<Found>, String> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))
         .await
         .map_err(|error| error.to_string())?;
     let message = probe_message(&message_id());
     // Multicast may not leave a container; the hosts below are for that.
-    if let Err(error) = socket.send_to(message.as_bytes(), MULTICAST).await {
-        tracing::debug!("the discovery multicast didn't go out: {error}");
+    for repeat in 0..REPEAT {
+        if repeat > 0 {
+            tokio::time::sleep(REPEAT_GAP).await;
+        }
+        if let Err(error) = socket.send_to(message.as_bytes(), MULTICAST).await {
+            tracing::debug!("the discovery multicast didn't go out: {error}");
+        }
+    }
+    for ip in known {
+        let _ = socket
+            .send_to(message.as_bytes(), SocketAddr::new(*ip, PORT))
+            .await;
     }
     for host in hosts {
         let Ok(addresses) = tokio::net::lookup_host((host.as_str(), PORT)).await else {

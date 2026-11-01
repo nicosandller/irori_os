@@ -97,6 +97,15 @@ pub async fn clock(camera: &Camera, device: &Target) -> Result<ClockOffset, Http
 }
 
 /// Logs in and reads everything this extension needs from the camera.
+/// Says which question a failure came from. A refused login stays just that.
+fn at(step: &'static str) -> impl Fn(HttpError) -> HttpError {
+    move |error| match error {
+        HttpError::Refused => HttpError::Refused,
+        HttpError::Unreachable(why) => HttpError::Unreachable(format!("{step}: {why}")),
+        HttpError::Failed(why) => HttpError::Failed(format!("{step}: {why}")),
+    }
+}
+
 pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpError> {
     let camera = Camera { ip: found.ip };
     let offset = clock(&camera, &found.device_service).await?;
@@ -113,7 +122,8 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
             &format!("{DEVICE}/GetDeviceInformation"),
             "<tds:GetDeviceInformation/>",
         )
-        .await?;
+        .await
+        .map_err(at("device information"))?;
     let mut info = device_information(&answer);
 
     let answer = soap
@@ -122,7 +132,8 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
             &format!("{DEVICE}/GetCapabilities"),
             "<tds:GetCapabilities><tds:Category>All</tds:Category></tds:GetCapabilities>",
         )
-        .await?;
+        .await
+        .map_err(at("capabilities"))?;
     let (media, events, ptz) = capabilities(&answer);
     info.media = media;
     info.events = events;
@@ -135,14 +146,20 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
                 &format!("{MEDIA}/GetProfiles"),
                 "<trt:GetProfiles/>",
             )
-            .await?;
+            .await
+            .map_err(at("profiles"))?;
         let mut profiles = profiles(&answer);
         for profile in &mut profiles {
-            profile.stream = stream_uri(&soap, &media, &profile.token).await?;
+            profile.stream = stream_uri(&soap, &media, &profile.token)
+                .await
+                .map_err(at("stream address"))?;
         }
         // Smallest first, for the picture.
         for profile in profiles.iter().rev() {
-            if let Some(snapshot) = snapshot_uri(&soap, &media, &profile.token).await? {
+            if let Some(snapshot) = snapshot_uri(&soap, &media, &profile.token)
+                .await
+                .map_err(at("picture address"))?
+            {
                 info.snapshot = Some(snapshot);
                 break;
             }
@@ -150,13 +167,17 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
         info.profiles = profiles;
     }
     if let Some(events) = info.events.clone() {
-        info.detects = events::properties(&soap, &events).await?;
+        info.detects = events::properties(&soap, &events)
+            .await
+            .map_err(at("events"))?;
     }
     if let (Some(service), Some(profile)) = (
         info.ptz_service.clone(),
         info.profiles.iter().find(|profile| profile.ptz),
     ) {
-        let abilities = ptz::ask_abilities(&soap, &service).await?;
+        let abilities = ptz::ask_abilities(&soap, &service)
+            .await
+            .map_err(at("turning"))?;
         if abilities.pan_tilt || abilities.zoom || abilities.presets {
             info.turns = Some(Turning {
                 token: profile.token.clone(),

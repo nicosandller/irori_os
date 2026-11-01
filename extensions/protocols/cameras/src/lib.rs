@@ -75,6 +75,8 @@ impl Protocol for Cameras {
 /// How long a camera that couldn't be reached is left before it's tried again, when it next
 /// answers discovery.
 const RETRY: Duration = Duration::from_secs(60);
+/// The longest setting a camera up may take, all its questions together.
+const SETTING_UP: Duration = Duration::from_secs(90);
 const EVENTS: usize = 32;
 
 /// Where one camera stands.
@@ -216,6 +218,9 @@ fn arrive(
     generations: &mut u64,
     events: &mpsc::Sender<Event>,
 ) {
+    if !cams.contains_key(&found.id) {
+        tracing::info!(camera = %found.id, ip = %found.ip, "found a camera");
+    }
     let cam = cams.entry(found.id.clone()).or_insert_with(|| Cam {
         found: found.clone(),
         generation: 0,
@@ -250,6 +255,7 @@ fn arrive(
             cam.stop_tasks();
             *generations += 1;
             cam.generation = *generations;
+            tracing::info!(camera = %cam.found.id, ip = %cam.found.ip, "logging into a camera");
             connect(
                 cam.found.clone(),
                 login.clone(),
@@ -265,7 +271,13 @@ fn arrive(
 fn connect(found: Found, login: Login, generation: u64, events: mpsc::Sender<Event>) {
     tokio::spawn(async move {
         let id = found.id.clone();
-        let event = match onvif::connect(&found, &login).await {
+        let connected = tokio::time::timeout(SETTING_UP, onvif::connect(&found, &login)).await;
+        let connected = connected.unwrap_or_else(|_| {
+            Err(HttpError::Unreachable(
+                "it took too long to answer while being set up".into(),
+            ))
+        });
+        let event = match connected {
             Ok((soap, info)) => Event::Connected {
                 id,
                 generation,
