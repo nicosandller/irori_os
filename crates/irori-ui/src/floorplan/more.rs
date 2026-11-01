@@ -203,7 +203,7 @@ pub(super) fn Feed(
     name: String,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
-    let (src, next) = pictures(camera, FEED_MS);
+    let (src, next) = pictures(camera.clone(), FEED_MS);
     let close = focused();
     let failed = RwSignal::new(false);
     let zoom = RwSignal::new(1.0_f64);
@@ -220,6 +220,120 @@ pub(super) fn Feed(
     let transform = move || {
         let (x, y) = pan.get();
         format!("translate({x}px, {y}px) scale({})", zoom.get())
+    };
+    // A camera that sends live video plays it here, with its arrows; one that only sends
+    // pictures is watched a picture at a time, with the page's zoom.
+    let live_camera = use_context::<crate::Live>().and_then(|live| {
+        live.home.with_untracked(|home| {
+            home.entities
+                .iter()
+                .find(|entity| entity.id == camera)
+                .and_then(|entity| match &entity.capabilities {
+                    Capabilities::Camera(capabilities) if capabilities.live => {
+                        Some(capabilities.clone())
+                    }
+                    _ => None,
+                })
+        })
+    });
+    let body = match live_camera {
+        Some(capabilities) => {
+            let turns = capabilities.pan_tilt || capabilities.zoom || capabilities.presets;
+            let turn = turns.then(|| {
+                view! {
+                    <crate::camera_turn::CameraTurn
+                        id=camera.clone()
+                        capabilities=capabilities.clone()
+                    />
+                }
+            });
+            view! {
+                <div class="feed-live-video">
+                    <crate::camera_live::CameraLive
+                        id=camera.clone()
+                        name=name.clone()
+                        capabilities=capabilities
+                        open=Signal::stored(true)
+                    />
+                    {turn}
+                </div>
+            }
+            .into_any()
+        }
+        None => view! {
+        <div
+            class="feed-frame"
+            class:zoomed=move || { zoom.get() > 1.0 }
+            on:wheel=move |event: ev::WheelEvent| {
+                event.prevent_default();
+                let step = if event.delta_y() < 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
+                zoom_to(zoom.get_untracked() * step);
+            }
+            on:pointerdown=move |event: ev::PointerEvent| {
+                if zoom.get_untracked() <= 1.0 {
+                    return;
+                }
+                event.prevent_default();
+                let at = (f64::from(event.client_x()), f64::from(event.client_y()));
+                grab.set_value(Some((at, pan.get_untracked())));
+            }
+            on:pointermove=move |event: ev::PointerEvent| {
+                let Some((from, was)) = grab.get_value() else { return };
+                if event.buttons() & 1 == 0 {
+                    grab.set_value(None);
+                    return;
+                }
+                let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
+                pan.set((was.0 + x - from.0, was.1 + y - from.1));
+            }
+            on:pointerup=move |_| grab.set_value(None)
+            on:dblclick=move |_| {
+                zoom_to(if zoom.get_untracked() > 1.0 { 1.0 } else { 2.0 })
+            }
+        >
+            <img
+                src=move || src.get()
+                alt=format!("What {name} sees now")
+                draggable="false"
+                style:transform=transform
+                on:load=move |_| {
+                    failed.set(false);
+                    next.run(());
+                }
+                on:error=move |_| {
+                    failed.set(true);
+                    next.run(());
+                }
+            />
+        </div>
+        <div class="feed-zoom" role="group" aria-label="Zoom">
+            <button
+                type="button"
+                aria-label="Zoom out"
+                disabled=move || { zoom.get() <= 1.0 }
+                on:click=move |_| zoom_to(zoom.get_untracked() / ZOOM_STEP)
+            >
+                "−"
+            </button>
+            <button
+                type="button"
+                class="feed-level"
+                aria-label="Back to the whole picture"
+                on:click=move |_| zoom_to(1.0)
+            >
+                {move || format!("{:.0}%", zoom.get() * 100.0)}
+            </button>
+            <button
+                type="button"
+                aria-label="Zoom in"
+                disabled=move || { zoom.get() >= MOST_ZOOM }
+                on:click=move |_| zoom_to(zoom.get_untracked() * ZOOM_STEP)
+            >
+                "+"
+            </button>
+        </div>
+        }
+        .into_any(),
     };
     view! {
         <div
@@ -261,77 +375,7 @@ pub(super) fn Feed(
                         {icon(Icon::Close)}
                     </button>
                 </div>
-                <div
-                    class="feed-frame"
-                    class:zoomed=move || { zoom.get() > 1.0 }
-                    on:wheel=move |event: ev::WheelEvent| {
-                        event.prevent_default();
-                        let step = if event.delta_y() < 0.0 { ZOOM_STEP } else { 1.0 / ZOOM_STEP };
-                        zoom_to(zoom.get_untracked() * step);
-                    }
-                    on:pointerdown=move |event: ev::PointerEvent| {
-                        if zoom.get_untracked() <= 1.0 {
-                            return;
-                        }
-                        event.prevent_default();
-                        let at = (f64::from(event.client_x()), f64::from(event.client_y()));
-                        grab.set_value(Some((at, pan.get_untracked())));
-                    }
-                    on:pointermove=move |event: ev::PointerEvent| {
-                        let Some((from, was)) = grab.get_value() else { return };
-                        if event.buttons() & 1 == 0 {
-                            grab.set_value(None);
-                            return;
-                        }
-                        let (x, y) = (f64::from(event.client_x()), f64::from(event.client_y()));
-                        pan.set((was.0 + x - from.0, was.1 + y - from.1));
-                    }
-                    on:pointerup=move |_| grab.set_value(None)
-                    on:dblclick=move |_| {
-                        zoom_to(if zoom.get_untracked() > 1.0 { 1.0 } else { 2.0 })
-                    }
-                >
-                    <img
-                        src=move || src.get()
-                        alt=format!("What {name} sees now")
-                        draggable="false"
-                        style:transform=transform
-                        on:load=move |_| {
-                            failed.set(false);
-                            next.run(());
-                        }
-                        on:error=move |_| {
-                            failed.set(true);
-                            next.run(());
-                        }
-                    />
-                </div>
-                <div class="feed-zoom" role="group" aria-label="Zoom">
-                    <button
-                        type="button"
-                        aria-label="Zoom out"
-                        disabled=move || { zoom.get() <= 1.0 }
-                        on:click=move |_| zoom_to(zoom.get_untracked() / ZOOM_STEP)
-                    >
-                        "−"
-                    </button>
-                    <button
-                        type="button"
-                        class="feed-level"
-                        aria-label="Back to the whole picture"
-                        on:click=move |_| zoom_to(1.0)
-                    >
-                        {move || format!("{:.0}%", zoom.get() * 100.0)}
-                    </button>
-                    <button
-                        type="button"
-                        aria-label="Zoom in"
-                        disabled=move || { zoom.get() >= MOST_ZOOM }
-                        on:click=move |_| zoom_to(zoom.get_untracked() * ZOOM_STEP)
-                    >
-                        "+"
-                    </button>
-                </div>
+                {body}
             </div>
         </div>
     }
