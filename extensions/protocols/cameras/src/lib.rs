@@ -462,10 +462,13 @@ fn start_tasks(
     {
         let (changes_tx, mut changes) = mpsc::channel(32);
         let soap = ready.soap.clone();
+        let detects = ready.info.detects.clone();
         let tx = events_tx.clone();
         let who = id.to_owned();
         cam.tasks.push(tokio::spawn(async move {
-            if let Err(HttpError::Refused) = events::follow(&soap, &target, &changes_tx).await {
+            if let Err(HttpError::Refused) =
+                events::follow(&soap, &target, &detects, &changes_tx).await
+            {
                 let _ = tx
                     .send(Event::Refused {
                         id: who,

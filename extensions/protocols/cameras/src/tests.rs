@@ -407,6 +407,14 @@ async fn a_camera_s_sensors_follow_what_it_notices() {
         );
     }
     let motion = format!("motion:{ID}");
+    // A camera that only sends changes still starts with its sensors off, not unknown.
+    let person = format!("person:{ID}");
+    let report = world
+        .report("person starts off", |report| {
+            report.unique_id.as_str() == person
+        })
+        .await;
+    assert!(matches!(report.state, Some(State::BinarySensor(state)) if !state.on));
     camera.notice(
         "tns1:RuleEngine/CellMotionDetector/Motion",
         "IsMotion",

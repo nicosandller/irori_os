@@ -188,8 +188,10 @@ pub async fn properties(soap: &Soap, events: &Target) -> Result<Vec<Detects>, Ht
 pub async fn follow(
     soap: &Soap,
     events: &Target,
+    detects: &[Detects],
     changes: &mpsc::Sender<Change>,
 ) -> Result<(), HttpError> {
+    let mut started = false;
     let mut attempt = 0usize;
     loop {
         if changes.is_closed() {
@@ -198,7 +200,7 @@ pub async fn follow(
         match subscribe(soap, events).await {
             Ok(subscription) => {
                 attempt = 0;
-                match pull(soap, &subscription, changes).await {
+                match pull(soap, &subscription, detects, &mut started, changes).await {
                     Err(HttpError::Refused) => return Err(HttpError::Refused),
                     Ok(()) => return Ok(()),
                     Err(error) => tracing::debug!("a camera's events stopped: {error}"),
@@ -242,9 +244,13 @@ async fn subscribe(soap: &Soap, events: &Target) -> Result<Subscription, HttpErr
 }
 
 /// Pulls until something goes wrong or nobody listens.
+/// `started` is whether the first answer has come yet: after it, whatever the camera didn't say
+/// is taken to be off, since some cameras (a Tapo) only ever send changes.
 async fn pull(
     soap: &Soap,
     subscription: &Subscription,
+    detects: &[Detects],
+    started: &mut bool,
     changes: &mpsc::Sender<Change>,
 ) -> Result<(), HttpError> {
     let pull_action = format!("{EVENTS}/PullPointSubscription/PullMessagesRequest");
@@ -281,7 +287,21 @@ async fn pull(
                 Some(&subscription.address),
             )
             .await?;
-        for change in self::changes(&answer) {
+        let said = self::changes(&answer);
+        let unsaid: Vec<Change> = if *started {
+            Vec::new()
+        } else {
+            *started = true;
+            detects
+                .iter()
+                .filter(|detects| !said.iter().any(|change| change.detects == **detects))
+                .map(|detects| Change {
+                    detects: *detects,
+                    on: false,
+                })
+                .collect()
+        };
+        for change in unsaid.into_iter().chain(said) {
             if changes.send(change).await.is_err() {
                 return Ok(());
             }
