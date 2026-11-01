@@ -85,6 +85,11 @@ const CALENDAR: &str = r#"<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/
 const CAMERA: &str = r#"<path d="M3.5 7.500h11a1.500 1.500 0 0 1 1.500 1.500v6a1.500 1.500 0 0 1-1.500 1.500h-11A1.500 1.500 0 0 1 2 15V9a1.500 1.500 0 0 1 1.500-1.500Z"/><path d="m16 11 5-3v8l-5-3"/><circle cx="9" cy="12" r="2.200"/>"#;
 pub const ROBOT: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M5.5 8.500a8.500 8.500 0 0 1 13 0"/><circle cx="12" cy="12.5" r="2.5"/>"#;
 /// A mower from the side: its deck, its wheels, and grass ahead of it.
+/// A car from the side: body, windows, two wheels.
+pub const CAR: &str = concat!(
+    r#"<path d="M3 15.5v-2.8a2 2 0 0 1 1.3-1.9L6.5 10l2.2-3.3A2 2 0 0 1 10.4 6h4.400a2 2 0 0 1 1.600.8L19 10l.9.3a2 2 0 0 1 1.100 1.8v3.400H19"/>"#,
+    r#"<path d="M5 15.500H3M15 15.500H9M6.500 10h12.500"/><circle cx="7" cy="15.500" r="2"/><circle cx="17" cy="15.500" r="2"/>"#,
+);
 pub const MOWER: &str = r#"<path d="M4 15.5V12a3 3 0 0 1 3-3h6l4 6.5Z"/><circle cx="7" cy="17" r="2"/><circle cx="15" cy="17" r="2"/><path d="M20 17v-3M21.5 17v-2"/>"#;
 /// Three overlapping lights: a scene.
 const PALETTE: &str = r#"<circle cx="9" cy="9.5" r="4.5"/><circle cx="15" cy="9.5" r="4.5"/><circle cx="12" cy="14.5" r="4.5"/>"#;
