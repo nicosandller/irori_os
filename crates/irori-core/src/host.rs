@@ -850,6 +850,7 @@ async fn supervise(
             unpairs: contribution.unpairs,
             app: None,
             engine: false,
+            answer_within_seconds: contribution.answer_within_seconds,
         },
     );
 
@@ -1379,6 +1380,7 @@ async fn supervise_package(
                 unpairs: false,
                 app,
                 engine: false,
+                answer_within_seconds: None,
             },
         );
         if !has_app {
@@ -1455,6 +1457,8 @@ async fn supervise_package(
             unpairs: contribution.is_some_and(|contribution| contribution.unpairs),
             app: app.clone(),
             engine: manifest.is_engine(),
+            answer_within_seconds: contribution
+                .and_then(|contribution| contribution.answer_within_seconds),
         },
     );
 

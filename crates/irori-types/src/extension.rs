@@ -326,7 +326,17 @@ pub struct ProtocolContribution {
     /// first, and the device is gone rather than back among what was found.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unpairs: bool,
+    /// How long the core waits for its answer to a service call, in seconds: for a protocol
+    /// whose devices take a while (a car that has to wake first). Leave it out for the usual 10.
+    /// At most [`MAX_CALL_ANSWER_SECONDS`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(min = 1, max = 120))]
+    pub answer_within_seconds: Option<u32>,
 }
+
+/// The longest a protocol may say its service calls take. A person pressed something and waits
+/// for it: past two minutes they'd rather be told it didn't work.
+pub const MAX_CALL_ANSWER_SECONDS: u32 = 120;
 
 impl ProtocolContribution {
     fn validate(&self) -> Result<(), InvariantError> {
@@ -336,6 +346,15 @@ impl ProtocolContribution {
             ));
         }
         no_duplicates("entity_kinds", &self.entity_kinds)?;
+        if self
+            .answer_within_seconds
+            .is_some_and(|seconds| seconds == 0 || seconds > MAX_CALL_ANSWER_SECONDS)
+        {
+            return Err(InvariantError(format!(
+                "contributes.protocol.answer_within_seconds must be between 1 and \
+                 {MAX_CALL_ANSWER_SECONDS}"
+            )));
+        }
         let action_ids: Vec<&str> = self.actions.iter().map(|a| a.id.as_str()).collect();
         no_duplicates("contributes.protocol.actions ids", &action_ids)?;
         for action in &self.actions {
@@ -1306,6 +1325,39 @@ mod tests {
 
     /// An action that asks for a line of text (Matter's pairing code) and takes a while to
     /// answer. A blank field label or an answer time of nothing or forever is refused.
+    #[test]
+    fn a_protocol_may_say_its_calls_take_longer_up_to_two_minutes() {
+        let protocol = |seconds: u32| {
+            serde_json::from_value::<ExtensionManifest>(serde_json::json!({
+                "extension": {
+                    "id": "car",
+                    "name": "Car",
+                    "version": "0.1.0",
+                    "irori": ">=0.0.0"
+                },
+                "contributes": {
+                    "protocol": [{
+                        "iot_class": "cloud_polling",
+                        "entity_kinds": ["switch"],
+                        "answer_within_seconds": seconds
+                    }]
+                }
+            }))
+        };
+        let manifest = protocol(90).expect("valid");
+        assert_eq!(
+            manifest.contributes.protocol[0].answer_within_seconds,
+            Some(90)
+        );
+        for seconds in [0, MAX_CALL_ANSWER_SECONDS + 1] {
+            let error = protocol(seconds).expect_err("out of range");
+            assert!(
+                error.to_string().contains("answer_within_seconds"),
+                "{error}"
+            );
+        }
+    }
+
     #[test]
     fn an_action_can_ask_for_text_and_say_how_long_it_takes() {
         let manifest = |action: serde_json::Value| {

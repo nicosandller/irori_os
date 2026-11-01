@@ -521,7 +521,9 @@ new state is confirmed; that comes as a state report):
   - `unavailable`: the device can't be reached right now;
   - `failed`: the device or service refused or failed, e.g. the cloud API returned an error.
 
-The core adds `timeout` when there's no reply within 10 seconds. Errors go back to whoever made
+The core adds `timeout` when there's no reply within 10 seconds, or within the protocol's
+`answer_within_seconds` (1–120) when its manifest sets one: Tesla's car has to wake before it
+hears a command, which takes up to a minute. Errors go back to whoever made
 the call (the UI, the CLI, a rule's trace).
 
 ## 8. What the core checks

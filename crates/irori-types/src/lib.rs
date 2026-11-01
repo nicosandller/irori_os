@@ -39,8 +39,9 @@ pub use extension::{
     ActionField, ActionPlace, ActionWay, ApiScope, AppContribution, AppPlacement,
     AutomationContribution, Contributions, CoreRequirement, ExtensionInfo, ExtensionManifest,
     HostPath, IotClass, MAX_ACTION_ANSWER_SECONDS, MAX_ACTION_INPUT, MAX_ACTION_WAYS,
-    MAX_WAY_FIELDS, MAX_WAY_SETTINGS, NetworkHost, PackagePath, Permissions, ProtocolAction,
-    ProtocolContribution, ReservedContribution, RunCommand, SerialPath, Version,
+    MAX_CALL_ANSWER_SECONDS, MAX_WAY_FIELDS, MAX_WAY_SETTINGS, NetworkHost, PackagePath,
+    Permissions, ProtocolAction, ProtocolContribution, ReservedContribution, RunCommand,
+    SerialPath, Version,
 };
 pub use floorplan::{
     Floorplan, Glyph, Hinge, Level, Marked, Opening, OpeningKind, PlacedArea, PlacedDevice,
