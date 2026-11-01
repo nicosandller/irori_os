@@ -15,6 +15,7 @@ irori-protocol-cast.workspace = true
 irori-protocol-matter.workspace = true
 irori-protocol-mqtt.workspace = true
 irori-protocol-switchbot.workspace = true
+irori-protocol-tplink.workspace = true
 irori-protocol-zigbee.workspace = true
 anyhow.workspace = true
 schemars.workspace = true

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "known_hosts": {
+      "description": "Devices to ask by address, as well as anything that answers the broadcast. Each one has to\nbe a private, loopback, or link-local IPv4 address, or a name under `.local`, `.home.arpa`,\n`.internal`, `.lan`, or `.home`. A port, a bare name, an IPv6 address, a public address, or\nan internet hostname is refused: TP-Link devices are found over IPv4.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    },
+    "password": {
+      "description": "That account's password.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "poll_seconds": {
+      "description": "Seconds between readings of each device, 5 to 300. 15 when left out.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "default": null,
+      "maximum": 300,
+      "minimum": 5
+    },
+    "username": {
+      "description": "The email of the TP-Link (Tapo or Kasa) account the devices were set up with. Tapo plugs\nand recent Kasa firmware check every local connection against it.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    }
+  },
+  "additionalProperties": false
+}

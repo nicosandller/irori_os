@@ -79,6 +79,10 @@ fn extension_config_schemas() -> Vec<(&'static str, schemars::Schema)> {
             schemars::schema_for!(irori_protocol_switchbot::settings::Settings),
         ),
         (
+            "extensions/protocols/tplink",
+            schemars::schema_for!(irori_protocol_tplink::settings::Settings),
+        ),
+        (
             "extensions/protocols/zigbee",
             schemars::schema_for!(irori_protocol_zigbee::settings::Settings),
         ),
