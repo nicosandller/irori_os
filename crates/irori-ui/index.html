@@ -12,6 +12,9 @@
   <!-- The network map's drawing (src/network_map.js), for the Devices page's Network map tab. -->
   <link data-trunk rel="copy-file" href="src/network_map.js">
   <script src="/network_map.js" defer></script>
+  <!-- A camera's live video (src/camera_live.js), played through Media Source Extensions. -->
+  <link data-trunk rel="copy-file" href="src/camera_live.js">
+  <script src="/camera_live.js" defer></script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     /* Brand tokens (assets/README.md). Fonts are never downloaded: the UI works offline. */
@@ -796,6 +799,32 @@
                        border: 1px solid var(--line); object-fit: cover;
                        animation: frame-in var(--dur-layout) var(--ease-out); }
     .camera-view.failed img { opacity: .45; }
+    /* Live video (camera_live.rs): the video where the picture would be, and a bar under it
+       with what it's doing, sound, SD/HD, and "Try again" once it stops. */
+    .camera-live video { display: block; width: 100%; max-width: 40rem; aspect-ratio: 16 / 9;
+                         border-radius: .6rem; background: #000; border: 1px solid var(--line);
+                         object-fit: contain; }
+    .camera-live.failed video { opacity: .45; }
+    .camera-live-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+                       max-width: 40rem; color: var(--muted); }
+    .camera-live-state { display: inline-flex; align-items: center; gap: .4rem; flex: 1;
+                         min-width: 0; }
+    .camera-live.playing .camera-live-state { color: var(--fg); }
+    .camera-live.playing .camera-dot { background: #e5484d;
+                                       animation: recording 1.6s ease-in-out infinite; }
+    .camera-live-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+    .live-button { padding: .3rem .65rem; font: inherit; font-size: .8rem; color: var(--fg);
+                   background: var(--card); border: 1px solid var(--line); border-radius: .45rem;
+                   cursor: pointer; }
+    .live-button:hover { border-color: var(--ember); }
+    .live-button[aria-pressed="true"] { background: var(--sunk); border-color: var(--muted); }
+    .live-segs { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line);
+                 border-radius: .45rem; background: var(--sunk); }
+    .live-seg { padding: .2rem .55rem; font: inherit; font-size: .78rem; color: var(--muted);
+                background: transparent; border: 0; border-radius: .3rem; cursor: pointer; }
+    .live-seg:hover { color: var(--fg); }
+    .live-seg[aria-pressed="true"] { color: var(--fg); background: var(--card);
+                                     box-shadow: 0 0 0 1px var(--line); }
     @keyframes frame-in { from { opacity: .7; } }
     /* An update: the bar fills as the install goes. A device that doesn't say how far it has
        got gets a bar that only says it's busy. */

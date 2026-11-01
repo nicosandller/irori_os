@@ -2,7 +2,7 @@
 //! picture is in its drawer ([`camera_picture`]), asked for again every few seconds only while
 //! the drawer is open and the page is in view: five cameras on a Raspberry Pi add up.
 
-use irori_types::{CameraCapabilities, CameraStatus, Entity, EntityId, State};
+use irori_types::{CameraCapabilities, CameraStatus, Capabilities, Entity, EntityId, State};
 use leptos::prelude::*;
 
 use super::knob;
@@ -54,7 +54,22 @@ pub(crate) fn camera_control(
 
 /// The picture a camera sees, for its drawer: asked for when the drawer opens, and again every
 /// few seconds while it stays open and the page is in view.
+///
+/// A camera that can be watched live shows its video instead.
 pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
+    if let Capabilities::Camera(capabilities) = &entity.capabilities
+        && capabilities.live
+    {
+        return view! {
+            <crate::camera_live::CameraLive
+                id=entity.id.clone()
+                name=entity.name.to_string()
+                capabilities=capabilities.clone()
+                open=open
+            />
+        }
+        .into_any();
+    }
     let id = entity.id.clone();
     let name = entity.name.to_string();
     let frame = RwSignal::new(0u64);
