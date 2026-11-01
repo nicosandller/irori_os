@@ -1,0 +1,20 @@
+[package]
+name = "irori-cloud"
+description = "What a vendor-cloud extension needs: an HTTPS client, secrets, a call budget, and retry pacing."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

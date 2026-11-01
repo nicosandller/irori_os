@@ -571,6 +571,10 @@
           },
           "uniqueItems": true
         },
+        "bluetooth": {
+          "description": "Bluetooth devices near the machine, through its Bluetooth adapter: scanning for them,\nand connecting to them.",
+          "type": "boolean"
+        },
         "host_fs": {
           "description": "Files and folders on the machine. `$CONFIG` and `$DATA` are Irori's own folders; any\nother path means full access to this machine.",
           "type": "array",

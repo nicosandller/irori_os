@@ -595,6 +595,10 @@ pub struct Permissions {
     /// Devices on the local network: private and link-local addresses, and mDNS (`.local`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub lan: bool,
+    /// Bluetooth devices near the machine, through its Bluetooth adapter: scanning for them,
+    /// and connecting to them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bluetooth: bool,
     /// Internet hosts it connects to, e.g. `api.switch-bot.com` or `*.example.com`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(extend("uniqueItems" = true))]

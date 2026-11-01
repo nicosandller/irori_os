@@ -353,8 +353,8 @@ reads them, every few seconds (`GET /api/network`, [api.md](api.md) §3).
 | `scanned_at` | RFC 3339 time | no | When its links were last measured, for a protocol that measures them now and then (Zigbee's scan) rather than all the time |
 | `nodes[].id` | 1-64 of letters, digits, `_.:-` | yes | Its id in this map, once each |
 | `nodes[].name` | string, 1-100 | yes | |
-| `nodes[].role` | `controller`, `coordinator`, `border_router`, `access_point`, `router`, `end_device`, `sleepy_end_device`, `device` | yes | `device` is one on the home's own network (Wi-Fi or Ethernet) |
-| `nodes[].medium` | `thread`, `wifi`, `ethernet`, `zigbee`, `bluetooth`, `ip`, `serial` | no | How it's connected |
+| `nodes[].role` | `controller`, `coordinator`, `border_router`, `access_point`, `router`, `end_device`, `sleepy_end_device`, `device`, `cloud` | yes | `device` is one on the home's own network (Wi-Fi or Ethernet). `cloud` is a vendor's servers a cloud protocol reaches its devices through ("SwitchBot cloud"): drawn as the way into them, and a network with one is drawn in the cloud colour |
+| `nodes[].medium` | `thread`, `wifi`, `ethernet`, `zigbee`, `bluetooth`, `ip`, `serial`, `internet` | no | How it's connected. `internet` is the link to and from a vendor's cloud |
 | `nodes[].device_unique_id` | `UniqueId` | no | The device it is, when it's one of the protocol's |
 | `nodes[].detail` | string, ≤ 200 | no | "Thread router, channel 25" |
 | `nodes[].host` | lowercase host name, ≤ 253, no trailing dot | no | Its mDNS host (`fuchsia-dce5-5ba4-40db.local`; `host_name` makes it). Nodes in different maps with one host are one node on the joined map: a Nest Hub is a Cast device and a Thread border router, and is drawn once, as the device, the way into Thread |
@@ -378,6 +378,8 @@ What draws a map today:
   controller's own diagnostics.
 - **ESPHome**: every device on the home's Wi-Fi, each with its signal when it has a Wi-Fi signal
   sensor.
+- **SwitchBot**: Irori, then "SwitchBot cloud" over the internet, then each hub and each device on
+  Wi-Fi of its own, and the devices behind a hub hanging off it over Bluetooth.
 - **Demo**: all three, made up, so the map can be seen without hardware.
 
 ## 7. Service calls

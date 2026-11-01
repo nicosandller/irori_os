@@ -12,3 +12,4 @@ run = { command = "bin/switchbot", args = ["--log-format", "json"] }
 
 [permissions]
 network = ["api.switch-bot.com"]
+bluetooth = true

@@ -13,6 +13,7 @@ members = [
     "crates/irori-helpers",
     "crates/irori-ha-discovery",
     "crates/irori-node-runtime",
+    "crates/irori-cloud",
     "crates/irori",
     "extensions/demo",
     "extensions/automations",
@@ -20,6 +21,7 @@ members = [
     "extensions/protocols/esphome",
     "extensions/protocols/matter",
     "extensions/protocols/mqtt",
+    "extensions/protocols/switchbot",
     "extensions/protocols/zigbee",
     "extras/irori-assist",
     "xtask",
@@ -52,12 +54,14 @@ irori-client = { path = "crates/irori-client" }
 irori-helpers = { path = "crates/irori-helpers" }
 irori-ha-discovery = { path = "crates/irori-ha-discovery" }
 irori-node-runtime = { path = "crates/irori-node-runtime" }
+irori-cloud = { path = "crates/irori-cloud" }
 irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
 irori-protocol-demo = { path = "extensions/demo" }
 irori-protocol-cast = { path = "extensions/protocols/cast" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
 irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
 irori-protocol-matter = { path = "extensions/protocols/matter" }
+irori-protocol-switchbot = { path = "extensions/protocols/switchbot" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
@@ -76,7 +80,13 @@ http-body-util = "0.1.5"
 # no TLS, since the server never leaves this machine.
 tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
+# Bluetooth for the SwitchBot extension: BlueZ on Linux, CoreBluetooth on macOS.
+btleplug = "0.13.5"
+# btleplug reaches BlueZ through libdbus; `vendored` builds it from source (used under its
+# AFL-2.1 licence), so the static musl builds need no system library.
+dbus = { version = "0.9.12", features = ["vendored"] }
 getrandom = "0.4.3"
+hmac = "0.13.0"
 # The MQTT client: broker connection, TLS, and the wire protocol. `mqtt` and `zigbee` (its own
 # embedded broker's client side) both depend on it directly; xtask/src/deps.rs keeps it out of
 # every crate that isn't a protocol.
