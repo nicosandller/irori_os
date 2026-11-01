@@ -483,6 +483,34 @@ async fn a_missed_meter_reading_is_unknown_until_the_next() {
 }
 
 #[tokio::test]
+async fn a_missed_meter_reading_right_after_logging_in_again_keeps_the_sensors() {
+    let fake = fake::start(Kind::Plug, auth()).await;
+    let world = world(settings(true)).await;
+    world.see(&fake, "02:00:00:00:00:01", "PP1(EU)").await;
+    world.states(&["02:00:00:00:00:01-power"]).await;
+    let described = world.log.lock().expect("log").entities.len();
+    {
+        // The session ends, and the first reading on the new one misses its meter.
+        let mut state = fake.state.lock().expect("state");
+        state.expire_next = true;
+        state.meter_misses = 1;
+        state.power_mw = 3_000;
+    }
+    world
+        .until_state("02:00:00:00:00:01-power", |state| {
+            state.is_some() && number(state) == 3.0
+        })
+        .await;
+    assert_eq!(fake.state.lock().expect("state").handshakes, 2);
+    {
+        let log = world.log.lock().expect("log");
+        assert_eq!(log.entities.len(), described);
+        assert!(log.removed.is_empty());
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_missed_outlet_reading_is_unknown_until_the_next() {
     let fake = fake::start(Kind::Strip, auth()).await;
     let world = world(settings(true)).await;

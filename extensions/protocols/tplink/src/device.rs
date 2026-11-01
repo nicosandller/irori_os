@@ -86,6 +86,13 @@ struct Plan {
     led: bool,
     children: bool,
     child_energy: BTreeSet<String>,
+}
+
+/// The meter values a device has given. Kept beside `misses`, not in the session: a session is
+/// dropped on any error, and one bad reading right after the next login must not take the sensors
+/// (and with them their history) away. Only a device saying it has no meter clears them.
+#[derive(Debug, Default)]
+struct Seen {
     metered: Metered,
     child_metered: BTreeMap<String, Metered>,
 }
@@ -101,17 +108,18 @@ pub fn spawn(
         let mac = found.mac.clone();
         let mut session: Option<(Session, Plan)> = None;
         let mut misses = 0u32;
+        let mut seen = Seen::default();
         loop {
             // Only a session from an earlier poll can have expired; a fresh one that's refused is
             // a miss like any other, so it waits instead of logging in again at once.
             let reused = session.is_some();
             let outcome = match session.as_mut() {
-                Some((session, plan)) => read(session, plan).await,
+                Some((session, plan)) => read(session, plan, &mut seen).await,
                 None => match Session::connect(found.address, &auth).await {
                     Ok(mut fresh) => match learn(&mut fresh).await {
                         Ok(plan) => {
                             let (fresh, plan) = session.insert((fresh, plan));
-                            read(fresh, plan).await
+                            read(fresh, plan, &mut seen).await
                         }
                         Err(error) => Err(error),
                     },
@@ -199,8 +207,6 @@ async fn learn(session: &mut Session) -> Result<Plan, KlapError> {
         led: has("led"),
         children,
         child_energy: BTreeSet::new(),
-        metered: Metered::default(),
-        child_metered: BTreeMap::new(),
     };
     if plan.children {
         // Paged like the child list itself.
@@ -248,7 +254,11 @@ fn no_meter(answers: &BTreeMap<String, smart::Answer>) -> bool {
         .all(|method| answers.get(*method) == Some(&Err(smart::UNKNOWN_METHOD)))
 }
 
-async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapError> {
+async fn read(
+    session: &mut Session,
+    plan: &mut Plan,
+    seen: &mut Seen,
+) -> Result<Snapshot, KlapError> {
     let mut methods = vec![(smart::DEVICE_INFO, Value::Null)];
     if plan.energy {
         methods.push((smart::ENERGY_USAGE, Value::Null));
@@ -275,10 +285,10 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
     // Any other miss is one bad reading: its values are unknown until the next.
     if plan.energy && meter.is_none() && no_meter(&answers) {
         plan.energy = false;
-        plan.metered = Metered::default();
+        seen.metered = Metered::default();
     }
     if let Some(meter) = &meter {
-        plan.metered.add(meter);
+        seen.metered.add(meter);
     }
     let led = answers
         .get(smart::LED_INFO)
@@ -320,10 +330,10 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
                 meter = answers.as_ref().and_then(meter_of);
                 if meter.is_none() && answers.as_ref().is_some_and(no_meter) {
                     plan.child_energy.remove(&info.device_id);
-                    plan.child_metered.remove(&info.device_id);
+                    seen.child_metered.remove(&info.device_id);
                 }
             }
-            let metered = plan
+            let metered = seen
                 .child_metered
                 .entry(info.device_id.clone())
                 .or_default();
@@ -343,7 +353,7 @@ async fn read(session: &mut Session, plan: &mut Plan) -> Result<Snapshot, KlapEr
     Ok(Snapshot {
         info,
         meter,
-        metered: plan.metered,
+        metered: seen.metered,
         led,
         children,
     })
