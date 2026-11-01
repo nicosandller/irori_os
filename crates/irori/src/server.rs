@@ -4796,6 +4796,9 @@ mod tests {
                     irori_protocol::Incoming::Picture(asked) => {
                         asked.reply(Err("no cameras on this mesh".into()));
                     }
+                    irori_protocol::Incoming::Page(page) => {
+                        page.answer(Err("no page on this mesh".into()));
+                    }
                 }
             }
             Ok(())

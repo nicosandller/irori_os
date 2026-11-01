@@ -119,6 +119,7 @@ core's process.
 | Handle actions | receives an action id, and whether to start it or stop it early; replies with a result | §5.1 |
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
 | Send a picture | receives a camera entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` entities. §5.2 |
+| Answer its page | receives a method, its params and who asked; replies with a JSON value or why not | Only with an `app` in its manifest. The same `app_request`/`app_answer` an engine gets ([automations.md](automations.md) §B3). E.g. Tesla's usage page asking for the month's spend |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 

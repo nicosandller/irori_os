@@ -1631,7 +1631,9 @@ async fn supervise_package(
             core.link_action(&extension, actions_tx);
         }
         let mut engine = EngineLink::new(&manifest);
-        if manifest.is_engine() && app.is_some() {
+        // An engine and a protocol both answer their own page: the questions travel the same
+        // link either way (`EngineLink`), and the process says what each method does.
+        if app.is_some() {
             core.link_app(&extension, engine.app_sender());
         }
         core.set_status(&extension, crate::ExtensionStatus::Running);

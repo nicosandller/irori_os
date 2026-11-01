@@ -201,8 +201,10 @@ For each running extension with an `app` contribution, the core:
   an origin of its own and reaches only what the bridge hands it. The frame, the page's own
   scripts and images, and anything that isn't a browser are served as before.
 - relays `POST /api/apps/<extension>/rpc` with body `{ "method": "…", "params": … }` to the
-  engine as `app_request`, and returns `{ "value": … }` or an error status with `{ "error": "…" }`.
-  30 s timeout (a backtest can take a moment). `503` if the engine isn't running. A regular user
+  extension's process as `app_request` (an engine's, or a protocol's: both answer their own
+  page), and returns `{ "value": … }` or an error status with `{ "error": "…" }`.
+  30 s timeout (a backtest can take a moment). `503` if the process isn't running. `has_engine`
+  in the list says there is a process to ask; it keeps its name from when only engines could. A regular user
   may ask only an extension with `users = true` that the home trusts with it; to any other it
   answers `404`, as if it had no page. A flow saved, turned on or off, deleted or brought back, or
   tested for real, by anyone, is written to the activity log;
@@ -242,7 +244,7 @@ Page → shell: `{ irori: 1, id, op, args }`. Shell → page: `{ irori: 1, id, v
 | `op` | Needs | Does |
 |---|---|---|
 | `hello` | — | Answers `{ theme, path }` |
-| `rpc` `{ method, params }` | an engine | `POST /api/apps/<id>/rpc` |
+| `rpc` `{ method, params }` | an engine or a protocol | `POST /api/apps/<id>/rpc` |
 | `registry` | `registry:read` | Entities, devices and areas as the shell has them |
 | `states` | `states:read` | Current states |
 | `history` `{ entity_id }` | `history:read` | The last day of one entity's changes |

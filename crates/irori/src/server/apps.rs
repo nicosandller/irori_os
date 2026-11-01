@@ -29,7 +29,8 @@ pub(super) struct AppEntry {
     has_icon: bool,
     /// What the shell's bridge may hand the page.
     api: Vec<ApiScope>,
-    /// Whether there's an engine for the page to ask.
+    /// Whether there's a process for the page to ask: an engine, or a protocol answering its own
+    /// page. The name stays from when only engines could.
     has_engine: bool,
     /// Whether the page's files are there. A package installed without its page built still
     /// gets an entry, which says so, rather than an empty frame.
@@ -71,7 +72,7 @@ pub(super) async fn list(
                 has_icon: info.icon.is_some(),
                 label: app.label,
                 api: app.api,
-                has_engine: info.engine,
+                has_engine: info.engine || info.iot_class.is_some(),
                 entity_format: app.entity_format,
                 built,
                 extension: id,

@@ -201,7 +201,8 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 extension id.
 
 **At most one process per extension**: it contributes a `protocol` or an `automation`, not both.
-An `app` can accompany either, or come alone ([automations.md](automations.md) §B1).
+An `app` can accompany either, or come alone ([automations.md](automations.md) §B1). Its page
+can ask the process either way: an engine or a protocol answers its own page's `rpc`.
 
 ### 6.2 Kinds this version doesn't implement
 
