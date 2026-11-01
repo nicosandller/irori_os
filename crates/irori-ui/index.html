@@ -823,6 +823,18 @@
     .live-seg { padding: .2rem .55rem; font: inherit; font-size: .78rem; color: var(--muted);
                 background: transparent; border: 0; border-radius: .3rem; cursor: pointer; }
     .live-seg:hover { color: var(--fg); }
+    .camera-turn { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: .5rem 0 .75rem; }
+    .camera-turn:empty { display: none; }
+    .turn-pad { display: grid; grid-template-columns: repeat(3, 2.5rem); grid-auto-rows: 2.5rem; gap: .2rem; }
+    .turn-zoom { display: inline-flex; flex-direction: column; gap: .2rem; }
+    .turn-zoom .turn-button { width: 2.5rem; height: 2.5rem; }
+    .turn-button { font: inherit; font-size: .95rem; color: var(--fg); background: var(--card);
+      border: 1px solid var(--line); border-radius: .5rem; cursor: pointer;
+      touch-action: none; user-select: none; -webkit-user-select: none; }
+    .turn-button:hover { border-color: var(--muted); }
+    .turn-button:active { background: var(--line); }
+    .turn-middle { border-radius: 50%; margin: .9rem; background: var(--line); }
+    .turn-presets select { font: inherit; margin-left: .25rem; }
     .live-seg[aria-pressed="true"] { color: var(--fg); background: var(--card);
                                      box-shadow: 0 0 0 1px var(--line); }
     @keyframes frame-in { from { opacity: .7; } }

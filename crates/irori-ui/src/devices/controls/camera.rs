@@ -57,6 +57,19 @@ pub(crate) fn camera_control(
 ///
 /// A camera that can be watched live shows its video instead.
 pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
+    let turn = match &entity.capabilities {
+        Capabilities::Camera(capabilities)
+            if capabilities.pan_tilt || capabilities.zoom || capabilities.presets =>
+        {
+            Some(view! {
+                <crate::camera_turn::CameraTurn
+                    id=entity.id.clone()
+                    capabilities=capabilities.clone()
+                />
+            })
+        }
+        _ => None,
+    };
     if let Capabilities::Camera(capabilities) = &entity.capabilities
         && capabilities.live
     {
@@ -67,6 +80,7 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
                 capabilities=capabilities.clone()
                 open=open
             />
+            {turn}
         }
         .into_any();
     }
@@ -112,6 +126,7 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
                 }}
             </figcaption>
         </figure>
+        {turn}
     }
     .into_any()
 }
