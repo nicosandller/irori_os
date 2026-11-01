@@ -111,6 +111,9 @@ pub enum NetworkRole {
     SleepyEndDevice,
     /// On the home's own network, Wi-Fi or wired.
     Device,
+    /// A vendor's servers on the internet, which a cloud protocol reaches its devices through:
+    /// SwitchBot's, Tesla's. Drawn as the way into that protocol's devices.
+    Cloud,
 }
 
 /// How a node is connected, or what a link is over.
@@ -128,6 +131,8 @@ pub enum NetworkMedium {
     Serial,
     /// The home's network, not known which way.
     Ip,
+    /// The internet: between Irori and a vendor's cloud, or a vendor's cloud and a device.
+    Internet,
 }
 
 /// Two nodes that reach each other directly.

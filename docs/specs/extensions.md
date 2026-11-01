@@ -29,7 +29,7 @@ crate in-process through the `Protocol` trait. From the UI they look the same.
 flowchart LR
     manifest["irori-extension.toml"] --> info["[extension]<br/>id · name · version · irori"]
     manifest --> contributes["[contributes]"]
-    manifest --> permissions["[permissions]<br/>lan · network · serial · host_fs · host_shell · api"]
+    manifest --> permissions["[permissions]<br/>lan · bluetooth · network · serial · host_fs · host_shell · api"]
     contributes --> protocol["protocol"]
     contributes --> automation["automation"]
     contributes --> app["app"]
@@ -226,6 +226,7 @@ increase on update needs approval again (D23).
 | Field | Type | Grants |
 |---|---|---|
 | `lan` | bool | Devices on the local network: private and link-local addresses, and mDNS (`.local` names, service discovery) |
+| `bluetooth` | bool | Bluetooth devices near the machine, through its adapter: scanning for their adverts, and connecting to them. On Linux that's BlueZ over D-Bus (`bluetoothd` running; in Docker, `/run/dbus` mounted) |
 | `network` | list of hosts, no repeats | These internet hosts. A lowercase hostname with a domain (`api.switch-bot.com`), or `*.example.com` for every subdomain. Not IP addresses or local-network names (`.local`, `.home.arpa`, `.internal`, `.lan`, `.home`), which need `lan`, so local access can't hide behind this permission |
 | `serial` | list of `/dev/…` paths, no repeats | These serial or USB devices, e.g. `/dev/ttyUSB0` |
 | `host_fs` | list of paths, no repeats | These files and folders. `$CONFIG` and `$DATA` (optionally `/sub/path`) are Irori's own folders; any absolute path (`/`, `/home/pi`) is outside them |
@@ -247,8 +248,8 @@ the extension can do anything on the machine. The UI and CLI must say that in th
 only the owner can approve it. A terminal app is honest about what it is instead of hiding it.
 
 **Enforcement.** API scopes are enforced on every engine request over the wire
-([automations.md](automations.md) §B2) and by the shell's bridge for app pages (§B4). `lan`, `network`,
-`serial`, and host access are recorded, shown, and approved, but only enforced where the OS
+([automations.md](automations.md) §B2) and by the shell's bridge for app pages (§B4). `lan`, `bluetooth`,
+`network`, `serial`, and host access are recorded, shown, and approved, but only enforced where the OS
 makes it practical (ROADMAP M1.5). The UI must not suggest otherwise. When `network` is enforced,
 it has to check the addresses a name resolves to as well: a public-looking name can point at a
 local address.

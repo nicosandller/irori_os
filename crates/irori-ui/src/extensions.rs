@@ -492,6 +492,11 @@ fn card(
                 })}
                 {waiting_for.map(|why| view! { <span class="muted small">{why}</span> })}
                 {full_access.then(|| view! { <span class="chip quiet ext-full">"full access"</span> })}
+                {(!entry.network.is_empty()).then(|| view! {
+                    <span class="chip quiet" title=format!("Connects to {}", entry.network.join(", "))>
+                        "uses the internet"
+                    </span>
+                })}
             </div>
             <p class="muted ext-description">{entry.description.clone()}</p>
             <button
