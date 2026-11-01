@@ -796,6 +796,29 @@
         "unavailable"
       ]
     },
+    "CameraPreset": {
+      "description": "A position saved on a camera, which it can be sent back to.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "What the camera calls it, for `camera.go_to_preset`.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "name": {
+          "description": "What a person called it.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ]
+    },
     "CameraStatus": {
       "description": "What a camera is doing. Home Assistant's camera states, with `off` for one turned off.",
       "oneOf": [
@@ -2174,6 +2197,17 @@
                 "boolean",
                 "null"
               ]
+            },
+            "presets": {
+              "description": "The positions saved on it, for one with `presets`. In the camera's own order.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/CameraPreset"
+              },
+              "maxItems": 256
             },
             "state": {
               "$ref": "#/$defs/CameraStatus"

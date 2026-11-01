@@ -398,6 +398,8 @@ where
                 ToExt::Hello { .. }
                 | ToExt::Reply { .. }
                 | ToExt::Loaded { .. }
+                | ToExt::LiveStart { .. }
+                | ToExt::LiveStop { .. }
                 | ToExt::ServiceCall { .. }
                 | ToExt::ActionCall { .. }
                 | ToExt::UnpairDevice { .. }

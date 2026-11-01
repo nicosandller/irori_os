@@ -119,6 +119,7 @@ core's process.
 | Handle actions | receives an action id, and whether to start it or stop it early; replies with a result | §5.1 |
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
 | Send a picture | receives a camera entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` entities. §5.2 |
+| Send live video | receives a camera entity's `unique_id`, a quality and the codecs the page plays; sends an init segment, then video, until told to stop | Only for its own `camera` entities that say `live`. §5.3 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 
@@ -197,6 +198,42 @@ camera's protocol.
 On the wire the request is `camera_picture { id, unique_id }`, answered with
 `picture_result { id, picture: { content_type, data }, error }`, `data` being the bytes as
 base64. In the SDK it is `Incoming::Picture`, from `ProtocolContext::next`.
+
+### 5.3 Live video
+
+A camera that says `live` ([entities.md](entities.md)) can be watched. Like its picture, its video
+isn't state. A page opens `GET /api/entities/{id}/live` ([api.md](api.md)), and the core asks the
+camera's protocol for a stream.
+
+- **The container is fragmented MP4**, which browsers play through Media Source Extensions. The
+  protocol makes it: an **init segment** (`video/mp4; codecs="…"`, at most 64 KB) once, then
+  **fragments** (at most 1 MB each), a fragment that starts at a keyframe marked `key`. Neither
+  the core nor the page knows anything about codecs.
+- **The request says what to send**: one of the camera's `qualities` (`low`, its small stream, or
+  `high`, its full size) and `accepts`, the codec families the page can play as MP4 names them
+  (`avc1`, `hvc1`, `mp4a`, `flac`). The protocol sends video the page can play, and sound only in
+  a codec it can; when there's no video it can play, it ends the stream saying so.
+- **One stream for everyone.** The core asks for one stream per camera, quality and `accepts`,
+  however many pages watch it. A page that comes later is sent the init segment the protocol
+  already sent, and joins at the next keyframe. When the last page leaves, the stream runs on for
+  10 seconds, so a page reloading doesn't make the camera start over, and then the core tells the
+  protocol to stop.
+- **Video never waits.** Every hop between the camera and the page is a small queue that drops
+  what doesn't fit instead of waiting, and then drops everything up to the next keyframe, since a
+  decoder shows nothing useful until then anyway. A slow page costs its own frames, never the
+  protocol's state reports or anyone else's view. In an extension process, video has its own queue
+  to stdout, behind every other message.
+- The protocol starts within about 15 seconds or the page is told the camera didn't start. A
+  protocol with no cameras ends the stream at once saying so; the SDK's `next_action` does that
+  for it.
+- A camera reports `streaming` while it sends a stream, and `idle` again after.
+
+On the wire the request is `live_start { stream, unique_id, quality, accepts }` and
+`live_stop { stream }`; the protocol answers with `live_init { stream, mime, data }`,
+`live_fragment { stream, key, data }` and `live_end { stream, error }`, `data` being the bytes as
+base64. In the SDK it is `Incoming::Live`, whose `LiveFeed` refuses rather than waits
+(`fragment` says whether it was `Sent` or `Skipped`) and whose `closed()` resolves when nobody
+watches any more.
 
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
@@ -298,6 +335,12 @@ core accepts a secret **only at a path the protocol is currently asking for**: u
 sign-in (ROADMAP D12), an endpoint that wrote anything anywhere would let anyone on the network
 rewrite anyone's settings. A secret, once given, is never sent back, and the protocol receives
 it on its next start (§3, step 6).
+
+**A login.** A secret request with `username: { label, placeholder? }` asks for a username as
+well: a camera's login, an account's. The page shows both fields, and the core writes the two side
+by side, at `path` + `username` and `path` + `password` (`["cameras", "<id>"]` becomes
+`[<extension>.cameras.<id>]` with `username` and `password` in it). The API refuses a username
+for a request that didn't ask for one, and a login without one.
 
 ### 6.7 Unmodeled
 
@@ -413,6 +456,9 @@ manifest's `entity_kinds`.
 | `scene.turn_on` | none | Home Assistant's name for setting a scene |
 | `camera.turn_on`, `camera.turn_off` | none | Its privacy switch. Only for one with `on_off` |
 | `camera.enable_motion_detection`, `camera.disable_motion_detection` | none | Only for one with `motion_detection` |
+| `camera.move` | `{ pan?, tilt?, zoom?, seconds? }`, speeds from -1 to 1, at least one; `seconds` 0.1 to 10, 0.5 when absent | Turns it at those speeds for `seconds`, then it **stops on its own**, so a lost `camera.stop` never leaves it turning; a page holding a button sends it again before it runs out. `pan`/`tilt` only for one with `pan_tilt`, `zoom` for one with `zoom` |
+| `camera.stop` | none | Stops a move now. For one with `pan_tilt` or `zoom` |
+| `camera.go_to_preset` | `{ preset }` | One of its `presets`' ids. For one with `presets` |
 | `timer.start` | `duration` (optional), seconds above 0, at most a year | Left out: its own `duration`, or what was left when it was paused |
 | `timer.pause`, `timer.cancel`, `timer.finish` | none | |
 | `timer.change` | `by`, seconds to add, or to take away when negative | Taken past its end, it finishes |

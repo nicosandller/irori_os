@@ -140,6 +140,10 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                         let picture = house.picture(asked.unique_id.as_str());
                         asked.reply(picture);
                     }
+                    // Its cameras draw pictures; none says it can be watched live.
+                    Some(Incoming::Live(live)) => {
+                        live.feed.end(Some("the demo's cameras have no live video".into()));
+                    }
                     Some(Incoming::Action(action)) if action.action_id == SCAN_NETWORK => {
                         if action.stop {
                             action.reply(Err("a scan can't be stopped once it's under way".into()));

@@ -8,8 +8,8 @@ use std::io::{BufRead, Write};
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 
 use irori_types::{
     Availability, ContextId, DeviceDescription, EntityDescription, EntityId, EntityState,
@@ -101,6 +101,25 @@ pub enum FromExt {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         picture: Option<WirePicture>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// A live stream's init segment (`docs/specs/protocols.md` §5.3), base64.
+    LiveInit {
+        stream: u64,
+        mime: String,
+        data: String,
+    },
+    /// Some of a live stream's video, base64. `key` when it starts at a keyframe.
+    LiveFragment {
+        stream: u64,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        key: bool,
+        data: String,
+    },
+    /// A live stream is over, with why when it failed.
+    LiveEnd {
+        stream: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
@@ -220,6 +239,19 @@ pub enum ToExt {
         id: u64,
         unique_id: UniqueId,
     },
+    /// A page wants to watch one of its cameras live. Answered with `live_init`, then
+    /// `live_fragment`s, until `live_end` or `live_stop`.
+    LiveStart {
+        stream: u64,
+        unique_id: UniqueId,
+        quality: irori_types::LiveQuality,
+        #[serde(default)]
+        accepts: Vec<String>,
+    },
+    /// Nobody watches that stream any more: stop it. Nothing more is read for it.
+    LiveStop {
+        stream: u64,
+    },
     Stop,
     /// The answer to an engine operation. `error` starts with a code for `call_service`
     /// (`unavailable: …`).
@@ -324,15 +356,22 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
     // The queue between them is bounded. State reports that do not fit stay in `ReportQueue`,
     // where a newer value for the same entity still replaces the one waiting.
     let (out_tx, out_rx) = mpsc::channel(STDOUT_QUEUE);
+    // Live video has a queue of its own, which the writer reads only when nothing else waits:
+    // a state report never queues behind a second of video.
+    let (live_tx, live_rx) = mpsc::channel(LIVE_LINES);
+    let writer_runtime = tokio::runtime::Handle::current();
     std::thread::Builder::new()
         .name("protocol-stdout".into())
-        .spawn(move || write_stdout(out_rx))
+        .spawn(move || write_stdout(out_rx, live_rx, &writer_runtime))
         .map_err(|e| {
             ProtocolError::new(format!("couldn't start the protocol stdout thread: {e}"))
         })?;
 
     let (ctx, host_end) = host::connect();
-    let pending = Arc::new(Pending::default());
+    let pending = Arc::new(Pending {
+        live_out: Some(live_tx),
+        ..Pending::default()
+    });
     let (hello_tx, hello_rx) = std::sync::mpsc::sync_channel(1);
     let pending_in = Arc::clone(&pending);
     let calls = host_end.calls;
@@ -372,6 +411,10 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
 /// How many encoded lines may sit ahead of the stdout thread. Past this, state reports stay
 /// in `ReportQueue` (one per entity) instead of becoming another retained `String`.
 const STDOUT_QUEUE: usize = 64;
+
+/// How many lines of live video may sit ahead of the stdout thread, across every stream. Past
+/// this each stream's own feed fills, and it skips to its next keyframe.
+const LIVE_LINES: usize = 8;
 
 async fn pump_outgoing(
     mut ops: tokio::sync::mpsc::Receiver<Op>,
@@ -454,9 +497,30 @@ async fn send_line(out: &mpsc::Sender<String>, value: &impl Serialize) -> Result
     out.send(line).await.map_err(|_| ())
 }
 
-fn write_stdout(mut rx: mpsc::Receiver<String>) {
+fn write_stdout(
+    mut rx: mpsc::Receiver<String>,
+    mut live: mpsc::Receiver<String>,
+    runtime: &tokio::runtime::Handle,
+) {
     let mut out = std::io::stdout().lock();
-    while let Some(line) = rx.blocking_recv() {
+    loop {
+        let line = match rx.try_recv() {
+            Ok(line) => line,
+            Err(mpsc::error::TryRecvError::Disconnected) => return,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                let next = runtime.block_on(async {
+                    tokio::select! {
+                        biased;
+                        line = rx.recv() => line,
+                        Some(line) = live.recv() => Some(line),
+                    }
+                });
+                match next {
+                    Some(line) => line,
+                    None => return,
+                }
+            }
+        };
         if out.write_all(line.as_bytes()).is_err() || out.flush().is_err() {
             return;
         }
@@ -675,6 +739,26 @@ fn handle_host_line(
                 ),
             }
         }
+        ToExt::LiveStart {
+            stream,
+            unique_id,
+            quality,
+            accepts,
+        } => {
+            let (incoming, chunks) = host::incoming_live(unique_id, quality, accepts);
+            match actions.try_send(incoming) {
+                Ok(()) => pending.start_live(stream, chunks, out, runtime),
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => enqueue_json(
+                    out,
+                    &FromExt::LiveEnd {
+                        stream,
+                        error: Some("the extension is busy and can't take this yet".into()),
+                    },
+                ),
+            }
+        }
+        ToExt::LiveStop { stream } => pending.stop_live(stream),
         ToExt::Stop => return ReadControl::Stop,
         // Engine traffic is read by `engine::run`, not by a protocol extension's `serve`.
         // A line that arrives here is consumed so the reader stays up; the same messages
@@ -717,9 +801,72 @@ struct Pending {
     next_id: AtomicU64,
     replies: Mutex<HashMap<u64, Reply>>,
     loads: Mutex<HashMap<u64, LoadReply>>,
+    /// Each live stream's forwarder, by the host's stream number, so `live_stop` can end it.
+    live: Arc<Mutex<HashMap<u64, tokio::task::AbortHandle>>>,
+    /// Where live video lines go: their own queue (see `serve`). Unset in tests, which read
+    /// everything off one queue.
+    live_out: Option<mpsc::Sender<String>>,
 }
 
 impl Pending {
+    /// Forwards a stream's chunks to the host as lines until it ends or the host stops it.
+    fn start_live(
+        &self,
+        stream: u64,
+        mut chunks: mpsc::Receiver<crate::LiveChunk>,
+        out: &mpsc::Sender<String>,
+        runtime: &tokio::runtime::Handle,
+    ) {
+        use base64::Engine as _;
+        let lines = self.live_out.clone().unwrap_or_else(|| out.clone());
+        let streams = Arc::clone(&self.live);
+        let mut table = self.live.lock().unwrap_or_else(PoisonError::into_inner);
+        let task = runtime.spawn(async move {
+            let encode = |data: &[u8]| base64::engine::general_purpose::STANDARD.encode(data);
+            loop {
+                let message = match chunks.recv().await {
+                    Some(crate::LiveChunk::Init { mime, data }) => FromExt::LiveInit {
+                        stream,
+                        mime,
+                        data: encode(&data),
+                    },
+                    Some(crate::LiveChunk::Fragment { key, data }) => FromExt::LiveFragment {
+                        stream,
+                        key,
+                        data: encode(&data),
+                    },
+                    Some(crate::LiveChunk::End { error }) => FromExt::LiveEnd { stream, error },
+                    None => FromExt::LiveEnd {
+                        stream,
+                        error: Some("the protocol stopped the stream".into()),
+                    },
+                };
+                let over = matches!(message, FromExt::LiveEnd { .. });
+                if send_line(&lines, &message).await.is_err() || over {
+                    break;
+                }
+            }
+            streams
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&stream);
+        });
+        table.insert(stream, task.abort_handle());
+    }
+
+    /// The host stopped watching: dropping the forwarder drops the feed's receiver, which is the
+    /// protocol's sign to stop.
+    fn stop_live(&self, stream: u64) {
+        if let Some(task) = self
+            .live
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&stream)
+        {
+            task.abort();
+        }
+    }
+
     fn encode_op(&self, op: Op) -> Option<FromExt> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         match op {
@@ -1150,6 +1297,66 @@ mod tests {
         assert_eq!(control, ReadControl::Continue);
         let busy = out_rx.try_recv().expect("a full queue answers immediately");
         assert!(busy.contains("can't take this action yet"));
+    }
+
+    /// A page watching a camera: the request reaches the protocol as one, its video comes back
+    /// on the pipe as lines, and the host's `live_stop` is the protocol's sign to stop.
+    #[tokio::test]
+    async fn a_live_stream_goes_out_as_lines_until_the_host_stops_it() {
+        let pending = Pending::default();
+        let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
+        let (actions, mut actions_rx) = tokio::sync::mpsc::channel(1);
+        let (out_tx, mut out_rx) = mpsc::channel(STDOUT_QUEUE);
+        let runtime = tokio::runtime::Handle::current();
+
+        let control = handle_host_line(
+            r#"{"type":"live_start","stream":3,"unique_id":"driveway","quality":"low","accepts":["avc1"]}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        let crate::Incoming::Live(mut live) = actions_rx.try_recv().expect("queued").sorted()
+        else {
+            panic!("a live request arrives as one");
+        };
+        assert_eq!(live.unique_id.as_str(), "driveway");
+        assert!(live.accepts("avc1") && !live.accepts("hvc1"));
+        live.feed
+            .init("video/mp4; codecs=\"avc1.4d401f\"".into(), vec![1, 2, 3])
+            .expect("room");
+        live.feed.fragment(true, vec![4]).expect("room");
+
+        let line = out_rx.recv().await.expect("the init segment");
+        let FromExt::LiveInit { stream, mime, data } =
+            serde_json::from_str(line.trim()).expect("a live init")
+        else {
+            panic!("expected live_init, got {line}");
+        };
+        assert_eq!(
+            (stream, mime.as_str(), data.as_str()),
+            (3, "video/mp4; codecs=\"avc1.4d401f\"", "AQID")
+        );
+        let line = out_rx.recv().await.expect("a fragment");
+        assert!(
+            line.contains(r#""type":"live_fragment","stream":3,"key":true"#),
+            "{line}"
+        );
+
+        let control = handle_host_line(
+            r#"{"type":"live_stop","stream":3}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        tokio::time::timeout(std::time::Duration::from_secs(1), live.feed.closed())
+            .await
+            .expect("the protocol is told nobody watches");
     }
 
     #[tokio::test]

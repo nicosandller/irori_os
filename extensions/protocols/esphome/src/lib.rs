@@ -142,6 +142,7 @@ fn needs_key(mac: &Mac, name: &str, why: &str) -> Option<Waiting> {
             path: vec!["keys".to_owned(), mac.to_string()],
             label: "Encryption key".to_owned(),
             hint: Some("`api: encryption: key:` in the device's ESPHome YAML".to_owned()),
+            username: None,
         }),
     })
 }

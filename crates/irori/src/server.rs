@@ -232,6 +232,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/entities/{id}", patch(edit_entity))
         .route("/api/entities/{id}/picture", get(camera_picture))
+        .route("/api/entities/{id}/live", get(live::camera))
         .route("/api/extensions/{id}/secrets", put(give_secret))
         .route(
             "/api/extensions/{id}/settings",
@@ -2221,12 +2222,15 @@ pub(crate) fn is_write_only(field_schema: &serde_json::Value, root: &serde_json:
     })
 }
 
-/// A secret for an extension, at the place it asked for one: `{"path": [...], "value": "..."}`.
+/// A secret for an extension, at the place it asked for one: `{"path": [...], "value": "..."}`,
+/// with `username` too when what it asked for is a login.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SecretGiven {
     path: Vec<String>,
     value: String,
+    #[serde(default)]
+    username: Option<String>,
 }
 
 /// Written by hand so the value can't reach a log through `{:?}`.
@@ -2261,8 +2265,9 @@ async fn give_secret(
         .waiting
         .iter()
         .filter_map(|waiting| waiting.secret.as_ref())
-        .any(|secret| secret.path == given.path);
-    if !asked {
+        .find(|secret| secret.path == given.path)
+        .cloned();
+    let Some(asked) = asked else {
         return refused(
             StatusCode::CONFLICT,
             format!(
@@ -2270,17 +2275,42 @@ async fn give_secret(
                  have stopped waiting"
             ),
         );
-    }
+    };
     if given.value.trim().is_empty() {
         return refused(StatusCode::BAD_REQUEST, "the secret is empty".to_owned());
     }
+    // A login is two values side by side; anything else is the one value at the path.
+    let writes = match (&asked.username, given.username.as_deref().map(str::trim)) {
+        (None, None) => vec![(given.path.clone(), given.value.trim().to_owned())],
+        (Some(_), Some(username)) if !username.is_empty() => {
+            let (username_at, password_at) = asked.login_paths();
+            vec![
+                (username_at, username.to_owned()),
+                (password_at, given.value.trim().to_owned()),
+            ]
+        }
+        (Some(_), _) => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                "this is a login: it needs a username as well".to_owned(),
+            );
+        }
+        (None, Some(_)) => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                "this asks for one secret, not a username".to_owned(),
+            );
+        }
+    };
     let saved = state
         .0
         .config
         .edit_secrets(core, |secrets| {
-            secrets
-                .set(&id, &given.path, given.value.trim().to_owned())
-                .map_err(|e| Refused(e.to_string()))
+            writes.into_iter().try_for_each(|(path, value)| {
+                secrets
+                    .set(&id, &path, value)
+                    .map_err(|e| Refused(e.to_string()))
+            })
         })
         .await;
     match saved {
@@ -4636,6 +4666,7 @@ mod tests {
                         path: vec!["code".into()],
                         label: "Code".into(),
                         hint: None,
+                        username: None,
                     }),
                 }])
                 .await;
@@ -4791,6 +4822,9 @@ mod tests {
                     irori_protocol::Incoming::Call(call) => call.reply(Ok(())),
                     irori_protocol::Incoming::Picture(asked) => {
                         asked.reply(Err("no cameras on this mesh".into()));
+                    }
+                    irori_protocol::Incoming::Live(live) => {
+                        live.feed.end(Some("no cameras on this mesh".into()));
                     }
                 }
             }
@@ -5210,6 +5244,139 @@ mod tests {
             "a secret leaked into the home view"
         );
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A camera that wants its login: a username and a password, kept side by side.
+    struct Doorcam;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    struct DoorcamSettings {
+        #[serde(default)]
+        cameras: std::collections::BTreeMap<String, serde_json::Value>,
+    }
+
+    impl irori_protocol::Protocol for Doorcam {
+        type Config = DoorcamSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "doorcam"
+            name = "Doorcam"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["camera"]
+        "#;
+        async fn run(
+            settings: DoorcamSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let waiting = if settings.cameras.contains_key("front") {
+                Vec::new()
+            } else {
+                vec![irori_types::Waiting {
+                    unique_id: "front".parse()?,
+                    name: "Front door".parse()?,
+                    reason: "it needs the camera's login".into(),
+                    secret: Some(irori_types::SecretRequest {
+                        path: vec!["cameras".into(), "front".into()],
+                        label: "Password".into(),
+                        hint: None,
+                        username: Some(irori_types::UsernameRequest {
+                            label: "Username".into(),
+                            placeholder: Some("admin".into()),
+                        }),
+                    }),
+                }]
+            };
+            ctx.set_waiting(waiting).await;
+            ctx.stopped().await;
+            Ok(())
+        }
+    }
+
+    /// A login lands as a username and a password side by side, and only when both are given
+    /// where a login was asked for.
+    #[tokio::test]
+    async fn a_login_is_given_as_a_username_and_a_password() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<Doorcam>().map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Safe>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let server = Server::new(core.clone())?;
+        for _ in 0..500 {
+            let home = server.read("/api/home").await?;
+            if home["extensions"]["doorcam"]["waiting"][0].is_object()
+                && home["extensions"]["safe"]["waiting"][0].is_object()
+            {
+                assert_eq!(
+                    home["extensions"]["doorcam"]["waiting"][0]["secret"]["username"]["placeholder"],
+                    "admin"
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        for (extension, body, wanted) in [
+            (
+                "doorcam",
+                serde_json::json!({"path": ["cameras", "front"], "value": "hunter2"}),
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "safe",
+                serde_json::json!({"path": ["code"], "value": "1234", "username": "admin"}),
+                StatusCode::BAD_REQUEST,
+            ),
+        ] {
+            let (status, body) = server
+                .json("PUT", &format!("/api/extensions/{extension}/secrets"), body)
+                .await?;
+            assert_eq!(status, wanted, "{extension}: {body}");
+        }
+
+        let (status, body) = server
+            .json(
+                "PUT",
+                "/api/extensions/doorcam/secrets",
+                serde_json::json!({"path": ["cameras", "front"], "value": "hunter2", "username": " admin "}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let written: toml::Table =
+            std::fs::read_to_string(server.config_dir().join("secrets.toml"))?.parse()?;
+        assert_eq!(
+            written["doorcam"]["cameras"]["front"],
+            toml::Value::Table(toml::toml! { username = "admin"
+            password = "hunter2" }),
+        );
+        let unlocked = |home: &serde_json::Value| {
+            let waiting = &home["extensions"]["doorcam"]["waiting"];
+            waiting.is_null() || waiting.as_array().is_some_and(Vec::is_empty)
+        };
+        for _ in 0..500 {
+            if unlocked(&server.read("/api/home").await?) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let home = server.read("/api/home").await?;
+        assert!(
+            unlocked(&home),
+            "the camera has its login: {}",
+            home["extensions"]["doorcam"]
+        );
+        assert!(!home.to_string().contains("hunter2"), "the password leaked");
         host.shutdown().await;
         Ok(())
     }
@@ -6554,6 +6721,265 @@ mod tests {
             assert_eq!(status, wanted, "{path}: {}", String::from_utf8_lossy(&body));
         }
         host.shutdown().await;
+        Ok(())
+    }
+
+    /// How many times the test camera was asked to start its video.
+    static GATE_STARTS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A camera that can be watched live: a made-up init segment, then a fragment numbered by
+    /// its place every 20 ms, every third one a keyframe, until nobody watches.
+    struct Gate;
+    impl irori_protocol::Protocol for Gate {
+        type Config = irori_protocol::NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "gate"
+            name = "Gate"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["camera"]
+        "#;
+        async fn run(
+            _: irori_protocol::NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            use irori_types::{
+                CameraCapabilities, CameraState, CameraStatus, Capabilities, DeviceDescription,
+                EntityDescription, LiveQuality, State, StateReport,
+            };
+            let uid = |id: &str| irori_types::UniqueId::try_from(id).expect("valid");
+            ctx.describe_device(DeviceDescription {
+                unique_id: uid("gate"),
+                name: Name::try_from("Gate")?,
+                manufacturer: None,
+                model: None,
+                sw_version: None,
+                hw_version: None,
+                serial_number: None,
+                suggested_area: None,
+                via_device_unique_id: None,
+            })
+            .await?;
+            ctx.describe_entity(EntityDescription {
+                unique_id: uid("gate-camera"),
+                name: None,
+                device_unique_id: Some(uid("gate")),
+                suggested_object_id: Some(irori_types::ObjectId::try_from("gate")?),
+                capabilities: Capabilities::Camera(CameraCapabilities {
+                    live: true,
+                    qualities: vec![LiveQuality::Low],
+                    ..CameraCapabilities::default()
+                }),
+                entity_category: None,
+            })
+            .await?;
+            ctx.report_state(StateReport {
+                unique_id: uid("gate-camera"),
+                state: Some(State::Camera(CameraState {
+                    state: CameraStatus::Idle,
+                    motion_detection: None,
+                    presets: None,
+                })),
+                attributes: Default::default(),
+                caused_by: None,
+                replayed: false,
+            });
+            while let Some(incoming) = ctx.next().await {
+                if let irori_protocol::Incoming::Live(mut live) = incoming {
+                    GATE_STARTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::spawn(async move {
+                        if live
+                            .feed
+                            .init("video/mp4; codecs=\"avc1.4d401f\"".into(), b"init".to_vec())
+                            .is_err()
+                        {
+                            return;
+                        }
+                        for n in 0u8.. {
+                            if live.feed.fragment(n % 3 == 0, vec![n]).is_err() {
+                                return;
+                            }
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+
+    type CameraSocket = tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >;
+
+    /// Opens a camera's live socket and says the page plays H.264.
+    async fn watch(
+        address: std::net::SocketAddr,
+        origin: Option<&str>,
+    ) -> anyhow::Result<CameraSocket> {
+        use futures_util::SinkExt as _;
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut last = None;
+        for _ in 0..50 {
+            let mut request = format!("ws://{address}/api/entities/camera.gate/live?quality=low")
+                .into_client_request()?;
+            if let Some(origin) = origin {
+                request.headers_mut().insert("origin", origin.parse()?);
+            }
+            match tokio_tungstenite::connect_async(request).await {
+                Ok((mut socket, _)) => {
+                    socket
+                        .send(tokio_tungstenite::tungstenite::Message::Text(
+                            r#"{"accepts":["avc1"]}"#.into(),
+                        ))
+                        .await?;
+                    return Ok(socket);
+                }
+                Err(error) => {
+                    last = Some(error);
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }
+        }
+        anyhow::bail!("the camera's socket did not open: {last:?}")
+    }
+
+    enum Seen {
+        Word(serde_json::Value),
+        Video(Vec<u8>),
+    }
+
+    async fn next_frame(socket: &mut CameraSocket) -> anyhow::Result<Seen> {
+        use futures_util::StreamExt as _;
+        let frame = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("the socket closed"))??;
+        Ok(match frame {
+            tokio_tungstenite::tungstenite::Message::Text(text) => {
+                Seen::Word(serde_json::from_str(&text)?)
+            }
+            tokio_tungstenite::tungstenite::Message::Binary(data) => Seen::Video(data.to_vec()),
+            other => anyhow::bail!("unexpected frame {other:?}"),
+        })
+    }
+
+    /// The type, then the init segment, then video: the start of what a page plays.
+    async fn starts_playing(socket: &mut CameraSocket) -> anyhow::Result<()> {
+        let Seen::Word(word) = next_frame(socket).await? else {
+            anyhow::bail!("the first frame says what the video is");
+        };
+        assert_eq!(word["playing"]["mime"], "video/mp4; codecs=\"avc1.4d401f\"");
+        let Seen::Video(init) = next_frame(socket).await? else {
+            anyhow::bail!("then the init segment");
+        };
+        assert_eq!(init, b"init");
+        Ok(())
+    }
+
+    async fn first_fragment(socket: &mut CameraSocket) -> anyhow::Result<u8> {
+        let Seen::Video(fragment) = next_frame(socket).await? else {
+            anyhow::bail!("then video");
+        };
+        Ok(fragment[0])
+    }
+
+    /// Two pages watching one camera share one stream from it, and the one that comes later
+    /// starts at a keyframe. A page from another site can't open it, and a camera that isn't live
+    /// can't be watched.
+    #[tokio::test]
+    async fn a_camera_is_watched_live_by_everyone_through_one_stream() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<Gate>().map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        for _ in 0..500 {
+            if core.state(&EntityId::try_from("camera.gate")?).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core.clone())?;
+        let app = server.app()?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let serve = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let mut first = watch(address, None).await?;
+        starts_playing(&mut first).await?;
+        assert_eq!(first_fragment(&mut first).await?, 0, "from the very start");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut second = watch(address, Some(&format!("http://{address}"))).await?;
+        starts_playing(&mut second).await?;
+        let at = first_fragment(&mut second).await?;
+        assert_eq!(
+            at % 3,
+            0,
+            "a late page starts at a keyframe, not fragment {at}"
+        );
+        assert_eq!(
+            GATE_STARTS.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "one stream from the camera for both"
+        );
+
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+        let mut request =
+            format!("ws://{address}/api/entities/camera.gate/live").into_client_request()?;
+        request
+            .headers_mut()
+            .insert("origin", "http://elsewhere.example".parse()?);
+        match tokio_tungstenite::connect_async(request).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), StatusCode::FORBIDDEN);
+            }
+            other => anyhow::bail!("another site opened the camera: {:?}", other.is_ok()),
+        }
+        for (path, wanted) in [
+            (
+                "/api/entities/camera.garden_camera_1/live",
+                StatusCode::CONFLICT,
+            ),
+            (
+                "/api/entities/camera.gate/live?quality=high",
+                StatusCode::CONFLICT,
+            ),
+            (
+                "/api/entities/camera.gate/live?quality=huge",
+                StatusCode::BAD_REQUEST,
+            ),
+            ("/api/entities/camera.nowhere/live", StatusCode::NOT_FOUND),
+            (
+                "/api/entities/light.living_room_lamp/live",
+                StatusCode::NOT_FOUND,
+            ),
+        ] {
+            let (status, body) = server.send(Request::get(path).body(Body::empty())?).await?;
+            assert_eq!(status, wanted, "{path}: {}", String::from_utf8_lossy(&body));
+        }
+
+        // The extension stopping ends what everyone watches, saying so.
+        host.shutdown().await;
+        let ended = loop {
+            if let Seen::Word(word) = next_frame(&mut first).await? {
+                break word;
+            }
+        };
+        assert!(ended["ended"]["reason"].is_string(), "{ended}");
+        serve.abort();
         Ok(())
     }
 
@@ -9959,6 +10385,7 @@ mod tests {
         ("DELETE", "/api/devices/{id}", Run),
         ("PATCH", "/api/entities/{id}", Run),
         ("GET", "/api/entities/{id}/picture", Hidden),
+        ("GET", "/api/entities/{id}/live", Hidden),
         ("PUT", "/api/extensions/{id}/secrets", Run),
         ("POST", "/api/extensions/{id}/settings", Run),
         ("POST", "/api/extensions/{id}/actions/{action_id}", Run),

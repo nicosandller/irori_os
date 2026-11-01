@@ -616,6 +616,7 @@ impl Service {
             Self::TimerStart(data) => data.validate(),
             Self::TimerChange(data) => data.validate(),
             Self::SirenTurnOn(data) => data.validate(),
+            Self::CameraMove(data) => data.validate(),
             Self::ClimateSetTemperature(data) => data.validate(),
             Self::ClimateSetHumidity(data) | Self::HumidifierSetHumidity(data) => data.validate(),
             Self::MediaPlayerVolumeSet(data) => data.validate(),

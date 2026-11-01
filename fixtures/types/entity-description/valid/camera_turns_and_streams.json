@@ -1,0 +1,15 @@
+{
+  "unique_id": "05121508-0115-0400-0613-ec71dbc9da16-camera",
+  "name": "Driveway",
+  "device_unique_id": "05121508-0115-0400-0613-ec71dbc9da16",
+  "capabilities": {
+    "kind": "camera",
+    "live": true,
+    "qualities": [
+      "low",
+      "high"
+    ],
+    "pan_tilt": true,
+    "presets": true
+  }
+}

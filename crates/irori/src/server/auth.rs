@@ -252,6 +252,8 @@ fn named_read(rest: &str) -> bool {
     ) || rest.starts_with("history/")
         // A picture is the camera's face on the page: an `<img>` that carries the cookie.
         || (rest.starts_with("entities/") && rest.ends_with("/picture"))
+        // Its live video, the same face moving: the same reach as its picture.
+        || (rest.starts_with("entities/") && rest.ends_with("/live"))
         || rest.starts_with("assistant/turns/")
         || rest.starts_with("assistant/transcript/")
 }
@@ -300,7 +302,8 @@ pub(super) fn token_access(method: &Method, path: &str) -> TokenAccess {
         Some(SCOPE_HOME)
     } else if reading
         && (path == "/api/states"
-            || (path.starts_with("/api/entities/") && path.ends_with("/picture")))
+            || (path.starts_with("/api/entities/")
+                && (path.ends_with("/picture") || path.ends_with("/live"))))
     {
         Some(SCOPE_STATES)
     } else if reading && (path == "/api/history" || path.starts_with("/api/history/")) {
@@ -1154,6 +1157,11 @@ mod tests {
             (
                 Method::GET,
                 "/api/entities/camera.garden_camera_1/picture",
+                Use,
+            ),
+            (
+                Method::GET,
+                "/api/entities/camera.garden_camera_1/live?quality=low",
                 Use,
             ),
             // The logs hold everybody's sign-ins and what the owner did.

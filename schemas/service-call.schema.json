@@ -1805,6 +1805,70 @@
       "if": {
         "properties": {
           "service": {
+            "const": "camera.move"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/CameraMove"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "camera.stop"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "camera.go_to_preset"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/CameraGoToPreset"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
             "const": "timer.start"
           }
         },
@@ -1909,6 +1973,66 @@
     "context"
   ],
   "$defs": {
+    "CameraGoToPreset": {
+      "description": "Data for `camera.go_to_preset`.",
+      "type": "object",
+      "properties": {
+        "preset": {
+          "description": "One of its `presets`' ids.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset"
+      ]
+    },
+    "CameraMove": {
+      "description": "Data for `camera.move`: how fast to turn each way, from -1 (left, down, out) to 1 (right, up,\nin). It moves for `seconds` and then stops on its own, so a lost `camera.stop` never leaves it\nturning.",
+      "type": "object",
+      "properties": {
+        "pan": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        },
+        "seconds": {
+          "description": "How long to keep moving: 0.5 seconds unless told.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 10.0,
+          "minimum": 0.1
+        },
+        "tilt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        },
+        "zoom": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        }
+      },
+      "additionalProperties": false
+    },
     "CivilDate": {
       "type": "string",
       "examples": [
@@ -2575,6 +2699,9 @@
         "camera.turn_off",
         "camera.enable_motion_detection",
         "camera.disable_motion_detection",
+        "camera.move",
+        "camera.stop",
+        "camera.go_to_preset",
         "timer.start",
         "timer.pause",
         "timer.cancel",

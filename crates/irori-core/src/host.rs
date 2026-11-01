@@ -1886,6 +1886,31 @@ fn exit_reason(status: std::io::Result<std::process::ExitStatus>) -> String {
     }
 }
 
+/// Passes one chunk of a live stream on, without waiting. A chunk that's wrong ends the stream
+/// with why; a stream nobody watches any more is told to stop.
+fn live_chunk(
+    live_feeds: &mut HashMap<u64, irori_protocol::LiveFeed>,
+    stream: u64,
+    chunk: Result<irori_protocol::LiveChunk, String>,
+) -> Option<ToExt> {
+    let feed = live_feeds.get_mut(&stream)?;
+    let chunk = chunk.and_then(|chunk| chunk.check().map(|()| chunk));
+    match chunk {
+        Ok(chunk) => {
+            if feed.forward(chunk).is_ok() {
+                return None;
+            }
+            live_feeds.remove(&stream);
+        }
+        Err(why) => {
+            if let Some(feed) = live_feeds.remove(&stream) {
+                feed.end(Some(why));
+            }
+        }
+    }
+    Some(ToExt::LiveStop { stream })
+}
+
 fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
     if let Some(unique_id) = incoming.picturing() {
         return ToExt::CameraPicture {
@@ -1933,6 +1958,9 @@ async fn drive(
     } = live;
     let mut pending_calls: HashMap<u64, IncomingCall> = HashMap::new();
     let mut pending_actions: HashMap<u64, IncomingAction> = HashMap::new();
+    // Live streams running in the extension, by the number this end gave each: where its video
+    // goes. A feed whose far end has closed (nobody watches) is told to stop.
+    let mut live_feeds: HashMap<u64, irori_protocol::LiveFeed> = HashMap::new();
     let mut next_call: u64 = 0;
     let mut next_action: u64 = 0;
     let child = &mut link.child;
@@ -1965,10 +1993,41 @@ async fn drive(
             Some(incoming) = actions.recv() => {
                 let id = next_action;
                 next_action += 1;
-                let message = action_message(id, &incoming);
-                pending_actions.insert(id, incoming);
+                let message = if incoming.living().is_some() {
+                    let Some(live) = incoming.into_live() else { continue };
+                    let message = ToExt::LiveStart {
+                        stream: id,
+                        unique_id: live.unique_id,
+                        quality: live.quality,
+                        accepts: live.accepts,
+                    };
+                    live_feeds.insert(id, live.feed);
+                    message
+                } else {
+                    let message = action_message(id, &incoming);
+                    pending_actions.insert(id, incoming);
+                    message
+                };
                 if let Err(reason) = link.outgoing.deliver(message).await {
                     return Outcome::Ended(reason);
+                }
+            }
+            () = async {
+                if live_feeds.is_empty() {
+                    std::future::pending::<()>().await;
+                }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            } => {
+                let unwatched: Vec<u64> = live_feeds
+                    .iter()
+                    .filter(|(_, feed)| feed.is_closed())
+                    .map(|(stream, _)| *stream)
+                    .collect();
+                for stream in unwatched {
+                    live_feeds.remove(&stream);
+                    if let Err(reason) = link.outgoing.deliver(ToExt::LiveStop { stream }).await {
+                        return Outcome::Ended(reason);
+                    }
                 }
             }
             message = engine.next_outgoing(core) => {
@@ -1987,7 +2046,7 @@ async fn drive(
                         };
                         match apply_from_ext(
                             core, extension, protocol, kinds, from, &mut pending_calls,
-                            &mut pending_actions,
+                            &mut pending_actions, &mut live_feeds,
                         ).await {
                             Ok(Some(reply)) => {
                                 if let Err(reason) = link.outgoing.deliver(reply).await {
@@ -2027,7 +2086,7 @@ async fn drive(
                     && let Some(from) = engine.handle(core, extension, from)
                     && let Ok(Some(reply)) = apply_from_ext(
                         core, extension, protocol, kinds, from, &mut pending_calls,
-                        &mut pending_actions,
+                        &mut pending_actions, &mut live_feeds,
                     ).await
                 {
                     let _ = link.outgoing.deliver(reply).await;
@@ -2046,6 +2105,7 @@ async fn apply_from_ext(
     from: FromExt,
     pending_calls: &mut HashMap<u64, IncomingCall>,
     pending_actions: &mut HashMap<u64, IncomingAction>,
+    live_feeds: &mut HashMap<u64, irori_protocol::LiveFeed>,
 ) -> Result<Option<ToExt>, String> {
     let reply_id = match &from {
         FromExt::DescribeDevice { id, .. }
@@ -2195,6 +2255,24 @@ async fn apply_from_ext(
                     (Some(picture), None) => irori_protocol::Picture::try_from(picture),
                     (None, None) => Err("it sent no picture".to_owned()),
                 });
+            }
+            Ok(None)
+        }
+        FromExt::LiveInit { stream, mime, data } => Ok(live_chunk(
+            live_feeds,
+            stream,
+            irori_protocol::live::decode(&data)
+                .map(|data| irori_protocol::LiveChunk::Init { mime, data }),
+        )),
+        FromExt::LiveFragment { stream, key, data } => Ok(live_chunk(
+            live_feeds,
+            stream,
+            irori_protocol::live::decode(&data)
+                .map(|data| irori_protocol::LiveChunk::Fragment { key, data }),
+        )),
+        FromExt::LiveEnd { stream, error } => {
+            if let Some(feed) = live_feeds.remove(&stream) {
+                feed.end(error);
             }
             Ok(None)
         }

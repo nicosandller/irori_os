@@ -1825,11 +1825,16 @@
           ]
         },
         {
+          "description": "What came with format 27 (`live`, `qualities`, `pan_tilt`, `zoom`, `presets`) is left out\nwhen it's off, so a camera that has none of it reads the same to a core from before.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "camera"
+            },
+            "live": {
+              "description": "Can be watched live (`docs/specs/protocols.md` §5.3).",
+              "type": "boolean"
             },
             "motion_detection": {
               "description": "Watches for motion, and can be told to stop and start again.",
@@ -1840,6 +1845,26 @@
               "description": "Can be turned off and on again: a privacy switch.",
               "type": "boolean",
               "default": false
+            },
+            "pan_tilt": {
+              "description": "Can be turned left and right, and up and down.",
+              "type": "boolean"
+            },
+            "presets": {
+              "description": "Has positions saved on it that it can be sent to. Which ones is state (`presets`).",
+              "type": "boolean"
+            },
+            "qualities": {
+              "description": "The qualities it can be watched in, for one that's `live`: at least one, each once.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/LiveQuality"
+              },
+              "maxItems": 2
+            },
+            "zoom": {
+              "description": "Can zoom in and out.",
+              "type": "boolean"
             }
           },
           "additionalProperties": false,
@@ -2111,6 +2136,21 @@
           "description": "Follows its own schedule or logic.",
           "type": "string",
           "const": "auto"
+        }
+      ]
+    },
+    "LiveQuality": {
+      "description": "How sharp live video is. A camera usually sends the same picture twice: a small stream that's\ncheap to watch, and its full size.",
+      "oneOf": [
+        {
+          "description": "Its small stream: quick to start, light on the network. Home Assistant's \"fluent\".",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Its full size. Home Assistant's \"clear\".",
+          "type": "string",
+          "const": "high"
         }
       ]
     },

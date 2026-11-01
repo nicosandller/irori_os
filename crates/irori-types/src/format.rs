@@ -41,7 +41,13 @@ use crate::{Entity, EntityKind, EntityState};
 /// 23. Adds `device_tracker`.
 /// 24. Adds `timer`.
 /// 25. Adds `schedule`.
-pub const ENTITY_FORMAT: u32 = 26;
+/// 26. Adds `camera`.
+/// 27. Adds live video (`live`, `qualities`) and turning (`pan_tilt`, `zoom`, `presets`) to
+///     cameras' capabilities, and `presets` to their state.
+pub const ENTITY_FORMAT: u32 = 27;
+
+/// The camera capabilities format 27 added, which an older reader is sent without.
+const CAMERA_27_CAPABILITIES: &[&str] = &["live", "qualities", "pan_tilt", "zoom", "presets"];
 
 pub(crate) fn first() -> u32 {
     1
@@ -192,15 +198,35 @@ pub fn entity_for(format: u32, entity: &Entity) -> Option<serde_json::Value> {
             }
         }
     }
+    if format < 27
+        && entity.id.kind() == EntityKind::Camera
+        && let Some(capabilities) = value
+            .get_mut("capabilities")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        for field in CAMERA_27_CAPABILITIES {
+            capabilities.remove(*field);
+        }
+    }
     Some(value)
 }
 
 /// `state` as a reader of `format` can parse it, or `None` if its entity's kind is newer than
-/// that. Nothing about a state has changed between formats yet.
+/// that. A camera's `presets` came in format 27.
 pub fn state_for(format: u32, state: &EntityState) -> Option<serde_json::Value> {
-    readable(format, state.entity_id.kind())
-        .then(|| serde_json::to_value(state).ok())
-        .flatten()
+    if !readable(format, state.entity_id.kind()) {
+        return None;
+    }
+    let mut value = serde_json::to_value(state).ok()?;
+    if format < 27
+        && state.entity_id.kind() == EntityKind::Camera
+        && let Some(state) = value
+            .get_mut("state")
+            .and_then(serde_json::Value::as_object_mut)
+    {
+        state.remove("presets");
+    }
+    Some(value)
 }
 
 #[cfg(test)]
@@ -344,6 +370,44 @@ mod tests {
         .expect("valid");
         assert_eq!(entity_for(16, &firmware), None);
         assert!(entity_for(17, &firmware).is_some());
+    }
+
+    /// A format-26 reader (Automations before 1.6.0) still gets cameras, without what came
+    /// after: it would fail on the fields it doesn't know.
+    #[test]
+    fn a_camera_reaches_an_older_reader_without_live_video_or_turning() {
+        let camera: Entity = serde_json::from_str(
+            r#"{"id": "camera.driveway", "protocol": "cameras", "unique_id": "d",
+                "name": "Driveway", "capabilities": {"kind": "camera", "motion_detection": true,
+                "live": true, "qualities": ["low", "high"], "pan_tilt": true, "presets": true}}"#,
+        )
+        .expect("valid");
+        let old = entity_for(26, &camera).expect("cameras are in format 26");
+        assert_eq!(
+            old["capabilities"],
+            serde_json::json!({"kind": "camera", "on_off": false, "motion_detection": true})
+        );
+        assert_eq!(entity_for(25, &camera), None);
+        let now = entity_for(ENTITY_FORMAT, &camera).expect("current");
+        assert_eq!(now["capabilities"]["pan_tilt"], true);
+
+        let state: EntityState = serde_json::from_str(
+            r#"{"entity_id": "camera.driveway", "availability": "available",
+                "state": {"kind": "camera", "state": "idle",
+                          "presets": [{"id": "1", "name": "Gate"}]},
+                "last_changed": "2026-11-01T08:21:54Z", "last_updated": "2026-11-01T08:21:54Z",
+                "last_reported": "2026-11-01T08:21:54Z",
+                "context": {"id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+                            "origin": {"type": "device", "protocol": "cameras"}}}"#,
+        )
+        .expect("valid");
+        let old = state_for(26, &state).expect("readable");
+        assert_eq!(
+            old["state"],
+            serde_json::json!({"kind": "camera", "state": "idle"})
+        );
+        let now = state_for(ENTITY_FORMAT, &state).expect("readable");
+        assert_eq!(now["state"]["presets"][0]["name"], "Gate");
     }
 
     /// Every `const` and `enum` string in a schema: an enum's names however schemars lays them out.

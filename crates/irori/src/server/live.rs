@@ -671,3 +671,195 @@ mod tests {
         assert!(*other.borrow());
     }
 }
+
+/// The quality `/api/entities/{id}/live` asks for: `?quality=high`, else low.
+fn asked_quality(query: Option<&str>) -> Result<irori_types::LiveQuality, String> {
+    let asked = query
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("quality="));
+    match asked {
+        None | Some("low") => Ok(irori_types::LiveQuality::Low),
+        Some("high") => Ok(irori_types::LiveQuality::High),
+        Some(other) => Err(format!("the quality is `low` or `high`, not `{other}`")),
+    }
+}
+
+/// The page's first word on a camera's socket: the codecs it can play.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Watching {
+    accepts: Vec<String>,
+}
+
+/// What a camera's socket says in text, between the video in binary.
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum CameraWord {
+    /// What the video is, before its init segment.
+    Playing { mime: String },
+    /// The stream is over, and why.
+    Ended { reason: String },
+}
+
+/// How long the page has to say what it can play.
+const ACCEPTS_WITHIN: Duration = Duration::from_secs(10);
+
+/// A camera, live (`docs/specs/api.md`, `docs/specs/protocols.md` §5.3): the page says what it
+/// can play, then gets `playing` with the video's type, the init segment and the video as binary
+/// frames, and `ended` with why when it stops.
+///
+/// The same doors as `/api/ws`: a browser only from Irori's own page, and the socket closes when
+/// the sign-in that opened it ends or the person no longer has the camera's room.
+pub async fn camera(
+    // Checked after what's wanted, so a plain request is told what's wrong with it first.
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(who): Extension<Actor>,
+    axum::extract::Path(id): axum::extract::Path<irori_types::EntityId>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+) -> Response {
+    if let Err(response) = same_server(&headers) {
+        return *response;
+    }
+    let quality = match asked_quality(query.as_deref()) {
+        Ok(quality) => quality,
+        Err(why) => return refused(StatusCode::BAD_REQUEST, why),
+    };
+    if id.kind() != irori_types::EntityKind::Camera {
+        return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
+    }
+    let reach = who.reach(&state.0.core);
+    if state.0.core.seen(&reach).state(&id).is_none() {
+        return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
+    }
+    let live = state.0.core.entity(&id).is_some_and(|entity| {
+        matches!(
+            &entity.capabilities,
+            irori_types::Capabilities::Camera(camera)
+                if camera.live && camera.qualities.contains(&quality)
+        )
+    });
+    if !live {
+        return refused(
+            StatusCode::CONFLICT,
+            format!(
+                "`{id}` can't be watched live in {} quality",
+                quality.as_str()
+            ),
+        );
+    }
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(rejection) => return axum::response::IntoResponse::into_response(rejection),
+    };
+    let seat = seat_kind(&state, &who, &headers).await;
+    let signed_in = matches!(seat, SeatKind::Session { .. });
+    let closed = state.0.sockets.open(seat);
+    ws.on_upgrade(move |socket| watch_camera(socket, state, closed, who, signed_in, id, quality))
+}
+
+async fn watch_camera(
+    mut socket: WebSocket,
+    state: AppState,
+    mut closed: watch::Receiver<bool>,
+    who: Actor,
+    signed_in: bool,
+    id: irori_types::EntityId,
+    quality: irori_types::LiveQuality,
+) {
+    let accepts = match tokio::time::timeout(ACCEPTS_WITHIN, socket.recv()).await {
+        Ok(Some(Ok(Message::Text(text)))) => match serde_json::from_str::<Watching>(&text) {
+            Ok(watching) => watching.accepts,
+            Err(error) => {
+                let _ = say_ended(
+                    &mut socket,
+                    format!("couldn't read what you can play: {error}"),
+                )
+                .await;
+                return;
+            }
+        },
+        _ => return,
+    };
+    let mut chunks = match state.0.core.watch_live(&id, quality, accepts) {
+        Ok(chunks) => chunks,
+        Err(error) => {
+            let _ = say_ended(&mut socket, error.to_string()).await;
+            return;
+        }
+    };
+    let mut people = tokio::time::interval(PEOPLE_EVERY);
+    people.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let reason = loop {
+        tokio::select! {
+            biased;
+            changed = closed.changed() => {
+                if changed.is_err() || *closed.borrow() {
+                    break None;
+                }
+            }
+            _ = people.tick() => {
+                if signed_in && !still_the_same_person(&state, &who).await {
+                    break None;
+                }
+                // The camera moved out of their rooms, or out of the home.
+                let reach = who.reach(&state.0.core);
+                if state.0.core.seen(&reach).state(&id).is_none() {
+                    break Some("the camera isn't yours to watch any more".to_owned());
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break None,
+                    Some(Ok(_)) => {}
+                }
+            }
+            chunk = chunks.recv() => {
+                let sent = match chunk {
+                    Some(irori_protocol::LiveChunk::Init { mime, data }) => {
+                        match send_word(&mut socket, &CameraWord::Playing { mime }).await {
+                            Ok(()) => socket.send(Message::Binary(data.into())).await.map_err(|_| ()),
+                            Err(()) => Err(()),
+                        }
+                    }
+                    Some(irori_protocol::LiveChunk::Fragment { data, .. }) => {
+                        socket.send(Message::Binary(data.into())).await.map_err(|_| ())
+                    }
+                    Some(irori_protocol::LiveChunk::End { error }) => {
+                        break Some(error.unwrap_or_else(|| "the stream ended".to_owned()));
+                    }
+                    None => break Some("the stream ended".to_owned()),
+                };
+                if sent.is_err() {
+                    break None;
+                }
+            }
+        }
+    };
+    if let Some(reason) = reason {
+        let _ = say_ended(&mut socket, reason).await;
+    } else {
+        let _ = socket.send(Message::Close(None)).await;
+    }
+}
+
+async fn send_word(socket: &mut WebSocket, word: &CameraWord) -> Result<(), ()> {
+    let text = serde_json::to_string(word).map_err(|_| ())?;
+    socket
+        .send(Message::Text(text.into()))
+        .await
+        .map_err(|_| ())
+}
+
+async fn say_ended(socket: &mut WebSocket, reason: String) -> Result<(), ()> {
+    send_word(socket, &CameraWord::Ended { reason }).await?;
+    socket
+        .send(Message::Close(Some(CloseFrame {
+            code: axum::extract::ws::close_code::NORMAL,
+            reason: "".into(),
+        })))
+        .await
+        .map_err(|_| ())
+}

@@ -179,6 +179,11 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `schedule` | none | | | On during the times a week sets out. Read, never told |
 | `camera` | `on_off` | bool | `false` | Has a privacy switch: can be turned off and on |
 | | `motion_detection` | bool | `false` | Watches for motion, and can be told to stop and start again |
+| | `live` | bool | `false` | Can be watched live ([protocols.md](protocols.md) §5.3) |
+| | `qualities` | list of `low` \| `high`, each once | `[]` | What it can be watched in: its small stream, its full size. At least one for one that's `live`, none otherwise |
+| | `pan_tilt` | bool | `false` | Can be turned left and right, up and down (`camera.move`) |
+| | `zoom` | bool | `false` | Can zoom in and out (`camera.move`) |
+| | `presets` | bool | `false` | Has positions saved on it to be sent to (`camera.go_to_preset`); which ones is state |
 | `timer` | none | | | Something that counts down. Home Assistant has timers only as helpers; here a device that counts down can be one too |
 | `scene` | none | | | A scene a device keeps (a Hue scene, a Zigbee group's) and can be told to set. Scenes Irori makes itself are flows |
 | `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
@@ -322,7 +327,8 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | `device_tracker` | `home` | bool | yes | Its typed value, for rules (`on()`): at home. Named places other than home wait for Irori to have zones; a tracker in one is not home |
 | | `latitude`, `longitude` | degrees, -90 to 90 and -180 to 180 | no | Where it is, from one that knows |
 | | `accuracy` | metres, 0 or more | no | How far off that may be |
-| `camera` | `state` | `off` \| `idle` \| `recording` \| `streaming` | yes | Its typed value, for rules (`text()`). `off` only for one with `on_off`. Its picture isn't state: a page asks for it ([protocols.md](protocols.md) §5.2) |
+| `camera` | `state` | `off` \| `idle` \| `recording` \| `streaming` | yes | Its typed value, for rules (`text()`). `off` only for one with `on_off`. Its picture and video aren't state: a page asks for them ([protocols.md](protocols.md) §5.2, §5.3) |
+| | `presets` | list of `{ id, name }`, up to 256, each id once | no | The positions saved on one with `presets`, in the camera's order |
 | | `motion_detection` | bool | no | Whether it's watching for motion, for one with `motion_detection` |
 | `schedule` | `on` | bool | yes | Its typed value, for rules (`on()`): within one of its times now |
 | | `next_change` | `Timestamp` | no | When it next turns on or off. Absent for one that never changes |

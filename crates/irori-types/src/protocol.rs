@@ -10,6 +10,7 @@ use std::fmt;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 
+use crate::kinds::camera::{CameraGoToPreset, CameraMove};
 use crate::kinds::climate::{
     ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature, ClimateSwingMode,
     SetHumidity,
@@ -96,6 +97,34 @@ pub struct SecretRequest {
     /// Where to find it, e.g. "`api: encryption: key:` in the device's YAML".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hint: Option<String>,
+    /// Set when what's wanted is a login: a username as well as the secret, which is then its
+    /// password. The two land side by side, at `path` + `username` and `path` + `password`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub username: Option<UsernameRequest>,
+}
+
+/// The username half of a login a protocol asks for (`docs/specs/protocols.md` §6.6). Not a
+/// secret, but kept with its password.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UsernameRequest {
+    /// What to call the field, e.g. "Username".
+    pub label: String,
+    /// A likely answer to show in the empty field, e.g. "admin".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+}
+
+impl SecretRequest {
+    /// Where a login's two halves go, for a request with `username`.
+    pub fn login_paths(&self) -> (Vec<String>, Vec<String>) {
+        let with = |key: &str| {
+            let mut path = self.path.clone();
+            path.push(key.to_owned());
+            path
+        };
+        (with("username"), with("password"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -105,6 +134,8 @@ struct RawSecretRequest {
     label: String,
     #[serde(default)]
     hint: Option<String>,
+    #[serde(default)]
+    username: Option<UsernameRequest>,
 }
 
 impl<'de> Deserialize<'de> for SecretRequest {
@@ -114,6 +145,7 @@ impl<'de> Deserialize<'de> for SecretRequest {
             path: raw.path,
             label: raw.label,
             hint: raw.hint,
+            username: raw.username,
         };
         request.validate().map_err(serde::de::Error::custom)?;
         Ok(request)
@@ -484,6 +516,10 @@ pub enum Service {
     CameraTurnOff,
     CameraEnableMotionDetection,
     CameraDisableMotionDetection,
+    /// Turns it for a moment (`docs/specs/entities.md`), then it stops on its own.
+    CameraMove(CameraMove),
+    CameraStop,
+    CameraGoToPreset(CameraGoToPreset),
     TimerStart(TimerStart),
     TimerPause,
     TimerCancel,
@@ -581,6 +617,9 @@ impl Service {
             Self::CameraTurnOff => ServiceName::CameraTurnOff,
             Self::CameraEnableMotionDetection => ServiceName::CameraEnableMotionDetection,
             Self::CameraDisableMotionDetection => ServiceName::CameraDisableMotionDetection,
+            Self::CameraMove(_) => ServiceName::CameraMove,
+            Self::CameraStop => ServiceName::CameraStop,
+            Self::CameraGoToPreset(_) => ServiceName::CameraGoToPreset,
             Self::TimerStart(_) => ServiceName::TimerStart,
             Self::TimerPause => ServiceName::TimerPause,
             Self::TimerCancel => ServiceName::TimerCancel,
@@ -767,6 +806,12 @@ pub enum ServiceName {
     CameraEnableMotionDetection,
     #[serde(rename = "camera.disable_motion_detection")]
     CameraDisableMotionDetection,
+    #[serde(rename = "camera.move")]
+    CameraMove,
+    #[serde(rename = "camera.stop")]
+    CameraStop,
+    #[serde(rename = "camera.go_to_preset")]
+    CameraGoToPreset,
     #[serde(rename = "timer.start")]
     TimerStart,
     #[serde(rename = "timer.pause")]
@@ -868,6 +913,9 @@ impl ServiceName {
         Self::CameraTurnOff,
         Self::CameraEnableMotionDetection,
         Self::CameraDisableMotionDetection,
+        Self::CameraMove,
+        Self::CameraStop,
+        Self::CameraGoToPreset,
         Self::TimerStart,
         Self::TimerPause,
         Self::TimerCancel,
@@ -964,6 +1012,9 @@ impl ServiceName {
             Self::CameraTurnOff => "camera.turn_off",
             Self::CameraEnableMotionDetection => "camera.enable_motion_detection",
             Self::CameraDisableMotionDetection => "camera.disable_motion_detection",
+            Self::CameraMove => "camera.move",
+            Self::CameraStop => "camera.stop",
+            Self::CameraGoToPreset => "camera.go_to_preset",
             Self::TimerStart => "timer.start",
             Self::TimerPause => "timer.pause",
             Self::TimerCancel => "timer.cancel",
@@ -1055,7 +1106,10 @@ impl ServiceName {
             Self::CameraTurnOn
             | Self::CameraTurnOff
             | Self::CameraEnableMotionDetection
-            | Self::CameraDisableMotionDetection => EntityKind::Camera,
+            | Self::CameraDisableMotionDetection
+            | Self::CameraMove
+            | Self::CameraStop
+            | Self::CameraGoToPreset => EntityKind::Camera,
             Self::TimerStart
             | Self::TimerPause
             | Self::TimerCancel
@@ -1172,6 +1226,8 @@ impl JsonSchema for ServiceCall {
         let fan_direction = generator.subschema_for::<FanSetDirection>();
         let fan_preset = generator.subschema_for::<FanPresetMode>();
         let siren_turn_on = generator.subschema_for::<SirenTurnOn>();
+        let camera_move = generator.subschema_for::<CameraMove>();
+        let camera_preset = generator.subschema_for::<CameraGoToPreset>();
         let climate_mode = generator.subschema_for::<ClimateHvacMode>();
         let climate_temperature = generator.subschema_for::<ClimateSetTemperature>();
         let set_humidity = generator.subschema_for::<SetHumidity>();
@@ -1223,6 +1279,8 @@ impl JsonSchema for ServiceCall {
                     ServiceName::FanSetDirection => fan_direction.clone(),
                     ServiceName::FanSetPresetMode => fan_preset.clone(),
                     ServiceName::SirenTurnOn => siren_turn_on.clone(),
+                    ServiceName::CameraMove => camera_move.clone(),
+                    ServiceName::CameraGoToPreset => camera_preset.clone(),
                     ServiceName::ClimateSetHvacMode => climate_mode.clone(),
                     ServiceName::ClimateSetTemperature => climate_temperature.clone(),
                     ServiceName::ClimateSetHumidity => set_humidity.clone(),
@@ -1278,18 +1336,21 @@ mod secret_request_tests {
             path: vec![],
             label: "Key".into(),
             hint: None,
+            username: None,
         };
         assert!(empty.validate().is_err());
         let blank_key = SecretRequest {
             path: vec!["keys".into(), "".into()],
             label: "Key".into(),
             hint: None,
+            username: None,
         };
         assert!(blank_key.validate().is_err());
         let ok = SecretRequest {
             path: vec!["keys".into(), "aa:bb".into()],
             label: "Key".into(),
             hint: None,
+            username: None,
         };
         assert!(ok.validate().is_ok());
     }

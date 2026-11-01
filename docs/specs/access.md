@@ -77,7 +77,7 @@ CLI, the assistant and the app bridge all ask it.
 | The home, entities, devices, states, areas, floors, floor plan | Only what is in their rooms. A floor with none of their rooms is gone. On the plan, the shapes of their rooms and their devices stay, and so do the walls of a floor they are on: a wall is structure, not a thing in the home. |
 | A device they can see | Without the hub it is reached through, when that is not theirs, and without the room it asked for by name (`suggested_area`). |
 | The live feed (`/api/ws`) | A snapshot and changes for those only. A change to the home's shape is a nudge to read it again, which gives them only theirs. Changing a person's rooms or role ends their open feeds; the page reconnects to the new view. A hand edit of `users.toml` does the same within a few seconds. |
-| History, a camera picture | Of an entity in their rooms; anything else is 404. |
+| History, a camera picture, its live video | Of an entity in their rooms; anything else is 404. Live video closes within a few seconds of the camera leaving their rooms. |
 | A command | Only to an entity in their rooms (§2.1). |
 | Extensions, devices waiting to be added, updates waiting to install, extension pages | None. What the extensions are doing and what they have found is the owner's. |
 | Other people | A person is told about themselves only. Every answer that lists people says so, an edit of their own name or password included. They change their password; an owner changes their name, because a name that was refused as taken would say who else is in the home. |
