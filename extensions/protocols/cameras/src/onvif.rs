@@ -33,13 +33,6 @@ pub struct Info {
     pub snapshot: Option<Target>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "live video picks a stream with these; it comes next"
-    )
-)]
 impl Info {
     /// Its full-size stream.
     pub fn high(&self) -> Option<&Profile> {

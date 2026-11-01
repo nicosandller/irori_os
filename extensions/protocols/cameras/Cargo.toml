@@ -23,6 +23,10 @@ hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"
 md-5 = "0.10.6"
 sha1 = "0.10.7"
 sha2.workspace = true
+# RTSP: the camera's live video, as H.264/H.265 frames and AAC/G.711 audio. Pure Rust.
+retina = "0.4.21"
+# The RTSP address handed to `retina`, with the camera's host put back in.
+url = "2.5.7"
 # ONVIF answers are SOAP. Matched by local name only: vendors put the same element in
 # different namespaces.
 roxmltree = "0.20.0"
@@ -30,6 +34,7 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+futures-util.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

@@ -13,7 +13,9 @@
 //! can't be reached is safe to try again.
 
 mod discover;
+mod fmp4;
 mod http;
+mod live;
 mod onvif;
 mod refused;
 pub mod settings;
@@ -33,7 +35,8 @@ use irori_protocol::{
 };
 use irori_types::{
     Availability, CameraCapabilities, CameraState, CameraStatus, Capabilities, DeviceDescription,
-    EntityDescription, Name, SecretRequest, State, StateReport, UniqueId, UsernameRequest, Waiting,
+    EntityDescription, LiveQuality, Name, SecretRequest, State, StateReport, UniqueId,
+    UsernameRequest, Waiting,
 };
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -99,6 +102,8 @@ struct Cam {
     stage: Stage,
     /// Whether it has been described to the core in this run.
     described: bool,
+    /// How many of its streams are running: it's `streaming` while any are.
+    watched: u32,
 }
 
 /// What a background task found out.
@@ -116,6 +121,11 @@ enum Event {
         id: String,
         generation: u64,
         why: String,
+    },
+    /// A stream started (`true`) or ended.
+    Watched {
+        id: String,
+        started: bool,
     },
 }
 
@@ -175,6 +185,7 @@ fn arrive(
         generation: 0,
         stage: Stage::NeedsLogin,
         described: false,
+        watched: 0,
     });
     let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
     cam.found = found;
@@ -241,6 +252,20 @@ async fn apply(
         Event::Connected { id, generation, .. }
         | Event::Refused { id, generation }
         | Event::Unreachable { id, generation, .. } => (id.clone(), *generation),
+        Event::Watched { id, started } => {
+            if let Some(cam) = cams.get_mut(id) {
+                let before = cam.watched;
+                cam.watched = if *started {
+                    cam.watched.saturating_add(1)
+                } else {
+                    cam.watched.saturating_sub(1)
+                };
+                if cam.described && (before == 0) != (cam.watched == 0) {
+                    report(ctx, id, cam.watched)?;
+                }
+            }
+            return Ok(());
+        }
     };
     let Some(cam) = cams.get_mut(&id) else {
         return Ok(());
@@ -273,17 +298,7 @@ async fn apply(
             }
             cam.described = true;
             available(ctx, &id, Availability::Available).await;
-            ctx.report_state(StateReport {
-                unique_id: camera_entity(&id)?,
-                state: Some(State::Camera(CameraState {
-                    state: CameraStatus::Idle,
-                    motion_detection: None,
-                    presets: None,
-                })),
-                attributes: BTreeMap::new(),
-                caused_by: None,
-                replayed: false,
-            });
+            report(ctx, &id, cam.watched)?;
             cam.stage = Stage::Ready(Arc::new(*ready));
         }
         Event::Refused { .. } => {
@@ -306,7 +321,29 @@ async fn apply(
                 retry: Instant::now() + RETRY,
             };
         }
+        // Handled above, before the generation check.
+        Event::Watched { .. } => {}
     }
+    Ok(())
+}
+
+/// The camera's state: `streaming` while anyone watches, else `idle`.
+fn report(ctx: &ProtocolContext, id: &str, watched: u32) -> Result<(), ProtocolError> {
+    ctx.report_state(StateReport {
+        unique_id: camera_entity(id)?,
+        state: Some(State::Camera(CameraState {
+            state: if watched > 0 {
+                CameraStatus::Streaming
+            } else {
+                CameraStatus::Idle
+            },
+            motion_detection: None,
+            presets: None,
+        })),
+        attributes: BTreeMap::new(),
+        caused_by: None,
+        replayed: false,
+    });
     Ok(())
 }
 
@@ -358,8 +395,46 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
             });
         }
         Incoming::Live(live) => {
-            live.feed
-                .end(Some("live video from this camera isn't ready yet".into()));
+            let (id, ready) = match ready_for(cams, live.unique_id.as_str()) {
+                Ok(pair) => pair,
+                Err(why) => {
+                    live.feed.end(Some(why));
+                    return;
+                }
+            };
+            let profile = match live.quality {
+                LiveQuality::Low => ready.info.low().or_else(|| ready.info.high()),
+                LiveQuality::High => ready.info.high(),
+            };
+            let (Some(stream), Some(login)) = (
+                profile.and_then(|profile| profile.stream.clone()),
+                ready.soap.login.clone(),
+            ) else {
+                live.feed
+                    .end(Some("this camera has no video stream".into()));
+                return;
+            };
+            let generation = cams.get(&id).map_or(0, |cam| cam.generation);
+            let ip = ready.soap.camera.ip;
+            let events = events.clone();
+            tokio::spawn(async move {
+                let _ = events
+                    .send(Event::Watched {
+                        id: id.clone(),
+                        started: true,
+                    })
+                    .await;
+                let ended = live::run(&stream, ip, &login, live).await;
+                let _ = events
+                    .send(Event::Watched {
+                        id: id.clone(),
+                        started: false,
+                    })
+                    .await;
+                if ended == live::Ended::Refused {
+                    let _ = events.send(Event::Refused { id, generation }).await;
+                }
+            });
         }
     }
 }
@@ -407,10 +482,27 @@ fn describe(
         name: None,
         device_unique_id: Some(device_id),
         suggested_object_id: None,
-        capabilities: Capabilities::Camera(CameraCapabilities::default()),
+        capabilities: Capabilities::Camera(capabilities(info)),
         entity_category: None,
     };
     Ok((device, entity))
+}
+
+/// What it can do: live video at the qualities it has a stream for.
+fn capabilities(info: &Info) -> CameraCapabilities {
+    let streams = |profile: Option<&onvif::Profile>| profile.is_some_and(|p| p.stream.is_some());
+    let mut qualities = Vec::new();
+    if streams(info.low()) {
+        qualities.push(LiveQuality::Low);
+    }
+    if streams(info.high()) {
+        qualities.push(LiveQuality::High);
+    }
+    CameraCapabilities {
+        live: !qualities.is_empty(),
+        qualities,
+        ..CameraCapabilities::default()
+    }
 }
 
 /// What to call it: its maker and model, which is what cameras' own names rarely are
