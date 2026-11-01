@@ -1,6 +1,13 @@
 //! Tesla cars and Powerwall energy sites, through Tesla's Fleet API.
 
+mod api;
+mod auth;
+#[cfg(test)]
+mod fake;
+mod keys;
 pub mod settings;
+#[cfg(test)]
+mod tests;
 mod usage;
 
 use irori_protocol::{Health, Protocol, ProtocolContext, ProtocolError};
