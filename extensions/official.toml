@@ -91,6 +91,18 @@ bin = "irori-ext-switchbot"
 network = ["api.switch-bot.com"]
 
 [[extension]]
+id = "tesla"
+name = "Tesla"
+category = "protocol"
+description = "Tesla cars and Powerwall sites, through Tesla's Fleet API, with what the API costs this month in view."
+version = "0.1.0"
+source = "extensions/protocols/tesla"
+crate = "irori-protocol-tesla"
+bin = "irori-ext-tesla"
+# Its manifest's `permissions.network`: the card says it uses the internet.
+network = ["*.vn.cloud.tesla.com"]
+
+[[extension]]
 id = "automations"
 name = "Automations"
 category = "automation"
