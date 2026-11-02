@@ -103,6 +103,45 @@ impl SiteSlot {
     }
 }
 
+/// What a state check means for a car's next read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Next {
+    /// Read it now: it just woke (its driver, the app, a schedule), so see why.
+    Now,
+    /// Leave whatever's planned.
+    Keep,
+    /// Don't read it: it's asleep or offline.
+    Never,
+}
+
+fn on_state(was_awake: bool, awake: bool, mode: Mode) -> Next {
+    match (was_awake, awake) {
+        (_, false) => Next::Never,
+        (false, true) if mode != Mode::Off => Next::Now,
+        _ => Next::Keep,
+    }
+}
+
+/// How long after a read the car is read again. Busy: as often as the plan allows. Idle: a
+/// dozen of those gaps, an hour at least, `cap` at most, so it can fall asleep, and a drive that
+/// starts while it's awake (kept up by sentry mode, or another app reading it) is still seen
+/// within the hour when there's money to spare. Saving looks at an idle car only every `cap`.
+/// Nothing when reading is off or the month's money is spent.
+fn after_read(busy: bool, mode: Mode, car: Option<Duration>, cap: Duration) -> Option<Duration> {
+    let gap = car?;
+    if busy {
+        return Some(gap);
+    }
+    if mode == Mode::Saving {
+        return Some(cap);
+    }
+    let floor = IDLE_FLOOR.min(cap);
+    Some((gap * 12).clamp(floor, cap))
+}
+
+/// The soonest an idle car is read again.
+const IDLE_FLOOR: Duration = Duration::from_secs(3600);
+
 /// Whether an error is the account's (and stops everything) or this one car's or site's.
 fn account_wide(error: &ApiError) -> bool {
     matches!(
@@ -420,13 +459,10 @@ impl World {
                 slot.reading.state = Some(car.state.clone());
                 changed.push(car.vin.clone());
             }
-            if slot.reading.awake() {
-                // Woken (by its driver, the app, a schedule): read it once to see why.
-                if !was_awake && mode != Mode::Off && !slot.reading_now {
-                    slot.next_read = Some(now);
-                }
-            } else {
-                slot.next_read = None;
+            match on_state(was_awake, slot.reading.awake(), mode) {
+                Next::Now if !slot.reading_now => slot.next_read = Some(now),
+                Next::Now | Next::Keep => {}
+                Next::Never => slot.next_read = None,
             }
         }
         for vin in changed {
@@ -459,12 +495,9 @@ impl World {
                     slot.reading.read_at = Some(unix_now);
                     slot.reading.state = Some("online".into());
                     let saving = mode == Mode::Saving;
-                    slot.next_read = match plan.car {
-                        Some(gap) if slot.reading.busy(saving) => Some(now + gap),
-                        // Idle: left alone to sleep, apart from a look now and then.
-                        Some(_) => Some(now + self.timing.idle),
-                        None => None,
-                    };
+                    let busy = slot.reading.busy(saving);
+                    slot.next_read =
+                        after_read(busy, mode, plan.car, self.timing.idle).map(|gap| now + gap);
                 }
                 self.account_worked();
             }
@@ -741,4 +774,62 @@ fn report(
         caused_by: None,
         replayed,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINUTE: Duration = Duration::from_secs(60);
+    const CAP: Duration = Duration::from_secs(6 * 3600);
+
+    #[test]
+    fn a_car_is_read_when_it_wakes_and_never_while_it_sleeps() {
+        use Mode::*;
+        assert_eq!(on_state(false, true, Balanced), Next::Now);
+        assert_eq!(on_state(false, true, Saving), Next::Now);
+        assert_eq!(
+            on_state(false, true, Off),
+            Next::Keep,
+            "off: only Refresh reads"
+        );
+        assert_eq!(
+            on_state(true, true, Balanced),
+            Next::Keep,
+            "still awake: as planned"
+        );
+        assert_eq!(on_state(true, false, Balanced), Next::Never);
+        assert_eq!(on_state(false, false, Responsive), Next::Never);
+    }
+
+    #[test]
+    fn a_busy_car_is_followed_and_an_idle_one_left_to_sleep() {
+        use Mode::*;
+        let two = Some(2 * MINUTE);
+        assert_eq!(after_read(true, Balanced, two, CAP), two);
+        assert_eq!(
+            after_read(true, Saving, Some(10 * MINUTE), CAP),
+            Some(10 * MINUTE)
+        );
+        assert_eq!(
+            after_read(false, Balanced, two, CAP),
+            Some(60 * MINUTE),
+            "an hour at least"
+        );
+        assert_eq!(
+            after_read(false, Balanced, Some(20 * MINUTE), CAP),
+            Some(240 * MINUTE)
+        );
+        assert_eq!(
+            after_read(false, Balanced, Some(60 * MINUTE), CAP),
+            Some(CAP)
+        );
+        assert_eq!(after_read(false, Saving, Some(10 * MINUTE), CAP), Some(CAP));
+        assert_eq!(after_read(true, Off, None, CAP), None);
+        assert_eq!(
+            after_read(false, Balanced, None, CAP),
+            None,
+            "the month's money is spent"
+        );
+    }
 }
