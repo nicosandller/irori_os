@@ -309,6 +309,77 @@ impl Usage {
     }
 }
 
+/// What an earlier run stored, to carry the month's count over a restart.
+#[derive(Debug, Default)]
+pub struct Stored {
+    pub month: Option<Month>,
+    pub last_month: Option<Month>,
+    pub calls: Option<VecDeque<Call>>,
+    pub points: Option<Vec<Point>>,
+    pub prefs: Option<Prefs>,
+}
+
+impl Usage {
+    /// The meter as an earlier run left it. A month that has ended since is last month.
+    pub fn restore(mut self, now: u64, stored: Stored) -> Self {
+        let this = month_of(now);
+        let last = previous_month(&this);
+        for month in [stored.month, stored.last_month].into_iter().flatten() {
+            if month.month == this {
+                self.month = month;
+            } else if month.month == last && self.last_month.days.is_empty() {
+                self.last_month = month;
+            }
+        }
+        if let Some(calls) = stored.calls {
+            self.calls = calls;
+            while self.calls.len() > CALLS_KEPT {
+                self.calls.pop_front();
+            }
+        }
+        let (start, _) = month_bounds(now);
+        self.points = stored
+            .points
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|point| point.at >= start)
+            .collect();
+        if let Some(prefs) = stored.prefs {
+            self.prefs = prefs;
+        }
+        self
+    }
+
+    /// What to store, by key.
+    pub fn to_store(&self) -> Vec<(String, serde_json::Value)> {
+        let mut out = vec![
+            (
+                keys::month(&self.month.month),
+                serde_json::to_value(&self.month).unwrap_or_default(),
+            ),
+            (
+                keys::CALLS.to_owned(),
+                serde_json::to_value(&self.calls).unwrap_or_default(),
+            ),
+            (
+                keys::POINTS.to_owned(),
+                serde_json::to_value(&self.points).unwrap_or_default(),
+            ),
+            (
+                keys::PREFS.to_owned(),
+                serde_json::to_value(self.prefs).unwrap_or_default(),
+            ),
+        ];
+        if !self.last_month.month.is_empty() {
+            out.push((
+                keys::month(&self.last_month.month),
+                serde_json::to_value(&self.last_month).unwrap_or_default(),
+            ));
+        }
+        out
+    }
+}
+
 /// `2026-11` for a time in November 2026, UTC.
 pub fn month_of(now: u64) -> String {
     let date = date_of(now);
@@ -341,6 +412,23 @@ pub fn month_bounds(now: u64) -> (u64, u64) {
             .unwrap_or(0)
     };
     (at(first), at(next))
+}
+
+/// The month before the one `now` is in, as `2026-10`.
+pub fn previous_month_of(now: u64) -> String {
+    previous_month(&month_of(now))
+}
+
+/// The first day of next month, as a person reads it: "December 1".
+pub fn next_month_label(now: u64) -> String {
+    let (_, end) = month_bounds(now);
+    jiff::Timestamp::from_second(i64::try_from(end).unwrap_or(i64::MAX))
+        .map(|at| {
+            at.to_zoned(jiff::tz::TimeZone::UTC)
+                .strftime("%B %-d")
+                .to_string()
+        })
+        .unwrap_or_else(|_| "the 1st".to_owned())
 }
 
 fn previous_month(month: &str) -> String {

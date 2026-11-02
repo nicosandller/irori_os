@@ -341,3 +341,371 @@ async fn registering_uses_the_apps_own_token_in_each_region() {
             .all(|call| call.endpoint.category().0 == Category::Data)
     );
 }
+
+// The whole protocol, through the host's end of its context.
+
+mod protocol {
+    use std::collections::BTreeMap;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use irori_cloud::Secret;
+    use irori_protocol::Filled;
+    use irori_protocol::host;
+    use irori_protocol::{Health, ProtocolError};
+    use irori_types::Waiting;
+    use p256::pkcs8::{EncodePrivateKey, LineEnding};
+    use serde_json::{Value, json};
+    use tokio::sync::{mpsc, watch};
+
+    use super::{NOV_10, VIN, nov_10};
+    use crate::fake::{Answer, Fake};
+    use crate::keys::Key;
+    use crate::settings::Settings;
+    use crate::{Timing, drive};
+
+    #[derive(Debug, Default)]
+    pub struct Log {
+        pub health: Vec<Health>,
+        pub waiting: Vec<Waiting>,
+        pub actions: Vec<String>,
+        pub stored: BTreeMap<String, Value>,
+    }
+
+    pub struct Home {
+        pub fake: Fake,
+        pub log: Arc<Mutex<Log>>,
+        actions: mpsc::Sender<irori_protocol::IncomingAction>,
+        /// Kept open: the protocol stops when the core's end of its calls closes.
+        _calls: mpsc::Sender<irori_protocol::IncomingCall>,
+        _stop: watch::Sender<bool>,
+        _drive: tokio::task::JoinHandle<Result<(), ProtocolError>>,
+    }
+
+    pub fn pasted(key: &Key) -> Settings {
+        let mut settings = crate::settings::for_tests();
+        let pem = key
+            .secret()
+            .to_pkcs8_pem(LineEnding::LF)
+            .expect("pem")
+            .to_string();
+        settings.private_key = Some(Secret::from(pem));
+        settings
+    }
+
+    pub async fn home(fake: Fake, settings: Settings, stored: BTreeMap<String, Value>) -> Home {
+        let (ctx, host) = host::connect();
+        let log = Arc::new(Mutex::new(Log {
+            stored: stored.clone(),
+            ..Log::default()
+        }));
+        let recorded = Arc::clone(&log);
+        let mut ops = host.ops;
+        tokio::spawn(async move {
+            while let Some(op) = ops.recv().await {
+                let mut log = recorded.lock().expect("log");
+                match op {
+                    host::Op::DescribeDevice(_, reply)
+                    | host::Op::DescribeEntity(_, reply)
+                    | host::Op::RemoveDevice(_, reply)
+                    | host::Op::RemoveEntity(_, reply)
+                    | host::Op::SetAvailability(_, _, reply) => {
+                        let _ = reply.send(Ok(()));
+                    }
+                    host::Op::SetHealth(health) => log.health.push(health),
+                    host::Op::SetWaiting(waiting) => log.waiting = waiting,
+                    host::Op::SetAvailableActions(actions) => log.actions = actions,
+                    host::Op::SetUnmodeled(_)
+                    | host::Op::SetNetworks(_)
+                    | host::Op::SetActionOpen(_, _) => {}
+                    host::Op::Load(key, reply) => {
+                        let _ = reply.send(Ok(log.stored.get(&key).cloned()));
+                    }
+                    host::Op::Store(key, value, reply) => {
+                        match value {
+                            Some(value) => log.stored.insert(key, value),
+                            None => log.stored.remove(&key),
+                        };
+                        let _ = reply.send(Ok(()));
+                    }
+                }
+            }
+        });
+        let timing = Timing {
+            hosts: fake.hosts(),
+            now: nov_10,
+            relist: Duration::from_secs(3600),
+            save: Duration::from_millis(50),
+        };
+        let drive = tokio::spawn(drive(settings, ctx, timing));
+        Home {
+            fake,
+            log,
+            actions: host.actions,
+            _calls: host.calls,
+            _stop: host.stop,
+            _drive: drive,
+        }
+    }
+
+    impl Home {
+        pub async fn until<T>(&self, what: &str, mut check: impl FnMut(&Log) -> Option<T>) -> T {
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+            loop {
+                if let Some(found) = check(&self.log.lock().expect("log")) {
+                    return found;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "never saw {what}: {:?}",
+                    self.log.lock().expect("log")
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+
+        pub async fn act(
+            &self,
+            action: &str,
+            way: Option<(&str, &str, &str)>,
+        ) -> Result<(), String> {
+            let filled = Filled {
+                way: way.map(|(way, _, _)| way.to_owned()),
+                fields: way
+                    .map(|(_, field, value)| BTreeMap::from([(field.to_owned(), value.to_owned())]))
+                    .unwrap_or_default(),
+            };
+            let (incoming, answer) = host::incoming_action_with(action.to_owned(), filled);
+            self.actions.send(incoming).await.expect("running");
+            tokio::time::timeout(Duration::from_secs(5), answer)
+                .await
+                .expect("an answer in time")
+                .expect("answered")
+        }
+
+        pub fn step(&self, starting: &str) -> Option<Waiting> {
+            self.log
+                .lock()
+                .expect("log")
+                .waiting
+                .iter()
+                .find(|step| step.reason.starts_with(starting))
+                .cloned()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_setup_asks_to_sign_in_and_registers_the_pasted_key() {
+        let key = Key::generate().expect("a key");
+        let fake = Fake::start().await;
+        let hex = key.public_hex();
+        fake.with(|state| {
+            state.registered.insert("na".into(), hex.clone());
+            state.registered.insert("eu".into(), hex.clone());
+        });
+        let home = home(fake, pasted(&key), BTreeMap::new()).await;
+        home.until("the key registered", |log| {
+            log.stored
+                .get("registered")
+                .filter(|value| **value == json!(hex))
+                .map(drop)
+        })
+        .await;
+        let step = home
+            .until("the sign-in step", |log| {
+                log.waiting
+                    .iter()
+                    .find(|step| step.reason.starts_with("Sign in to Tesla"))
+                    .cloned()
+            })
+            .await;
+        let url = step.link.expect("a link").url;
+        let state = home
+            .until("the sign-in state kept", |log| {
+                log.stored
+                    .get("sign_in_state")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .await;
+        assert!(url.contains(&format!("state={state}")));
+        home.until("the actions", |log| {
+            (log.actions == ["sign_in", "update_spend"]).then_some(())
+        })
+        .await;
+        assert!(home.step("Tesla has a different").is_none());
+        assert!(
+            !home
+                .log
+                .lock()
+                .expect("log")
+                .stored
+                .contains_key("private_key"),
+            "a pasted key isn't copied into the store"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_tesla_doesnt_have_is_shown_to_copy_onto_the_website() {
+        let fake = Fake::start().await;
+        let home = home(fake, crate::settings::for_tests(), BTreeMap::new()).await;
+        let step = home
+            .until("the key step", |log| {
+                log.waiting
+                    .iter()
+                    .find(|step| step.reason.starts_with("Tesla has a different"))
+                    .cloned()
+            })
+            .await;
+        let kept = home
+            .until("Irori's own key kept", |log| {
+                log.stored
+                    .get("private_key")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .await;
+        let key = Key::from_stored(&kept).expect("a key");
+        assert_eq!(step.copy.expect("a copy").text, key.public_pem());
+        assert!(
+            home.log
+                .lock()
+                .expect("log")
+                .actions
+                .contains(&"check_key".to_owned())
+        );
+
+        // The person puts it on the website; Tesla now has it.
+        let hex = key.public_hex();
+        home.fake.with(|state| {
+            state.registered.insert("na".into(), hex.clone());
+            state.registered.insert("eu".into(), hex.clone());
+        });
+        home.act("check_key", None).await.expect("it matches now");
+        home.until("the key step gone", |log| {
+            (!log
+                .waiting
+                .iter()
+                .any(|step| step.reason.starts_with("Tesla has a different")))
+            .then_some(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn signing_in_lists_the_cars_and_asks_for_the_key_on_one_without_it() {
+        let key = Key::generate().expect("a key");
+        let fake = Fake::start().await;
+        fake.answer(
+            "GET /na/api/1/products",
+            vec![Answer::ok(json!([
+                { "vin": VIN, "display_name": "Red car", "state": "asleep" },
+                { "energy_site_id": 12345, "site_name": "Home", "components": { "battery": true, "solar": true } },
+                { "energy_site_id": 999, "components": { "wall_connectors": [{}] } },
+            ]))],
+        );
+        fake.answer(
+            "POST /na/api/1/vehicles/fleet_status",
+            vec![Answer::ok(
+                json!({ "key_paired_vins": [], "unpaired_vins": [VIN], "vehicle_info": {} }),
+            )],
+        );
+        let home = home(fake, pasted(&key), BTreeMap::new()).await;
+        let state = home
+            .until("the sign-in state kept", |log| {
+                log.stored
+                    .get("sign_in_state")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            })
+            .await;
+        let stale = "https://tesla.example.com/irori/tesla?code=NA_abc&state=old";
+        assert!(
+            home.act("sign_in", Some(("landed", "address", stale)))
+                .await
+                .expect_err("an old sign-in")
+                .contains("older sign-in")
+        );
+        let landed = format!("https://tesla.example.com/irori/tesla?code=NA_abc&state={state}");
+        home.act("sign_in", Some(("landed", "address", &landed)))
+            .await
+            .expect("signed in");
+        let step = home
+            .until("the car's key step", |log| {
+                log.waiting
+                    .iter()
+                    .find(|step| step.unique_id.as_str() == VIN)
+                    .cloned()
+            })
+            .await;
+        assert_eq!(step.name.as_str(), "Red car");
+        assert!(home.step("Sign in to Tesla").is_none());
+        let products = home
+            .until("the products kept", |log| {
+                log.stored.get("products").cloned()
+            })
+            .await;
+        assert_eq!(
+            products["sites"].as_array().map(Vec::len),
+            Some(1),
+            "no Wall Connector"
+        );
+        assert!(home.log.lock().expect("log").stored.contains_key("tokens"));
+        home.until("sign_in no longer offered", |log| {
+            (!log.actions.contains(&"sign_in".to_owned())).then_some(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_suspended_account_says_billing_not_sign_in() {
+        let key = Key::generate().expect("a key");
+        let fake = Fake::start().await;
+        let tokens = serde_json::to_value(fake.signed_in()).expect("json");
+        fake.answer(
+            "GET /na/api/1/products",
+            vec![Answer::with(402, json!({ "error": "Payment required" }))],
+        );
+        let home = home(
+            fake,
+            pasted(&key),
+            BTreeMap::from([("tokens".to_owned(), tokens)]),
+        )
+        .await;
+        home.until("billing health", |log| match log.health.last() {
+            Some(Health::Degraded(why)) if why.contains("billing limit") => Some(()),
+            _ => None,
+        })
+        .await;
+        let health = home.log.lock().expect("log").health.last().cloned();
+        let Some(Health::Degraded(why)) = health else {
+            unreachable!()
+        };
+        assert!(why.contains("December 1"), "{why}");
+        assert!(!why.contains("sign in"));
+        assert!(home.step("Sign in to Tesla").is_none(), "still signed in");
+    }
+
+    #[tokio::test]
+    async fn the_dashboard_figure_is_taken_and_kept() {
+        let key = Key::generate().expect("a key");
+        let fake = Fake::start().await;
+        let home = home(fake, pasted(&key), BTreeMap::new()).await;
+        home.act("update_spend", Some(("dashboard", "spent", "$3.42")))
+            .await
+            .expect("taken");
+        let points = home
+            .until("the point kept", |log| {
+                log.stored.get("usage/dashboard").cloned()
+            })
+            .await;
+        assert_eq!(points[0]["account"], 3_420_000);
+        assert_eq!(points[0]["at"], NOV_10);
+        assert!(
+            home.act("update_spend", Some(("dashboard", "spent", "1.00")))
+                .await
+                .expect_err("lower")
+                .contains("only goes up")
+        );
+    }
+}

@@ -167,6 +167,28 @@ pub fn money(micros: Micros, currency: &str) -> String {
     }
 }
 
+/// An amount a person typed, like Tesla's dashboard shows it: `3.42`, `$3.42`, `3,42`.
+pub fn parse_money(text: &str) -> Result<Micros, String> {
+    let digits: String = text
+        .trim()
+        .chars()
+        .filter(|c| c.is_ascii_digit() || *c == '.' || *c == ',')
+        .collect();
+    // One comma and no point is a decimal comma; otherwise commas group thousands.
+    let digits = if digits.matches(',').count() == 1 && !digits.contains('.') {
+        digits.replace(',', ".")
+    } else {
+        digits.replace(',', "")
+    };
+    let amount: f64 = digits
+        .parse()
+        .map_err(|_| format!("`{}` isn't an amount like 3.42", text.trim()))?;
+    if !amount.is_finite() || !(0.0..=100_000.0).contains(&amount) {
+        return Err("that amount is out of range".to_owned());
+    }
+    Ok((amount * MICROS as f64).round() as Micros)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +230,15 @@ mod tests {
         assert_eq!(money(0, "USD"), "$0.00");
         assert_eq!(money(14_000_000, "CAD"), "$14.00");
         assert_eq!(money(1_500_000, "SEK"), "1.50 SEK");
+    }
+
+    #[test]
+    fn an_amount_reads_as_typed() {
+        assert_eq!(parse_money("3.42"), Ok(3_420_000));
+        assert_eq!(parse_money(" $3.42 "), Ok(3_420_000));
+        assert_eq!(parse_money("3,42 €"), Ok(3_420_000));
+        assert_eq!(parse_money("1,234.50"), Ok(1_234_500_000));
+        assert_eq!(parse_money("0"), Ok(0));
+        assert!(parse_money("lots").is_err());
     }
 }
