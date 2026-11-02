@@ -676,27 +676,15 @@ impl Api {
         classify(answer)
     }
 
-    /// A day's energy totals for a site, in its time zone.
-    pub async fn energy_history(
-        &self,
-        site: &str,
-        start: &str,
-        end: &str,
-        time_zone: &str,
-        why: Why,
-    ) -> Result<Value, ApiError> {
+    /// The site's day so far, in buckets: its own day, in its own time zone, as Tesla answers
+    /// without dates.
+    pub async fn energy_history(&self, site: &str, why: Why) -> Result<Value, ApiError> {
         let ask = Ask::new(site, Endpoint::EnergyHistory, why);
         let answer = self
             .call(
                 Method::GET,
                 &format!("/api/1/energy_sites/{site}/calendar_history"),
-                &[
-                    ("kind", "energy".to_owned()),
-                    ("period", "day".to_owned()),
-                    ("start_date", start.to_owned()),
-                    ("end_date", end.to_owned()),
-                    ("time_zone", time_zone.to_owned()),
-                ],
+                &[("kind", "energy".to_owned()), ("period", "day".to_owned())],
                 None,
                 &ask,
             )

@@ -370,6 +370,17 @@ mod protocol {
         pub waiting: Vec<Waiting>,
         pub actions: Vec<String>,
         pub stored: BTreeMap<String, Value>,
+        pub devices: BTreeMap<String, irori_types::DeviceDescription>,
+        pub entities: BTreeMap<String, irori_types::EntityDescription>,
+        /// The last state reported for each entity, as JSON, and whether it was replayed.
+        pub states: BTreeMap<String, (Value, bool)>,
+        pub removed: Vec<String>,
+    }
+
+    impl Log {
+        pub fn state(&self, id: &str) -> Option<Value> {
+            self.states.get(id).map(|(state, _)| state.clone())
+        }
     }
 
     pub struct Home {
@@ -405,11 +416,19 @@ mod protocol {
             while let Some(op) = ops.recv().await {
                 let mut log = recorded.lock().expect("log");
                 match op {
-                    host::Op::DescribeDevice(_, reply)
-                    | host::Op::DescribeEntity(_, reply)
-                    | host::Op::RemoveDevice(_, reply)
-                    | host::Op::RemoveEntity(_, reply)
-                    | host::Op::SetAvailability(_, _, reply) => {
+                    host::Op::DescribeDevice(device, reply) => {
+                        log.devices.insert(device.unique_id.to_string(), device);
+                        let _ = reply.send(Ok(()));
+                    }
+                    host::Op::DescribeEntity(entity, reply) => {
+                        log.entities.insert(entity.unique_id.to_string(), entity);
+                        let _ = reply.send(Ok(()));
+                    }
+                    host::Op::RemoveDevice(id, reply) | host::Op::RemoveEntity(id, reply) => {
+                        log.removed.push(id.to_string());
+                        let _ = reply.send(Ok(()));
+                    }
+                    host::Op::SetAvailability(_, _, reply) => {
                         let _ = reply.send(Ok(()));
                     }
                     host::Op::SetHealth(health) => log.health.push(health),
@@ -431,11 +450,25 @@ mod protocol {
                 }
             }
         });
+        let reports = host.reports;
+        let reported = Arc::clone(&log);
+        tokio::spawn(async move {
+            loop {
+                reports.ready().await;
+                let mut log = reported.lock().expect("log");
+                for report in reports.drain() {
+                    let state = serde_json::to_value(&report.state).expect("a state");
+                    log.states
+                        .insert(report.unique_id.to_string(), (state, report.replayed));
+                }
+            }
+        });
         let timing = Timing {
             hosts: fake.hosts(),
             now: nov_10,
             relist: Duration::from_secs(3600),
             save: Duration::from_millis(50),
+            idle: Duration::from_secs(3600),
         };
         let drive = tokio::spawn(drive(settings, ctx, timing));
         Home {
@@ -706,6 +739,282 @@ mod protocol {
                 .await
                 .expect_err("lower")
                 .contains("only goes up")
+        );
+    }
+}
+
+/// Reading cars and sites: when Tesla is asked, and what's shown from it.
+mod reading {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    use irori_protocol::Health;
+    use serde_json::{Value, json};
+
+    use super::VIN;
+    use super::protocol::{Home, home, pasted};
+    use crate::fake::{Answer, Fake};
+    use crate::keys::Key;
+
+    const OTHER: &str = "5YJ3E1EA7KF000002";
+    const SITE: &str = "2252000000000001";
+
+    fn answer(file: &str) -> Value {
+        let text = match file {
+            "vehicle_data" => include_str!("../testdata/vehicle_data.json"),
+            "live_status" => include_str!("../testdata/live_status.json"),
+            "site_info" => include_str!("../testdata/site_info.json"),
+            _ => include_str!("../testdata/energy_history.json"),
+        };
+        serde_json::from_str(text).expect("json")
+    }
+
+    fn car(vin: &str, name: &str, state: &str) -> Value {
+        json!({ "vin": vin, "display_name": name, "state": state })
+    }
+
+    fn site() -> Value {
+        json!({ "energy_site_id": 2_252_000_000_000_001_u64, "site_name": "Home", "components": { "battery": true, "solar": true } })
+    }
+
+    /// A home signed in to a fake with these products, the key already registered.
+    async fn signed_in(fake: Fake, products: Vec<Value>, stored: Vec<(&str, Value)>) -> Home {
+        let key = Key::generate().expect("a key");
+        let hex = key.public_hex();
+        fake.with(|state| {
+            state.registered.insert("na".into(), hex.clone());
+            state.registered.insert("eu".into(), hex.clone());
+        });
+        fake.answer("GET /na/api/1/products", vec![Answer::ok(json!(products))]);
+        let mut stored: BTreeMap<String, Value> = stored
+            .into_iter()
+            .map(|(key, value)| (key.to_owned(), value))
+            .collect();
+        stored.insert(
+            "tokens".into(),
+            serde_json::to_value(fake.signed_in()).expect("json"),
+        );
+        home(fake, pasted(&key), stored).await
+    }
+
+    fn vehicle_data_path(vin: &str) -> String {
+        format!("GET /na/api/1/vehicles/{vin}/vehicle_data")
+    }
+
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+
+    #[tokio::test]
+    async fn a_sleeping_car_is_never_read_and_shows_what_tesla_last_heard() {
+        let fake = Fake::start().await;
+        let mut cached = answer("vehicle_data");
+        cached["response"]["state"] = json!("asleep");
+        cached["response"]
+            .as_object_mut()
+            .expect("an object")
+            .remove("drive_state");
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data_cached"),
+            vec![Answer::with(200, cached)],
+        );
+        let sites = format!("/na/api/1/energy_sites/{SITE}");
+        fake.answer(
+            &format!("GET {sites}/live_status"),
+            vec![Answer::with(200, answer("live_status"))],
+        );
+        fake.answer(
+            &format!("GET {sites}/site_info"),
+            vec![Answer::with(200, answer("site_info"))],
+        );
+        fake.answer(
+            &format!("GET {sites}/calendar_history"),
+            vec![Answer::with(200, answer("history"))],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "asleep"), site()], vec![]).await;
+
+        let battery = format!("{VIN}:battery");
+        home.until("the battery from the cached data", |log| {
+            log.state(&battery)
+        })
+        .await;
+        let state = home
+            .until("the car's state", |log| log.state(&format!("{VIN}:state")))
+            .await;
+        assert_eq!(state["value"], "asleep");
+        home.until("the solar power", |log| {
+            log.state(&format!("{SITE}:solar_power"))
+        })
+        .await;
+        home.until("today's solar", |log| {
+            log.state(&format!("{SITE}:solar_today"))
+        })
+        .await;
+        settle().await;
+        assert!(
+            home.fake.sent("/vehicle_data").is_empty(),
+            "a sleeping car isn't read"
+        );
+        assert_eq!(home.fake.sent("/vehicle_data_cached").len(), 1);
+        assert!(
+            home.fake.sent("/wake_up").is_empty(),
+            "nothing wakes a car to read it"
+        );
+        let history = home.fake.sent("/calendar_history");
+        assert!(
+            !history[0].query.contains_key("start_date"),
+            "the site's own day: {:?}",
+            history[0].query
+        );
+        let log = home.log.lock().expect("log");
+        let device = log.devices.get(VIN).expect("the car");
+        assert_eq!(device.model.as_deref(), Some("Model 3"));
+        assert!(log.entities.contains_key(&format!("{VIN}:location")));
+        assert!(
+            !log.states.contains_key(&format!("{VIN}:location")),
+            "no position in the cached data"
+        );
+        assert!(log.stored.contains_key(&format!("car/{VIN}")));
+    }
+
+    #[tokio::test]
+    async fn what_a_car_said_last_shows_at_start_without_asking_tesla() {
+        let fake = Fake::start().await;
+        let mut reading = crate::vehicle::CarReading::default();
+        reading.merge(&answer("vehicle_data")["response"]);
+        let products =
+            json!({ "cars": [{ "vin": VIN, "name": "Red car", "state": "asleep" }], "sites": [] });
+        // Not signed in: nothing can be asked.
+        let home = home(
+            fake,
+            pasted(&Key::generate().expect("a key")),
+            BTreeMap::from([
+                ("products".to_owned(), products),
+                (
+                    format!("car/{VIN}"),
+                    serde_json::to_value(&reading).expect("json"),
+                ),
+            ]),
+        )
+        .await;
+        let (state, replayed) = home
+            .until("the battery", |log| {
+                log.states.get(&format!("{VIN}:battery")).cloned()
+            })
+            .await;
+        assert_eq!(state["value"], 77.0);
+        assert!(replayed, "what it said last, not something new");
+        assert!(
+            home.until("the position", |log| log.state(&format!("{VIN}:location")))
+                .await["latitude"]
+                .is_number()
+        );
+        settle().await;
+        assert!(home.fake.sent("/vehicles").is_empty());
+        assert!(home.fake.sent("/vehicle_data").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_awake_car_is_read_once_then_left_to_fall_asleep() {
+        let fake = Fake::start().await;
+        fake.answer(
+            &vehicle_data_path(VIN),
+            vec![Answer::with(200, answer("vehicle_data"))],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "online")], vec![]).await;
+        home.until("the battery", |log| log.state(&format!("{VIN}:battery")))
+            .await;
+        let position = home
+            .until("the position", |log| log.state(&format!("{VIN}:location")))
+            .await;
+        assert_eq!(position["latitude"], 35.6581);
+        settle().await;
+        let reads = home.fake.sent("/vehicle_data");
+        assert_eq!(reads.len(), 1, "parked and idle: not read again");
+        let parts = &reads[0].query["endpoints"];
+        assert!(
+            parts.contains("location_data") && parts.contains("charge_state"),
+            "{parts}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_car_tesla_refuses_leaves_the_others_reading() {
+        let fake = Fake::start().await;
+        fake.answer(
+            &vehicle_data_path(VIN),
+            vec![Answer::with(
+                403,
+                json!({ "error": "Unauthorized: vehicle has no key for this app" }),
+            )],
+        );
+        let mut blue = answer("vehicle_data");
+        blue["response"]["vin"] = json!(OTHER);
+        blue["response"]["charge_state"]["battery_level"] = json!(54);
+        fake.answer(&vehicle_data_path(OTHER), vec![Answer::with(200, blue)]);
+        let home = signed_in(
+            fake,
+            vec![
+                car(VIN, "Red car", "online"),
+                car(OTHER, "Blue car", "online"),
+            ],
+            vec![],
+        )
+        .await;
+        let battery = home
+            .until("the other car's battery", |log| {
+                log.state(&format!("{OTHER}:battery"))
+            })
+            .await;
+        assert_eq!(battery["value"], 54.0);
+        let why = home
+            .until("the refused car on its own line", |log| {
+                match log.health.last() {
+                    Some(Health::Degraded(why)) if why.contains("Red car") => Some(why.clone()),
+                    _ => None,
+                }
+            })
+            .await;
+        assert!(
+            why.starts_with("Tesla won't let Irori read Red car"),
+            "{why}"
+        );
+        assert!(!why.contains("Blue car"));
+    }
+
+    #[tokio::test]
+    async fn a_car_that_fell_asleep_is_billed_and_shown_asleep() {
+        let fake = Fake::start().await;
+        fake.answer(
+            &vehicle_data_path(VIN),
+            vec![Answer::with(408, json!({ "error": "vehicle unavailable" }))],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "online")], vec![]).await;
+        home.until("the car asleep", |log| {
+            log.state(&format!("{VIN}:state"))
+                .filter(|state| state["value"] == "asleep")
+        })
+        .await;
+        let calls = home
+            .until("the 408 on the meter", |log| {
+                log.stored.get("usage/calls").cloned().filter(|calls| {
+                    calls.as_array().is_some_and(|calls| {
+                        calls
+                            .iter()
+                            .any(|call| call["endpoint"] == "vehicle_data" && call["status"] == 408)
+                    })
+                })
+            })
+            .await;
+        assert!(calls.is_array());
+        settle().await;
+        assert_eq!(home.fake.sent("/vehicle_data").len(), 1, "not retried");
+        assert!(
+            matches!(
+                home.log.lock().expect("log").health.last(),
+                Some(Health::Running) | None
+            ),
+            "asleep isn't trouble"
         );
     }
 }

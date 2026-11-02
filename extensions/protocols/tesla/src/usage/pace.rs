@@ -88,6 +88,10 @@ struct Floors {
 /// while there's anything left at all.
 pub const LONGEST_GAP: Duration = Duration::from_secs(6 * 3600);
 
+/// A site's day so far is read once every this many readings of its power flows, and counted
+/// in each reading's cost.
+pub const HISTORY_EVERY: u32 = 6;
+
 /// The share of the month a car is assumed to be doing something (charging, driving, being
 /// warmed) until the month says otherwise.
 const ASSUMED_ACTIVE: f64 = 0.15;
@@ -256,7 +260,9 @@ pub fn plan(outlook: &Outlook, mode: Mode, prices: Prices, reading: Reading) -> 
     let budget = outlook.for_reading() as f64;
     let state_price = prices.call(Endpoint::Vehicles);
     let car_price = prices.of(Category::Data);
-    let site_price = prices.call(Endpoint::LiveStatus) * reading.sites as Micros;
+    let site_price = (prices.call(Endpoint::LiveStatus)
+        + prices.call(Endpoint::EnergyHistory) / Micros::from(HISTORY_EVERY))
+        * reading.sites as Micros;
 
     // Shares of what's left, among the kinds of reading that cost something.
     let state_weight = if reading.cars > 0 && state_price > 0 {

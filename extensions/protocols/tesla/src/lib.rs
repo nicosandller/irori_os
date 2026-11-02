@@ -7,16 +7,20 @@
 
 mod api;
 mod auth;
+mod energy;
+mod entity;
 #[cfg(test)]
 mod fake;
 mod keys;
+mod reading;
 pub mod settings;
 mod setup;
 #[cfg(test)]
 mod tests;
 mod usage;
+mod vehicle;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,6 +37,7 @@ use tokio::time::Instant;
 use crate::api::{Api, ApiError, Clock, Hosts, KeyStatus, Meter, Products};
 use crate::auth::{Keep, Session};
 use crate::keys::Key;
+use crate::reading::{CarSlot, Part, SiteSlot};
 use crate::settings::Settings;
 use crate::setup::Registered;
 use crate::usage::price::{self, Prices};
@@ -61,6 +66,8 @@ pub(crate) struct Timing {
     pub relist: Duration,
     /// How often the meter is saved while it changes.
     pub save: Duration,
+    /// How often a car that's awake but doing nothing is read: rarely, so it can fall asleep.
+    pub idle: Duration,
 }
 
 impl Timing {
@@ -70,6 +77,7 @@ impl Timing {
             now: unix_now,
             relist: Duration::from_secs(24 * 3600),
             save: Duration::from_secs(60),
+            idle: usage::pace::LONGEST_GAP,
         }
     }
 }
@@ -89,6 +97,19 @@ enum Done {
     Registered(Result<Registered, ApiError>, Option<IncomingAction>),
     SignedIn(Result<api::Region, ApiError>, IncomingAction),
     Listed(Result<(Products, Option<KeyStatus>), ApiError>),
+    /// Which cars are awake.
+    States(Result<Vec<api::Car>, ApiError>),
+    /// A car's data, or (`cached`) what Tesla last heard from it.
+    CarRead {
+        vin: String,
+        cached: bool,
+        result: Result<Option<serde_json::Value>, ApiError>,
+    },
+    SiteRead {
+        id: String,
+        part: Part,
+        result: Result<serde_json::Value, ApiError>,
+    },
 }
 
 /// The cars and sites as the last listing found them, kept for the next start.
@@ -129,6 +150,12 @@ struct World {
     listing: bool,
     next_list: Option<Instant>,
     list_backoff: Backoff,
+    cars: BTreeMap<String, CarSlot>,
+    sites: BTreeMap<String, SiteSlot>,
+    checking_states: bool,
+    next_states: Option<Instant>,
+    /// For reads that failed for the whole account.
+    read_backoff: Backoff,
     done: mpsc::Sender<Done>,
     reported: Reported,
 }
@@ -191,17 +218,23 @@ pub(crate) async fn drive(
         listing: false,
         next_list: signed_in.then(Instant::now),
         list_backoff: Backoff::new(),
+        cars: BTreeMap::new(),
+        sites: BTreeMap::new(),
+        checking_states: false,
+        next_states: None,
+        read_backoff: Backoff::new(),
         done,
         reported: Reported::default(),
         timing,
     };
+    world.restore().await;
     world.register(None);
     world.report().await;
 
     let mut save = tokio::time::interval(world.timing.save);
     save.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
-        let list_at = world.next_list.unwrap_or_else(far_future);
+        let due = world.next_due();
         tokio::select! {
             incoming = world.ctx.next() => {
                 let Some(incoming) = incoming else { break };
@@ -209,9 +242,8 @@ pub(crate) async fn drive(
             }
             Some(keep) = to_keep.recv() => world.keep_tokens(keep).await,
             Some(done) = finished.recv() => world.finished(done).await,
-            _ = tokio::time::sleep_until(list_at), if world.next_list.is_some() => {
-                world.next_list = None;
-                world.list();
+            _ = tokio::time::sleep_until(due.unwrap_or_else(far_future)), if due.is_some() => {
+                world.tick();
             }
             _ = save.tick() => world.save().await,
         }
@@ -386,6 +418,7 @@ impl World {
                         if let Ok(value) = serde_json::to_value(&self.known) {
                             let _ = self.ctx.store(stored::PRODUCTS, value).await;
                         }
+                        self.adopt().await;
                         self.next_list = Some(Instant::now() + self.timing.relist);
                         if self.registration == Registration::Later {
                             self.register(None);
@@ -404,6 +437,13 @@ impl World {
                     }
                 }
             }
+            Done::States(result) => self.states_checked(result).await,
+            Done::CarRead {
+                vin,
+                cached,
+                result,
+            } => self.car_read(vin, cached, result).await,
+            Done::SiteRead { id, part, result } => self.site_read(id, part, result).await,
         }
     }
 
@@ -503,7 +543,14 @@ impl World {
             Some(
                 error @ (ApiError::Server(_) | ApiError::Unreachable(_) | ApiError::RateLimited(_)),
             ) => Health::Degraded(format!("{}; trying again.", capitalise(&error.describe()))),
-            _ => Health::Running,
+            _ => {
+                let refused = self.refused();
+                if refused.is_empty() {
+                    Health::Running
+                } else {
+                    Health::Degraded(format!("Tesla won't let Irori read {}", refused.join("; ")))
+                }
+            }
         }
     }
 

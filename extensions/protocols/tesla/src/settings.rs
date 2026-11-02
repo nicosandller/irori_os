@@ -168,7 +168,7 @@ impl<'de> Deserialize<'de> for Settings {
         if raw.client_secret.expose().is_empty() {
             return Err(fail("the client secret is empty"));
         }
-        let domain = bare_host(&raw.domain).map_err(|why| fail(why))?;
+        let domain = bare_host(&raw.domain).map_err(fail)?;
         let redirect_uri = raw
             .redirect_uri
             .map(|uri| uri.trim().to_owned())
