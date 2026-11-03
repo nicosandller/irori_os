@@ -253,6 +253,11 @@ xtask/         repository automation (`cargo xtask …`)
 
 Most crates are empty shells for now; ROADMAP §2.1 describes what each will hold.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md): one change per pull request, the checks above before
+review, and how AI-assisted work is handled. Vulnerabilities go through [SECURITY.md](SECURITY.md).
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).
