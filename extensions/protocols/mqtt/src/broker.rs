@@ -177,9 +177,7 @@ pub fn connect(
                 }
                 Ok(_) => {} // acks and the like: nothing the run loop needs
                 Err(error) => {
-                    let steady = connected_at
-                        .take()
-                        .is_some_and(|since| since.elapsed() >= STEADY_AFTER);
+                    let steady = held_steady(connected_at.take(), Instant::now());
                     let pause = next_retry(retry, steady);
                     retry = Some(pause);
                     let reason = match oversized(&error) {
@@ -199,7 +197,10 @@ pub fn connect(
                                 retry_in = ?pause,
                                 "mqtt broker connection lost; reconnecting",
                             );
-                            format!("not connected to the broker: {error}")
+                            format!(
+                                "the broker connection dropped or failed ({error}); waiting for \
+                                 it to hold"
+                            )
                         }
                     };
                     if tx
@@ -246,6 +247,12 @@ fn batches(topics: &BTreeSet<String>) -> Vec<Vec<SubscribeFilter>> {
                 .collect()
         })
         .collect()
+}
+
+/// Whether a connection made at `connected_at` (`None`: it never got that far) had held for
+/// [`STEADY_AFTER`] by `now`, when it failed.
+fn held_steady(connected_at: Option<Instant>, now: Instant) -> bool {
+    connected_at.is_some_and(|since| now.duration_since(since) >= STEADY_AFTER)
 }
 
 /// The pause before the next reconnect: the shortest after the first failure or after a
@@ -345,14 +352,19 @@ mod tests {
 
     #[test]
     fn a_connection_that_drops_again_within_30_seconds_keeps_the_longer_pause() {
-        // Connected, then failed again before STEADY_AFTER: the pause keeps growing.
-        assert_eq!(
-            next_retry(Some(Duration::from_secs(8)), false).as_secs(),
-            16
-        );
-        assert_eq!(next_retry(Some(LONGEST_RETRY), false), LONGEST_RETRY);
+        let connected = Instant::now();
+        let pause_after = |failed_at: Duration| {
+            let steady = held_steady(Some(connected), connected + failed_at);
+            next_retry(Some(Duration::from_secs(8)), steady)
+        };
+        // Reconnected, then dropped again before STEADY_AFTER: the pause keeps growing.
+        assert_eq!(pause_after(Duration::from_secs(10)).as_secs(), 16);
+        assert_eq!(pause_after(Duration::from_secs(29)).as_secs(), 16);
         // Held for STEADY_AFTER first: back to the shortest.
-        assert_eq!(next_retry(Some(LONGEST_RETRY), true), FIRST_RETRY);
+        assert_eq!(pause_after(STEADY_AFTER), FIRST_RETRY);
+        // Never connected at all: not steady.
+        assert!(!held_steady(None, connected + STEADY_AFTER));
+        assert_eq!(next_retry(Some(LONGEST_RETRY), false), LONGEST_RETRY);
     }
 
     #[test]
