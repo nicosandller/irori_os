@@ -6907,8 +6907,11 @@ mod tests {
             irori_core::Timing::default(),
         )
         .map_err(anyhow::Error::msg)?;
+        // Both cameras: the Demo's is used below, and it can come up after the gate's.
+        let gate = EntityId::try_from("camera.gate")?;
+        let garden = EntityId::try_from("camera.garden_camera_1")?;
         for _ in 0..500 {
-            if core.state(&EntityId::try_from("camera.gate")?).is_some() {
+            if core.state(&gate).is_some() && core.state(&garden).is_some() {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
