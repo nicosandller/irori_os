@@ -1588,7 +1588,7 @@ async fn supervise_package(
                 stdout,
             } = proc;
             let mut outgoing = Outgoing::Process(stdin);
-            let incoming = Incoming::Process(stdout);
+            let incoming = Incoming::Process(Reader::spawn(stdout));
             if let Err(reason) = outgoing
                 .deliver(ToExt::Hello {
                     settings: started_with.clone(),
@@ -1769,8 +1769,52 @@ enum Outgoing {
 
 /// Words the extension sends back.
 enum Incoming {
-    Process(BufReader<ChildStdout>),
+    Process(Reader),
     Inbound(mpsc::Receiver<FromExt>),
+}
+
+/// A process's stdout, read by a task of its own that hands on whole messages (issue #91).
+///
+/// The host takes the next message inside a `select!`, where a call or an action can win at any
+/// moment. Reading a line there isn't safe to interrupt: a message longer than one read (a
+/// camera's picture, a network map) would lose its first half when another branch won, and the
+/// rest wouldn't parse. A channel's `recv` loses nothing when it's interrupted, so the reading
+/// happens here instead, where nothing interrupts it.
+struct Reader {
+    messages: mpsc::Receiver<Result<FromExt, String>>,
+    task: JoinHandle<()>,
+}
+
+impl Reader {
+    fn spawn(mut stdout: BufReader<ChildStdout>) -> Self {
+        // The same room a program that dials in gets. Full, the reader waits, the pipe fills,
+        // and the extension waits on its next line: the pace it had before.
+        let (tx, messages) = mpsc::channel(64);
+        let task = tokio::spawn(async move {
+            loop {
+                let message = ExtProcess::recv_on(&mut stdout).await;
+                let failed = message.is_err();
+                // Its first failure is its last word: whatever follows can't be trusted.
+                if tx.send(message).await.is_err() || failed {
+                    return;
+                }
+            }
+        });
+        Self { messages, task }
+    }
+
+    async fn take(&mut self) -> Result<FromExt, String> {
+        self.messages
+            .recv()
+            .await
+            .unwrap_or_else(|| Err("the extension stopped talking".to_owned()))
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 /// One running extension: the pipes it speaks on, and, for a process, the child and its stderr.
@@ -1796,7 +1840,7 @@ impl Outgoing {
 impl Incoming {
     async fn take(&mut self) -> Result<FromExt, String> {
         match self {
-            Self::Process(stdout) => ExtProcess::recv_on(stdout).await,
+            Self::Process(reader) => reader.take().await,
             Self::Inbound(incoming) => incoming
                 .recv()
                 .await
