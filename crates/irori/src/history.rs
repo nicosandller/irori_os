@@ -124,12 +124,6 @@ impl History {
         let recorder = self.recorder.clone();
         off_the_runtime(move || recorder.check())
     }
-
-    /// Drops history for every entity that is not in `live`. Used when this task fell behind
-    /// the core and may have missed a removal.
-    fn forget_missing(&self, live: &[EntityId]) {
-        self.recorder.forget_missing(live);
-    }
 }
 
 impl irori_core::HistorySource for History {
@@ -219,8 +213,11 @@ fn pressed(entity_id: EntityId, context: irori_types::Context) -> EntityState {
 
 /// Feeds [`History`] from the core's events, for the life of the server. The channel closing is
 /// the runtime shutting down. A listener that falls behind skips ahead to now: a missed change
-/// is a gap, which is better than grinding through the backlog. A missed removal is not a gap
-/// the file can keep, so a lag deletes history for every entity the core no longer has.
+/// is a gap, which is better than grinding through the backlog. Falling behind never deletes
+/// anything: at startup the home is still filling in, so "not in the home right now" is not
+/// "removed". A removal missed during a lag leaves its rows behind. Retention ages out its
+/// changes and five-minute summaries; its hourly statistics stay until the device is removed or
+/// forgotten again.
 pub async fn record(core: Core, history: History, mut events: broadcast::Receiver<Event>) {
     // Entities whose stored readings have been asked to be converted since Irori started. The
     // recorder remembers for good; this only saves asking it with every reading.
@@ -261,16 +258,7 @@ pub async fn record(core: Core, history: History, mut events: broadcast::Receive
             }) => history.record(entity_id.clone(), pressed(entity_id, context)),
             Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(missed)) => {
-                tracing::warn!(
-                    missed,
-                    "history fell behind; deleting rows for entities that have left"
-                );
-                let live: Vec<_> = core
-                    .entities()
-                    .into_iter()
-                    .map(|entity| entity.id)
-                    .collect();
-                history.forget_missing(&live);
+                tracing::warn!(missed, "history fell behind; {missed} changes not recorded");
             }
             Err(broadcast::error::RecvError::Closed) => return,
         }
@@ -400,5 +388,33 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].last_updated, when);
         assert!(history.check());
+    }
+
+    /// At startup the home is still empty while a burst of events can overflow the bus. Falling
+    /// behind then must not read "not in the home" as "removed" and delete everything.
+    #[tokio::test]
+    async fn falling_behind_keeps_the_history_already_recorded() {
+        let history = History::temporary();
+        let earlier = now();
+        history.record(plug(), state("switch.plug", true, earlier));
+        let core = Core::new(Arc::new(irori_core::SystemClock));
+        assert!(core.entities().is_empty(), "the home has not filled in yet");
+        let (sender, events) = broadcast::channel(2);
+        for index in 0..5 {
+            let new_state = state("switch.other", index % 2 == 0, later(earlier, index + 1));
+            sender
+                .send(Event::StateChanged {
+                    entity_id: new_state.entity_id.clone(),
+                    old_state: None,
+                    new_state: Box::new(new_state),
+                })
+                .expect("the receiver is still open");
+        }
+        drop(sender);
+        // The first receive is the lag; the close then ends the task.
+        record(core, history.clone(), events).await;
+        let kept = history.changes(&plug(), at("1970-01-01T00:00:00Z"));
+        assert_eq!(kept.len(), 1, "the row from before the lag is still there");
+        assert_eq!(kept[0].last_updated, earlier);
     }
 }
