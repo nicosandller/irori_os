@@ -1862,3 +1862,121 @@ async fn what_a_stopped_install_left_is_cleared_and_a_stopped_update_is_undone()
     );
     host.shutdown().await;
 }
+
+/// A package whose program is the shell `script`, under `packages_dir/<id>`.
+fn script_package(packages_dir: &std::path::Path, id: &str, script: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let package = packages_dir.join(id);
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        format!(
+            r#"
+            [extension]
+            id = "{id}"
+            name = "Script"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = {{ command = "bin/prog" }}
+            "#
+        ),
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    std::fs::write(&program, script).expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+}
+
+/// The pids a script wrote to `file`, one a line.
+fn pids_in(file: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+/// Whether a process with this pid is still running. A killed child whose parent died is
+/// reaped by init a moment later, so callers wait for this to turn false.
+fn running(pid: &str) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// An extension that won't stop is killed when its grace runs out, and so is everything it
+/// started: a Zigbee2MQTT left running keeps the dongle the next start needs (issue #101).
+#[tokio::test]
+async fn a_killed_extension_takes_what_it_started_with_it() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let pids = packages_dir.path().join("pids");
+    // Starts a long-running child, then ignores everything, `stop` included.
+    script_package(
+        packages_dir.path(),
+        "stubborn",
+        &format!(
+            "#!/bin/sh\nsleep 1000 &\necho $! >> '{}'\nwhile read line; do :; done\n",
+            pids.display()
+        ),
+    );
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing {
+            stop_grace: Duration::from_millis(200),
+            ..Timing::default()
+        },
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    eventually("the child is started", || pids_in(&pids).len() == 1).await;
+    let child = pids_in(&pids).remove(0);
+    assert!(running(&child), "the child runs while the extension does");
+
+    host.shutdown().await;
+    eventually("the child is gone", || !running(&child)).await;
+}
+
+/// An extension that dies by itself leaves what it started running, holding what the restarted
+/// extension needs. The group goes before the restart (issue #101).
+#[tokio::test]
+async fn an_extension_that_exits_leaves_nothing_running_behind() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let pids = packages_dir.path().join("pids");
+    // Starts a long-running child, then crashes. Restarted, it does the same.
+    script_package(
+        packages_dir.path(),
+        "crashy",
+        &format!(
+            "#!/bin/sh\nsleep 1000 &\necho $! >> '{}'\nexit 1\n",
+            pids.display()
+        ),
+    );
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    eventually("the extension crashed once", || !pids_in(&pids).is_empty()).await;
+    let child = pids_in(&pids).remove(0);
+    eventually("the crashed extension's child is gone", || !running(&child)).await;
+
+    host.shutdown().await;
+    for child in pids_in(&pids) {
+        eventually("every child is gone", || !running(&child)).await;
+    }
+}

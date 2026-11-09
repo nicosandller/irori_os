@@ -164,8 +164,10 @@ const SHUTDOWN: Duration = Duration::from_secs(4);
 /// Asks the server to stop, and kills it if it hasn't within [`SHUTDOWN`]. It holds Irori's
 /// fabric and every device's keys, so it gets the chance to finish writing them.
 ///
-/// The signal goes through the shell's own `kill`: this workspace has no `unsafe` to send one
-/// with, and a slim Debian has no `/bin/kill` (that's `procps`), but always a `/bin/sh`.
+/// The signal goes through the shell's own `kill`: this crate has no signal library of its own
+/// (rustix could send one without `unsafe`), and a slim Debian has no `/bin/kill` (that's
+/// `procps`), but always a `/bin/sh`. If it never stops, Irori kills the extension's whole
+/// process group, the server with it (`irori_protocol::ProcessGroup`).
 pub async fn stop(child: &mut Child) {
     if let Some(pid) = child.id() {
         let asked = Command::new("/bin/sh")

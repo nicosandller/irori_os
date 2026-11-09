@@ -27,7 +27,7 @@ pub use irori_types as types;
 pub mod engine;
 pub mod home;
 mod process;
-pub use process::{ExtProcess, FromExt, ToExt, WireCommand, serve, spawn};
+pub use process::{ExtProcess, FromExt, ProcessGroup, ToExt, WireCommand, serve, spawn};
 
 /// A built-in protocol.
 ///

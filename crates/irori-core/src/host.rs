@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
-use irori_protocol::{ExtProcess, FromExt, IncomingAction, IncomingCall, ToExt, spawn};
+use irori_protocol::{
+    ExtProcess, FromExt, IncomingAction, IncomingCall, ProcessGroup, ToExt, spawn,
+};
 
 use crate::engine::EngineLink;
 use std::collections::BTreeSet;
@@ -1547,6 +1549,7 @@ async fn supervise_package(
                     outgoing: Outgoing::Inbound(ready.outgoing),
                     incoming: Incoming::Inbound(ready.incoming),
                     child: None,
+                    group: None,
                     reading: None,
                 },
                 ready.started_with,
@@ -1586,6 +1589,7 @@ async fn supervise_package(
                 mut child,
                 stdin,
                 stdout,
+                group,
             } = proc;
             let mut outgoing = Outgoing::Process(stdin);
             let incoming = Incoming::Process(stdout);
@@ -1596,6 +1600,7 @@ async fn supervise_package(
                 .await
             {
                 tracing::error!(%extension, %reason, "can't talk to extension");
+                group.kill();
                 let _ = child.start_kill();
                 finish_reading(reading).await;
                 core.set_status(
@@ -1618,6 +1623,7 @@ async fn supervise_package(
                     outgoing,
                     incoming,
                     child: Some(child),
+                    group: Some(group),
                     reading: Some(reading),
                 },
                 started_with.clone(),
@@ -1691,6 +1697,12 @@ async fn supervise_package(
         // The pump already asked a process to stop, and may have killed it. Say it once more
         // on the way out. A program that dialed in only hears it here: there is nothing to kill.
         let _ = link.outgoing.deliver(ToExt::Stop).await;
+        // The whole group, whether the extension is still running, was killed, or exited by
+        // itself: a crash leaves what it started running, holding a dongle or a port the
+        // restarted extension needs (issue #101).
+        if let Some(group) = &link.group {
+            group.kill();
+        }
         if let Some(child) = link.child.as_mut() {
             let _ = child.start_kill();
         }
@@ -1773,11 +1785,13 @@ enum Incoming {
     Inbound(mpsc::Receiver<FromExt>),
 }
 
-/// One running extension: the pipes it speaks on, and, for a process, the child and its stderr.
+/// One running extension: the pipes it speaks on, and, for a process, the child, the group it
+/// and what it starts run in, and its stderr.
 struct Link {
     outgoing: Outgoing,
     incoming: Incoming,
     child: Option<Child>,
+    group: Option<ProcessGroup>,
     reading: Option<JoinHandle<()>>,
 }
 
@@ -2019,6 +2033,9 @@ async fn drive(
             }
             () = &mut grace => {
                 tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
+                if let Some(group) = &link.group {
+                    group.kill();
+                }
                 let _ = child.start_kill();
                 return why;
             }
