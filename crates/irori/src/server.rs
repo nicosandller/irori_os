@@ -2928,7 +2928,7 @@ async fn health(State(state): State<AppState>) -> Response {
 
 #[cfg(feature = "ui")]
 mod ui {
-    use axum::http::{StatusCode, Uri, header};
+    use axum::http::{HeaderMap, StatusCode, Uri, header};
     use axum::response::{IntoResponse, Response};
     use rust_embed::RustEmbed;
 
@@ -2945,7 +2945,103 @@ mod ui {
 
     const INDEX: &str = "index.html";
 
-    pub async fn serve(uri: Uri) -> Response {
+    /// A compressed copy `cargo xtask ui` wrote next to a file: `<file>.br`, `<file>.gz`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(super) enum Encoding {
+        Brotli,
+        Gzip,
+    }
+
+    impl Encoding {
+        /// Brotli first: it is the smaller of the two. Browsers only offer it over HTTPS.
+        const ALL: [Self; 2] = [Self::Brotli, Self::Gzip];
+
+        /// The name in `Accept-Encoding` and `Content-Encoding`.
+        fn token(self) -> &'static str {
+            match self {
+                Self::Brotli => "br",
+                Self::Gzip => "gzip",
+            }
+        }
+
+        /// The suffix of the copy on disk.
+        fn suffix(self) -> &'static str {
+            match self {
+                Self::Brotli => ".br",
+                Self::Gzip => ".gz",
+            }
+        }
+    }
+
+    /// The encodings a browser's `Accept-Encoding` allows, best first. One it gives `q=0` is
+    /// refused, as is one it doesn't name (unless `*` covers it). Equal weights keep brotli
+    /// ahead of gzip.
+    pub(super) fn accepted(accept_encoding: Option<&str>) -> Vec<Encoding> {
+        let mut weights: Vec<(Encoding, f32)> = Vec::new();
+        let mut any = None;
+        for item in accept_encoding.unwrap_or_default().split(',') {
+            let mut parts = item.split(';');
+            let token = parts.next().unwrap_or_default().trim();
+            let q = parts
+                .filter_map(|param| {
+                    let (key, value) = param.split_once('=')?;
+                    key.trim()
+                        .eq_ignore_ascii_case("q")
+                        .then(|| value.trim().parse::<f32>().ok())
+                        .flatten()
+                })
+                .next()
+                .unwrap_or(1.0);
+            if token == "*" {
+                any = Some(q);
+            } else if let Some(encoding) = Encoding::ALL
+                .into_iter()
+                .find(|encoding| token.eq_ignore_ascii_case(encoding.token()))
+            {
+                weights.push((encoding, q));
+            }
+        }
+        let mut ranked: Vec<(Encoding, f32)> = Encoding::ALL
+            .into_iter()
+            .filter_map(|encoding| {
+                let named = weights
+                    .iter()
+                    .find(|(e, _)| *e == encoding)
+                    .map(|(_, q)| *q);
+                named.or(any).map(|q| (encoding, q))
+            })
+            .filter(|(_, q)| *q > 0.0)
+            .collect();
+        // Stable, so equal weights keep `ALL`'s order.
+        ranked.sort_by(|a, b| b.1.total_cmp(&a.1));
+        ranked.into_iter().map(|(encoding, _)| encoding).collect()
+    }
+
+    /// How long a browser may keep a file. trunk names the app's wasm and JS after their
+    /// content (`irori-ui-<hash>.js`, `irori-ui-<hash>_bg.wasm`), so a new build gets new names
+    /// and those can be kept for good. Anything else (the page itself, `map.js`, the favicon)
+    /// keeps its name across builds, so the browser asks each time and an update shows at once.
+    pub(super) fn cache_control(path: &str) -> &'static str {
+        if is_content_hashed(path) {
+            "public, max-age=31536000, immutable"
+        } else {
+            "no-cache"
+        }
+    }
+
+    /// `<name>-<16 hex digits>` before `.js`, `.css` or `_bg.wasm`: trunk's `filehash`.
+    fn is_content_hashed(path: &str) -> bool {
+        let stem = path
+            .strip_suffix("_bg.wasm")
+            .or_else(|| path.strip_suffix(".js"))
+            .or_else(|| path.strip_suffix(".css"));
+        stem.and_then(|stem| stem.rsplit_once('-'))
+            .is_some_and(|(name, hash)| {
+                !name.is_empty() && hash.len() == 16 && hash.bytes().all(|b| b.is_ascii_hexdigit())
+            })
+    }
+
+    pub async fn serve(uri: Uri, headers: HeaderMap) -> Response {
         let path = uri.path().trim_start_matches('/');
         let path = if path.is_empty() { INDEX } else { path };
         // `/api/…` belongs to the API, whatever is or isn't there. Handing an API caller the
@@ -2953,29 +3049,63 @@ mod ui {
         if path == "api" || path.starts_with("api/") {
             return (StatusCode::NOT_FOUND, "no such endpoint\n").into_response();
         }
-        // The app wins where both have a file, so a built UI replaces the placeholder page.
-        let file = App::get(path)
-            .or_else(|| Placeholder::get(path))
-            .map(|file| (path, file))
-            // A path with no file extension is one of the app's own pages (`/devices`), which
-            // the app routes itself once it has loaded: it gets the page, not a 404. A missing
-            // file (`/nope.css`) is still a 404, so a broken asset says so plainly.
-            .or_else(|| {
-                (!path.contains('.'))
-                    .then(|| {
-                        App::get(INDEX)
-                            .or_else(|| Placeholder::get(INDEX))
-                            .map(|index| (INDEX, index))
-                    })
-                    .flatten()
-            });
-        match file {
-            Some((path, file)) => {
-                let mime = mime_guess::from_path(path).first_or_octet_stream();
-                ([(header::CONTENT_TYPE, mime.as_ref())], file.data).into_response()
-            }
-            None => (StatusCode::NOT_FOUND, "not found").into_response(),
+        // The compressed copies are only ever sent in place of their original, labelled as
+        // such. Asked for by name, one would arrive as an unlabelled blob.
+        if Encoding::ALL
+            .into_iter()
+            .any(|encoding| path.ends_with(encoding.suffix()))
+        {
+            return (StatusCode::NOT_FOUND, "not found").into_response();
         }
+        let accepted = accepted(
+            headers
+                .get(header::ACCEPT_ENCODING)
+                .and_then(|value| value.to_str().ok()),
+        );
+        // The app wins where both have a file, so a built UI replaces the placeholder page.
+        // A path with no file extension is one of the app's own pages (`/devices`), which the
+        // app routes itself once it has loaded: it gets the page, not a 404. A missing file
+        // (`/nope.css`) is still a 404, so a broken asset says so plainly.
+        let path = if App::get(path).is_some() || Placeholder::get(path).is_some() {
+            path
+        } else if !path.contains('.') {
+            INDEX
+        } else {
+            return (StatusCode::NOT_FOUND, "not found").into_response();
+        };
+        // The smallest copy the browser takes. Only the app has compressed copies, and a file
+        // too small to be worth compressing has none; the original is sent then.
+        let compressed = App::get(path).and_then(|_| {
+            accepted.into_iter().find_map(|encoding| {
+                App::get(&format!("{path}{}", encoding.suffix())).map(|file| (encoding, file))
+            })
+        });
+        let (encoding, file) = match compressed {
+            Some((encoding, file)) => (Some(encoding), file),
+            None => match App::get(path).or_else(|| Placeholder::get(path)) {
+                Some(file) => (None, file),
+                None => return (StatusCode::NOT_FOUND, "not found").into_response(),
+            },
+        };
+        // The type of the original, not of `.gz`.
+        let mime = mime_guess::from_path(path).first_or_octet_stream();
+        let mut response = (
+            [
+                (header::CONTENT_TYPE, mime.as_ref()),
+                (header::CACHE_CONTROL, cache_control(path)),
+                // A cache in between must not hand a gzip copy to a browser that didn't ask.
+                (header::VARY, "accept-encoding"),
+            ],
+            file.data,
+        )
+            .into_response();
+        if let Some(encoding) = encoding {
+            response.headers_mut().insert(
+                header::CONTENT_ENCODING,
+                header::HeaderValue::from_static(encoding.token()),
+            );
+        }
+        response
     }
 }
 
@@ -3133,19 +3263,38 @@ mod tests {
         core: Core,
         path: &str,
     ) -> anyhow::Result<(StatusCode, Option<String>, Vec<u8>)> {
-        let server = Server::new(core)?;
-        let res = server
-            .app()?
-            .oneshot(Request::get(path).body(Body::empty())?)
-            .await?;
-        let status = res.status();
-        let content_type = res
-            .headers()
+        let (status, headers, body) = get_with_headers_from(core, path, &[]).await?;
+        let content_type = headers
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        let body = res.into_body().collect().await?.to_bytes().to_vec();
         Ok((status, content_type, body))
+    }
+
+    /// A GET that sends `headers`, answered with all of the response's headers.
+    #[cfg(feature = "ui")]
+    async fn get_with_headers(
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> anyhow::Result<(StatusCode, axum::http::HeaderMap, Vec<u8>)> {
+        get_with_headers_from(core(), path, headers).await
+    }
+
+    async fn get_with_headers_from(
+        core: Core,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> anyhow::Result<(StatusCode, axum::http::HeaderMap, Vec<u8>)> {
+        let server = Server::new(core)?;
+        let mut request = Request::get(path);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let res = server.app()?.oneshot(request.body(Body::empty())?).await?;
+        let status = res.status();
+        let headers = res.headers().clone();
+        let body = res.into_body().collect().await?.to_bytes().to_vec();
+        Ok((status, headers, body))
     }
 
     #[tokio::test]
@@ -3394,6 +3543,104 @@ mod tests {
         assert_eq!(content_type.as_deref(), Some("image/svg+xml"));
         assert!(String::from_utf8(body)?.starts_with("<svg"));
         Ok(())
+    }
+
+    /// The page keeps its name from one build to the next, so a browser must ask before reusing
+    /// it, or an update wouldn't show. Whichever copy is sent (the placeholder in CI, gzip after
+    /// `cargo xtask ui`), it unpacks to the page and says what it is.
+    #[cfg(feature = "ui")]
+    #[tokio::test]
+    async fn the_page_is_rechecked_and_sent_compressed_when_it_can_be() -> anyhow::Result<()> {
+        let (status, headers, body) =
+            get_with_headers("/", &[("accept-encoding", "gzip, deflate")]).await?;
+        assert_eq!(status, StatusCode::OK);
+        let header = |name: &str| headers.get(name).and_then(|v| v.to_str().ok());
+        assert_eq!(header("content-type"), Some("text/html"));
+        assert_eq!(header("cache-control"), Some("no-cache"));
+        assert_eq!(header("vary"), Some("accept-encoding"));
+        let page = match header("content-encoding") {
+            None => String::from_utf8(body)?,
+            Some("gzip") => {
+                let mut page = String::new();
+                std::io::Read::read_to_string(
+                    &mut flate2::read::GzDecoder::new(body.as_slice()),
+                    &mut page,
+                )?;
+                page
+            }
+            Some(other) => anyhow::bail!("asked for gzip, got {other}"),
+        };
+        assert!(page.contains("IroriOS"));
+        Ok(())
+    }
+
+    /// The compressed copies are sent only in place of their original. Asked for by name, they
+    /// are not there, so nothing arrives unlabelled.
+    #[cfg(feature = "ui")]
+    #[tokio::test]
+    async fn compressed_copies_are_not_served_by_name() -> anyhow::Result<()> {
+        for path in ["/index.html.gz", "/index.html.br", "/favicon.svg.gz"] {
+            let (status, _, _) = get(path).await?;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn the_browsers_accept_encoding_picks_the_copy() {
+        use ui::Encoding::{Brotli, Gzip};
+        // What browsers send: Chrome over HTTPS, and over plain HTTP on the LAN.
+        assert_eq!(
+            ui::accepted(Some("gzip, deflate, br, zstd")),
+            [Brotli, Gzip]
+        );
+        assert_eq!(ui::accepted(Some("gzip, deflate")), [Gzip]);
+        // Nothing asked for, or nothing this server has.
+        assert_eq!(ui::accepted(None), []);
+        assert_eq!(ui::accepted(Some("")), []);
+        assert_eq!(ui::accepted(Some("identity")), []);
+        assert_eq!(ui::accepted(Some("deflate, zstd")), []);
+        // `q=0` is a refusal.
+        assert_eq!(ui::accepted(Some("br;q=0, gzip")), [Gzip]);
+        assert_eq!(ui::accepted(Some("gzip;q=0")), []);
+        assert_eq!(ui::accepted(Some("gzip; q=0.0, br")), [Brotli]);
+        // A preference outranks brotli's default lead.
+        assert_eq!(ui::accepted(Some("br;q=0.5, gzip;q=1")), [Gzip, Brotli]);
+        // Spelling and spacing don't matter.
+        assert_eq!(ui::accepted(Some(" GZIP ; Q=1 ")), [Gzip]);
+        // `*` takes in what isn't named, and a named `q=0` still wins over it.
+        assert_eq!(ui::accepted(Some("*")), [Brotli, Gzip]);
+        assert_eq!(ui::accepted(Some("*, br;q=0")), [Gzip]);
+        assert_eq!(ui::accepted(Some("*;q=0")), []);
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn only_files_named_after_their_content_are_cached_for_good() {
+        let forever = "public, max-age=31536000, immutable";
+        // trunk's names (Trunk.toml, `filehash`).
+        assert_eq!(ui::cache_control("irori-ui-61707102987207aa.js"), forever);
+        assert_eq!(
+            ui::cache_control("irori-ui-61707102987207aa_bg.wasm"),
+            forever
+        );
+        assert_eq!(ui::cache_control("style-0123456789abcdef.css"), forever);
+        // Names that stay the same across builds.
+        for path in [
+            "index.html",
+            "map.js",
+            "network_map.js",
+            "favicon.svg",
+            "irori-ui.js",
+            "irori-ui_bg.wasm",
+            // Not 16 hex digits.
+            "irori-ui-6170710298720.js",
+            "irori-ui-61707102987207zz.js",
+            "-61707102987207aa.js",
+        ] {
+            assert_eq!(ui::cache_control(path), "no-cache", "{path}");
+        }
     }
 
     /// A core with the demo extension running and its first state reports in.

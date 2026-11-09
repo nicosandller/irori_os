@@ -50,12 +50,96 @@ pub fn run() -> anyhow::Result<()> {
         .filter(|meta| meta.is_file())
         .map(|meta| meta.len())
         .sum();
+    let level = Level::for_release_mode(std::env::var("IRORI_TRUNK_RELEASE").ok().as_deref());
+    let compressed = compress_dir(&embedded, level)?;
     println!(
-        "UI built: {copied} files, {} KB in {}\nRebuild `irori` to embed it (`cargo build`).",
+        "UI built: {copied} files, {} KB in {} (plus {compressed} compressed copies)\n\
+         Rebuild `irori` to embed it (`cargo build`).",
         total / 1024,
         embedded.display()
     );
     pages(&root)
+}
+
+/// File types worth compressing: text, and wasm (which shrinks to about a quarter). Images other
+/// than SVG are compressed already.
+const COMPRESSIBLE: &[&str] = &["wasm", "js", "css", "html", "svg"];
+
+/// Below this, the saving is smaller than the headers that announce it.
+const MIN_SIZE: u64 = 1024;
+
+/// How hard to squeeze. A release build is squeezed as far as it goes, once, for every download
+/// after it. The dev image's wasm is unoptimized (about 220 MB), where brotli's top level would
+/// take minutes on every rebuild, so it gets quick levels instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Level {
+    gzip: u32,
+    brotli: u32,
+}
+
+impl Level {
+    const BEST: Self = Self {
+        gzip: 9,
+        brotli: 11,
+    };
+    const QUICK: Self = Self { gzip: 1, brotli: 1 };
+
+    fn for_release_mode(release_mode: Option<&str>) -> Self {
+        if release_mode == Some("0") {
+            Self::QUICK
+        } else {
+            Self::BEST
+        }
+    }
+}
+
+/// Writes `<file>.gz` and `<file>.br` next to each compressible file, which the server sends to a
+/// browser that accepts them (`server.rs`, `ui::serve`). A copy that comes out no smaller than its
+/// original isn't written; the original is served instead. Returns how many copies were written.
+fn compress_dir(dir: &Path, level: Level) -> anyhow::Result<usize> {
+    let mut written = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let compressible = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| COMPRESSIBLE.contains(&ext));
+        if !entry.file_type()?.is_file() || !compressible || entry.metadata()?.len() < MIN_SIZE {
+            continue;
+        }
+        let data = std::fs::read(&path)?;
+        for (suffix, packed) in [("gz", gzip(&data, level)?), ("br", brotli(&data, level)?)] {
+            if packed.len() < data.len() {
+                let mut name = entry.file_name();
+                name.push(".");
+                name.push(suffix);
+                std::fs::write(dir.join(name), packed)?;
+                written += 1;
+            }
+        }
+    }
+    Ok(written)
+}
+
+fn gzip(data: &[u8], level: Level) -> anyhow::Result<Vec<u8>> {
+    use std::io::Write as _;
+    let mut encoder =
+        flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::new(level.gzip));
+    encoder.write_all(data)?;
+    Ok(encoder.finish()?)
+}
+
+fn brotli(data: &[u8], level: Level) -> anyhow::Result<Vec<u8>> {
+    let params = brotli::enc::BrotliEncoderParams {
+        quality: level.brotli as i32,
+        // The largest window a browser has to accept (RFC 7932's 16 MB).
+        lgwin: 24,
+        ..Default::default()
+    };
+    let mut out = Vec::new();
+    brotli::BrotliCompress(&mut std::io::Cursor::new(data), &mut out, &params)?;
+    Ok(out)
 }
 
 /// Builds the pages official extensions bring (`[[contributes.app]]`), each into its own
@@ -139,8 +223,43 @@ fn workspace_root() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use super::trunk_command_with;
+    use super::{Level, compress_dir, trunk_command_with};
+    use std::io::Read as _;
     use std::path::Path;
+
+    #[test]
+    fn compressed_copies_unpack_to_the_original() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let text = "a page that repeats itself. ".repeat(200);
+        std::fs::write(dir.path().join("app.js"), &text)?;
+        // Too small to be worth it, and a type that isn't text.
+        std::fs::write(dir.path().join("tiny.css"), "body{}")?;
+        std::fs::write(dir.path().join("photo.png"), text.as_bytes())?;
+
+        let written = compress_dir(dir.path(), Level::QUICK)?;
+        assert_eq!(written, 2);
+
+        let mut unzipped = String::new();
+        flate2::read::GzDecoder::new(std::fs::File::open(dir.path().join("app.js.gz"))?)
+            .read_to_string(&mut unzipped)?;
+        assert_eq!(unzipped, text);
+
+        let mut unbrotlied = String::new();
+        brotli::Decompressor::new(std::fs::File::open(dir.path().join("app.js.br"))?, 4096)
+            .read_to_string(&mut unbrotlied)?;
+        assert_eq!(unbrotlied, text);
+
+        for skipped in ["tiny.css.gz", "tiny.css.br", "photo.png.gz", "photo.png.br"] {
+            assert!(!dir.path().join(skipped).exists(), "{skipped}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn dev_image_compresses_quickly() {
+        assert_eq!(Level::for_release_mode(Some("0")), Level::QUICK);
+        assert_eq!(Level::for_release_mode(None), Level::BEST);
+    }
 
     #[test]
     fn dev_image_builds_the_pages_without_release() {

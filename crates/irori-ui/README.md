@@ -126,8 +126,8 @@ opened on and closes when the floor is changed. Its corners are solid wherever
 two walls meet at any angle, and where three or more do at right angles; a junction of three
 walls one of which runs at an odd angle can still nick the outside of the corner. The page
 hears the home on `/api/ws` and asks `/api/health` about once every 30 seconds. Log windows
-keep their own two-second refresh. The binary also serves these files **uncompressed**
-(see the budget below).
+keep their own two-second refresh. The binary serves these files compressed, gzip or brotli,
+whichever the browser accepts (see the budget below).
 
 ## Motion
 
@@ -209,8 +209,11 @@ to about 520 KB. It was 500 KB until 2026-09-28, when the motion work (charts, p
 transitions) reached it and it was raised to leave room for the UI to be richer rather than
 smaller.
 
-That is the budget's unit, not yet what goes over the wire. `irori serve` hands these files out
-**as they are**, so a browser opening the page today downloads roughly **1.3 MB** — the wasm is
-most of it. Serving precompressed assets with `Accept-Encoding` negotiation is part of the plan
-(ROADMAP §2.2) and hasn't been done; until it is, read the compressed number as the budget's
-unit, not as the transfer. On a LAN the difference is a fraction of a second; over a slow link it isn't.
+What goes over the wire is now the compressed size, not the original. `cargo xtask ui` writes a gzip (`.gz`) and a
+brotli (`.br`) copy next to each wasm, JS, CSS, HTML and SVG file over 1 KiB, and the binary
+embeds them. `irori serve` sends the smallest copy the browser's `Accept-Encoding` allows.
+Browsers only offer brotli over HTTPS, so on the LAN (plain HTTP) they get gzip, a little bigger
+than the brotli number. The wasm and main JS are named after their content, so the browser keeps
+them for good. The page itself, `map.js`, `network_map.js` and the favicon keep their names
+across builds, so the browser checks them on every load. The compressed copies add about 3.4 MB
+to the binary (2026-11-09: the 4.9 MB wasm is 1.9 MB as gzip, 1.3 MB as brotli).
