@@ -26,7 +26,7 @@ for it, verifies the SHA-256 against the release's `SHA256SUMS`, and installs `i
 command above uses the full path because the installer runs in its own process and can't change
 the shell you're in. Releases carry `linux-x64`, `linux-arm64` (both static musl), `darwin-x64`
 and `darwin-arm64`, and the installer itself as `install.sh`. The one-liner installs the latest
-release; before the first release is published, use the source build below. Options go after
+release; to build it yourself instead, use the source build below. Options go after
 `bash -s --`:
 
 ```sh
@@ -244,14 +244,15 @@ docs/specs/    specifications: entities.md, extensions.md, protocols.md, config.
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-protocol, irori-rules, irori-recorder,
-               irori-config, irori-client, irori (the binary), and irori-ui
+               irori-config, irori-client, irori-cloud, irori-flow-types, irori-flows,
+               irori-ha-discovery, irori-helpers, irori-node-runtime, irori-ui-kit,
+               irori (the binary), and irori-ui
                (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
-extensions/    first-party extensions: protocols/mqtt, protocols/esphome, demo, helpers
+extensions/    first-party extensions: automations, demo, and protocols/{cast, esphome,
+               matter, mqtt, switchbot, tplink, zigbee}
 extras/        irori-assist (providers and prompts; the control plane is in the default build, weights are not)
 xtask/         repository automation (`cargo xtask …`)
 ```
-
-Most crates are empty shells for now; ROADMAP §2.1 describes what each will hold.
 
 ## Contributing
 

@@ -39,7 +39,7 @@ Two halves, deliberately kept apart:
 | What | What exists and what it can do | What it's doing right now |
 | Types | `Floor`, `Area`, `Device`, `Entity` | `EntityState` |
 | Changes | Rarely: pairing a device, renaming, moving rooms | Constantly: every sensor report |
-| Stored | Registry tables; user edits in the config dir (M0.7) | In memory; history in the recorder |
+| Stored | In the core's memory; names, rooms and other edits are TOML in the config dir | In memory; history in the recorder |
 
 Splitting them keeps every state update small, and lets rules be checked against the
 registry ("does this light support color temperature?") without looking at live values.
