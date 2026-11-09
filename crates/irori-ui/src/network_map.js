@@ -229,7 +229,7 @@
         const css = getComputedStyle(root);
         const get = (name, fallback) => (css.getPropertyValue(name) || '').trim() || fallback;
         const tones = {};
-        for (const tone of ['zigbee', 'matter', 'esphome', 'thread', 'wifi', 'cast', 'other-1', 'other-2', 'other-3', 'other-4']) {
+        for (const tone of ['zigbee', 'matter', 'esphome', 'thread', 'wifi', 'cast', 'cloud', 'other-1', 'other-2', 'other-3', 'other-4']) {
           tones[tone] = get('--nm-' + tone, '#a39990');
         }
         const t = {

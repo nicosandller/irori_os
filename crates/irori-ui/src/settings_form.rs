@@ -298,6 +298,18 @@ fn label_from_key(key: &str) -> String {
     label
 }
 
+/// Whether a settings schema has any secret (`writeOnly`) field: an account's token, say.
+pub fn has_secrets(schema: &serde_json::Value) -> bool {
+    schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|fields| {
+            fields
+                .values()
+                .any(|field| matches!(classify(field, schema), FieldKind::Secret))
+        })
+}
+
 /// Resolves `$ref`/`anyOf`'s non-null branch to find the real type — schemars' shape for
 /// `Option<Secret>` is `{"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]}`.
 fn classify(field_schema: &serde_json::Value, root: &serde_json::Value) -> FieldKind {
@@ -1100,5 +1112,15 @@ mod tests {
         );
         assert!(parse_row(dataset, "0e0").is_err());
         assert!(parse_row(dataset, "not hex!").is_err());
+    }
+    #[test]
+    fn a_schema_with_a_token_has_secrets() {
+        let with = serde_json::json!({
+            "properties": {"token": {"anyOf": [{"$ref": "#/$defs/Secret"}, {"type": "null"}]}},
+            "$defs": {"Secret": {"type": "string", "writeOnly": true}},
+        });
+        assert!(has_secrets(&with));
+        let without = serde_json::json!({"properties": {"port": {"type": "integer"}}});
+        assert!(!has_secrets(&without));
     }
 }

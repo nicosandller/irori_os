@@ -53,6 +53,16 @@ crate = "irori-protocol-mqtt"
 bin = "irori-ext-mqtt"
 
 [[extension]]
+id = "tplink"
+name = "TP-Link Tapo and Kasa"
+category = "protocol"
+description = "TP-Link Tapo and Kasa plugs and power strips on the local network: each outlet, and power, voltage, current and energy where the device meters."
+version = "0.1.0"
+source = "extensions/protocols/tplink"
+crate = "irori-protocol-tplink"
+bin = "irori-ext-tplink"
+
+[[extension]]
 id = "zigbee"
 name = "Zigbee"
 category = "protocol"
@@ -77,6 +87,18 @@ bin = "irori-ext-matter"
 # `host_shell` in the manifest: it downloads and runs Node.js and the Open Home Foundation
 # Matter Server, the same trade as Zigbee.
 full_access = true
+
+[[extension]]
+id = "switchbot"
+name = "SwitchBot"
+category = "protocol"
+description = "SwitchBot meters, sensors, locks, plugs, curtains, humidifiers and vacuums, through SwitchBot's cloud and over Bluetooth nearby."
+version = "0.1.0"
+source = "extensions/protocols/switchbot"
+crate = "irori-protocol-switchbot"
+bin = "irori-ext-switchbot"
+# Its manifest's `permissions.network`: the card says it uses the internet.
+network = ["api.switch-bot.com"]
 
 [[extension]]
 id = "automations"

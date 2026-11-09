@@ -5,7 +5,7 @@
 //!   SDK (`irori-protocol`) is allowed: the core hosts protocols through its trait. Because
 //!   the check is transitive, the SDK can't bring in a protocol library either.
 //! - Crates may only depend on the workspace crates their layer allows (e.g. protocols
-//!   depend only on `irori-types` and `irori-protocol`).
+//!   depend only on `irori-types`, `irori-protocol`, and the shared helpers listed below).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
@@ -71,11 +71,15 @@ const ALLOWED_WORKSPACE_DEPS: &[(&str, &[&str])] = &[
             "irori-protocol",
             "irori-ha-discovery",
             "irori-node-runtime",
+            "irori-cloud",
         ],
     ),
     // A managed Node.js for protocols that wrap a Node program (Zigbee2MQTT, the Matter
     // server). Knows nothing of Irori itself.
     ("irori-node-runtime", &[]),
+    // What a vendor-cloud protocol shares (SwitchBot, Tesla): an HTTPS client, secrets, a call
+    // budget. Knows nothing of Irori itself, so local protocols never carry it.
+    ("irori-cloud", &[]),
     // Pure HA-discovery logic shared by the mqtt and zigbee protocols. No protocol libraries of
     // its own, and it never talks to a broker itself (that's each protocol's own broker.rs).
     ("irori-ha-discovery", &["irori-types"]),
