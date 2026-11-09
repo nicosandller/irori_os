@@ -4975,6 +4975,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "irori-flow-types",
+ "irori-protocol",
  "irori-protocol-cast",
  "irori-protocol-matter",
  "irori-protocol-mqtt",

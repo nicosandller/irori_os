@@ -1,7 +1,8 @@
-//! `cargo xtask schemas [--check]`: writes JSON Schemas from `irori-types` (core) and
-//! `irori-rules` (sequential engine) to `schemas/`, and each external extension's own
-//! `config.schema.json` (its manifest's `config_schema`, `docs/specs/extensions.md` §5) next to
-//! its `irori-extension.toml` — or with `--check`, fails if any checked-in file is stale.
+//! `cargo xtask schemas [--check]`: writes JSON Schemas from `irori-types` (core), `irori-rules`
+//! (sequential engine), `irori-flow-types` and `irori-protocol` (the extension wire) to
+//! `schemas/`, and each external extension's own `config.schema.json` (its manifest's
+//! `config_schema`, `docs/specs/extensions.md` §5) next to its `irori-extension.toml` — or with
+//! `--check`, fails if any checked-in file is stale.
 
 use std::path::{Path, PathBuf};
 
@@ -12,6 +13,7 @@ pub fn run(check: bool) -> anyhow::Result<()> {
     let mut docs = irori_types::schemas();
     docs.extend(irori_rules::schemas());
     docs.extend(irori_flow_types::schemas());
+    docs.extend(irori_protocol::schemas());
 
     let mut stale = Vec::new();
     for doc in &docs {

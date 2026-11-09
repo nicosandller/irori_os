@@ -578,27 +578,89 @@ The exact API is settled in M1.1, with `extensions/demo` as the reference protoc
 ## 10. External protocols
 
 External protocols are separate processes, in any language. They do the **same operations**,
-as JSON messages over a connection to the core, with the payloads defined in §6–§7:
+as JSON messages over a connection to the core, with the payloads defined in §6–§7.
 
-| Direction | Message | Payload |
-|---|---|---|
-| → core | `protocol/hello` | extension id, version, and its token |
-| ← core | `protocol/welcome` | its settings |
-| → core | `device/describe`, `entity/describe` | `DeviceDescription`, `EntityDescription` |
-| → core | `device/remove`, `entity/remove` | `unique_id` |
-| → core | `state/report` | `StateReport` |
-| → core | `availability/set` | `unique_id`s or a device `unique_id`; `available` \| `unavailable` |
-| → core | `health/set` | `running` \| `degraded` + reason |
-| ← core | `service/call` | `ServiceCall` |
-| → core | `service/result` | `ok` \| `error` + code + message |
-| → core | `store/get`, `store/set` | key, JSON value |
-| → core | `log` | level, message, fields |
+**Framing.** A child process speaks on stdin and stdout: one JSON object per line, each tagged
+by its `"type"`. Its stderr is its log, shown on its card. There is no `log` message. Every
+message is one of two enums in `crates/irori-protocol/src/process.rs`: `FromExt` (extension
+→ core) and `ToExt` (core → extension). Their JSON Schemas are
+[`schemas/extension-to-core.schema.json`](../../schemas/extension-to-core.schema.json) and
+[`schemas/core-to-extension.schema.json`](../../schemas/core-to-extension.schema.json),
+generated from those types, so check messages against them. A message with an `id` is
+answered with the same `id`. Sample conversations are in
+`crates/irori-protocol/tests/fixtures/`.
+
+**Lifecycle**
+
+| Direction | `type` | Fields | Meaning |
+|---|---|---|---|
+| core → | `hello` | `settings` | The first message, always from the core: the extension's settings ([extensions.md](extensions.md) §5). |
+| core → | `stop` | — | Finish up and exit. Killed if it hasn't within the grace period (default 5 s). |
+| → core | `set_health` | `health`: `"running"` or `{"degraded": reason}` | What the extension says about itself (§6.5). |
+
+**Devices, entities and state** (answered with `reply`, unless noted)
+
+| Direction | `type` | Fields | Meaning |
+|---|---|---|---|
+| → core | `describe_device` | `id`, `device`: `DeviceDescription` | A device, new or changed (§6.1). |
+| → core | `describe_entity` | `id`, `entity`: `EntityDescription` | An entity, new or changed (§6.2). |
+| → core | `remove_device`, `remove_entity` | `id`, `unique_id` | It's gone (§5). |
+| → core | `set_availability` | `id`, `target`: `{"device": uid}` or `{"entities": [uid…]}`, `availability` | Which entities can be reached (§6.4). |
+| → core | `state_report` | `report`: `StateReport` | A new state (§6.3). Not answered. |
+| core → | `reply` | `id`, `error`? | The answer to the messages above, and to `store`. |
+| → core | `set_waiting`, `set_unmodeled`, `set_networks` | `waiting` / `unmodeled` / `networks` (lists) | Devices waiting to be added, what it found but doesn't model, the networks it sees (§6.6–§6.8). Each replaces the last. Not answered. |
+
+**Calls and actions**
+
+| Direction | `type` | Fields | Meaning |
+|---|---|---|---|
+| core → | `service_call` | `id`, `call`: `ServiceCall` | Do something (§7). |
+| → core | `service_result` | `id`, `error`?: `{code, message}` | Done, or why not (§7.3). |
+| → core | `set_available_actions` | `actions` | The extension's own buttons on its card. |
+| → core | `set_action_open` | `action_id`, `closes_in_ms`? | A timed action is open (for this long), or closed. |
+| core → | `action_call` | `id`, `action_id`, `stop`?, `way`?, `fields`? | Someone pressed one of its actions. |
+| core → | `unpair_device` | `id`, `unique_id`, `force`? | Take a device off the network. Only to a protocol whose manifest says `unpairs`. |
+| → core | `action_result` | `id`, `error`? | The answer to `action_call` and `unpair_device`. |
+| core → | `camera_picture` | `id`, `unique_id` | A page wants a picture from this camera. |
+| → core | `picture_result` | `id`, `picture`?: `{content_type, data}` (base64), `error`? | The picture, or why there's none. |
+
+**Storage** (`extension_kv`, kept across restarts and updates)
+
+| Direction | `type` | Fields | Meaning |
+|---|---|---|---|
+| → core | `load` | `id`, `key` | Read a value. |
+| core → | `loaded` | `id`, `value`?, `error`? | The value, absent if none. |
+| → core | `store` | `id`, `key`, `value`? | Write a value. No `value` deletes it. Answered with `reply`. |
+
+**Automation engines** (each needs an API scope; answered with `answer`;
+[automations.md](automations.md) §B2)
+
+| Direction | `type` | Fields | Meaning |
+|---|---|---|---|
+| → core | `get_registry`, `get_states` | `id` | Every entity; every entity's current state. |
+| → core | `get_history` | `id`, `entities`, `since` | Recent changes, oldest first. |
+| → core | `get_reach` | `id`, `user` | What a person can see and do now. |
+| → core | `subscribe` | `id`, `states`?, `registry`? | Start receiving the two messages below. |
+| → core | `call_service` | `id`, `entity_id`, `command`, `data`?, `run_id`, `parent_id`? | Ask an entity to do something, as a run of the engine. |
+| → core | `note` | `action`, `target`, `detail` | Something the engine did, for the activity log. Not answered. |
+| core → | `answer` | `id`, `value`?, `error`? | The answer to the operations above. |
+| core → | `state_changed` | `entity_id`, `old_state`?, `new_state` | A state changed (after `subscribe` with `states`). |
+| core → | `registry_changed` | — | Something was added, changed or removed (after `subscribe` with `registry`). Ask again. |
+
+**The extension's page**
+
+| Direction | `type` | Fields | Meaning |
+|---|---|---|---|
+| core → | `app_request` | `id`, `method`, `params`, `caller`?: `{user?, owner}` | The extension's page asked it something. |
+| → core | `app_answer` | `id`, `value`?, `error`? | Its answer. |
+
+`?` marks a field that may be left out. A test in `crates/irori-protocol/tests/wire.rs` fails
+when a message type is in the code but missing from these tables.
 
 The core starts a package that has `run` and supervises it like a built-in (§3). A package
 with `inbound = true` is not started. Its program connects to `GET /api/extension` with the
 token made for it. Each text frame is one `FromExt` or `ToExt`, the same JSON a child process
-writes as a line (`docs/specs/api.md` §6). The names in the table above are the operations.
-On the wire they are those messages, not a second vocabulary. There is no stderr pipe.
+writes as a line (`docs/specs/api.md` §6). There is no stderr pipe.
 Built-in and external protocols must be indistinguishable from the UI.
 
 ## 11. Not in this spec (on purpose)
