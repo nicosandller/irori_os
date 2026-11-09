@@ -18,6 +18,7 @@ use irori_protocol::{
     ServiceError,
 };
 use irori_types::{Availability, State, StateReport, UniqueId};
+use tokio::time::Instant;
 
 use crate::broker::{BrokerEvent, Connectivity, Message, Publisher};
 use crate::settings::Settings;
@@ -79,27 +80,37 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         .map_err(ProtocolError::new)?;
 
     let mut registry = Registry::default();
-    ctx.set_health(Health::Degraded("connecting to the broker".to_owned()))
-        .await;
+    let mut health = ConnectionHealth::new();
+    ctx.set_health(health.shown.clone()).await;
 
     let outcome = loop {
+        let steady_at = health.clears_at;
         tokio::select! {
             call = ctx.next_call() => {
                 let Some(incoming) = call else { break Ok(()) };
                 route(incoming, &registry, &broker).await;
             }
+            () = until(steady_at) => {
+                if let Some(shown) = health.due(Instant::now()) {
+                    ctx.set_health(shown).await;
+                }
+            }
             event = events.recv() => {
-                match event {
+                let change = match event {
                     Some(BrokerEvent::Message(message)) => {
                         apply(message, &settings, &mut registry, &broker, &ctx).await;
+                        None
                     }
                     Some(BrokerEvent::Connectivity(Connectivity::Connected)) => {
-                        ctx.set_health(Health::Running).await;
+                        health.connected(Instant::now())
                     }
-                    Some(BrokerEvent::Connectivity(Connectivity::Disconnected)) => {
-                        ctx.set_health(Health::Degraded("disconnected from the broker".to_owned())).await;
+                    Some(BrokerEvent::Connectivity(Connectivity::Disconnected(reason))) => {
+                        health.lost(reason)
                     }
                     None => break Err(ProtocolError::new("stopped listening to the broker")),
+                };
+                if let Some(shown) = change {
+                    ctx.set_health(shown).await;
                 }
             }
         }
@@ -108,6 +119,75 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     drop(events);
     broker_task.abort();
     outcome
+}
+
+/// What the extension's card says about the broker connection. After a problem it stays
+/// degraded, with the problem's reason, until the connection has held for
+/// [`broker::STEADY_AFTER`]: a message too big to receive drops the connection again right after
+/// each reconnect, and showing Running in between would only make the card flicker.
+#[derive(Debug)]
+struct ConnectionHealth {
+    /// What was last shown.
+    shown: Health,
+    /// The problem being shown, kept until the connection has held long enough.
+    problem: Option<String>,
+    /// When the problem can be cleared, once reconnected.
+    clears_at: Option<Instant>,
+}
+
+impl ConnectionHealth {
+    fn new() -> Self {
+        Self {
+            shown: Health::Degraded("connecting to the broker".to_owned()),
+            problem: None,
+            clears_at: None,
+        }
+    }
+
+    /// Connected: Running straight away if nothing went wrong before, otherwise once it holds.
+    fn connected(&mut self, now: Instant) -> Option<Health> {
+        if self.problem.is_some() {
+            self.clears_at = Some(now + broker::STEADY_AFTER);
+            None
+        } else {
+            self.show(Health::Running)
+        }
+    }
+
+    fn lost(&mut self, reason: String) -> Option<Health> {
+        self.clears_at = None;
+        self.problem = Some(reason.clone());
+        self.show(Health::Degraded(reason))
+    }
+
+    /// Running again, when the connection has held since [`Self::clears_at`] was set.
+    fn due(&mut self, now: Instant) -> Option<Health> {
+        if self.clears_at.is_some_and(|at| at <= now) {
+            self.clears_at = None;
+            self.problem = None;
+            self.show(Health::Running)
+        } else {
+            None
+        }
+    }
+
+    /// `health`, if it differs from what's shown.
+    fn show(&mut self, health: Health) -> Option<Health> {
+        if self.shown == health {
+            None
+        } else {
+            self.shown = health.clone();
+            Some(health)
+        }
+    }
+}
+
+/// Waits until `deadline`, or forever when there's none.
+async fn until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Applies one incoming broker message: a discovery config, a state report, an availability
@@ -361,6 +441,7 @@ async fn route(incoming: IncomingCall, registry: &Registry, broker: &impl Publis
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use irori_ha_discovery::topic::Component;
     use irori_protocol::host;
@@ -975,5 +1056,42 @@ mod tests {
             matches!(answered, Err(ref e) if e.code == irori_protocol::ServiceErrorCode::Unavailable),
             "got {answered:?}"
         );
+    }
+
+    #[test]
+    fn the_first_connection_shows_running_straight_away() {
+        let mut health = ConnectionHealth::new();
+        assert_eq!(health.connected(Instant::now()), Some(Health::Running));
+        assert_eq!(health.clears_at, None);
+    }
+
+    #[test]
+    fn after_a_problem_the_card_stays_degraded_until_the_connection_holds() {
+        let start = Instant::now();
+        let mut health = ConnectionHealth::new();
+        health.connected(start);
+        let reason = "a message of 51 KB is over the 10 KB limit".to_owned();
+        assert_eq!(
+            health.lost(reason.clone()),
+            Some(Health::Degraded(reason.clone()))
+        );
+
+        // Reconnected, then the same message drops it again before 30 s: still degraded with the
+        // same reason, and nothing new to show.
+        assert_eq!(health.connected(start), None);
+        assert_eq!(health.due(start + Duration::from_secs(10)), None);
+        assert_eq!(health.lost(reason.clone()), None);
+        assert_eq!(health.clears_at, None);
+        assert_eq!(health.due(start + Duration::from_secs(60)), None);
+
+        // Reconnected and held for 30 s: Running.
+        let later = start + Duration::from_secs(100);
+        assert_eq!(health.connected(later), None);
+        assert_eq!(health.due(later + Duration::from_secs(29)), None);
+        assert_eq!(
+            health.due(later + broker::STEADY_AFTER),
+            Some(Health::Running)
+        );
+        assert_eq!(health.problem, None);
     }
 }
