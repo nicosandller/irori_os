@@ -62,6 +62,10 @@ config/
     <id>.toml     an extension's settings that aren't secret
 ```
 
+How the files relate to the core, the UI and the database:
+
+![The files in the config directory and how they connect to the core, the UI, hand edits and the recorder database](img/config-dir.svg)
+
 Every file is optional. A file that is absent means "nothing said".
 
 ### 3.1 `areas.toml`
