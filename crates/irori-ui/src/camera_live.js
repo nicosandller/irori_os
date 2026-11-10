@@ -313,13 +313,15 @@
     }
   }
 
-  // The magnifier, for a camera much wider than the screen (a two-lens panorama). The video
-  // fills its box at full height (`object-fit: cover`), so it shows a slice; `pan` (0 = the
-  // left edge, 1 = the right) says which, through `object-position`. `canvas` draws the whole
-  // picture with the slice marked. Dragging the strip moves the slice to the pointer, dragging
-  // the video moves it the way a photo is dragged, and the strip takes the arrow keys.
-  // `onPan(pan)` is told where it was left. Returns { stop }.
-  function magnify(video, canvas, pan, onPan) {
+  // The magnifier, for a camera much wider than the screen (a two-lens panorama). The whole
+  // picture sits in its frame (`object-fit: contain`); magnified, it's scaled up until it fills
+  // the frame's height, so the frame shows a slice, and moved sideways to the slice `pan` asks
+  // for (0 = the left edge, 1 = the right). Scale and move are CSS transitions, so turning it
+  // on and off is a zoom. `canvas` draws the whole picture with the slice marked. Dragging the
+  // strip moves the slice to the pointer, dragging the video moves it the way a photo is
+  // dragged, and the strip takes the arrow keys; `range` (a 0–1000 slider, used in full
+  // screen) moves it too. `onPan(pan)` is told where it was left. Returns { stop }.
+  function magnify(video, canvas, pan, onPan, range) {
     let stopped = false;
     let frame = null;
     pan = Math.min(1, Math.max(0, Number(pan) || 0.5));
@@ -333,9 +335,21 @@
       return Math.min(1, (video.clientWidth / video.clientHeight) / (width / height));
     }
 
+    // The scale and move for the slice; percentages of the frame's width, so they hold as
+    // the frame changes size. Set again with each frame, for a frame that went full screen or
+    // a picture that changed size.
+    let placed = '';
     function place() {
-      video.style.objectPosition = (pan * 100).toFixed(2) + '% 50%';
+      const grow = 1 / slice();
+      const move = ((0.5 - pan) * (grow - 1) * 100).toFixed(3) + '% 0';
+      const now = grow.toFixed(4) + '|' + move;
+      if (now !== placed) {
+        placed = now;
+        video.style.scale = grow.toFixed(4);
+        video.style.translate = move;
+      }
       canvas.setAttribute('aria-valuenow', String(Math.round(pan * 100)));
+      if (range) range.value = String(Math.round(pan * 1000));
     }
 
     function paint() {
@@ -343,6 +357,7 @@
       const width = video.videoWidth;
       const height = video.videoHeight;
       const shown = canvas.clientWidth;
+      place();
       if (width && height && shown) {
         const ratio = window.devicePixelRatio || 1;
         const w = Math.round(shown * ratio);
@@ -422,8 +437,7 @@
     }
     function videoMove(event) {
       if (!videoDrag) return;
-      const shown = video.clientHeight * (video.videoWidth / video.videoHeight);
-      const spare = shown - video.clientWidth;
+      const spare = video.clientWidth * (1 / slice() - 1);
       if (spare > 0) set(videoDrag.pan - (event.clientX - videoDrag.x) / spare);
     }
     function videoUp() {
@@ -442,7 +456,37 @@
       onPan(pan);
     }
 
+    // The slider: held, the picture follows it at once (like the drags); a key press on it
+    // still glides.
+    function slideDown() {
+      video.classList.add('dragging');
+      // Let go anywhere, even off the slider or without moving it.
+      window.addEventListener('pointerup', slideUp, { once: true });
+      window.addEventListener('pointercancel', slideUp, { once: true });
+    }
+    function slideUp() {
+      window.removeEventListener('pointerup', slideUp);
+      window.removeEventListener('pointercancel', slideUp);
+      video.classList.remove('dragging');
+    }
+    function slide() {
+      set(Number(range.value) / 1000);
+    }
+    function slid() {
+      onPan(pan);
+    }
+
+    // A frame that changes size (full screen, a turned phone) needs a new zoom even when no
+    // new picture comes, as when the video has stopped.
+    const resized = window.ResizeObserver ? new ResizeObserver(paint) : null;
+
     canvas.addEventListener('pointerdown', stripDown);
+    if (range) {
+      range.addEventListener('pointerdown', slideDown);
+      range.addEventListener('input', slide);
+      range.addEventListener('change', slid);
+    }
+    if (resized) resized.observe(video);
     canvas.addEventListener('pointermove', stripMove);
     canvas.addEventListener('pointerup', stripUp);
     canvas.addEventListener('pointercancel', stripUp);
@@ -461,6 +505,13 @@
           video.cancelVideoFrameCallback(frame.video);
         }
         if (frame && frame.animation !== undefined) cancelAnimationFrame(frame.animation);
+        if (range) {
+          range.removeEventListener('pointerdown', slideDown);
+          range.removeEventListener('input', slide);
+          range.removeEventListener('change', slid);
+        }
+        slideUp();
+        if (resized) resized.disconnect();
         canvas.removeEventListener('pointerdown', stripDown);
         canvas.removeEventListener('pointermove', stripMove);
         canvas.removeEventListener('pointerup', stripUp);
@@ -471,7 +522,8 @@
         video.removeEventListener('pointerup', videoUp);
         video.removeEventListener('pointercancel', videoUp);
         video.classList.remove('dragging');
-        video.style.objectPosition = '';
+        video.style.scale = '';
+        video.style.translate = '';
       },
     };
   }

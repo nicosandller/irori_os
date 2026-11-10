@@ -110,6 +110,10 @@ pub fn CameraLive(
     );
     let key = StoredValue::new(quality_key(&id));
     let choose = move |chosen: LiveQuality| {
+        // Already showing it: nothing to load again.
+        if quality.get_untracked() == chosen {
+            return;
+        }
         key.with_value(|key| crate::devices::remember(key, chosen.as_str()));
         quality.set(chosen);
     };
@@ -121,6 +125,7 @@ pub fn CameraLive(
     ));
     let zoomed = move || magnify.get() && wide.get();
     let strip = NodeRef::<leptos::html::Canvas>::new();
+    let slider = NodeRef::<leptos::html::Input>::new();
     let magnifier = StoredValue::new_local(None::<(JsValue, Closure<dyn Fn(f64)>)>);
     let keys = StoredValue::new((magnify_key(&id), pan_key(&id)));
     let measure = move || {
@@ -145,7 +150,8 @@ pub fn CameraLive(
     };
     Effect::new(move |_| {
         let on = zoomed();
-        let (Some(element), Some(canvas)) = (video.get(), strip.get()) else {
+        let (Some(element), Some(canvas), Some(range)) = (video.get(), strip.get(), slider.get())
+        else {
             return;
         };
         unmagnify();
@@ -166,11 +172,13 @@ pub fn CameraLive(
         });
         let element: &web_sys::Element = &element;
         let canvas: &web_sys::Element = &canvas;
+        let range: &web_sys::Element = &range;
         let arguments: Array = [
             JsValue::from(element.clone()),
             JsValue::from(canvas.clone()),
             JsValue::from_f64(pan.get_value()),
             on_pan.as_ref().clone(),
+            JsValue::from(range.clone()),
         ]
         .into_iter()
         .collect();
@@ -342,15 +350,17 @@ pub fn CameraLive(
             class:playing=playing
             class:zoomed=zoomed
         >
-            <video
-                node_ref=video
-                muted=true
-                playsinline=true
-                autoplay=true
-                aria-label=format!("{name}, live")
-                on:loadedmetadata=move |_| measure()
-                on:resize=move |_| measure()
-            ></video>
+            <div class="camera-frame">
+                <video
+                    node_ref=video
+                    muted=true
+                    playsinline=true
+                    autoplay=true
+                    aria-label=format!("{name}, live")
+                    on:loadedmetadata=move |_| measure()
+                    on:resize=move |_| measure()
+                ></video>
+            </div>
             <canvas
                 node_ref=strip
                 class="camera-strip"
@@ -362,6 +372,17 @@ pub fn CameraLive(
                 aria-valuemax="100"
                 title="The whole picture: drag the box, or use the arrow keys"
             ></canvas>
+            // In full screen, a small slider beside the talk button instead of the strip.
+            <input
+                node_ref=slider
+                type="range"
+                class="camera-pan"
+                min="0"
+                max="1000"
+                step="1"
+                aria-label="Which part of the picture is shown"
+                title="Which part of the picture is shown"
+            />
             <figcaption class="camera-live-bar small">
                 <span class="camera-live-state">
                     {move || playing().then(|| view! {
