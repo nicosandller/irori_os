@@ -12,6 +12,7 @@ mod app_frame;
 mod assistant;
 mod backups;
 mod camera_live;
+mod camera_talk;
 mod camera_turn;
 mod chart;
 mod choices;

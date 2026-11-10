@@ -133,15 +133,16 @@ A token needs `states:read`, as for a picture.
 ([protocols.md](protocols.md) §5.4), as a WebSocket, on the same terms as its live video. Talking
 is a command, so it is for the people who may send the camera one, and it is written in the
 activity log (`camera_talked`). `404` for anything that isn't a camera they have, `409` for one
-without a speaker or one someone else is talking through, `503` when its extension isn't running.
-Once open:
+without a speaker. Once open:
 
 1. The server sends `"listening"` when the camera's speaker is open.
 2. The page sends sound as binary frames: 16-bit little-endian PCM at 8 kHz, one channel, 20 ms
    (320 bytes) each. Frames sent before `listening` are dropped; a frame that is empty, over 4 KB
    or half a sample ends the talk.
 3. When the talk ends (the page closes, 3 seconds of nothing, 10 minutes, the camera hung up) the
-   server sends `{ "ended": { "reason": "…" } }` and closes.
+   server sends `{ "ended": { "reason": "…" } }` and closes. A talk that can't start, because
+   someone else is talking through the camera or its extension isn't running, opens only to say
+   that in `ended`: a browser isn't told why a socket was refused.
 
 A token needs `services:call`, as for a command.
 

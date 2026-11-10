@@ -7158,10 +7158,17 @@ mod tests {
         );
 
         // One person at a time, only from Irori's own page, and only a camera with a speaker.
-        assert_eq!(
-            open_talk(address, "camera.porch", None).await?.err(),
-            Some(StatusCode::CONFLICT),
-            "someone is already talking"
+        // The second is let in to be told why, since a browser isn't told why a socket was
+        // refused.
+        let mut second = open_talk(address, "camera.porch", None)
+            .await?
+            .map_err(|status| anyhow::anyhow!("refused with {status}"))?;
+        let busy = talk_word(&mut second).await?;
+        assert!(
+            busy["ended"]["reason"]
+                .as_str()
+                .is_some_and(|why| why.contains("someone else is talking")),
+            "{busy}"
         );
         assert_eq!(
             open_talk(address, "camera.porch", Some("http://elsewhere.example"))
@@ -7196,12 +7203,13 @@ mod tests {
 
         // The camera is free again, and a page that goes quiet is let go.
         let mut again = loop {
-            if let Ok(socket) = open_talk(address, "camera.porch", None).await? {
+            if let Ok(mut socket) = open_talk(address, "camera.porch", None).await?
+                && talk_word(&mut socket).await? == serde_json::json!("listening")
+            {
                 break socket;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
-        assert_eq!(talk_word(&mut again).await?, serde_json::json!("listening"));
         let quiet = talk_word(&mut again).await?;
         assert!(
             quiet["ended"]["reason"]

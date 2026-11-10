@@ -3,7 +3,8 @@
 //!
 //! It starts muted, since a browser won't play sound nobody asked for, with a button to turn it
 //! on when the stream has any. A camera with a small and a full-size stream gets a toggle
-//! between them, starting small: quicker to start, and lighter on a Raspberry Pi.
+//! between them, starting small: quicker to start, and lighter on a Raspberry Pi. While someone
+//! talks through the camera (`camera_talk.rs`) its sound is muted.
 
 use irori_types::{CameraCapabilities, EntityId, LiveQuality};
 use leptos::prelude::*;
@@ -49,6 +50,10 @@ pub fn CameraLive(
     name: String,
     capabilities: CameraCapabilities,
     open: Signal<bool>,
+    /// While true, the camera's sound is muted, so its microphone doesn't send the person's own
+    /// voice back to them.
+    #[prop(optional, into)]
+    talking: Option<Signal<bool>>,
 ) -> impl IntoView {
     let video = NodeRef::<leptos::html::Video>::new();
     let standing = RwSignal::new(Standing::Starting);
@@ -128,6 +133,19 @@ pub fn CameraLive(
         }
     });
     on_cleanup(take_down);
+
+    if let Some(talking) = talking {
+        Effect::new(move |_| {
+            let hush = talking.get() || muted.get_untracked();
+            if let Some(element) = video.get_untracked() {
+                let _ = Reflect::set(
+                    &element,
+                    &JsValue::from_str("muted"),
+                    &JsValue::from_bool(hush),
+                );
+            }
+        });
+    }
 
     let toggle_sound = move |_| {
         let Some(element) = video.get_untracked() else {

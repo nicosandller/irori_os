@@ -15,6 +15,10 @@
   <!-- A camera's live video (src/camera_live.js), played through Media Source Extensions. -->
   <link data-trunk rel="copy-file" href="src/camera_live.js">
   <script src="/camera_live.js" defer></script>
+  <!-- Talking through a camera (src/camera_talk.js), and what turns the microphone into 8 kHz. -->
+  <link data-trunk rel="copy-file" href="src/camera_talk.js">
+  <link data-trunk rel="copy-file" href="src/camera_talk_worklet.js">
+  <script src="/camera_talk.js" defer></script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     /* Brand tokens (assets/README.md). Fonts are never downloaded: the UI works offline. */
@@ -823,6 +827,17 @@
     .live-seg { padding: .2rem .55rem; font: inherit; font-size: .78rem; color: var(--muted);
                 background: transparent; border: 0; border-radius: .3rem; cursor: pointer; }
     .live-seg:hover { color: var(--fg); }
+    /* Hold to talk (camera_talk.rs): ember while it connects, red while the camera listens. */
+    .camera-talk { display: flex; flex-wrap: wrap; align-items: center; gap: .6rem; margin: .5rem 0 0; }
+    .talk-button { display: inline-flex; align-items: center; gap: .45rem; padding: .5rem .9rem;
+      font: inherit; font-size: .88rem; color: var(--fg); background: var(--card);
+      border: 1px solid var(--line); border-radius: 999px; cursor: pointer;
+      touch-action: none; user-select: none; -webkit-user-select: none; }
+    .talk-button:hover { border-color: var(--ember); }
+    .talk-button.held { border-color: var(--ember); background: var(--sunk); }
+    .talk-button.live { color: #fff; background: #e5484d; border-color: #e5484d;
+      animation: recording 1.6s ease-in-out infinite; }
+    .camera-talk-why { color: var(--muted); }
     .camera-turn { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: .5rem 0 .75rem; }
     .camera-turn:empty { display: none; }
     .feed-live-video { padding: 0 1rem 1rem; }

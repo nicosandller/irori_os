@@ -55,7 +55,8 @@ pub(crate) fn camera_control(
 /// The picture a camera sees, for its drawer: asked for when the drawer opens, and again every
 /// few seconds while it stays open and the page is in view.
 ///
-/// A camera that can be watched live shows its video instead.
+/// A camera that can be watched live shows its video instead, and one with a speaker gets a
+/// "Hold to talk" button.
 pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
     let turn = match &entity.capabilities {
         Capabilities::Camera(capabilities)
@@ -70,6 +71,18 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
         }
         _ => None,
     };
+    // While its button is held, the live sound is muted.
+    let talking = RwSignal::new(false);
+    let talk = match &entity.capabilities {
+        Capabilities::Camera(capabilities) if capabilities.talk => Some(view! {
+            <crate::camera_talk::CameraTalk
+                id=entity.id.clone()
+                name=entity.name.to_string()
+                talking=talking
+            />
+        }),
+        _ => None,
+    };
     if let Capabilities::Camera(capabilities) = &entity.capabilities
         && capabilities.live
     {
@@ -79,7 +92,9 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
                 name=entity.name.to_string()
                 capabilities=capabilities.clone()
                 open=open
+                talking=talking
             />
+            {talk}
             {turn}
         }
         .into_any();
@@ -126,6 +141,7 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
                 }}
             </figcaption>
         </figure>
+        {talk}
         {turn}
     }
     .into_any()

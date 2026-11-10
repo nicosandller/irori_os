@@ -860,12 +860,13 @@ const TALK_LONGEST: Duration = Duration::from_secs(10 * 60);
 ///
 /// The same doors as watching it live, and the same as a command: a browser only from Irori's
 /// own page, a camera in the person's rooms, and closed when either stops being so. One person
-/// at a time per camera; a second is told someone else is talking (409).
+/// at a time per camera; a second is told someone else is talking, in `ended`.
 pub async fn talk(
     ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
     State(state): State<AppState>,
     headers: HeaderMap,
     Extension(who): Extension<Actor>,
+    Extension(trail): Extension<super::trail::Trail>,
     axum::extract::Path(id): axum::extract::Path<irori_types::EntityId>,
 ) -> Response {
     if let Err(response) = same_server(&headers) {
@@ -894,24 +895,30 @@ pub async fn talk(
         Ok(ws) => ws,
         Err(rejection) => return axum::response::IntoResponse::into_response(rejection),
     };
-    // Taken before the upgrade, so a second person is told plainly that someone is talking.
-    let talking = match state.0.core.talk(&id).await {
-        Ok(talking) => talking,
-        Err(irori_core::TalkError::Busy) => {
-            return refused(
-                StatusCode::CONFLICT,
-                irori_core::TalkError::Busy.to_string(),
-            );
-        }
-        Err(irori_core::TalkError::Cant(why)) => return refused(StatusCode::CONFLICT, why),
-        Err(irori_core::TalkError::NotRunning(why)) => {
-            return refused(StatusCode::SERVICE_UNAVAILABLE, why);
-        }
-    };
+    // Taken before the upgrade; when it can't be, the socket still opens and says why in its
+    // `ended`, since a browser isn't told why a socket was refused.
+    let talking = state
+        .0
+        .core
+        .talk(&id)
+        .await
+        .map_err(|error| error.to_string());
+    if let Err(why) = &talking {
+        // The socket opens to say so, and the log says it didn't happen.
+        trail.outcome(irori_types::Outcome::Failed);
+        trail.detail(why.clone());
+    }
     let seat = seat_kind(&state, &who, &headers).await;
     let signed_in = matches!(seat, SeatKind::Session { .. });
     let closed = state.0.sockets.open(seat);
-    ws.on_upgrade(move |socket| talk_through(socket, state, closed, who, signed_in, id, talking))
+    ws.on_upgrade(move |mut socket| async move {
+        match talking {
+            Ok(talking) => talk_through(socket, state, closed, who, signed_in, id, talking).await,
+            Err(why) => {
+                let _ = say_ended(&mut socket, why).await;
+            }
+        }
+    })
 }
 
 async fn talk_through(

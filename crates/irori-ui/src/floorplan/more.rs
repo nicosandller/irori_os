@@ -247,6 +247,16 @@ pub(super) fn Feed(
                     />
                 }
             });
+            let talking = RwSignal::new(false);
+            let talk = capabilities.talk.then(|| {
+                view! {
+                    <crate::camera_talk::CameraTalk
+                        id=camera.clone()
+                        name=name.clone()
+                        talking=talking
+                    />
+                }
+            });
             view! {
                 <div class="feed-live-video">
                     <crate::camera_live::CameraLive
@@ -254,7 +264,9 @@ pub(super) fn Feed(
                         name=name.clone()
                         capabilities=capabilities
                         open=Signal::stored(true)
+                        talking=talking
                     />
+                    {talk}
                     {turn}
                 </div>
             }

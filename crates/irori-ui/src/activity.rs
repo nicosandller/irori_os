@@ -51,6 +51,7 @@ pub fn what(entry: &AuditEntry) -> String {
                 .split_once(": ")
                 .map_or(detail, |(command, _)| command)
         ),
+        "camera_talked" => named("talked through"),
         "place_changed" => "changed where the home is".to_owned(),
         "history_kept_changed" => "changed how long history is kept".to_owned(),
         "restart" => "restarted Irori".to_owned(),
