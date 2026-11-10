@@ -8,7 +8,8 @@
 // Kept short and at the live edge: a few seconds of buffer, a jump forward when it falls
 // behind, and a jump over any hole (a page that joins late, or a frame dropped to keep up,
 // leaves one). Closed while the tab is hidden, and opened again when it's back. `full` puts it
-// in full screen with its controls.
+// in full screen with its controls. `magnify` shows a wide camera a slice at a time, with the
+// whole picture in a strip to slide the slice along.
 (function () {
   // What a page can play, by the codec family the camera's stream names.
   const PROBES = [
@@ -312,5 +313,168 @@
     }
   }
 
-  window.iroriCameraLive = { mount, accepts, full };
+  // The magnifier, for a camera much wider than the screen (a two-lens panorama). The video
+  // fills its box at full height (`object-fit: cover`), so it shows a slice; `pan` (0 = the
+  // left edge, 1 = the right) says which, through `object-position`. `canvas` draws the whole
+  // picture with the slice marked. Dragging the strip moves the slice to the pointer, dragging
+  // the video moves it the way a photo is dragged, and the strip takes the arrow keys.
+  // `onPan(pan)` is told where it was left. Returns { stop }.
+  function magnify(video, canvas, pan, onPan) {
+    let stopped = false;
+    let frame = null;
+    pan = Math.min(1, Math.max(0, Number(pan) || 0.5));
+    const context = canvas.getContext('2d');
+
+    // How much of the picture's width the slice is.
+    function slice() {
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      if (!width || !height || !video.clientHeight) return 1;
+      return Math.min(1, (video.clientWidth / video.clientHeight) / (width / height));
+    }
+
+    function place() {
+      video.style.objectPosition = (pan * 100).toFixed(2) + '% 50%';
+      canvas.setAttribute('aria-valuenow', String(Math.round(pan * 100)));
+    }
+
+    function paint() {
+      if (stopped) return;
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      const shown = canvas.clientWidth;
+      if (width && height && shown) {
+        const ratio = window.devicePixelRatio || 1;
+        const w = Math.round(shown * ratio);
+        const h = Math.round((shown * height / width) * ratio);
+        if (canvas.width !== w || canvas.height !== h) {
+          canvas.width = w;
+          canvas.height = h;
+          canvas.style.aspectRatio = width + ' / ' + height;
+        }
+        context.drawImage(video, 0, 0, w, h);
+        const part = slice();
+        const left = pan * (1 - part) * w;
+        // Outside the slice dimmed, the slice outlined.
+        context.fillStyle = 'rgba(0, 0, 0, 0.5)';
+        context.fillRect(0, 0, left, h);
+        context.fillRect(left + part * w, 0, w - left - part * w, h);
+        context.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+        context.lineWidth = 2 * ratio;
+        context.strokeRect(left + ratio, ratio, part * w - 2 * ratio, h - 2 * ratio);
+      }
+    }
+
+    function draw() {
+      paint();
+      next();
+    }
+
+    function next() {
+      if (stopped) return;
+      // A new frame when the video has one; otherwise each screen refresh.
+      if (video.requestVideoFrameCallback) {
+        frame = { video: video.requestVideoFrameCallback(draw) };
+      } else {
+        frame = { animation: requestAnimationFrame(draw) };
+      }
+    }
+
+    function set(to) {
+      pan = Math.min(1, Math.max(0, to));
+      place();
+      paint();
+    }
+
+    // The strip: the slice centres on the pointer.
+    function toPointer(event) {
+      const box = canvas.getBoundingClientRect();
+      const part = slice();
+      if (part >= 1 || !box.width) return;
+      const centre = (event.clientX - box.left) / box.width;
+      set((centre - part / 2) / (1 - part));
+    }
+    let stripDrag = false;
+    function stripDown(event) {
+      stripDrag = true;
+      canvas.setPointerCapture(event.pointerId);
+      video.classList.add('dragging');
+      toPointer(event);
+      event.preventDefault();
+    }
+    function stripMove(event) {
+      if (stripDrag) toPointer(event);
+    }
+    function stripUp() {
+      if (!stripDrag) return;
+      stripDrag = false;
+      video.classList.remove('dragging');
+      onPan(pan);
+    }
+
+    // The video: dragged like a photo, so the slice moves the other way.
+    let videoDrag = null;
+    function videoDown(event) {
+      if (event.button !== 0) return;
+      videoDrag = { x: event.clientX, pan };
+      video.setPointerCapture(event.pointerId);
+      video.classList.add('dragging');
+    }
+    function videoMove(event) {
+      if (!videoDrag) return;
+      const shown = video.clientHeight * (video.videoWidth / video.videoHeight);
+      const spare = shown - video.clientWidth;
+      if (spare > 0) set(videoDrag.pan - (event.clientX - videoDrag.x) / spare);
+    }
+    function videoUp() {
+      if (!videoDrag) return;
+      videoDrag = null;
+      video.classList.remove('dragging');
+      onPan(pan);
+    }
+
+    function key(event) {
+      const step = event.shiftKey ? 0.25 : 0.05;
+      const to = { ArrowLeft: pan - step, ArrowRight: pan + step, Home: 0, End: 1 }[event.key];
+      if (to === undefined) return;
+      event.preventDefault();
+      set(to);
+      onPan(pan);
+    }
+
+    canvas.addEventListener('pointerdown', stripDown);
+    canvas.addEventListener('pointermove', stripMove);
+    canvas.addEventListener('pointerup', stripUp);
+    canvas.addEventListener('pointercancel', stripUp);
+    canvas.addEventListener('keydown', key);
+    video.addEventListener('pointerdown', videoDown);
+    video.addEventListener('pointermove', videoMove);
+    video.addEventListener('pointerup', videoUp);
+    video.addEventListener('pointercancel', videoUp);
+    place();
+    next();
+
+    return {
+      stop() {
+        stopped = true;
+        if (frame && frame.video !== undefined && video.cancelVideoFrameCallback) {
+          video.cancelVideoFrameCallback(frame.video);
+        }
+        if (frame && frame.animation !== undefined) cancelAnimationFrame(frame.animation);
+        canvas.removeEventListener('pointerdown', stripDown);
+        canvas.removeEventListener('pointermove', stripMove);
+        canvas.removeEventListener('pointerup', stripUp);
+        canvas.removeEventListener('pointercancel', stripUp);
+        canvas.removeEventListener('keydown', key);
+        video.removeEventListener('pointerdown', videoDown);
+        video.removeEventListener('pointermove', videoMove);
+        video.removeEventListener('pointerup', videoUp);
+        video.removeEventListener('pointercancel', videoUp);
+        video.classList.remove('dragging');
+        video.style.objectPosition = '';
+      },
+    };
+  }
+
+  window.iroriCameraLive = { mount, accepts, full, magnify };
 })();

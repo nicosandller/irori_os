@@ -830,6 +830,16 @@
                          border-radius: .6rem; background: #000; border: 1px solid var(--line);
                          object-fit: contain; }
     .camera-live.failed video { opacity: .45; }
+    /* The magnifier (camera_live.js `magnify`): a full-height slice of a wide picture, moved
+       along by dragging it or the strip of the whole picture under it. */
+    .camera-live.zoomed video { object-fit: cover; cursor: grab; touch-action: pan-y;
+      transition: object-position var(--dur-fast) var(--ease-out); }
+    .camera-live.zoomed video.dragging { cursor: grabbing; transition: none; }
+    .camera-strip { display: block; width: 100%; max-width: 40rem; margin-top: .45rem;
+      border-radius: .4rem; border: 1px solid var(--line); background: #000; cursor: pointer;
+      touch-action: none; animation: drop-in var(--dur-base) var(--ease-out); }
+    .camera-strip[hidden] { display: none; }
+    .camera-strip:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
     .camera-live-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
                        max-width: 40rem; color: var(--muted); }
     .camera-live-state { display: inline-flex; align-items: center; gap: .4rem; flex: 1;
@@ -922,6 +932,10 @@
       max-width: none; padding: 3.5rem 1.25rem 1.1rem; color: var(--paper);
       background: linear-gradient(to top, rgba(0, 0, 0, .7), transparent); }
     .camera-stage.is-full .live-segs { display: none; }
+    .camera-stage.is-full .camera-live.zoomed video { object-fit: cover; }
+    .camera-stage.is-full .camera-strip { position: absolute; left: 50%; bottom: 7.75rem;
+      translate: -50% 0; width: min(50vw, 36rem); max-width: none; margin: 0; z-index: 2;
+      border-color: rgba(255, 255, 255, .35); box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
     .camera-stage.is-full .live-icon { width: 2.6rem; height: 2.6rem; border-radius: 50%;
       color: var(--paper); background: rgba(20, 16, 14, .45); border-color: rgba(255, 255, 255, .18);
       backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
@@ -946,7 +960,7 @@
     .camera-stage.is-full .turn-presets { color: var(--paper); text-shadow: 0 1px 3px #000; }
     .camera-stage.is-full .history, .camera-stage.is-full > :not(.camera-live, .camera-talk, .camera-turn) {
       display: none; }
-    .camera-stage.is-full :is(.camera-live-bar, .camera-talk, .camera-turn) {
+    .camera-stage.is-full :is(.camera-live-bar, .camera-talk, .camera-turn, .camera-strip) {
       transition: opacity var(--dur-layout) var(--ease-out); }
     /* A moved, filtered or contained box (a drawer sliding in) would hold the full-screen stage
        inside itself instead of the screen; none of those while a camera fills it. */
@@ -956,7 +970,7 @@
       opacity: 1 !important; }
     .camera-stage.is-full[data-idle]:not(:has(.talk-button.held)) { cursor: none; }
     .camera-stage.is-full[data-idle]:not(:has(.talk-button.held))
-      :is(.camera-live-bar, .camera-talk, .camera-turn) { opacity: 0; }
+      :is(.camera-live-bar, .camera-talk, .camera-turn, .camera-strip) { opacity: 0; }
     .camera-turn { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: .5rem 0 .75rem; }
     .camera-turn:empty { display: none; }
     .feed-live-video { padding: 0 1rem 1rem; }

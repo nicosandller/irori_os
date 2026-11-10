@@ -47,6 +47,30 @@ fn quality_key(id: &EntityId) -> String {
     format!("irori.camera.quality.{id}")
 }
 
+/// Where a camera's magnifier is remembered, on or off, and where its slice was left.
+fn magnify_key(id: &EntityId) -> String {
+    format!("irori.camera.magnify.{id}")
+}
+
+fn pan_key(id: &EntityId) -> String {
+    format!("irori.camera.pan.{id}")
+}
+
+/// Whether a picture is wide enough for the magnifier: more than twice as wide as it's tall,
+/// like a two-lens panorama, where a 16:9 box shows it as a thin band.
+fn wide_enough(width: u32, height: u32) -> bool {
+    height > 0 && f64::from(width) > 2.0 * f64::from(height)
+}
+
+/// Where a slice was left, 0 (the left edge) to 1 (the right): the middle when nothing, or
+/// nothing sensible, was.
+fn remembered_pan(stored: Option<&str>) -> f64 {
+    stored
+        .and_then(|text| text.parse::<f64>().ok())
+        .filter(|pan| (0.0..=1.0).contains(pan))
+        .unwrap_or(0.5)
+}
+
 /// The quality remembered for a camera, when it still has it.
 fn remembered(stored: Option<&str>, qualities: &[LiveQuality]) -> Option<LiveQuality> {
     qualities
@@ -89,6 +113,73 @@ pub fn CameraLive(
         key.with_value(|key| crate::devices::remember(key, chosen.as_str()));
         quality.set(chosen);
     };
+    // The magnifier: on (when the picture is wide enough), and where its slice is.
+    let wide = RwSignal::new(false);
+    let magnify = RwSignal::new(crate::devices::stored(&magnify_key(&id)).as_deref() == Some("on"));
+    let pan = StoredValue::new(remembered_pan(
+        crate::devices::stored(&pan_key(&id)).as_deref(),
+    ));
+    let zoomed = move || magnify.get() && wide.get();
+    let strip = NodeRef::<leptos::html::Canvas>::new();
+    let magnifier = StoredValue::new_local(None::<(JsValue, Closure<dyn Fn(f64)>)>);
+    let keys = StoredValue::new((magnify_key(&id), pan_key(&id)));
+    let measure = move || {
+        if let Some(element) = video.get_untracked() {
+            let _ = wide.try_set(wide_enough(element.video_width(), element.video_height()));
+        }
+    };
+    let toggle_magnify = move |_| {
+        let now = !magnify.get_untracked();
+        keys.with_value(|(key, _)| crate::devices::remember(key, if now { "on" } else { "off" }));
+        magnify.set(now);
+    };
+    let unmagnify = move || {
+        magnifier.update_value(|magnifier| {
+            if let Some((handle, _on_pan)) = magnifier.take()
+                && let Ok(stop) = Reflect::get(&handle, &JsValue::from_str("stop"))
+                && let Ok(stop) = stop.dyn_into::<Function>()
+            {
+                let _ = stop.call0(&handle);
+            }
+        });
+    };
+    Effect::new(move |_| {
+        let on = zoomed();
+        let (Some(element), Some(canvas)) = (video.get(), strip.get()) else {
+            return;
+        };
+        unmagnify();
+        if !on {
+            return;
+        }
+        let call = Reflect::get(&window(), &JsValue::from_str("iroriCameraLive"))
+            .ok()
+            .and_then(|live| Reflect::get(&live, &JsValue::from_str("magnify")).ok())
+            .and_then(|call| call.dyn_into::<Function>().ok());
+        let Some(call) = call else {
+            return;
+        };
+        let on_pan = Closure::<dyn Fn(f64)>::new(move |at: f64| {
+            let _ = pan.try_set_value(at);
+            let _ =
+                keys.try_with_value(|(_, key)| crate::devices::remember(key, &format!("{at:.3}")));
+        });
+        let element: &web_sys::Element = &element;
+        let canvas: &web_sys::Element = &canvas;
+        let arguments: Array = [
+            JsValue::from(element.clone()),
+            JsValue::from(canvas.clone()),
+            JsValue::from_f64(pan.get_value()),
+            on_pan.as_ref().clone(),
+        ]
+        .into_iter()
+        .collect();
+        if let Ok(handle) = call.apply(&JsValue::NULL, &arguments) {
+            magnifier.set_value(Some((handle, on_pan)));
+        }
+    });
+    on_cleanup(unmagnify);
+
     // Bumped by "Try again", so the player is mounted afresh.
     let attempt = RwSignal::new(0u32);
     let mounted = StoredValue::new_local(None::<Mounted>);
@@ -245,14 +336,32 @@ pub fn CameraLive(
     let playing = move || standing.get() == Standing::Playing;
 
     view! {
-        <figure class="camera-view camera-live" class:failed=ended class:playing=playing>
+        <figure
+            class="camera-view camera-live"
+            class:failed=ended
+            class:playing=playing
+            class:zoomed=zoomed
+        >
             <video
                 node_ref=video
                 muted=true
                 playsinline=true
                 autoplay=true
                 aria-label=format!("{name}, live")
+                on:loadedmetadata=move |_| measure()
+                on:resize=move |_| measure()
             ></video>
+            <canvas
+                node_ref=strip
+                class="camera-strip"
+                hidden=move || !zoomed()
+                tabindex="0"
+                role="slider"
+                aria-label="Which part of the picture is shown"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                title="The whole picture: drag the box, or use the arrow keys"
+            ></canvas>
             <figcaption class="camera-live-bar small">
                 <span class="camera-live-state">
                     {move || playing().then(|| view! {
@@ -306,6 +415,20 @@ pub fn CameraLive(
                             "Try again"
                         </button>
                     })}
+                    {move || wide.get().then(|| view! {
+                        <button
+                            type="button"
+                            class="live-icon glyph live-magnify"
+                            class:alt=move || magnify.get()
+                            aria-pressed=move || magnify.get().to_string()
+                            aria-label=move || if magnify.get() { "Show the whole picture" } else { "Magnify part of the picture" }
+                            title=move || if magnify.get() { "Whole picture" } else { "Magnify" }
+                            on:click=toggle_magnify
+                        >
+                            <span class="glyph-first">{icon(Icon::ZoomIn)}</span>
+                            <span class="glyph-second">{icon(Icon::ZoomOut)}</span>
+                        </button>
+                    })}
                     <button
                         type="button"
                         class="live-icon glyph live-full"
@@ -327,6 +450,25 @@ pub fn CameraLive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_panorama_is_wide_enough_to_magnify() {
+        // The Duo 2V's two lenses side by side.
+        assert!(wide_enough(5120, 1552));
+        assert!(wide_enough(1920, 576));
+        // Ordinary cameras, and one whose size isn't known yet.
+        assert!(!wide_enough(1920, 1080));
+        assert!(!wide_enough(2304, 1296));
+        assert!(!wide_enough(0, 0));
+    }
+
+    #[test]
+    fn a_remembered_slice_is_between_the_edges_or_the_middle() {
+        assert!((remembered_pan(Some("0.25")) - 0.25).abs() < f64::EPSILON);
+        assert!((remembered_pan(Some("1.5")) - 0.5).abs() < f64::EPSILON);
+        assert!((remembered_pan(Some("left")) - 0.5).abs() < f64::EPSILON);
+        assert!((remembered_pan(None) - 0.5).abs() < f64::EPSILON);
+    }
 
     #[test]
     fn a_remembered_quality_counts_only_if_the_camera_still_has_it() {

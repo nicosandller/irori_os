@@ -52,6 +52,9 @@ pub enum Icon {
     /// Filling the screen, and coming back out of it.
     Expand,
     Shrink,
+    /// Looking closer at part of a wide picture, and back out to all of it.
+    ZoomIn,
+    ZoomOut,
     // The kinds of device on the Floorplan.
     Bulb,
     Tv,
@@ -401,6 +404,12 @@ fn drawing(icon: Icon) -> &'static str {
         ),
         Icon::Expand => r#"<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>"#,
         Icon::Shrink => r#"<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>"#,
+        Icon::ZoomIn => {
+            r#"<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.5v6M7.5 10.5h6"/>"#
+        }
+        Icon::ZoomOut => {
+            r#"<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6"/>"#
+        }
         Icon::Bulb => concat!(
             r#"<path d="M9 17.5h6M10 20.5h4"/>"#,
             r#"<path d="M8.5 14.5a6 6 0 1 1 7 0c-.6.5-1 1.200-1 2v1h-5v-1c0-.800-.4-1.500-1-2Z"/>"#,
