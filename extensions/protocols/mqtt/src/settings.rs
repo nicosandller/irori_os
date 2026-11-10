@@ -12,9 +12,9 @@ use std::net::IpAddr;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer};
 
-/// The largest message accepted, in KiB, when the settings don't say: 1 MiB, the same as the
-/// Zigbee extension's own broker.
-pub const DEFAULT_MAX_MESSAGE_KIB: u32 = 1024;
+/// The largest message accepted, in KiB, when the settings don't say: 1 MiB, the same limit the
+/// Zigbee extension's own broker uses (`irori_ha_discovery::MAX_MESSAGE_BYTES`).
+pub const DEFAULT_MAX_MESSAGE_KIB: u32 = (irori_ha_discovery::MAX_MESSAGE_BYTES / 1024) as u32;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

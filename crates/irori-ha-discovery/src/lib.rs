@@ -16,6 +16,13 @@ pub mod template;
 pub mod topic;
 pub mod unmodeled;
 
+/// The largest MQTT message, in bytes, either protocol takes by default: 1 MiB. rumqttc's own
+/// default is 10 KiB, and it drops the connection on anything bigger (it can't skip one message).
+/// Zigbee2MQTT 2.14 retains `bridge/info` (~48 KB, its settings schema included) and
+/// `bridge/definitions` (~228 KB, the ZCL cluster list), and a 20 KB cap closed the connection
+/// while Home Assistant discovery was still starting.
+pub const MAX_MESSAGE_BYTES: usize = 1024 * 1024;
+
 pub use discovery::{AvailabilityTopic, EntityTopics, ParsedConfig, ParsedDevice};
 pub use state::Publish;
 pub use template::{CommandTemplate, ValueTemplate};
