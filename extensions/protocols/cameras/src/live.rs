@@ -25,6 +25,11 @@ use crate::settings::Login;
 const OPENING: Duration = Duration::from_secs(10);
 /// How long a running stream may go without a frame before it's taken to have stopped.
 const SILENCE: Duration = Duration::from_secs(10);
+/// A camera may send a damaged packet now and then (a Tapo C200 packs an unmarked slice in
+/// one every few seconds): it's skipped, and the picture holds until the next keyframe. More
+/// than this many in [`DAMAGE_WINDOW`] and the stream is taken to be broken.
+const MOST_DAMAGE: usize = 5;
+const DAMAGE_WINDOW: Duration = Duration::from_secs(30);
 /// The longest one frame may last: a camera that pauses doesn't get one frame lasting minutes.
 const LONGEST_FRAME_SECS: i64 = 5;
 /// The tracks in the MP4.
@@ -103,6 +108,9 @@ async fn stream_to(
     };
 
     let mut muxer: Option<Muxer> = None;
+    let mut damage = Damage::default();
+    // After damage, frames that lean on what was lost are left out until a keyframe.
+    let mut to_keyframe: Option<std::time::Instant> = None;
     loop {
         let next = tokio::select! {
             () = feed.closed() => return Ended::Stopped,
@@ -111,13 +119,25 @@ async fn stream_to(
         let item = match next {
             Err(_) | Ok(None) => return Ended::Failed("the camera stopped sending video".into()),
             Ok(Some(Err(error))) => {
-                tracing::info!(%ip, "a camera's stream failed: {error}");
-                return Ended::Failed("the camera's video stream broke off".into());
+                if !damage.bearable(std::time::Instant::now()) {
+                    tracing::info!(%ip, "a camera's stream failed: {error}");
+                    return Ended::Failed("the camera's video stream broke off".into());
+                }
+                tracing::debug!(%ip, "a damaged packet from a camera, skipped: {error}");
+                to_keyframe.get_or_insert_with(std::time::Instant::now);
+                continue;
             }
             Ok(Some(Ok(item))) => item,
         };
         let sent = match item {
             CodecItem::VideoFrame(frame) if frame.stream_id() == streams.video => {
+                if let Some(since) = to_keyframe {
+                    if !frame.is_random_access_point() {
+                        continue;
+                    }
+                    to_keyframe = None;
+                    tracing::debug!(%ip, held = ?since.elapsed(), "a camera's video went on at a keyframe");
+                }
                 let Some(muxer) = muxer.as_mut() else {
                     // Start at a keyframe, with the codecs as the camera describes them now.
                     if !frame.is_random_access_point() {
@@ -159,6 +179,20 @@ async fn stream_to(
         if let Err(ended) = sent {
             return ended;
         }
+    }
+}
+
+/// When a camera's damaged packets came, to tell an odd one from a broken stream.
+#[derive(Default)]
+struct Damage(std::collections::VecDeque<std::time::Instant>);
+
+impl Damage {
+    /// Counts one more, and says whether the stream can go on.
+    fn bearable(&mut self, now: std::time::Instant) -> bool {
+        self.0
+            .retain(|at| now.saturating_duration_since(*at) < DAMAGE_WINDOW);
+        self.0.push_back(now);
+        self.0.len() <= MOST_DAMAGE
     }
 }
 
@@ -555,6 +589,23 @@ mod tests {
         );
         assert_eq!(sound_of("G726-32", 8_000, 1), None);
         assert_eq!(sound_of("PCMU", 8_000, 9), None);
+    }
+
+    #[test]
+    fn an_odd_damaged_packet_is_borne_but_a_run_of_them_ends_the_stream() {
+        let start = std::time::Instant::now();
+        let mut damage = Damage::default();
+        // One every 8 s, the way a C200 does it, goes on forever.
+        for n in 0..20 {
+            assert!(damage.bearable(start + Duration::from_secs(8 * n)));
+        }
+        // A burst is a broken stream.
+        let mut damage = Damage::default();
+        let bursts: Vec<bool> = (0..=MOST_DAMAGE as u64)
+            .map(|n| damage.bearable(start + Duration::from_secs(n)))
+            .collect();
+        assert_eq!(bursts.iter().filter(|ok| **ok).count(), MOST_DAMAGE);
+        assert!(!bursts[MOST_DAMAGE]);
     }
 
     #[test]
