@@ -904,7 +904,7 @@ pub async fn talk(
         .await
         .map_err(|error| error.to_string());
     if let Err(why) = &talking {
-        // The socket opens to say so, and the log says it didn't happen.
+        // The socket opens to say so, and it isn't written down as a talk.
         trail.outcome(irori_types::Outcome::Failed);
         trail.detail(why.clone());
     }
