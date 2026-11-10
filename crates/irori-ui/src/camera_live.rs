@@ -41,6 +41,20 @@ impl Mounted {
 }
 
 /// The address of a camera's live video.
+/// Where a camera's SD or HD is remembered, in this browser: a phone on the go may want SD
+/// while the computer at home wants HD.
+fn quality_key(id: &EntityId) -> String {
+    format!("irori.camera.quality.{id}")
+}
+
+/// The quality remembered for a camera, when it still has it.
+fn remembered(stored: Option<&str>, qualities: &[LiveQuality]) -> Option<LiveQuality> {
+    qualities
+        .iter()
+        .copied()
+        .find(|quality| Some(quality.as_str()) == stored)
+}
+
 pub fn live_path(id: &EntityId, quality: LiveQuality) -> String {
     format!("/api/entities/{id}/live?quality={}", quality.as_str())
 }
@@ -63,12 +77,18 @@ pub fn CameraLive(
     let muted = RwSignal::new(true);
     let both = capabilities.qualities.len() == 2;
     let quality = RwSignal::new(
-        capabilities
-            .qualities
-            .first()
-            .copied()
-            .unwrap_or(LiveQuality::Low),
+        remembered(
+            crate::devices::stored(&quality_key(&id)).as_deref(),
+            &capabilities.qualities,
+        )
+        .or_else(|| capabilities.qualities.first().copied())
+        .unwrap_or(LiveQuality::Low),
     );
+    let key = StoredValue::new(quality_key(&id));
+    let choose = move |chosen: LiveQuality| {
+        key.with_value(|key| crate::devices::remember(key, chosen.as_str()));
+        quality.set(chosen);
+    };
     // Bumped by "Try again", so the player is mounted afresh.
     let attempt = RwSignal::new(0u32);
     let mounted = StoredValue::new_local(None::<Mounted>);
@@ -262,7 +282,7 @@ pub fn CameraLive(
                                 class="live-seg"
                                 aria-pressed=move || (quality.get() == LiveQuality::Low).to_string()
                                 title="The camera's small stream: quick, and light on the network"
-                                on:click=move |_| quality.set(LiveQuality::Low)
+                                on:click=move |_| choose(LiveQuality::Low)
                             >
                                 "SD"
                             </button>
@@ -271,7 +291,7 @@ pub fn CameraLive(
                                 class="live-seg"
                                 aria-pressed=move || (quality.get() == LiveQuality::High).to_string()
                                 title="The camera's full size"
-                                on:click=move |_| quality.set(LiveQuality::High)
+                                on:click=move |_| choose(LiveQuality::High)
                             >
                                 "HD"
                             </button>
@@ -307,6 +327,15 @@ pub fn CameraLive(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_remembered_quality_counts_only_if_the_camera_still_has_it() {
+        let both = [LiveQuality::Low, LiveQuality::High];
+        assert_eq!(remembered(Some("high"), &both), Some(LiveQuality::High));
+        assert_eq!(remembered(Some("high"), &[LiveQuality::Low]), None);
+        assert_eq!(remembered(Some("4k"), &both), None);
+        assert_eq!(remembered(None, &both), None);
+    }
 
     #[test]
     fn the_live_address_names_the_quality() {

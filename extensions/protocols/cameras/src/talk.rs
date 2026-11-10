@@ -30,11 +30,12 @@ const STEP: Duration = Duration::from_secs(5);
 /// How long the camera's speaker stays open with nothing to play.
 const QUIET: Duration = Duration::from_secs(3);
 
-/// How long the speaker stays open after the last sound. A camera plays from a buffer, a
-/// moment behind; hanging up at once loses what's still in it, and a short sentence can be
-/// all of it.
+/// How long the speaker is fed silence after the last sound. A Reolink holds a few seconds
+/// before it plays, and plays only while sound keeps coming: stopping, or just going quiet on
+/// the line, loses what it holds, and a talk under about 3 s was all lost. The silence pushes
+/// the voice out; it's the silence that's lost.
 #[cfg(not(test))]
-const TAIL: Duration = Duration::from_millis(1500);
+const TAIL: Duration = Duration::from_millis(3000);
 #[cfg(test)]
 const TAIL: Duration = Duration::from_millis(50);
 
@@ -244,12 +245,22 @@ async fn speak(
         }
     };
     if ended == Ended::Stopped && sent > 0 {
-        // Let the camera play what it still holds; what it says meanwhile is let go.
+        // Silence, a packet each 20 ms as speech would come, so the camera plays out what it
+        // holds; what it says meanwhile is let go.
+        let silence = vec![0u8; PACKET * 2];
+        let mut pace = tokio::time::interval(Duration::from_millis(20));
         let tail = tokio::time::sleep(TAIL);
         tokio::pin!(tail);
-        loop {
+        'tail: loop {
             tokio::select! {
                 () = &mut tail => break,
+                _ = pace.tick() => {
+                    for packet in packets.push(&silence) {
+                        if rtsp.write(&packet).await.is_err() {
+                            break 'tail;
+                        }
+                    }
+                }
                 read = rtsp.stream.read(&mut buffer) => if matches!(read, Ok(0) | Err(_)) { break },
             }
         }
@@ -887,7 +898,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn talking_plays_the_pages_sound_then_closes_the_speaker() {
+    async fn talking_plays_the_pages_sound_then_silence_then_closes_the_speaker() {
         let (port, heard) = fake_camera(Has::Speaker).await;
         let stream = format!("rtsp://127.0.0.1:{port}/main");
         let track = ask(&stream, here(), &login("secret"))
@@ -926,7 +937,9 @@ mod tests {
         }
         let heard = heard.lock().expect("heard");
         let packets = &heard.packets;
-        assert_eq!(packets.len(), 3, "{packets:?}");
+        // The 3 sent, then the silence that pushes them out of the camera's buffer, carrying
+        // on the same sequence and clock.
+        assert!(packets.len() > 3, "{packets:?}");
         for (n, (payload_type, sequence, timestamp, length)) in packets.iter().enumerate() {
             assert_eq!((*payload_type, *length), (0, 160));
             assert_eq!(*sequence, packets[0].1.wrapping_add(n as u16));

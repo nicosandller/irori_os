@@ -48,7 +48,17 @@ pub async fn run(stream: &str, ip: IpAddr, login: &Login, live: IncomingLive) ->
     let IncomingLive {
         accepts, mut feed, ..
     } = live;
+    let started = std::time::Instant::now();
     let ended = stream_to(stream, ip, login, &accepts, &mut feed).await;
+    // Why a stream ended, so a camera that keeps dropping can be told apart from one whose
+    // viewers just left.
+    if let Ended::Failed(why) = &ended {
+        tracing::info!(
+            %ip,
+            after = format!("{:.0} s", started.elapsed().as_secs_f64()),
+            "a camera's live video ended: {why}"
+        );
+    }
     match &ended {
         Ended::Failed(why) => feed.end(Some(why.clone())),
         Ended::Refused => feed.end(Some("the camera refused its login".into())),
@@ -101,7 +111,7 @@ async fn stream_to(
         let item = match next {
             Err(_) | Ok(None) => return Ended::Failed("the camera stopped sending video".into()),
             Ok(Some(Err(error))) => {
-                tracing::debug!("a camera's stream failed: {error}");
+                tracing::info!(%ip, "a camera's stream failed: {error}");
                 return Ended::Failed("the camera's video stream broke off".into());
             }
             Ok(Some(Ok(item))) => item,
