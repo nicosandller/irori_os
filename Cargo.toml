@@ -107,6 +107,8 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 # no link is ever created while one is unpacked, and it can be encrypted as a stream. Pure Rust.
 tar = { version = "0.4.46", default-features = false }
 flate2 = { version = "1.1.10", default-features = false, features = ["rust_backend"] }
+# Precompressing the web UI at build time (`cargo xtask ui`), so the binary can serve it brotli'd.
+brotli = { version = "9.1.1", default-features = false, features = ["std"] }
 # The cipher for an encrypted backup. Already in the tree through the ESPHome Noise transport.
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 rust-embed = "8.12.0"
@@ -137,6 +139,14 @@ missing_debug_implementations = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unwrap_used = "warn"
+
+# `cargo xtask ui` compresses the UI's wasm at brotli's top level in a debug build of xtask;
+# unoptimized, that takes minutes instead of seconds.
+[profile.dev.package.brotli]
+opt-level = 3
+
+[profile.dev.package.miniz_oxide]
+opt-level = 3
 
 [profile.release]
 # Size and speed both matter (ROADMAP §4.3). Keep unwinding: the protocol host
