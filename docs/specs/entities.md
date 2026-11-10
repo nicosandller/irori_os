@@ -75,6 +75,10 @@ Why these choices:
 JSON field names are `snake_case`. Optional fields may be omitted, and Irori omits them when
 writing.
 
+The registry is built in the core's memory from two sources: what the protocol extensions report
+(id, maker, model, entities) and what a person has set in the config dir (name, description,
+room). Only the second is kept in files; see the diagram in [config.md](config.md) §3.
+
 ### 4.1 Floor
 
 | Field | Type | Required | Notes |

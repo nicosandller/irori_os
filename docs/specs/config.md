@@ -62,6 +62,43 @@ config/
     <id>.toml     an extension's settings that aren't secret
 ```
 
+How the files relate to the core, the UI and the database:
+
+```mermaid
+flowchart TB
+    ext["Protocol extensions<br/>live device facts"] --> core
+    core["Irori core<br/>registry and live state"]
+    ui["UI · CLI · API<br/>write the files"]
+    editor["Text editor<br/>hand edits"]
+    db[("Recorder database<br/>past entity states")]
+
+    subgraph cfg["Config dir"]
+        direction LR
+        subgraph home["Home"]
+            areas["areas.toml"]
+            floorplan["floorplan.toml"]
+            homef["home.toml"]
+            users["users.toml"]
+        end
+        subgraph devs["Devices, extensions"]
+            devices["devices.toml"]
+            entities["entities.toml"]
+            extf["extensions/&lt;id&gt;.toml"]
+        end
+        subgraph sys["System"]
+            irori["irori.toml"]
+            assistant["assistant.toml"]
+            backup["backup.toml"]
+            secrets["secrets.toml"]
+        end
+    end
+
+    ui --> cfg
+    editor --> cfg
+    cfg --> core
+    core --> db
+```
+
 Every file is optional. A file that is absent means "nothing said".
 
 ### 3.1 `areas.toml`
