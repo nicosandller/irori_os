@@ -235,6 +235,34 @@ base64. In the SDK it is `Incoming::Live`, whose `LiveFeed` refuses rather than 
 (`fragment` says whether it was `Sent` or `Skipped`) and whose `closed()` resolves when nobody
 watches any more.
 
+### 5.4 Talking through a camera
+
+A camera that says `talk` ([entities.md](entities.md)) has a speaker a person can talk through,
+like a walkie-talkie: the page sends sound while they hold a button. A page opens
+`GET /api/entities/{id}/talk` ([api.md](api.md)), and the core asks the camera's protocol to open
+its speaker.
+
+- **The sound is the plainest there is**: 16-bit signed little-endian PCM, one channel, 8000
+  samples a second, the rate every camera speaker takes. The page sends 20 ms (320 bytes) at a
+  time, and a chunk is never more than 4 KB or half a sample. The protocol turns it into whatever
+  its camera wants (G.711 µ-law or A-law for an ONVIF backchannel), so nothing between the page
+  and the protocol knows about codecs.
+- **One person at a time.** A camera's speaker plays one voice. While someone is talking through
+  it, anyone else who tries is told so, rather than the voices being mixed or one cutting the
+  other off.
+- **The protocol says when it's listening.** It opens the speaker, says it's ready, and only then
+  does the page show the person they're on. It has about 10 seconds to do that.
+- **Sound never waits.** Like video, every hop drops a chunk that doesn't fit rather than holding
+  anything up: a missing 20 ms is a click, a queue that backs up is a voice arriving seconds late.
+- **Silence ends it.** 3 seconds with no sound, or 10 minutes in all, and the core closes the
+  talk; the protocol closes the speaker when its sound ends. A protocol with no talking cameras
+  ends the talk at once saying so; the SDK's `next_action` does that for it.
+
+On the wire the request is `talk_start { stream, unique_id }`, then `talk_audio { stream, data }`
+for each chunk (`data` the bytes as base64) and `talk_stop { stream }`; the protocol answers with
+`talk_ready { stream }` and `talk_end { stream, error }`. In the SDK it is `Incoming::Talk`, whose
+`audio` is the chunks and whose `line` says `ready()` and `end(error)`.
+
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
 contexts itself.

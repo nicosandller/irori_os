@@ -184,6 +184,7 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | | `pan_tilt` | bool | `false` | Can be turned left and right, up and down (`camera.move`) |
 | | `zoom` | bool | `false` | Can zoom in and out (`camera.move`) |
 | | `presets` | bool | `false` | Has positions saved on it to be sent to (`camera.go_to_preset`); which ones is state |
+| | `talk` | bool | `false` | Has a speaker a person can talk through ([protocols.md](protocols.md) §5.4) |
 | `timer` | none | | | Something that counts down. Home Assistant has timers only as helpers; here a device that counts down can be one too |
 | `scene` | none | | | A scene a device keeps (a Hue scene, a Zigbee group's) and can be told to set. Scenes Irori makes itself are flows |
 | `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |

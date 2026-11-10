@@ -79,6 +79,7 @@ CLI, the assistant and the app bridge all ask it.
 | The live feed (`/api/ws`) | A snapshot and changes for those only. A change to the home's shape is a nudge to read it again, which gives them only theirs. Changing a person's rooms or role ends their open feeds; the page reconnects to the new view. A hand edit of `users.toml` does the same within a few seconds. |
 | History, a camera picture, its live video | Of an entity in their rooms; anything else is 404. Live video closes within a few seconds of the camera leaving their rooms. |
 | A command | Only to an entity in their rooms (§2.1). |
+| Talking through a camera | A command: only through a camera in their rooms, and it closes within a few seconds of the camera leaving them. |
 | Extensions, devices waiting to be added, updates waiting to install, extension pages | None. What the extensions are doing and what they have found is the owner's. |
 | Other people | A person is told about themselves only. Every answer that lists people says so, an edit of their own name or password included. They change their password; an owner changes their name, because a name that was refused as taken would say who else is in the home. |
 | The assistant | Asked everywhere they can ask it (the sidebar mark, the Ask buttons on a device, an automation and the floor plan), and **answered from their rooms** (§2.4). |
@@ -201,7 +202,7 @@ on what, **whether it was allowed** (`ok`, `denied`, `failed`), and a few words 
 | Sign-in, wrong password, locked out, sign-out | Reading anything |
 | A person added, removed, renamed, given another role, other rooms, a new password | The password, key, code or secret itself, ever |
 | An access token made or revoked | Calls made by an automation (the trace has them) |
-| A command sent by a person or a token, and one refused | State changes (history has them) |
+| A command sent by a person or a token, and one refused; talking through a camera | State changes (history has them) |
 | Areas, floors, devices, entities, the floor plan, settings, the place changed | |
 | An extension installed, updated, uninstalled, its secrets set | |
 | An update installed or skipped | |
