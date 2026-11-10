@@ -395,10 +395,18 @@
       }
     }
 
+    // The picture moves at once; the strip, which copies a whole camera frame, is drawn again
+    // at most once a screen refresh, however fast the pointer sends moves.
+    let repaint = null;
     function set(to) {
       pan = Math.min(1, Math.max(0, to));
       place();
-      paint();
+      if (repaint === null) {
+        repaint = requestAnimationFrame(() => {
+          repaint = null;
+          paint();
+        });
+      }
     }
 
     // The strip: the slice centres on the pointer.
@@ -505,6 +513,7 @@
           video.cancelVideoFrameCallback(frame.video);
         }
         if (frame && frame.animation !== undefined) cancelAnimationFrame(frame.animation);
+        if (repaint !== null) cancelAnimationFrame(repaint);
         if (range) {
           range.removeEventListener('pointerdown', slideDown);
           range.removeEventListener('input', slide);

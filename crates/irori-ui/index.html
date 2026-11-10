@@ -836,7 +836,7 @@
        height (`scale`) and slides to the slice that's wanted (`translate`), so turning it on
        and off is a zoom. The slice is moved by dragging it or the strip of the whole picture
        under it; in full screen, by a small slider beside the talk button instead. */
-    .camera-live.zoomed video { cursor: grab; touch-action: pan-y; }
+    .camera-live.zoomed video { cursor: grab; touch-action: pan-y; will-change: scale, translate; }
     .camera-live video.dragging { cursor: grabbing; transition: none; }
     .camera-strip { display: block; width: 100%; max-width: 40rem; margin-top: .45rem;
       border-radius: .4rem; border: 1px solid var(--line); background: #000; cursor: pointer;
