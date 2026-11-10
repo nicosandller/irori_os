@@ -215,5 +215,8 @@ embeds them. `irori serve` sends the smallest copy the browser's `Accept-Encodin
 Browsers only offer brotli over HTTPS, so on the LAN (plain HTTP) they get gzip, a little bigger
 than the brotli number. The wasm and main JS are named after their content, so the browser keeps
 them for good. The page itself, `map.js`, `network_map.js` and the favicon keep their names
-across builds, so the browser checks them on every load. The compressed copies add about 3.4 MB
-to the binary (2026-11-09: the 4.9 MB wasm is 1.9 MB as gzip, 1.3 MB as brotli).
+across builds, so the browser checks them on every load: each carries a version tag (`ETag`),
+and an unchanged one is answered with a short "not modified" (304) instead of the file. The
+compressed copies add about 3.4 MB to the binary (2026-11-09: the 4.9 MB wasm is 1.9 MB as gzip,
+1.3 MB as brotli). The dev image (`IRORI_TRUNK_RELEASE=0`) skips them: its wasm is unoptimized
+and about 220 MB, and is served as it is.

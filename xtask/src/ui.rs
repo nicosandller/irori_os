@@ -50,8 +50,11 @@ pub fn run() -> anyhow::Result<()> {
         .filter(|meta| meta.is_file())
         .map(|meta| meta.len())
         .sum();
-    let level = Level::for_release_mode(std::env::var("IRORI_TRUNK_RELEASE").ok().as_deref());
-    let compressed = compress_dir(&embedded, level)?;
+    let compressed =
+        match Level::for_release_mode(std::env::var("IRORI_TRUNK_RELEASE").ok().as_deref()) {
+            Some(level) => compress_dir(&embedded, level)?,
+            None => 0,
+        };
     println!(
         "UI built: {copied} files, {} KB in {} (plus {compressed} compressed copies)\n\
          Rebuild `irori` to embed it (`cargo build`).",
@@ -68,9 +71,7 @@ const COMPRESSIBLE: &[&str] = &["wasm", "js", "css", "html", "svg"];
 /// Below this, the saving is smaller than the headers that announce it.
 const MIN_SIZE: u64 = 1024;
 
-/// How hard to squeeze. A release build is squeezed as far as it goes, once, for every download
-/// after it. The dev image's wasm is unoptimized (about 220 MB), where brotli's top level would
-/// take minutes on every rebuild, so it gets quick levels instead.
+/// How hard to squeeze: as far as it goes, once, for every download after it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Level {
     gzip: u32,
@@ -82,14 +83,12 @@ impl Level {
         gzip: 9,
         brotli: 11,
     };
-    const QUICK: Self = Self { gzip: 1, brotli: 1 };
 
-    fn for_release_mode(release_mode: Option<&str>) -> Self {
-        if release_mode == Some("0") {
-            Self::QUICK
-        } else {
-            Self::BEST
-        }
+    /// None for the dev image (`IRORI_TRUNK_RELEASE=0`). Its wasm is unoptimized, about 220 MB,
+    /// and copies of it would add tens of MB to every dev binary on a VM disk that already runs
+    /// short. The server sends the originals when there are no copies.
+    fn for_release_mode(release_mode: Option<&str>) -> Option<Self> {
+        (release_mode != Some("0")).then_some(Self::BEST)
     }
 }
 
@@ -236,7 +235,8 @@ mod tests {
         std::fs::write(dir.path().join("tiny.css"), "body{}")?;
         std::fs::write(dir.path().join("photo.png"), text.as_bytes())?;
 
-        let written = compress_dir(dir.path(), Level::QUICK)?;
+        let quick = Level { gzip: 1, brotli: 1 };
+        let written = compress_dir(dir.path(), quick)?;
         assert_eq!(written, 2);
 
         let mut unzipped = String::new();
@@ -256,9 +256,9 @@ mod tests {
     }
 
     #[test]
-    fn dev_image_compresses_quickly() {
-        assert_eq!(Level::for_release_mode(Some("0")), Level::QUICK);
-        assert_eq!(Level::for_release_mode(None), Level::BEST);
+    fn dev_image_skips_the_compressed_copies() {
+        assert_eq!(Level::for_release_mode(Some("0")), None);
+        assert_eq!(Level::for_release_mode(None), Some(Level::BEST));
     }
 
     #[test]

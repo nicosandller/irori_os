@@ -2928,6 +2928,8 @@ async fn health(State(state): State<AppState>) -> Response {
 
 #[cfg(feature = "ui")]
 mod ui {
+    use std::borrow::Cow;
+
     use axum::http::{HeaderMap, StatusCode, Uri, header};
     use axum::response::{IntoResponse, Response};
     use rust_embed::RustEmbed;
@@ -3041,8 +3043,62 @@ mod ui {
             })
     }
 
+    /// A file the page can be served from, whichever embed holds it, with the SHA-256 of its
+    /// contents (worked out at build time in a release binary).
+    pub(super) struct Asset {
+        pub(super) data: Cow<'static, [u8]>,
+        pub(super) hash: [u8; 32],
+    }
+
+    impl From<rust_embed::EmbeddedFile> for Asset {
+        fn from(file: rust_embed::EmbeddedFile) -> Self {
+            Self {
+                hash: file.metadata.sha256_hash(),
+                data: file.data,
+            }
+        }
+    }
+
+    /// Looks a file up by its path in one of the embeds.
+    pub(super) type Lookup<'a> = &'a dyn Fn(&str) -> Option<Asset>;
+
+    /// The version tag of a file, from its original's contents. Weak (`W/`), because the gzip
+    /// and brotli copies are the same file in a different wrapping and share it.
+    fn etag(hash: &[u8; 32]) -> String {
+        let hex: String = hash[..16].iter().map(|b| format!("{b:02x}")).collect();
+        format!("W/\"{hex}\"")
+    }
+
+    /// Whether the browser's `If-None-Match` names this version, so a 304 will do. Compared
+    /// weakly, as RFC 9110 has it for this header: `W/` on either side doesn't matter.
+    pub(super) fn unchanged(if_none_match: Option<&str>, etag: &str) -> bool {
+        let opaque = |tag: &str| tag.trim().trim_start_matches("W/").to_owned();
+        let ours = opaque(etag);
+        if_none_match.is_some_and(|value| {
+            value
+                .split(',')
+                .any(|tag| tag.trim() == "*" || opaque(tag) == ours)
+        })
+    }
+
     pub async fn serve(uri: Uri, headers: HeaderMap) -> Response {
-        let path = uri.path().trim_start_matches('/');
+        respond(
+            uri.path(),
+            &headers,
+            &|path| App::get(path).map(Asset::from),
+            &|path| Placeholder::get(path).map(Asset::from),
+        )
+    }
+
+    /// `serve`, over any two embeds, so tests can hand it a built app the CI machine doesn't
+    /// have (CI runs the tests before it builds the page).
+    pub(super) fn respond(
+        path: &str,
+        headers: &HeaderMap,
+        app: Lookup<'_>,
+        placeholder: Lookup<'_>,
+    ) -> Response {
+        let path = path.trim_start_matches('/');
         let path = if path.is_empty() { INDEX } else { path };
         // `/api/…` belongs to the API, whatever is or isn't there. Handing an API caller the
         // page with a 200 would let a typo look like success.
@@ -3050,55 +3106,62 @@ mod ui {
             return (StatusCode::NOT_FOUND, "no such endpoint\n").into_response();
         }
         // The compressed copies are only ever sent in place of their original, labelled as
-        // such. Asked for by name, one would arrive as an unlabelled blob.
+        // such. Asked for by name, one would arrive as an unlabelled blob. This also turns away
+        // a real file whose own name ends in `.gz` or `.br`; the UI has none.
         if Encoding::ALL
             .into_iter()
             .any(|encoding| path.ends_with(encoding.suffix()))
         {
             return (StatusCode::NOT_FOUND, "not found").into_response();
         }
-        let accepted = accepted(
-            headers
-                .get(header::ACCEPT_ENCODING)
-                .and_then(|value| value.to_str().ok()),
-        );
+        let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
         // The app wins where both have a file, so a built UI replaces the placeholder page.
+        // `true` when the file is the app's, which alone has compressed copies.
+        let find = |path: &str| {
+            app(path)
+                .map(|file| (file, true))
+                .or_else(|| placeholder(path).map(|file| (file, false)))
+        };
         // A path with no file extension is one of the app's own pages (`/devices`), which the
         // app routes itself once it has loaded: it gets the page, not a 404. A missing file
         // (`/nope.css`) is still a 404, so a broken asset says so plainly.
-        let path = if App::get(path).is_some() || Placeholder::get(path).is_some() {
-            path
-        } else if !path.contains('.') {
-            INDEX
-        } else {
+        let found = match find(path) {
+            Some(found) => Some((path, found)),
+            None if !path.contains('.') => find(INDEX).map(|found| (INDEX, found)),
+            None => None,
+        };
+        let Some((path, (original, from_app))) = found else {
             return (StatusCode::NOT_FOUND, "not found").into_response();
         };
-        // The smallest copy the browser takes. Only the app has compressed copies, and a file
-        // too small to be worth compressing has none; the original is sent then.
-        let compressed = App::get(path).and_then(|_| {
-            accepted.into_iter().find_map(|encoding| {
-                App::get(&format!("{path}{}", encoding.suffix())).map(|file| (encoding, file))
+        let etag = etag(&original.hash);
+        let common = [
+            (header::CACHE_CONTROL, cache_control(path).to_owned()),
+            // A cache in between must not hand a gzip copy to a browser that didn't ask.
+            (header::VARY, "accept-encoding".to_owned()),
+            (header::ETAG, etag.clone()),
+        ];
+        // The browser has this version already: say so, and send nothing.
+        if unchanged(header(header::IF_NONE_MATCH), &etag) {
+            return (StatusCode::NOT_MODIFIED, common).into_response();
+        }
+        // The smallest copy the browser takes. A file too small to be worth compressing has
+        // none; the original is sent then.
+        let compressed = from_app
+            .then(|| {
+                accepted(header(header::ACCEPT_ENCODING))
+                    .into_iter()
+                    .find_map(|encoding| {
+                        app(&format!("{path}{}", encoding.suffix())).map(|file| (encoding, file))
+                    })
             })
-        });
-        let (encoding, file) = match compressed {
-            Some((encoding, file)) => (Some(encoding), file),
-            None => match App::get(path).or_else(|| Placeholder::get(path)) {
-                Some(file) => (None, file),
-                None => return (StatusCode::NOT_FOUND, "not found").into_response(),
-            },
+            .flatten();
+        let (encoding, data) = match compressed {
+            Some((encoding, file)) => (Some(encoding), file.data),
+            None => (None, original.data),
         };
         // The type of the original, not of `.gz`.
         let mime = mime_guess::from_path(path).first_or_octet_stream();
-        let mut response = (
-            [
-                (header::CONTENT_TYPE, mime.as_ref()),
-                (header::CACHE_CONTROL, cache_control(path)),
-                // A cache in between must not hand a gzip copy to a browser that didn't ask.
-                (header::VARY, "accept-encoding"),
-            ],
-            file.data,
-        )
-            .into_response();
+        let mut response = (common, [(header::CONTENT_TYPE, mime.as_ref())], data).into_response();
         if let Some(encoding) = encoding {
             response.headers_mut().insert(
                 header::CONTENT_ENCODING,
@@ -3574,6 +3637,27 @@ mod tests {
         Ok(())
     }
 
+    /// Asked again with the version tag it was given, the server answers 304 and sends nothing.
+    /// Runs on the placeholder page in CI, and on the built page after `cargo xtask ui`.
+    #[cfg(feature = "ui")]
+    #[tokio::test]
+    async fn an_unchanged_page_is_not_sent_twice() -> anyhow::Result<()> {
+        let (_, headers, _) = get_with_headers("/", &[]).await?;
+        let etag = headers
+            .get("etag")
+            .and_then(|v| v.to_str().ok())
+            .expect("the page has a version tag")
+            .to_owned();
+        let (status, headers, body) = get_with_headers("/", &[("if-none-match", &etag)]).await?;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert!(body.is_empty());
+        assert_eq!(
+            headers.get("etag").and_then(|v| v.to_str().ok()),
+            Some(etag.as_str())
+        );
+        Ok(())
+    }
+
     /// The compressed copies are sent only in place of their original. Asked for by name, they
     /// are not there, so nothing arrives unlabelled.
     #[cfg(feature = "ui")]
@@ -3613,6 +3697,172 @@ mod tests {
         assert_eq!(ui::accepted(Some("*")), [Brotli, Gzip]);
         assert_eq!(ui::accepted(Some("*, br;q=0")), [Gzip]);
         assert_eq!(ui::accepted(Some("*;q=0")), []);
+        // Named twice: the first says. A weight that isn't a number is no weight, so a refusal.
+        assert_eq!(ui::accepted(Some("gzip;q=0, gzip")), []);
+        assert_eq!(ui::accepted(Some("gzip, gzip;q=0")), [Gzip]);
+        assert_eq!(ui::accepted(Some("gzip;q=nan, br")), [Brotli]);
+    }
+
+    #[cfg(feature = "ui")]
+    #[test]
+    fn a_browser_that_has_this_version_is_told_so() {
+        let etag = r#"W/"0123abcd""#;
+        assert!(ui::unchanged(Some(etag), etag));
+        // Weak and strong spellings compare equal, and a list matches on any of its tags.
+        assert!(ui::unchanged(Some(r#""0123abcd""#), etag));
+        assert!(ui::unchanged(Some(r#""old", W/"0123abcd""#), etag));
+        assert!(ui::unchanged(Some("*"), etag));
+        assert!(!ui::unchanged(Some(r#"W/"0123abce""#), etag));
+        assert!(!ui::unchanged(Some(""), etag));
+        assert!(!ui::unchanged(None, etag));
+    }
+
+    /// A built app, in memory: what `cargo xtask ui` leaves in `crates/irori/ui`, which the CI
+    /// machine doesn't have when it runs the tests.
+    #[cfg(feature = "ui")]
+    mod built_ui {
+        use super::*;
+        use axum::http::HeaderMap;
+
+        const WASM: &str = "irori-ui-61707102987207aa_bg.wasm";
+
+        fn asset(data: &'static [u8]) -> ui::Asset {
+            // Any hash that changes with the contents will do here.
+            let mut hash = [0; 32];
+            for (i, byte) in data.iter().enumerate() {
+                hash[i % 32] ^= byte;
+            }
+            ui::Asset {
+                data: std::borrow::Cow::Borrowed(data),
+                hash,
+            }
+        }
+
+        fn app(path: &str) -> Option<ui::Asset> {
+            match path {
+                WASM => Some(asset(b"the wasm, as built")),
+                "irori-ui-61707102987207aa_bg.wasm.gz" => Some(asset(b"the wasm, gzipped")),
+                "irori-ui-61707102987207aa_bg.wasm.br" => Some(asset(b"the wasm, brotli")),
+                "index.html" => Some(asset(b"<html>the app</html>")),
+                "index.html.gz" => Some(asset(b"the app, gzipped")),
+                // Too small to have been compressed.
+                "map.js" => Some(asset(b"map")),
+                _ => None,
+            }
+        }
+
+        fn placeholder(path: &str) -> Option<ui::Asset> {
+            (path == "index.html").then(|| asset(b"<html>placeholder</html>"))
+        }
+
+        async fn fetch(
+            path: &str,
+            sent: &[(&str, &str)],
+        ) -> anyhow::Result<(StatusCode, HeaderMap, Vec<u8>)> {
+            let mut headers = HeaderMap::new();
+            for (name, value) in sent {
+                headers.insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes())?,
+                    value.parse()?,
+                );
+            }
+            let res = ui::respond(path, &headers, &app, &placeholder);
+            let status = res.status();
+            let headers = res.headers().clone();
+            let body = res.into_body().collect().await?.to_bytes().to_vec();
+            Ok((status, headers, body))
+        }
+
+        fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+            headers.get(name).and_then(|value| value.to_str().ok())
+        }
+
+        #[tokio::test]
+        async fn the_wasm_goes_out_compressed_and_is_kept_for_good() -> anyhow::Result<()> {
+            let path = format!("/{WASM}");
+            // A browser on the LAN: plain HTTP, so no brotli on offer.
+            let (status, headers, body) =
+                fetch(&path, &[("accept-encoding", "gzip, deflate")]).await?;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, b"the wasm, gzipped");
+            assert_eq!(header(&headers, "content-encoding"), Some("gzip"));
+            assert_eq!(header(&headers, "content-type"), Some("application/wasm"));
+            assert_eq!(
+                header(&headers, "cache-control"),
+                Some("public, max-age=31536000, immutable")
+            );
+            assert_eq!(header(&headers, "vary"), Some("accept-encoding"));
+            let gzip_etag = header(&headers, "etag").map(str::to_owned);
+            assert!(
+                gzip_etag
+                    .as_deref()
+                    .is_some_and(|tag| tag.starts_with("W/\""))
+            );
+
+            // Over HTTPS brotli is on offer, and is smaller.
+            let (_, headers, body) =
+                fetch(&path, &[("accept-encoding", "gzip, deflate, br")]).await?;
+            assert_eq!(body, b"the wasm, brotli");
+            assert_eq!(header(&headers, "content-encoding"), Some("br"));
+            // The same file in another wrapping: the same version tag.
+            assert_eq!(header(&headers, "etag"), gzip_etag.as_deref());
+
+            // Nothing accepted: the original, unlabelled.
+            let (_, headers, body) = fetch(&path, &[]).await?;
+            assert_eq!(body, b"the wasm, as built");
+            assert_eq!(header(&headers, "content-encoding"), None);
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn the_page_is_rechecked_and_a_304_answers_an_unchanged_one() -> anyhow::Result<()> {
+            let (status, headers, body) = fetch("/devices", &[("accept-encoding", "gzip")]).await?;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, b"the app, gzipped");
+            assert_eq!(header(&headers, "content-type"), Some("text/html"));
+            assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
+            let etag = header(&headers, "etag").expect("a version tag").to_owned();
+
+            let (status, headers, body) = fetch(
+                "/",
+                &[("accept-encoding", "gzip"), ("if-none-match", &etag)],
+            )
+            .await?;
+            assert_eq!(status, StatusCode::NOT_MODIFIED);
+            assert!(body.is_empty());
+            assert_eq!(header(&headers, "etag"), Some(etag.as_str()));
+            assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
+
+            // A different version on the browser's side: the page again, in full.
+            let (status, _, body) = fetch("/", &[("if-none-match", r#"W/"stale""#)]).await?;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, b"<html>the app</html>");
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn a_small_file_goes_out_as_it_is() -> anyhow::Result<()> {
+            let (status, headers, body) =
+                fetch("/map.js", &[("accept-encoding", "gzip, br")]).await?;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, b"map");
+            assert_eq!(header(&headers, "content-encoding"), None);
+            assert_eq!(header(&headers, "cache-control"), Some("no-cache"));
+            Ok(())
+        }
+
+        #[tokio::test]
+        async fn copies_and_missing_files_are_not_found() -> anyhow::Result<()> {
+            for path in [
+                "/irori-ui-61707102987207aa_bg.wasm.gz",
+                "/index.html.br",
+                "/nope.css",
+            ] {
+                let (status, _, _) = fetch(path, &[("accept-encoding", "gzip, br")]).await?;
+                assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            }
+            Ok(())
+        }
     }
 
     #[cfg(feature = "ui")]
