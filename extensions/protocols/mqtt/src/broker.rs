@@ -39,7 +39,7 @@ pub enum BrokerEvent {
 }
 
 /// What the run loop needs to talk back to a broker — real or, in tests, not. Kept to exactly
-/// these two operations so `lib.rs`'s `describe`/`route`/`apply` can be tested by handing them a
+/// these operations so `lib.rs`'s `describe`/`route`/`apply` can be tested by handing them a
 /// fake that records what it was asked to do, never a real socket.
 pub trait Publisher: Send + Sync {
     fn publish(
@@ -49,7 +49,12 @@ pub trait Publisher: Send + Sync {
         retain: bool,
     ) -> impl Future<Output = Result<(), String>> + Send;
 
+    /// Subscribes to `topic`. Nothing is sent when it's already subscribed: asking again would
+    /// only have the broker replay its retained message.
     fn subscribe(&self, topic: &str) -> impl Future<Output = Result<(), String>> + Send;
+
+    /// Stops listening to `topic`, which no entity uses any more.
+    fn unsubscribe(&self, topic: &str) -> impl Future<Output = Result<(), String>> + Send;
 }
 
 /// A handle to publish and subscribe. Cheap to clone (an `rumqttc::AsyncClient` is a channel
@@ -57,12 +62,33 @@ pub trait Publisher: Send + Sync {
 #[derive(Debug, Clone)]
 pub struct Broker {
     client: AsyncClient,
-    /// Every topic ever subscribed to, so they can all be subscribed again after a reconnect.
+    /// What's subscribed to, so it can all be subscribed again after a reconnect.
     topics: Topics,
 }
 
-/// The topics to be subscribed to, shared between [`Broker`] and the task polling the connection.
-type Topics = Arc<Mutex<BTreeSet<String>>>;
+/// The topics subscribed to, shared between [`Broker`] and the task polling the connection.
+#[derive(Debug, Clone, Default)]
+struct Topics(Arc<Mutex<BTreeSet<String>>>);
+
+impl Topics {
+    /// Whether `topic` is new, and so has to be sent to the broker.
+    fn add(&self, topic: &str) -> bool {
+        self.0
+            .lock()
+            .expect("not poisoned")
+            .insert(topic.to_owned())
+    }
+
+    /// Whether `topic` was subscribed, and so the broker has to be told to stop.
+    fn remove(&self, topic: &str) -> bool {
+        self.0.lock().expect("not poisoned").remove(topic)
+    }
+
+    /// Every topic, in SUBSCRIBE-sized batches.
+    fn batches(&self) -> Vec<Vec<SubscribeFilter>> {
+        batches(&self.0.lock().expect("not poisoned"))
+    }
+}
 
 impl Publisher for Broker {
     async fn publish(&self, topic: &str, payload: Vec<u8>, retain: bool) -> Result<(), String> {
@@ -75,12 +101,21 @@ impl Publisher for Broker {
     async fn subscribe(&self, topic: &str) -> Result<(), String> {
         // Recorded before it's sent: a subscribe still waiting to go out when the connection
         // drops is thrown away by rumqttc, and only this list brings it back.
-        self.topics
-            .lock()
-            .expect("not poisoned")
-            .insert(topic.to_owned());
+        if !self.topics.add(topic) {
+            return Ok(());
+        }
         self.client
             .subscribe(topic, QoS::AtLeastOnce)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn unsubscribe(&self, topic: &str) -> Result<(), String> {
+        if !self.topics.remove(topic) {
+            return Ok(());
+        }
+        self.client
+            .unsubscribe(topic)
             .await
             .map_err(|e| e.to_string())
     }
@@ -145,7 +180,7 @@ pub fn connect(
     let (tx, rx) = mpsc::channel(EVENT_QUEUE);
     let handle = tokio::spawn(async move {
         let mut connected_at: Option<Instant> = None;
-        let mut first_connection = true;
+        let mut session = Session::default();
         let mut retry: Option<Duration> = None;
         loop {
             match event_loop.poll().await {
@@ -161,12 +196,9 @@ pub fn connect(
                 }
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
                     connected_at = Some(Instant::now());
-                    // The first connection's subscribes are already queued; sending them again
-                    // would have the broker replay every retained message twice.
-                    if !first_connection {
+                    if session.connected() {
                         resubscribe(&client, &topics);
                     }
-                    first_connection = false;
                     if tx
                         .send(BrokerEvent::Connectivity(Connectivity::Connected))
                         .await
@@ -220,10 +252,26 @@ pub fn connect(
     (broker, rx, handle)
 }
 
+/// Whether a new connection has to subscribe to everything again.
+#[derive(Debug, Default)]
+struct Session {
+    connected_before: bool,
+}
+
+impl Session {
+    /// Called on each connection: true from the second on. Each one is a clean session, so the
+    /// broker has forgotten what the last one subscribed to. The first connection's subscribes
+    /// are still queued, and sending them twice would have the broker replay every retained
+    /// message twice.
+    fn connected(&mut self) -> bool {
+        std::mem::replace(&mut self.connected_before, true)
+    }
+}
+
 /// Subscribes to every known topic again, in the background: the request queue is bounded and
 /// only the polling task empties it, so that task can't wait on it itself.
 fn resubscribe(client: &AsyncClient, topics: &Topics) {
-    let batches = batches(&topics.lock().expect("not poisoned"));
+    let batches = topics.batches();
     let client = client.clone();
     tokio::spawn(async move {
         for batch in batches {
@@ -365,6 +413,26 @@ mod tests {
         // Never connected at all: not steady.
         assert!(!held_steady(None, connected + STEADY_AFTER));
         assert_eq!(next_retry(Some(LONGEST_RETRY), false), LONGEST_RETRY);
+    }
+
+    #[test]
+    fn every_connection_after_the_first_subscribes_again() {
+        let mut session = Session::default();
+        assert!(!session.connected());
+        assert!(session.connected());
+        assert!(session.connected());
+    }
+
+    #[test]
+    fn a_topic_is_only_sent_when_new_or_still_subscribed() {
+        let topics = Topics::default();
+        assert!(topics.add("zigbee2mqtt/lamp"));
+        assert!(!topics.add("zigbee2mqtt/lamp"));
+        assert!(topics.remove("zigbee2mqtt/lamp"));
+        assert!(!topics.remove("zigbee2mqtt/lamp"));
+        assert!(topics.batches().is_empty());
+        topics.add("zigbee2mqtt/lamp");
+        assert_eq!(topics.batches()[0][0].path, "zigbee2mqtt/lamp");
     }
 
     #[test]
