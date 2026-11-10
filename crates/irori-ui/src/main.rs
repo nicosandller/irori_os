@@ -172,14 +172,46 @@ fn App() -> impl IntoView {
 
     let busy = RwSignal::new(BTreeSet::new());
     let failures = RwSignal::new(BTreeMap::new());
+    let asked = RwSignal::new(BTreeMap::new());
+    let asks = StoredValue::new(0u64);
     let controls = Controls {
         busy,
         failures,
+        asked,
         set_on: Callback::new(move |(entity_id, on): (EntityId, bool)| {
             let (home, busy, failures) = (live.home, busy, failures);
-            send_command(entity_id.clone(), home, busy, failures, async move {
-                api::set_on(&entity_id, on).await
-            })
+            asks.update_value(|n| *n += 1);
+            let ask = asks.get_value();
+            asked.update(|asked| {
+                asked.insert(entity_id.clone(), (on, ask));
+            });
+            let id = entity_id.clone();
+            let forget = move || {
+                asked.update(|asked| {
+                    if asked.get(&id).is_some_and(|(_, was)| *was == ask) {
+                        asked.remove(&id);
+                    }
+                });
+            };
+            send_command_then(
+                entity_id.clone(),
+                home,
+                busy,
+                failures,
+                async move { api::set_on(&entity_id, on).await },
+                move |worked| {
+                    if !worked {
+                        forget();
+                        return;
+                    }
+                    // A device may say it's there a moment after it said yes; one that never
+                    // does springs back.
+                    spawn_local(async move {
+                        gloo_timers::future::sleep(ASKED_WAIT).await;
+                        forget();
+                    });
+                },
+            )
         }),
         set_light: Callback::new(move |(entity_id, data): (EntityId, LightTurnOn)| {
             let (home, busy, failures) = (live.home, busy, failures);
@@ -737,11 +769,27 @@ fn send_command(
     failures: RwSignal<BTreeMap<EntityId, String>>,
     run: impl Future<Output = Result<Option<EntityState>, String>> + 'static,
 ) {
+    send_command_then(entity_id, home, busy, failures, run, |_| {});
+}
+
+/// How long a switch's knob waits where it was sent, after the device said yes, for the device
+/// to say it's there.
+const ASKED_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// [`send_command`], then `after` with whether it worked.
+fn send_command_then(
+    entity_id: EntityId,
+    home: RwSignal<Home>,
+    busy: RwSignal<BTreeSet<EntityId>>,
+    failures: RwSignal<BTreeMap<EntityId, String>>,
+    run: impl Future<Output = Result<Option<EntityState>, String>> + 'static,
+    after: impl FnOnce(bool) + 'static,
+) {
     busy.update(|busy| {
         busy.insert(entity_id.clone());
     });
     spawn_local(async move {
-        match run.await {
+        let worked = match run.await {
             Ok(state) => {
                 failures.update(|failures| {
                     failures.remove(&entity_id);
@@ -753,13 +801,18 @@ fn send_command(
                         home.set(next);
                     }
                 }
+                true
             }
-            Err(why) => failures.update(|failures| {
-                failures.insert(entity_id.clone(), why);
-            }),
-        }
+            Err(why) => {
+                failures.update(|failures| {
+                    failures.insert(entity_id.clone(), why);
+                });
+                false
+            }
+        };
         busy.update(|busy| {
             busy.remove(&entity_id);
         });
+        after(worked);
     });
 }

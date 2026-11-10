@@ -258,7 +258,7 @@ pub(super) fn Feed(
                 }
             });
             view! {
-                <div class="feed-live-video">
+                <div class="feed-live-video camera-stage">
                     <crate::camera_live::CameraLive
                         id=camera.clone()
                         name=name.clone()

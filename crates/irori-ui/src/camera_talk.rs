@@ -7,6 +7,8 @@
 
 use irori_types::EntityId;
 use leptos::prelude::*;
+
+use crate::icons::{Icon, icon};
 use web_sys::js_sys::{Array, Function, Reflect};
 use web_sys::wasm_bindgen::closure::Closure;
 use web_sys::wasm_bindgen::{JsCast as _, JsValue};
@@ -61,6 +63,7 @@ impl Started {
 pub fn CameraTalk(id: EntityId, name: String, talking: RwSignal<bool>) -> impl IntoView {
     let standing = RwSignal::new(Standing::Idle);
     let started = StoredValue::new_local(None::<Started>);
+    let button = NodeRef::<leptos::html::Button>::new();
 
     let let_go = move || {
         if let Some(talk) = started.try_update_value(Option::take).flatten() {
@@ -98,9 +101,14 @@ pub fn CameraTalk(id: EntityId, name: String, talking: RwSignal<bool>) -> impl I
                 }
                 let _ = standing.try_set(next);
             });
-        let arguments: Array = [JsValue::from_str(&path), on_state.as_ref().clone()]
-            .into_iter()
-            .collect();
+        let level_on = button.get_untracked().map_or(JsValue::NULL, JsValue::from);
+        let arguments: Array = [
+            JsValue::from_str(&path),
+            on_state.as_ref().clone(),
+            level_on,
+        ]
+        .into_iter()
+        .collect();
         if let Ok(handle) = start.apply(&JsValue::NULL, &arguments) {
             started.set_value(Some(Started {
                 handle,
@@ -111,8 +119,16 @@ pub fn CameraTalk(id: EntityId, name: String, talking: RwSignal<bool>) -> impl I
 
     let label = move || match standing.get() {
         Standing::Connecting => "Connecting…",
-        Standing::Talking => "Talking… let go to stop",
+        Standing::Talking => "Talking · let go to stop",
         Standing::Idle | Standing::Failed(_) => "Hold to talk",
+    };
+    // What the styles key on: a turning arc while it connects, ripples while it talks, a shake
+    // when it stopped by itself.
+    let state = move || match standing.get() {
+        Standing::Idle => "idle",
+        Standing::Connecting => "connecting",
+        Standing::Talking => "talking",
+        Standing::Failed(_) => "failed",
     };
     let held = move || matches!(standing.get(), Standing::Connecting | Standing::Talking);
     let live = move || standing.get() == Standing::Talking;
@@ -123,8 +139,9 @@ pub fn CameraTalk(id: EntityId, name: String, talking: RwSignal<bool>) -> impl I
     let (down, key_down) = (press.clone(), press);
 
     view! {
-        <div class="camera-talk">
+        <div class="camera-talk" data-state=state>
             <button
+                node_ref=button
                 type="button"
                 class="talk-button"
                 class:held=held
@@ -158,8 +175,14 @@ pub fn CameraTalk(id: EntityId, name: String, talking: RwSignal<bool>) -> impl I
                 on:blur=move |_| let_go()
                 on:contextmenu=|event: web_sys::MouseEvent| event.prevent_default()
             >
-                <span class="talk-mic" aria-hidden="true">"🎙"</span>
-                {label}
+                <span class="talk-disc" aria-hidden="true">
+                    <span class="talk-wave"></span>
+                    <span class="talk-wave talk-wave-late"></span>
+                    <span class="talk-level"></span>
+                    <span class="talk-arc"></span>
+                    {icon(Icon::Mic)}
+                </span>
+                <span class="talk-label" aria-live="polite">{label}</span>
             </button>
             {failure}
         </div>

@@ -47,6 +47,11 @@ pub enum Icon {
     Power,
     Volume,
     Muted,
+    /// Talking through something: a microphone.
+    Mic,
+    /// Filling the screen, and coming back out of it.
+    Expand,
+    Shrink,
     // The kinds of device on the Floorplan.
     Bulb,
     Tv,
@@ -390,6 +395,12 @@ fn drawing(icon: Icon) -> &'static str {
         Icon::Muted => {
             r#"<path d="M4 9.500h3l4.500-4v13l-4.500-4H4Z"/><path d="m16 9.500 5 5M21 9.500l-5 5"/>"#
         }
+        Icon::Mic => concat!(
+            r#"<rect x="9" y="3" width="6" height="11.500" rx="3"/>"#,
+            r#"<path d="M5.500 11a6.500 6.500 0 0 0 13 0M12 17.500V21M9 21h6"/>"#,
+        ),
+        Icon::Expand => r#"<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>"#,
+        Icon::Shrink => r#"<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>"#,
         Icon::Bulb => concat!(
             r#"<path d="M9 17.5h6M10 20.5h4"/>"#,
             r#"<path d="M8.5 14.5a6 6 0 1 1 7 0c-.6.5-1 1.200-1 2v1h-5v-1c0-.800-.4-1.500-1-2Z"/>"#,

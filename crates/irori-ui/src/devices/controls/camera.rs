@@ -86,16 +86,19 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
     if let Capabilities::Camera(capabilities) = &entity.capabilities
         && capabilities.live
     {
+        // One block, so full screen takes the talk button and the arrows with the video.
         return view! {
-            <crate::camera_live::CameraLive
-                id=entity.id.clone()
-                name=entity.name.to_string()
-                capabilities=capabilities.clone()
-                open=open
-                talking=talking
-            />
-            {talk}
-            {turn}
+            <div class="camera-stage">
+                <crate::camera_live::CameraLive
+                    id=entity.id.clone()
+                    name=entity.name.to_string()
+                    capabilities=capabilities.clone()
+                    open=open
+                    talking=talking
+                />
+                {talk}
+                {turn}
+            </div>
         }
         .into_any();
     }

@@ -455,29 +455,80 @@ pub async fn run(
             return;
         };
         let result = carry_out(&mut api, part, &call.call.service, &mut siren_until).await;
-        let refused = matches!(result, Err(ApiError::Refused(_)));
-        call.reply(result.as_ref().map(|_| ()).map_err(|error| match error {
-            ApiError::Refused(_) => ServiceError::unavailable("the camera turned its login down"),
-            ApiError::Unreachable(why) => ServiceError::unavailable(why.clone()),
-            ApiError::Failed(why) => ServiceError::failed(why.clone()),
-        }));
-        if refused {
+        if matches!(result, Err(ApiError::Refused(_))) {
+            call.reply(Err(ServiceError::unavailable(
+                "the camera turned its login down",
+            )));
             tracing::warn!(%ip, "a Reolink's own API turned its login down");
             return;
         }
-        if let Ok(Some(now)) = result {
-            tell(&reports, &mut known, part, now).await;
-        } else if result.is_ok() {
-            match read(&mut api, part, dimmable).await {
-                Ok(now) => {
-                    tell(&reports, &mut known, part, now).await;
-                }
-                Err(error) => {
-                    tracing::debug!(%ip, "a Reolink's light couldn't be read back: {error}")
+        // What it's doing now goes out before the answer, so the page's switch lands as the
+        // command comes back rather than at the next poll.
+        match &result {
+            Ok(Some(now)) => {
+                tell(&reports, &mut known, part, *now).await;
+            }
+            Ok(None) => {
+                let wanted = asked_on(&call.call.service);
+                match read_back(&mut api, part, dimmable, wanted).await {
+                    Ok(now) => {
+                        tell(&reports, &mut known, part, now).await;
+                    }
+                    Err(error) => {
+                        tracing::debug!(%ip, "a Reolink's light couldn't be read back: {error}")
+                    }
                 }
             }
+            Err(_) => {}
+        }
+        call.reply(result.map(|_| ()).map_err(|error| match error {
+            ApiError::Refused(_) => ServiceError::unavailable("the camera turned its login down"),
+            ApiError::Unreachable(why) => ServiceError::unavailable(why),
+            ApiError::Failed(why) => ServiceError::failed(why),
+        }));
+    }
+}
+
+/// Whether a call asks for on or off.
+fn asked_on(service: &Service) -> Option<bool> {
+    match service {
+        Service::LightTurnOn(_) | Service::SwitchTurnOn => Some(true),
+        Service::LightTurnOff | Service::SwitchTurnOff => Some(false),
+        _ => None,
+    }
+}
+
+/// How long after a change it's read again, while the camera still says what it was: a Reolink
+/// can take a moment to say what it's just been told.
+const READ_BACK: [Duration; 4] = [
+    Duration::from_millis(0),
+    Duration::from_millis(400),
+    Duration::from_millis(900),
+    Duration::from_millis(1700),
+];
+
+/// Reads a part after changing it, again for a few seconds until it says what was asked, and
+/// what it says in the end.
+async fn read_back(
+    api: &mut Api,
+    part: Part,
+    dimmable: bool,
+    wanted: Option<bool>,
+) -> Result<Now, ApiError> {
+    let mut last = Err(ApiError::Failed("not read".into()));
+    for wait in READ_BACK {
+        tokio::time::sleep(wait).await;
+        last = read(api, part, dimmable).await;
+        let on = match &last {
+            Ok(Now::Light { on, .. } | Now::On(on)) => Some(*on),
+            Err(_) => None,
+        };
+        tracing::info!(part = part.key(), ?wanted, ?on, "a Reolink part read back");
+        if wanted.is_none() || on == wanted {
+            break;
         }
     }
+    last
 }
 
 /// Sends what a part is doing, if it changed. False once nobody listens.

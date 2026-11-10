@@ -283,9 +283,10 @@ pub(crate) fn fill(value: impl Into<f64>, min: impl Into<f64>, max: impl Into<f6
     ((value.clamp(min, max) - min) * 100.0 / (max - min)).floor() as u16
 }
 
-/// A switch showing what the entity is doing, not what was last clicked: it moves when the
-/// device reports back. A light that has never reported sits in between, and clicking turns it
-/// on.
+/// A switch showing what the entity is doing, not what was last clicked. Clicked, the knob
+/// travels at once to where it was sent and waits there, its track shimmering, until the device
+/// says it's there; one that never does springs back. Only then is the track solid. A light that
+/// has never reported sits in between, and clicking turns it on.
 pub(crate) fn knob(
     entity: &Entity,
     on: Option<bool>,
@@ -297,7 +298,26 @@ pub(crate) fn knob(
         let entity_id = entity_id.clone();
         move || controls.busy.get().contains(&entity_id)
     };
-    let pending = busy.clone();
+    // Where it was sent, while the device hasn't said it's there.
+    let heading = {
+        let entity_id = entity_id.clone();
+        move || {
+            controls
+                .asked
+                .with(|asked| asked.get(&entity_id).map(|(to, _)| *to))
+                .filter(|to| Some(*to) != on)
+        }
+    };
+    let pending = {
+        let busy = busy.clone();
+        let heading = heading.clone();
+        move || busy() || heading().is_some()
+    };
+    let heading_on = {
+        let heading = heading.clone();
+        move || heading() == Some(true)
+    };
+    let heading_off = move || heading() == Some(false);
     // What the click means is "I want it off", not "flip whatever it is now": the page sends the
     // state the person asked for, so a second click on a stale row can't undo the first.
     let wanted = !on.unwrap_or(false);
@@ -337,6 +357,8 @@ pub(crate) fn knob(
             // Waiting on the device, as opposed to unable to reach it: both disable the switch,
             // but only this one is going to change.
             class:pending=pending
+            class:heading-on=heading_on
+            class:heading-off=heading_off
             aria-label=label
             aria-pressed=pressed
             disabled=move || offline || busy()

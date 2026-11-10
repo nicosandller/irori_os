@@ -8,6 +8,8 @@
 
 use irori_types::{CameraCapabilities, EntityId, LiveQuality};
 use leptos::prelude::*;
+
+use crate::icons::{Icon, icon};
 use web_sys::js_sys::{Array, Function, Reflect};
 use web_sys::wasm_bindgen::closure::Closure;
 use web_sys::wasm_bindgen::{JsCast as _, JsValue};
@@ -160,6 +162,58 @@ pub fn CameraLive(
         muted.set(now);
     };
 
+    // Full screen: the whole camera block (`.camera-stage`: this, its talk button, its arrows)
+    // fills the screen, with the controls over the video.
+    let full = RwSignal::new(false);
+    let on_leave = StoredValue::new_local(None::<Closure<dyn Fn()>>);
+    let toggle_full = move |_| {
+        let Some(element) = video.get_untracked() else {
+            return;
+        };
+        let element: &web_sys::Element = &element;
+        let stage = element
+            .closest(".camera-stage")
+            .ok()
+            .flatten()
+            .or_else(|| element.parent_element());
+        let Some(stage) = stage else {
+            return;
+        };
+        let call = Reflect::get(&window(), &JsValue::from_str("iroriCameraLive"))
+            .ok()
+            .and_then(|live| Reflect::get(&live, &JsValue::from_str("full")).ok())
+            .and_then(|call| call.dyn_into::<Function>().ok());
+        let Some(call) = call else {
+            return;
+        };
+        if on_leave.with_value(Option::is_none) {
+            on_leave.set_value(Some(Closure::<dyn Fn()>::new(move || {
+                let _ = full.try_set(false);
+            })));
+        }
+        let now = !full.get_untracked();
+        let leave = on_leave.with_value(|leave| {
+            leave
+                .as_ref()
+                .map(|leave| leave.as_ref().clone())
+                .unwrap_or(JsValue::NULL)
+        });
+        let arguments: Array = [JsValue::from(stage), JsValue::from_bool(now), leave]
+            .into_iter()
+            .collect();
+        if call.apply(&JsValue::NULL, &arguments).is_ok() {
+            full.set(now);
+        }
+    };
+    // Leaving the page while full: the stage goes with it, so the page isn't left covered.
+    on_cleanup(move || {
+        if full.get_untracked()
+            && let Some(root) = document().document_element()
+        {
+            let _ = root.class_list().remove_1("camera-full");
+        }
+    });
+
     let caption = move || match standing.get() {
         Standing::Starting => "Connecting to the camera…".to_owned(),
         Standing::Playing => "Live".to_owned(),
@@ -190,11 +244,15 @@ pub fn CameraLive(
                     {move || (playing() && sound.get()).then(|| view! {
                         <button
                             type="button"
-                            class="live-button"
+                            class="live-icon glyph"
+                            class:alt=move || !muted.get()
                             aria-pressed=move || (!muted.get()).to_string()
+                            aria-label=move || if muted.get() { "Turn the sound on" } else { "Turn the sound off" }
+                            title=move || if muted.get() { "Sound on" } else { "Sound off" }
                             on:click=toggle_sound
                         >
-                            {move || if muted.get() { "Sound on" } else { "Sound off" }}
+                            <span class="glyph-first">{icon(Icon::Muted)}</span>
+                            <span class="glyph-second">{icon(Icon::Volume)}</span>
                         </button>
                     })}
                     {both.then(|| view! {
@@ -228,6 +286,18 @@ pub fn CameraLive(
                             "Try again"
                         </button>
                     })}
+                    <button
+                        type="button"
+                        class="live-icon glyph live-full"
+                        class:alt=move || full.get()
+                        aria-pressed=move || full.get().to_string()
+                        aria-label=move || if full.get() { "Leave full screen" } else { "Full screen" }
+                        title=move || if full.get() { "Leave full screen (Esc)" } else { "Full screen" }
+                        on:click=toggle_full
+                    >
+                        <span class="glyph-first">{icon(Icon::Expand)}</span>
+                        <span class="glyph-second">{icon(Icon::Shrink)}</span>
+                    </button>
                 </span>
             </figcaption>
         </figure>

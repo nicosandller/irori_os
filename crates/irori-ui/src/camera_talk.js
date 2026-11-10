@@ -21,8 +21,23 @@
   // `onState(state, reason)` with "connecting", "talking" or "ended". An ended reason is the
   // server's words, or "insecure", "blocked" or "no-microphone" for what the browser refused, or
   // "" when it was let go. Call from the press itself: a browser starts sound only for a gesture.
-  // Returns { stop }.
-  function start(path, onState) {
+  // `levelOn`, when given, gets how loud the voice is as `--level` (0 to 1), for the button to
+  // move with it. Returns { stop }.
+  function start(path, onState, levelOn) {
+    let level = 0;
+    function show(chunk) {
+      if (!levelOn) return;
+      const samples = new Int16Array(chunk);
+      let sum = 0;
+      for (let i = 0; i < samples.length; i++) sum += samples[i] * samples[i];
+      const loud = Math.min(1, (Math.sqrt(sum / Math.max(1, samples.length)) / 32768) * 5);
+      // Up at once, down slowly: speech reads as a pulse rather than a flicker.
+      level = Math.max(loud, level * 0.82);
+      levelOn.style.setProperty('--level', level.toFixed(3));
+    }
+    function quiet() {
+      if (levelOn) levelOn.style.setProperty('--level', '0');
+    }
     let ended = false;
     let listening = false;
     let socket = null;
@@ -36,6 +51,7 @@
     }
 
     function release() {
+      quiet();
       if (stream) {
         stream.getTracks().forEach((track) => {
           try {
@@ -136,6 +152,7 @@
         const node = new AudioWorkletNode(context, 'irori-talk');
         node.port.onmessage = (event) => {
           if (listening && socket && socket.readyState === WebSocket.OPEN) {
+            show(event.data);
             socket.send(event.data);
           }
         };

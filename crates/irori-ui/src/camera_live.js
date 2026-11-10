@@ -7,7 +7,8 @@
 //
 // Kept short and at the live edge: a few seconds of buffer, a jump forward when it falls
 // behind, and a jump over any hole (a page that joins late, or a frame dropped to keep up,
-// leaves one). Closed while the tab is hidden, and opened again when it's back.
+// leaves one). Closed while the tab is hidden, and opened again when it's back. `full` puts it
+// in full screen with its controls.
 (function () {
   // What a page can play, by the codec family the camera's stream names.
   const PROBES = [
@@ -229,5 +230,87 @@
     };
   }
 
-  window.iroriCameraLive = { mount, accepts };
+  // How long the controls stay over a full-screen video after the pointer last moved, in ms.
+  const IDLE_MS = 2600;
+
+  // Puts `stage` (the video with its controls) in full screen, or takes it out. The browser's
+  // own full screen where there is one; where there isn't (an iPhone), the stage just covers
+  // the page. The controls sit over the video and fade when the pointer is still. `onLeave` is
+  // called when it leaves some other way: Escape, or the system's own gesture.
+  function full(stage, on, onLeave) {
+    const was = stage.__iroriFull;
+    if (!on) {
+      if (was) was.leave(false);
+      return;
+    }
+    if (was) return;
+    let timer = null;
+    const wake = () => {
+      delete stage.dataset.idle;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        stage.dataset.idle = '';
+      }, IDLE_MS);
+    };
+    const changed = () => {
+      const now = document.fullscreenElement || document.webkitFullscreenElement;
+      if (!now && state.native) state.leave(true);
+    };
+    const key = (event) => {
+      if (event.key === 'Escape') state.leave(true);
+    };
+    const state = {
+      native: false,
+      leave(told) {
+        if (stage.__iroriFull !== state) return;
+        delete stage.__iroriFull;
+        if (timer) clearTimeout(timer);
+        stage.classList.remove('is-full');
+        delete stage.dataset.idle;
+        document.documentElement.classList.remove('camera-full');
+        stage.removeEventListener('pointermove', wake);
+        stage.removeEventListener('pointerdown', wake);
+        document.removeEventListener('fullscreenchange', changed);
+        document.removeEventListener('webkitfullscreenchange', changed);
+        document.removeEventListener('keydown', key);
+        const now = document.fullscreenElement || document.webkitFullscreenElement;
+        if (now === stage) {
+          const exit = document.exitFullscreen || document.webkitExitFullscreen;
+          try {
+            const done = exit && exit.call(document);
+            if (done && done.catch) done.catch(() => {});
+          } catch (_) {}
+        }
+        if (told) {
+          try {
+            onLeave();
+          } catch (_) {}
+        }
+      },
+    };
+    stage.__iroriFull = state;
+    stage.classList.add('is-full');
+    document.documentElement.classList.add('camera-full');
+    stage.addEventListener('pointermove', wake);
+    stage.addEventListener('pointerdown', wake);
+    document.addEventListener('fullscreenchange', changed);
+    document.addEventListener('webkitfullscreenchange', changed);
+    document.addEventListener('keydown', key);
+    wake();
+    const request = stage.requestFullscreen || stage.webkitRequestFullscreen;
+    if (request) {
+      try {
+        const asked = request.call(stage);
+        state.native = true;
+        if (asked && asked.catch) {
+          // Refused: the stage still covers the page.
+          asked.catch(() => {
+            state.native = false;
+          });
+        }
+      } catch (_) {}
+    }
+  }
+
+  window.iroriCameraLive = { mount, accepts, full };
 })();
