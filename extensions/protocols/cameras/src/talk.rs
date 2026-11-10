@@ -30,6 +30,14 @@ const STEP: Duration = Duration::from_secs(5);
 /// How long the camera's speaker stays open with nothing to play.
 const QUIET: Duration = Duration::from_secs(3);
 
+/// How long the speaker stays open after the last sound. A camera plays from a buffer, a
+/// moment behind; hanging up at once loses what's still in it, and a short sentence can be
+/// all of it.
+#[cfg(not(test))]
+const TAIL: Duration = Duration::from_millis(1500);
+#[cfg(test)]
+const TAIL: Duration = Duration::from_millis(50);
+
 /// How often the session is kept alive while talking: well inside the usual 60 s timeout.
 const KEEPALIVE: Duration = Duration::from_secs(25);
 
@@ -131,6 +139,10 @@ pub async fn run(track: &TalkTrack, ip: IpAddr, login: &Login, talk: IncomingTal
     let IncomingTalk {
         mut audio, line, ..
     } = talk;
+    // One session at a time on a camera's speaker: a quick second press waits for the first
+    // one's tail rather than asking a camera that's still busy.
+    let speaker = speaker_of(ip);
+    let _turn = speaker.lock().await;
     let ended = speak(track, ip, login, &mut audio, &line).await;
     match &ended {
         Ended::Stopped => line.end(None),
@@ -195,10 +207,16 @@ async fn speak(
     let mut keepalive =
         tokio::time::interval_at(tokio::time::Instant::now() + KEEPALIVE, KEEPALIVE);
     let mut buffer = vec![0u8; 4096];
+    // What was sent, for the log: how much, and how loud at its loudest.
+    let (mut sent, mut loudest) = (0usize, 0u16);
     let ended = loop {
         tokio::select! {
             chunk = tokio::time::timeout(QUIET, audio.recv()) => match chunk {
                 Ok(Some(chunk)) => {
+                    sent += chunk.len() / 2;
+                    loudest = irori_protocol::talk::samples(&chunk)
+                        .map(i16::unsigned_abs)
+                        .fold(loudest, u16::max);
                     let mut gone = false;
                     for packet in packets.push(&chunk) {
                         if rtsp.write(&packet).await.is_err() {
@@ -225,13 +243,42 @@ async fn speak(
             },
         }
     };
+    if ended == Ended::Stopped && sent > 0 {
+        // Let the camera play what it still holds; what it says meanwhile is let go.
+        let tail = tokio::time::sleep(TAIL);
+        tokio::pin!(tail);
+        loop {
+            tokio::select! {
+                () = &mut tail => break,
+                read = rtsp.stream.read(&mut buffer) => if matches!(read, Ok(0) | Err(_)) { break },
+            }
+        }
+    }
     let _ = tokio::time::timeout(
         Duration::from_secs(1),
         rtsp.send("TEARDOWN", &track.base, &[("Session", &session)]),
     )
     .await;
-    tracing::info!(%ip, "stopped talking through a camera");
+    tracing::info!(
+        %ip,
+        seconds = sent as f64 / 8000.0,
+        loudest = format!("{:.0}%", f64::from(loudest) * 100.0 / 32768.0),
+        "stopped talking through a camera"
+    );
     ended
+}
+
+/// Each camera's speaker, to take turns on.
+fn speaker_of(ip: IpAddr) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    static SPEAKERS: std::sync::LazyLock<
+        std::sync::Mutex<
+            std::collections::BTreeMap<IpAddr, std::sync::Arc<tokio::sync::Mutex<()>>>,
+        >,
+    > = std::sync::LazyLock::new(Default::default);
+    let mut speakers = SPEAKERS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    speakers.entry(ip).or_default().clone()
 }
 
 /// A refused login, as [`Rtsp::request`] says it.

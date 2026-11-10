@@ -19,9 +19,10 @@ use tokio::sync::mpsc::error::TrySendError;
 /// The most an init segment may be: a codec's parameters, a few hundred bytes in practice.
 pub const MAX_INIT: usize = 64 * 1024;
 
-/// The most one fragment may be. A fragment is a frame or a few, and a keyframe of a 4K camera
-/// is a few hundred kilobytes; it crosses the extension pipe as base64, a third bigger again.
-pub const MAX_FRAGMENT: usize = 1024 * 1024;
+/// The most one fragment may be. A fragment is a frame or a few. A keyframe of a 4K camera is
+/// a few hundred kilobytes, but a wide two-lens one (5120×1552) sends keyframes past 1 MB; it
+/// crosses the extension pipe as base64, a third bigger again.
+pub const MAX_FRAGMENT: usize = 4 * 1024 * 1024;
 
 /// How many chunks wait between two hops before the sender starts skipping: a second or so
 /// of video at 25 frames a second.

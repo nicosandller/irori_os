@@ -207,7 +207,7 @@ camera's protocol for a stream.
 
 - **The container is fragmented MP4**, which browsers play through Media Source Extensions. The
   protocol makes it: an **init segment** (`video/mp4; codecs="…"`, at most 64 KB) once, then
-  **fragments** (at most 1 MB each), a fragment that starts at a keyframe marked `key`. Neither
+  **fragments** (at most 4 MB each), a fragment that starts at a keyframe marked `key`. Neither
   the core nor the page knows anything about codecs.
 - **The request says what to send**: one of the camera's `qualities` (`low`, its small stream, or
   `high`, its full size) and `accepts`, the codec families the page can play as MP4 names them
