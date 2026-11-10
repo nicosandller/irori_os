@@ -952,7 +952,8 @@
        inside itself instead of the screen; none of those while a camera fills it. */
     :has(.camera-stage.is-full) {
       translate: none !important; transform: none !important; filter: none !important;
-      contain: none !important; backdrop-filter: none !important; }
+      contain: none !important; backdrop-filter: none !important; transition: none !important;
+      opacity: 1 !important; }
     .camera-stage.is-full[data-idle]:not(:has(.talk-button.held)) { cursor: none; }
     .camera-stage.is-full[data-idle]:not(:has(.talk-button.held))
       :is(.camera-live-bar, .camera-talk, .camera-turn) { opacity: 0; }
