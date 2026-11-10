@@ -4,8 +4,8 @@
 // While the button is held: the microphone (with the browser's echo cancelling, so the camera's
 // own sound isn't sent back to it), two low-pass filters that keep speech and drop what 8 kHz
 // can't carry, then camera_talk_worklet.js, which posts 20 ms of 16-bit sound at 8 kHz at a
-// time. Nothing is sent until the server says the camera is "listening"; letting go closes it
-// all, the microphone included.
+// time. The socket opens once the microphone runs, and nothing is sent until the server says
+// the camera is "listening"; letting go closes it all, the microphone included.
 (function () {
   // Speech is below this; 8000 samples a second carry nothing above 4 kHz.
   const LOW_PASS_HZ = 3400;
@@ -85,25 +85,29 @@
       return { stop() {} };
     }
 
-    const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
-    socket = new WebSocket(scheme + location.host + path);
-    socket.binaryType = 'arraybuffer';
-    socket.onmessage = (event) => {
-      if (typeof event.data !== 'string') return;
-      let word = null;
-      try {
-        word = JSON.parse(event.data);
-      } catch (_) {
-        return;
-      }
-      if (word === 'listening') {
-        listening = true;
-        say('talking');
-      } else if (word && word.ended) {
-        finish(word.ended.reason || 'the camera stopped listening');
-      }
-    };
-    socket.onclose = () => finish('the connection to Irori closed');
+    // Dialled once the microphone is running, so a first-time "allow the microphone?" doesn't
+    // eat into the few seconds the camera waits for sound.
+    function dial() {
+      const scheme = location.protocol === 'https:' ? 'wss://' : 'ws://';
+      socket = new WebSocket(scheme + location.host + path);
+      socket.binaryType = 'arraybuffer';
+      socket.onmessage = (event) => {
+        if (typeof event.data !== 'string') return;
+        let word = null;
+        try {
+          word = JSON.parse(event.data);
+        } catch (_) {
+          return;
+        }
+        if (word === 'listening') {
+          listening = true;
+          say('talking');
+        } else if (word && word.ended) {
+          finish(word.ended.reason || 'the camera stopped listening');
+        }
+      };
+      socket.onclose = () => finish('the connection to Irori closed');
+    }
 
     const microphone = navigator.mediaDevices.getUserMedia({
       audio: {
@@ -139,6 +143,7 @@
         // A node nothing listens to may never run; it writes nothing, so this is silent.
         node.connect(context.destination);
         if (context.state === 'suspended') context.resume();
+        dial();
       })
       .catch((error) => {
         const name = error && error.name;
