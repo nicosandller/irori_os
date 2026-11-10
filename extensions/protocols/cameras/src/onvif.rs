@@ -37,6 +37,8 @@ pub struct Info {
     pub profiles: Vec<Profile>,
     /// Where a picture comes from: the smallest profile that has one.
     pub snapshot: Option<Target>,
+    /// How its speaker is reached, when it has one that can be talked through.
+    pub talk: Option<crate::talk::TalkTrack>,
 }
 
 impl Info {
@@ -184,6 +186,10 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
             }
         }
         info.profiles = profiles;
+        // Never a reason to fail: a camera that won't say just can't be talked through.
+        if let Some(stream) = info.high().and_then(|profile| profile.stream.clone()) {
+            info.talk = crate::talk::ask(&stream, soap.camera.ip, login).await;
+        }
     }
     if let Some(events) = info.events.clone() {
         info.detects = events::properties(&soap, &events)

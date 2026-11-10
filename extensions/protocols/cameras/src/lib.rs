@@ -25,6 +25,7 @@ mod refused;
 mod reolink;
 pub mod settings;
 mod soap;
+mod talk;
 
 #[cfg(test)]
 mod fake;
@@ -367,6 +368,7 @@ async fn apply(
                     .collect::<Vec<_>>()
                     .join(", "),
                 pictures = info.snapshot.is_some(),
+                talks = info.talk.is_some(),
                 "logged into a camera"
             );
             let (device, entities) = describe(&cam.found, info)?;
@@ -758,6 +760,28 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
                 }
             });
         }
+        Incoming::Talk(talk) => {
+            let (id, ready) = match ready_for(cams, talk.unique_id.as_str()) {
+                Ok(pair) => pair,
+                Err(why) => {
+                    talk.line.end(Some(why));
+                    return;
+                }
+            };
+            let (Some(track), Some(login)) = (ready.info.talk.clone(), ready.soap.login.clone())
+            else {
+                talk.line.end(Some("this camera has no speaker".into()));
+                return;
+            };
+            let generation = cams.get(&id).map_or(0, |cam| cam.generation);
+            let ip = ready.soap.camera.ip;
+            let events = events.clone();
+            tokio::spawn(async move {
+                if talk::run(&track, ip, &login, talk).await == talk::Ended::Refused {
+                    let _ = events.send(Event::Refused { id, generation }).await;
+                }
+            });
+        }
     }
 }
 
@@ -916,6 +940,7 @@ fn capabilities(info: &Info) -> CameraCapabilities {
         pan_tilt: abilities.pan_tilt,
         zoom: abilities.zoom,
         presets: abilities.presets,
+        talk: info.talk.is_some(),
         ..CameraCapabilities::default()
     }
 }

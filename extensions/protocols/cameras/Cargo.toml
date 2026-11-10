@@ -25,6 +25,9 @@ sha1 = "0.10.7"
 sha2.workspace = true
 # RTSP: the camera's live video, as H.264/H.265 frames and AAC/G.711 audio. Pure Rust.
 retina = "0.4.21"
+# RTSP's Digest login for talking through a camera, answered the way `retina` answers it for
+# video (the cameras turned down our own Digest answer on RTSP).
+http-auth = "0.1.10"
 # The RTSP address handed to `retina`, with the camera's host put back in.
 url = "2.5.7"
 # ONVIF answers are SOAP. Matched by local name only: vendors put the same element in
