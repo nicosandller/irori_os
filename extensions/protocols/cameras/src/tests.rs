@@ -55,7 +55,7 @@ fn settings(login: Option<(&str, &str)>) -> Settings {
         serde_json::from_value(serde_json::json!({ "cameras": cameras })).expect("settings");
     // The fake cameras say they're Reolinks: their own API is somewhere nothing listens,
     // unless a test starts one.
-    settings.reolink_port = Some(1);
+    settings.https_port = Some(1);
     settings
 }
 
@@ -125,12 +125,17 @@ async fn world(settings: Settings, store: &Store) -> World {
 
 impl World {
     async fn sees(&self, camera: &FakeCamera) {
+        self.sees_at(camera.port).await;
+    }
+
+    /// Something answers discovery as the camera, from `port` on loopback.
+    async fn sees_at(&self, port: u16) {
         self.discovery
             .send(Found {
                 id: ID.to_owned(),
                 ip: "127.0.0.1".parse().expect("ip"),
                 device_service: Target {
-                    port: camera.port,
+                    port,
                     path: "/onvif/device_service".into(),
                 },
                 name: "Reolink".into(),
@@ -550,7 +555,7 @@ async fn a_reolinks_spotlight_siren_and_lights_do_what_they_re_told_and_say_so()
     let camera = FakeCamera::start("admin", "right", true).await;
     let api = FakeReolink::start("admin", "right").await;
     let mut settings = settings(Some(("admin", "right")));
-    settings.reolink_port = Some(api.port);
+    settings.https_port = Some(api.port);
     let world = world(settings, &store).await;
     world.sees(&camera).await;
     world
@@ -665,7 +670,7 @@ async fn a_reolink_api_that_turns_its_login_down_is_asked_once() {
     // Its API wants something else: say, an account allowed ONVIF but not the API.
     let api = FakeReolink::start("admin", "other").await;
     let mut settings = settings(Some(("admin", "right")));
-    settings.reolink_port = Some(api.port);
+    settings.https_port = Some(api.port);
     let world = world(settings, &store).await;
     world.sees(&camera).await;
     world
@@ -691,5 +696,131 @@ async fn a_reolink_api_that_turns_its_login_down_is_asked_once() {
         );
         assert!(log.waiting.is_empty(), "the camera itself still works");
     }
+    world.stop().await;
+}
+
+fn doubted(log: &Log) -> bool {
+    log.waiting.iter().any(|waiting| {
+        waiting
+            .reason
+            .starts_with("something answered as this camera")
+    })
+}
+
+/// What the store remembers of the camera.
+fn pinned(store: &Store) -> serde_json::Value {
+    store
+        .lock()
+        .expect("store")
+        .get("trusted")
+        .and_then(|trusted| trusted.get(ID))
+        .cloned()
+        .expect("the camera is remembered")
+}
+
+/// Anything on the network can answer discovery with a known camera's id. With no certificate
+/// to go by, only where the camera's login worked is trusted, before and after a restart, until
+/// the person types the new address.
+#[tokio::test]
+async fn something_answering_as_a_camera_from_elsewhere_gets_no_login() {
+    let store = Store::default();
+    let camera = FakeCamera::start("admin", "right", true).await;
+    // Takes the same login, so anything sent to it would show.
+    let impostor = FakeCamera::start("admin", "right", true).await;
+
+    let world = world(settings(Some(("admin", "right"))), &store).await;
+    world.sees(&camera).await;
+    world
+        .until("the camera is added", |log| {
+            log.availability.contains(&Availability::Available)
+        })
+        .await;
+    assert_eq!(
+        pinned(&store)["address"],
+        format!("127.0.0.1:{}", camera.port)
+    );
+
+    // While the camera works.
+    world.sees(&impostor).await;
+    world.until("it asks about the new address", doubted).await;
+    assert_eq!(impostor.seen().logins, 0, "{:?}", impostor.seen());
+    assert!(
+        !world
+            .log
+            .lock()
+            .expect("log")
+            .availability
+            .contains(&Availability::Unavailable),
+        "the working camera is left alone"
+    );
+    world.stop().await;
+
+    // After a restart, when it answers first.
+    let world = world_again(settings(Some(("admin", "right"))), &store).await;
+    world.sees(&impostor).await;
+    world.until("it asks about the new address", doubted).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(impostor.seen().logins, 0, "{:?}", impostor.seen());
+    assert!(
+        impostor.seen().actions.is_empty(),
+        "nothing was asked of it"
+    );
+    world.stop().await;
+
+    // The person says the camera moved there.
+    let mut moved = settings(Some(("admin", "right")));
+    moved.moved.insert(ID.to_owned(), "127.0.0.1".to_owned());
+    let world = world_again(moved, &store).await;
+    world.sees(&impostor).await;
+    world
+        .until("it's taken there", |log| {
+            log.availability.contains(&Availability::Available)
+        })
+        .await;
+    assert!(impostor.seen().logins > 0);
+    assert_eq!(
+        pinned(&store)["address"],
+        format!("127.0.0.1:{}", impostor.port)
+    );
+    world.stop().await;
+}
+
+/// A camera that shows a certificate is known by it: something else at its address, showing
+/// another, gets no login, over ONVIF or the Reolink API.
+#[tokio::test]
+async fn something_showing_another_certificate_gets_no_login() {
+    let store = Store::default();
+    let camera = FakeCamera::start("admin", "right", true).await;
+    let api = FakeReolink::start("admin", "right").await;
+    let mut first = settings(Some(("admin", "right")));
+    first.https_port = Some(api.port);
+    let world = world(first, &store).await;
+    world.sees(&camera).await;
+    world
+        .until("the camera is added", |log| {
+            log.availability.contains(&Availability::Available)
+        })
+        .await;
+    assert!(pinned(&store)["certificate"].is_string());
+    world.stop().await;
+    let before = camera.seen().actions.len();
+
+    let other = FakeReolink::start_other("admin", "right").await;
+    let mut then = settings(Some(("admin", "right")));
+    then.https_port = Some(other.port);
+    let world = world_again(then, &store).await;
+    world.sees(&camera).await;
+    world.until("it asks about it", doubted).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // The first run's event polling goes on in the test (a real restart ends the process), so
+    // what counts is that no login was started: a login begins by asking who the camera is.
+    let since = camera.seen().actions[before..].to_vec();
+    assert!(
+        !since
+            .iter()
+            .any(|action| action == "GetSystemDateAndTime" || action == "GetDeviceInformation"),
+        "no ONVIF login: {since:?}"
+    );
+    assert_eq!(other.seen().logins, 0, "no API login");
     world.stop().await;
 }

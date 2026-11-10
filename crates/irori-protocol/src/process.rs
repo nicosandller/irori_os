@@ -1083,16 +1083,28 @@ impl Pending {
     }
 }
 
+/// The longest line either side reads off the pipe. The biggest message there is a fragment of
+/// live video, base64 inside JSON; the room left over is for anything a fragment's own fields or
+/// a future message need. A longer line ends the link rather than being held in memory whole.
+pub const MAX_LINE: usize = 8 * 1024 * 1024;
+const _: () = assert!(crate::live::MAX_FRAGMENT.div_ceil(3) * 4 + 64 * 1024 <= MAX_LINE);
+const _: () = assert!(crate::MAX_PICTURE.div_ceil(3) * 4 + 64 * 1024 <= MAX_LINE);
+
 pub(crate) async fn read_json<T: for<'de> Deserialize<'de>>(
     reader: &mut BufReader<impl tokio::io::AsyncRead + Unpin>,
 ) -> Result<T, String> {
+    use tokio::io::AsyncReadExt as _;
     let mut line = String::new();
-    let n = reader
+    let n = (&mut *reader)
+        .take(MAX_LINE as u64 + 1)
         .read_line(&mut line)
         .await
         .map_err(|e| e.to_string())?;
     if n == 0 {
         return Err("the host closed the connection".into());
+    }
+    if n > MAX_LINE {
+        return Err(format!("a message longer than {MAX_LINE} bytes"));
     }
     serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}"))
 }
@@ -1263,6 +1275,31 @@ impl ExtProcess {
 mod tests {
     use super::*;
     use irori_types::PackagePath;
+
+    /// The biggest fragment of video there can be fits on one line; a line longer than any
+    /// message ends the link without being held whole.
+    #[tokio::test]
+    async fn the_biggest_message_fits_on_the_pipe_and_a_longer_line_doesnt() {
+        use base64::Engine as _;
+        let biggest = FromExt::LiveFragment {
+            stream: u64::MAX,
+            key: true,
+            data: base64::engine::general_purpose::STANDARD
+                .encode(vec![0xff; crate::live::MAX_FRAGMENT]),
+        };
+        let mut line = serde_json::to_string(&biggest).expect("ser");
+        line.push('\n');
+        let mut reader = BufReader::new(line.as_bytes());
+        let read: FromExt = read_json(&mut reader).await.expect("it fits");
+        assert!(matches!(read, FromExt::LiveFragment { data, .. } if data.len() > 5_000_000));
+
+        let long = vec![b'x'; MAX_LINE + 10];
+        let mut reader = BufReader::new(long.as_slice());
+        let error = read_json::<FromExt>(&mut reader)
+            .await
+            .expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+    }
 
     /// What an automations package built before kinds could take any action sends, byte for
     /// byte: a core that reads any action must still read it, and write it back the same way.

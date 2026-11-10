@@ -759,8 +759,17 @@ pub async fn camera(
     let seat = seat_kind(&state, &who, &headers).await;
     let signed_in = matches!(seat, SeatKind::Session { .. });
     let closed = state.0.sockets.open(seat);
-    ws.on_upgrade(move |socket| watch_camera(socket, state, closed, who, signed_in, id, quality))
+    ws.max_message_size(CAMERA_MESSAGE_MOST)
+        .max_frame_size(CAMERA_MESSAGE_MOST)
+        .on_upgrade(move |socket| watch_camera(socket, state, closed, who, signed_in, id, quality))
 }
+
+/// The most a page may send in one message on a camera's sockets. A watcher sends one short list
+/// of what it can play, and a talker chunks of sound of
+/// [`irori_protocol::talk::MAX_TALK_CHUNK`] at most, so anything bigger is refused before it's
+/// held in memory, rather than read in full and then turned down.
+const CAMERA_MESSAGE_MOST: usize = 16 * 1024;
+const _: () = assert!(irori_protocol::talk::MAX_TALK_CHUNK < CAMERA_MESSAGE_MOST);
 
 async fn watch_camera(
     mut socket: WebSocket,
@@ -822,12 +831,12 @@ async fn watch_camera(
                 let sent = match chunk {
                     Some(irori_protocol::LiveChunk::Init { mime, data }) => {
                         match send_word(&mut socket, &CameraWord::Playing { mime }).await {
-                            Ok(()) => socket.send(Message::Binary(data.into())).await.map_err(|_| ()),
+                            Ok(()) => socket.send(Message::Binary(data)).await.map_err(|_| ()),
                             Err(()) => Err(()),
                         }
                     }
                     Some(irori_protocol::LiveChunk::Fragment { data, .. }) => {
-                        socket.send(Message::Binary(data.into())).await.map_err(|_| ())
+                        socket.send(Message::Binary(data)).await.map_err(|_| ())
                     }
                     Some(irori_protocol::LiveChunk::End { error }) => {
                         break Some(error.unwrap_or_else(|| "the stream ended".to_owned()));
@@ -911,14 +920,18 @@ pub async fn talk(
     let seat = seat_kind(&state, &who, &headers).await;
     let signed_in = matches!(seat, SeatKind::Session { .. });
     let closed = state.0.sockets.open(seat);
-    ws.on_upgrade(move |mut socket| async move {
-        match talking {
-            Ok(talking) => talk_through(socket, state, closed, who, signed_in, id, talking).await,
-            Err(why) => {
-                let _ = say_ended(&mut socket, why).await;
+    ws.max_message_size(CAMERA_MESSAGE_MOST)
+        .max_frame_size(CAMERA_MESSAGE_MOST)
+        .on_upgrade(move |mut socket| async move {
+            match talking {
+                Ok(talking) => {
+                    talk_through(socket, state, closed, who, signed_in, id, talking).await
+                }
+                Err(why) => {
+                    let _ = say_ended(&mut socket, why).await;
+                }
             }
-        }
-    })
+        })
 }
 
 async fn talk_through(

@@ -2300,14 +2300,18 @@ async fn apply_from_ext(
         FromExt::LiveInit { stream, mime, data } => Ok(live_chunk(
             live_feeds,
             stream,
-            irori_protocol::live::decode(&data)
-                .map(|data| irori_protocol::LiveChunk::Init { mime, data }),
+            irori_protocol::live::decode(&data).map(|data| irori_protocol::LiveChunk::Init {
+                mime,
+                data: data.into(),
+            }),
         )),
         FromExt::LiveFragment { stream, key, data } => Ok(live_chunk(
             live_feeds,
             stream,
-            irori_protocol::live::decode(&data)
-                .map(|data| irori_protocol::LiveChunk::Fragment { key, data }),
+            irori_protocol::live::decode(&data).map(|data| irori_protocol::LiveChunk::Fragment {
+                key,
+                data: data.into(),
+            }),
         )),
         FromExt::LiveEnd { stream, error } => {
             if let Some(feed) = live_feeds.remove(&stream) {

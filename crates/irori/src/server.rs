@@ -7715,6 +7715,34 @@ mod tests {
             "{quiet}"
         );
 
+        // A message far bigger than any chunk of sound isn't read in full: the socket ends.
+        let mut big = loop {
+            if let Ok(mut socket) = open_talk(address, "camera.porch", None).await?
+                && talk_word(&mut socket).await? == serde_json::json!("listening")
+            {
+                break socket;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        let _ = big
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                vec![0u8; 64 * 1024].into(),
+            ))
+            .await;
+        let ended = loop {
+            use futures_util::StreamExt as _;
+            match tokio::time::timeout(Duration::from_secs(10), big.next()).await? {
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Text(text))) => {
+                    break Some(text.to_string());
+                }
+                Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_)) | Err(_)) | None => {
+                    break None;
+                }
+                Some(Ok(_)) => {}
+            }
+        };
+        assert_eq!(ended, None, "closed, not answered");
+
         host.shutdown().await;
         serve.abort();
         Ok(())

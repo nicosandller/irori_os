@@ -1,5 +1,5 @@
-//! Plain HTTP to a camera, with the logins cameras ask for: Digest (MD5), or Basic when that's
-//! all the camera offers.
+//! Plain HTTP to a camera, with the login cameras ask for: Digest (MD5). Basic, which sends the
+//! password as it is, is never answered: whatever asks for it gets nothing it can use.
 //!
 //! A login is only sent once the camera has asked for one, and a camera that still says no
 //! after seeing it has refused it ([`HttpError::Refused`]). That's the one answer that counts
@@ -115,6 +115,9 @@ fn parse_port(text: &str) -> Result<u16, String> {
 #[derive(Debug, Clone)]
 pub struct Camera {
     pub ip: IpAddr,
+    /// The fingerprint of the certificate it showed when it was trusted (`trust.rs`): HTTPS to
+    /// it refuses any other. `None` takes any, for a camera that had none to show.
+    pub certificate: Option<String>,
 }
 
 impl Camera {
@@ -149,7 +152,9 @@ impl Camera {
             .map(|challenge| challenge.answer(login, method.as_str(), &target.path))
         else {
             return Err(HttpError::Failed(
-                "the camera asked for a login in a way this doesn't speak".into(),
+                "the camera asked for a login Irori doesn't send: only Digest is answered, never \
+                 Basic, which would give the password away as it is"
+                    .into(),
             ));
         };
         let second = self
@@ -191,7 +196,8 @@ impl Camera {
         let exchange = async {
             let stream = self.connect(port).await?;
             let name = rustls::pki_types::ServerName::IpAddress(self.ip.into());
-            let stream = tokio_rustls::TlsConnector::from(Arc::clone(tls_config()))
+            let config = tls_config(self.certificate.as_deref());
+            let stream = tokio_rustls::TlsConnector::from(config)
                 .connect(name, stream)
                 .await
                 .map_err(|_| {
@@ -285,14 +291,17 @@ impl Camera {
     }
 }
 
-/// TLS for cameras: any certificate, since each camera signs its own, but a handshake signature
-/// that checks out against it.
-fn tls_config() -> &'static Arc<rustls::ClientConfig> {
-    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    CONFIG.get_or_init(|| {
+/// TLS for cameras. Each camera signs its own certificate, so no authority vouches for it:
+/// with `expect`, only the certificate with that fingerprint is taken (the one the camera
+/// showed when it was trusted); without, any. Either way the handshake's signature has to check
+/// out against the certificate, so whoever answers holds its key.
+fn tls_config(expect: Option<&str>) -> Arc<rustls::ClientConfig> {
+    static ANY: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+    let build = |expect: Option<String>| {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let verifier = Arc::new(OwnCerts {
             provider: Arc::clone(&provider),
+            expect,
         });
         let config = rustls::ClientConfig::builder_with_provider(provider)
             .with_safe_default_protocol_versions()
@@ -301,7 +310,59 @@ fn tls_config() -> &'static Arc<rustls::ClientConfig> {
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth();
         Arc::new(config)
-    })
+    };
+    match expect {
+        Some(expect) => build(Some(expect.to_owned())),
+        None => Arc::clone(ANY.get_or_init(|| build(None))),
+    }
+}
+
+/// A certificate's fingerprint: SHA-256 of its DER, as hex.
+pub fn fingerprint(cert: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+    hex(&Sha256::digest(cert))
+}
+
+/// What a camera showed over HTTPS, asked without any login.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shown {
+    /// A certificate, with a handshake signed by its key: its fingerprint.
+    Certificate(String),
+    /// Nothing: the port is closed, or it doesn't speak TLS, or its handshake didn't check out.
+    Nothing,
+    /// It didn't answer in time; ask again later.
+    NoAnswer,
+}
+
+/// Opens HTTPS to `ip` on `port` and says which certificate it shows. Sends nothing else.
+pub async fn certificate(ip: IpAddr, port: u16) -> Shown {
+    let handshake = async {
+        let stream = match tokio::net::TcpStream::connect(SocketAddr::new(ip, port)).await {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                return Shown::Nothing;
+            }
+            Err(_) => return Shown::NoAnswer,
+        };
+        let name = rustls::pki_types::ServerName::IpAddress(ip.into());
+        let Ok(stream) = tokio_rustls::TlsConnector::from(tls_config(None))
+            .connect(name, stream)
+            .await
+        else {
+            return Shown::Nothing;
+        };
+        let (_, connection) = stream.get_ref();
+        match connection
+            .peer_certificates()
+            .and_then(|certs| certs.first())
+        {
+            Some(cert) => Shown::Certificate(fingerprint(cert.as_ref())),
+            None => Shown::Nothing,
+        }
+    };
+    tokio::time::timeout(TIMEOUT, handshake)
+        .await
+        .unwrap_or(Shown::NoAnswer)
 }
 
 /// Checks a handshake signature against the certificate's key read straight out of it, for a
@@ -386,17 +447,26 @@ fn der(input: &[u8]) -> Option<(u8, &[u8], &[u8])> {
 #[derive(Debug)]
 struct OwnCerts {
     provider: Arc<rustls::crypto::CryptoProvider>,
+    /// The only certificate taken, by fingerprint, when there is one.
+    expect: Option<String>,
 }
 
 impl rustls::client::danger::ServerCertVerifier for OwnCerts {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls::pki_types::CertificateDer<'_>,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
         _intermediates: &[rustls::pki_types::CertificateDer<'_>],
         _server_name: &rustls::pki_types::ServerName<'_>,
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if let Some(expect) = &self.expect
+            && fingerprint(end_entity.as_ref()) != *expect
+        {
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure,
+            ));
+        }
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
@@ -471,26 +541,18 @@ pub enum Challenge {
         /// `MD5-sess` rather than `MD5`.
         session: bool,
     },
-    Basic,
 }
 
 impl Challenge {
-    /// The one to answer: Digest when it's on offer, since Basic sends the password as it is.
+    /// The one to answer: the first Digest. Basic is never answered, since it sends the password
+    /// as it is to whoever asks.
     pub fn pick(headers: &[String]) -> Option<Self> {
-        let parsed: Vec<Self> = headers.iter().filter_map(|h| Self::parse(h)).collect();
-        parsed
-            .iter()
-            .find(|challenge| matches!(challenge, Self::Digest { .. }))
-            .or_else(|| parsed.first())
-            .cloned()
+        headers.iter().find_map(|header| Self::parse(header))
     }
 
     pub fn parse(header: &str) -> Option<Self> {
         let header = header.trim();
         let (scheme, rest) = header.split_once(' ').unwrap_or((header, ""));
-        if scheme.eq_ignore_ascii_case("basic") {
-            return Some(Self::Basic);
-        }
         if !scheme.eq_ignore_ascii_case("digest") {
             return None;
         }
@@ -533,14 +595,6 @@ impl Challenge {
     /// The `Authorization` header that answers it.
     pub fn answer(&self, login: &Login, method: &str, uri: &str) -> String {
         match self {
-            Self::Basic => {
-                use base64::Engine as _;
-                let pair = format!("{}:{}", login.username, login.password);
-                format!(
-                    "Basic {}",
-                    base64::engine::general_purpose::STANDARD.encode(pair)
-                )
-            }
             Self::Digest {
                 realm,
                 nonce,
@@ -720,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn digest_is_preferred_over_basic() {
+    fn digest_is_answered_and_basic_never() {
         let picked = Challenge::pick(&[
             "Basic realm=\"cam\"".into(),
             "Digest realm=\"cam\", qop=\"auth,auth-int\", nonce=\"abc\", algorithm=MD5".into(),
@@ -737,7 +791,8 @@ mod tests {
         );
         assert_eq!(
             Challenge::pick(&["Basic realm=\"cam\"".into()]),
-            Some(Challenge::Basic)
+            None,
+            "Basic would send the password as it is"
         );
         assert_eq!(
             Challenge::pick(&["Digest realm=\"cam\", nonce=\"n\", algorithm=SHA-256".into()]),

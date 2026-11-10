@@ -141,7 +141,7 @@ impl Starting {
             entry,
         } = self;
         let mut viewers = vec![first];
-        let mut init: Option<(String, Vec<u8>)> = None;
+        let mut init: Option<(String, irori_protocol::Bytes)> = None;
         let started = Instant::now();
         let mut idle_since: Option<Instant> = None;
         let error: Option<String> = loop {
@@ -236,14 +236,14 @@ mod tests {
     fn init() -> LiveChunk {
         LiveChunk::Init {
             mime: "video/mp4".into(),
-            data: vec![0],
+            data: vec![0].into(),
         }
     }
 
     fn fragment(key: bool) -> LiveChunk {
         LiveChunk::Fragment {
             key,
-            data: vec![u8::from(key)],
+            data: vec![u8::from(key)].into(),
         }
     }
 

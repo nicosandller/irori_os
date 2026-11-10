@@ -29,6 +29,7 @@ pub mod home;
 pub mod live;
 mod process;
 pub mod talk;
+pub use bytes::Bytes;
 pub use live::{IncomingLive, LiveChunk, LiveClosed, LiveFeed, Sent};
 pub use process::{ExtProcess, FromExt, ToExt, WireCommand, serve, spawn};
 pub use talk::{IncomingTalk, TalkLine, TalkWord};

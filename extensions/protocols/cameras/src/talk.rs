@@ -415,7 +415,9 @@ impl Rtsp {
             .iter()
             .filter(|(key, _)| key.eq_ignore_ascii_case("www-authenticate"))
             .map(|(_, value)| value.as_str())
-            .find_map(|value| http_auth::PasswordClient::try_from(value).ok());
+            .find_map(|value| http_auth::PasswordClient::try_from(value).ok())
+            // Basic sends the password as it is, to whoever asks: never answered.
+            .filter(|client| !matches!(client, http_auth::PasswordClient::Basic(_)));
         let Some(challenge) = challenge else {
             return Ok(answer);
         };

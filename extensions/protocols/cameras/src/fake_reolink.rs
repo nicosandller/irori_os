@@ -43,6 +43,16 @@ pub struct FakeReolink {
 impl FakeReolink {
     /// Starts one that takes `username` and `password`.
     pub async fn start(username: &str, password: &str) -> Self {
+        Self::start_showing(username, password, false).await
+    }
+
+    /// Starts one showing another certificate than [`FakeReolink::start`]'s: something else in a
+    /// camera's place, or the camera after a reset.
+    pub async fn start_other(username: &str, password: &str) -> Self {
+        Self::start_showing(username, password, true).await
+    }
+
+    async fn start_showing(username: &str, password: &str, other: bool) -> Self {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("a port");
         let port = listener.local_addr().expect("an address").port();
         let seen = Arc::new(Mutex::new(Seen::default()));
@@ -51,7 +61,7 @@ impl FakeReolink {
             infrared: "Auto",
             status: "On",
         }));
-        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls()));
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls(other)));
         let login = (username.to_owned(), password.to_owned());
         let shared = Arc::clone(&seen);
         tokio::spawn(async move {
@@ -160,15 +170,25 @@ fn answer(
     }
 }
 
-/// Serves the version 1 test certificate. Through a resolver, since the usual way checks the
-/// key against the certificate by parsing it, which a version 1 certificate doesn't pass.
-fn tls() -> rustls::ServerConfig {
+/// Serves the version 1 test certificate, or with `other` a second one. Through a resolver,
+/// since the usual way checks the key against the certificate by parsing it, which a version 1
+/// certificate doesn't pass.
+fn tls(other: bool) -> rustls::ServerConfig {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
-        include_bytes!("testdata/v1-key.der").to_vec(),
-    ));
+    let (key, cert): (&[u8], &[u8]) = if other {
+        (
+            include_bytes!("testdata/other-key.der"),
+            include_bytes!("testdata/other-cert.der"),
+        )
+    } else {
+        (
+            include_bytes!("testdata/v1-key.der"),
+            include_bytes!("testdata/v1-cert.der"),
+        )
+    };
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key.to_vec()));
     let signer = provider.key_provider.load_private_key(key).expect("a key");
-    let cert = CertificateDer::from(include_bytes!("testdata/v1-cert.der").to_vec());
+    let cert = CertificateDer::from(cert.to_vec());
     let certified = Arc::new(CertifiedKey::new(vec![cert], signer));
     rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()

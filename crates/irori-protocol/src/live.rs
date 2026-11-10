@@ -12,6 +12,7 @@
 
 use std::fmt;
 
+use bytes::Bytes;
 use irori_types::{LiveQuality, UniqueId};
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -36,9 +37,9 @@ pub const MAX_ACCEPTS: usize = 16;
 #[derive(Clone, PartialEq, Eq)]
 pub enum LiveChunk {
     /// The init segment, and what it is: `video/mp4; codecs="avc1.4d401f"`. First, and once.
-    Init { mime: String, data: Vec<u8> },
+    Init { mime: String, data: Bytes },
     /// Some video. `key` when it starts at a keyframe, where a new viewer can begin.
-    Fragment { key: bool, data: Vec<u8> },
+    Fragment { key: bool, data: Bytes },
     /// The stream is over, and why when it's a failure.
     End { error: Option<String> },
 }
@@ -141,14 +142,17 @@ impl LiveFeed {
 
     /// Sends the init segment. It's first, so there's room; a feed that can't take even that is
     /// treated as gone.
-    pub fn init(&mut self, mime: String, data: Vec<u8>) -> Result<(), LiveClosed> {
+    pub fn init(&mut self, mime: String, data: impl Into<Bytes>) -> Result<(), LiveClosed> {
         self.tx
-            .try_send(LiveChunk::Init { mime, data })
+            .try_send(LiveChunk::Init {
+                mime,
+                data: data.into(),
+            })
             .map_err(|_| LiveClosed)
     }
 
     /// Sends a fragment, or skips it (see [`Sent::Skipped`]).
-    pub fn fragment(&mut self, key: bool, data: Vec<u8>) -> Result<Sent, LiveClosed> {
+    pub fn fragment(&mut self, key: bool, data: impl Into<Bytes>) -> Result<Sent, LiveClosed> {
         if self.skipping && !key {
             return if self.tx.is_closed() {
                 Err(LiveClosed)
@@ -156,7 +160,10 @@ impl LiveFeed {
                 Ok(Sent::Skipped)
             };
         }
-        match self.tx.try_send(LiveChunk::Fragment { key, data }) {
+        match self.tx.try_send(LiveChunk::Fragment {
+            key,
+            data: data.into(),
+        }) {
             Ok(()) => {
                 self.skipping = false;
                 Ok(Sent::Sent)
@@ -263,7 +270,7 @@ mod tests {
     fn fragment(key: bool) -> LiveChunk {
         LiveChunk::Fragment {
             key,
-            data: vec![u8::from(key)],
+            data: vec![u8::from(key)].into(),
         }
     }
 
@@ -310,7 +317,7 @@ mod tests {
     fn only_mp4_of_a_sensible_size_is_passed_on() {
         let init = |mime: &str, size| LiveChunk::Init {
             mime: mime.into(),
-            data: vec![0; size],
+            data: vec![0; size].into(),
         };
         assert!(
             init("video/mp4; codecs=\"avc1.4d401f\"", 600)
@@ -321,7 +328,7 @@ mod tests {
         assert!(init("video/mp4", MAX_INIT + 1).check().is_err());
         let big = LiveChunk::Fragment {
             key: true,
-            data: vec![0; MAX_FRAGMENT + 1],
+            data: vec![0; MAX_FRAGMENT + 1].into(),
         };
         assert!(big.check().is_err());
         assert!(check_accepts(&["avc1".into(), "mp4a".into()]).is_ok());

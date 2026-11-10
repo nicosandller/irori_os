@@ -40,11 +40,16 @@ pub struct Settings {
     #[serde(default, deserialize_with = "logins")]
     #[schemars(skip)]
     pub cameras: BTreeMap<String, GivenLogin>,
-    /// Where a Reolink's own API is: its HTTPS port unless a test says otherwise. Never read
-    /// from the settings.
+    /// A camera's new address, typed by the person to say it moved there (`trust.rs`), by its
+    /// id. Asked for in the waiting list when a camera can't show it's the same one.
+    #[serde(default)]
+    #[schemars(skip)]
+    pub moved: BTreeMap<String, String>,
+    /// Where a camera's HTTPS is (a Reolink's own API, and the certificate each camera is known
+    /// by): port 443 unless a test says otherwise. Never read from the settings.
     #[serde(skip)]
     #[schemars(skip)]
-    pub reolink_port: Option<u16>,
+    pub https_port: Option<u16>,
 }
 
 /// A camera's username and password.

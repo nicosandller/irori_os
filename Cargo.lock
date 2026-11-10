@@ -2025,6 +2025,7 @@ name = "irori-protocol"
 version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
+ "bytes",
  "irori-types",
  "rustix",
  "schemars",

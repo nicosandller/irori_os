@@ -27,6 +27,7 @@ mod reolink;
 pub mod settings;
 mod soap;
 mod talk;
+mod trust;
 
 #[cfg(test)]
 mod fake;
@@ -60,6 +61,7 @@ use crate::onvif::Info;
 use crate::refused::Refusals;
 use crate::settings::{Login, Settings};
 use crate::soap::Soap;
+use crate::trust::{Trust, Verdict};
 
 /// The Cameras protocol.
 #[derive(Debug)]
@@ -134,6 +136,18 @@ struct Cam {
     parts: Vec<reolink::Part>,
     /// What the network map says of it, once it has been logged into.
     on_map: Option<network::Member>,
+    /// Something answered as this camera and couldn't show it's the same one: where, and why.
+    /// It got no login; it waits for the person to say the camera moved there.
+    doubt: Option<Doubt>,
+    /// An address being checked while the camera runs where it is, so it's checked once.
+    checking: Option<String>,
+}
+
+/// Something that answered as a camera and couldn't show it's that camera.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Doubt {
+    ip: std::net::IpAddr,
+    why: String,
 }
 
 impl Cam {
@@ -154,6 +168,20 @@ enum Event {
         id: String,
         generation: u64,
         ready: Box<Ready>,
+        /// What it's known by from now on.
+        pin: trust::Pin,
+    },
+    /// What answered couldn't show it's the camera; it was sent no login.
+    Untrusted {
+        id: String,
+        generation: u64,
+        doubt: Doubt,
+    },
+    /// What a running camera's claimed new address turned out to be.
+    Claimed {
+        id: String,
+        found: Found,
+        verdict: Verdict,
     },
     Refused {
         id: String,
@@ -198,6 +226,7 @@ pub(crate) async fn drive(
 ) -> Result<(), ProtocolError> {
     let mut refusals = Refusals::load(&ctx).await;
     let mut addresses = addresses::Addresses::load(&ctx).await;
+    let mut trust = Trust::load(&ctx).await;
     let (events_tx, mut events) = mpsc::channel(EVENTS);
     let mut cams: BTreeMap<String, Cam> = BTreeMap::new();
     let mut generations = 0u64;
@@ -215,10 +244,14 @@ pub(crate) async fn drive(
             found = discovery.recv() => {
                 let Some(found) = found else { break Ok(()) };
                 addresses.saw(&ctx, &found.id, found.ip).await;
-                arrive(found, &settings, &refusals, &mut cams, &mut generations, &events_tx);
+                arrive(found, &settings, &refusals, &trust, &mut cams, &mut generations, &events_tx);
             }
             Some(event) = events.recv() => {
-                apply(event, &settings, &ctx, &mut refusals, &mut cams, &events_tx).await?;
+                if let Event::Claimed { id, found, verdict } = event {
+                    claimed(id, found, verdict, &settings, &refusals, &trust, &mut cams, &mut generations, &events_tx);
+                } else {
+                    apply(event, &settings, &ctx, &mut refusals, &mut trust, &mut cams, &events_tx).await?;
+                }
             }
         }
         let health = health(&cams);
@@ -256,6 +289,7 @@ fn arrive(
     found: Found,
     settings: &Settings,
     refusals: &Refusals,
+    trust: &Trust,
     cams: &mut BTreeMap<String, Cam>,
     generations: &mut u64,
     events: &mpsc::Sender<Event>,
@@ -276,8 +310,28 @@ fn arrive(
         extras: None,
         parts: Vec::new(),
         on_map: None,
+        doubt: None,
+        checking: None,
     });
     let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
+    // A camera that's running stays where it is while whatever answered from somewhere else
+    // is checked: anything can answer as it, and that mustn't take a working camera down.
+    if moved && matches!(cam.stage, Stage::Ready(_)) {
+        let address = trust::address_of(&found);
+        if cam.checking.as_ref() != Some(&address) {
+            cam.checking = Some(address);
+            let pin = trust.get(&found.id).cloned();
+            let port = settings.https_port.unwrap_or(reolink::PORT);
+            let confirmed = settings.moved.get(&found.id).cloned();
+            let events = events.clone();
+            tokio::spawn(async move {
+                let verdict = trust::check(pin.as_ref(), &found, port, confirmed.as_deref()).await;
+                let id = found.id.clone();
+                let _ = events.send(Event::Claimed { id, found, verdict }).await;
+            });
+        }
+        return;
+    }
     cam.found = found;
     let start = match &cam.stage {
         // A first sighting, or one still without a usable login: see what the settings have.
@@ -289,9 +343,52 @@ fn arrive(
         Stage::Ready(_) => moved,
         Stage::Unreachable { retry, .. } => Instant::now() >= *retry || moved,
     };
-    if !start {
-        return;
+    if start {
+        log_in(cam, settings, refusals, trust, generations, events);
     }
+}
+
+/// What a running camera's claimed new address turned out to be: the same camera, so it's
+/// logged into there; or not, so it stays where it is and the person is told.
+#[allow(clippy::too_many_arguments)]
+fn claimed(
+    id: String,
+    found: Found,
+    verdict: Verdict,
+    settings: &Settings,
+    refusals: &Refusals,
+    trust: &Trust,
+    cams: &mut BTreeMap<String, Cam>,
+    generations: &mut u64,
+    events: &mpsc::Sender<Event>,
+) {
+    let Some(cam) = cams.get_mut(&id) else {
+        return;
+    };
+    cam.checking = None;
+    match verdict {
+        Verdict::Trusted(_) => {
+            tracing::info!(camera = %id, ip = %found.ip, "a camera moved");
+            cam.found = found;
+            log_in(cam, settings, refusals, trust, generations, events);
+        }
+        Verdict::Untrusted(why) => {
+            tracing::warn!(camera = %id, ip = %found.ip, "something answered as a camera and couldn't show it's that camera, so it got no login: {why}");
+            cam.doubt = Some(Doubt { ip: found.ip, why });
+        }
+        Verdict::NoAnswer => {}
+    }
+}
+
+/// Starts logging into a camera at `cam.found`, if its settings have a login worth trying.
+fn log_in(
+    cam: &mut Cam,
+    settings: &Settings,
+    refusals: &Refusals,
+    trust: &Trust,
+    generations: &mut u64,
+    events: &mpsc::Sender<Event>,
+) {
     cam.stage = match settings.cameras.get(&cam.found.id).map(|given| &given.0) {
         None => Stage::NeedsLogin,
         Some(Err(why)) => Stage::BadLogin(why.clone()),
@@ -302,9 +399,14 @@ fn arrive(
             cam.generation = *generations;
             tracing::info!(camera = %cam.found.id, ip = %cam.found.ip, "logging into a camera");
             connect(
-                cam.found.clone(),
-                login.clone(),
-                cam.generation,
+                Attempt {
+                    found: cam.found.clone(),
+                    login: login.clone(),
+                    generation: cam.generation,
+                    pin: trust.get(&cam.found.id).cloned(),
+                    https_port: settings.https_port.unwrap_or(reolink::PORT),
+                    confirmed: settings.moved.get(&cam.found.id).cloned(),
+                },
                 events.clone(),
             );
             Stage::Connecting
@@ -312,11 +414,58 @@ fn arrive(
     };
 }
 
-/// Logs into a camera in the background.
-fn connect(found: Found, login: Login, generation: u64, events: mpsc::Sender<Event>) {
+/// One login, and what's needed to decide whether it may go.
+struct Attempt {
+    found: Found,
+    login: Login,
+    generation: u64,
+    pin: Option<trust::Pin>,
+    https_port: u16,
+    confirmed: Option<String>,
+}
+
+/// Logs into a camera in the background, once it has shown it's the camera the login is for.
+fn connect(attempt: Attempt, events: mpsc::Sender<Event>) {
     tokio::spawn(async move {
+        let Attempt {
+            found,
+            login,
+            generation,
+            pin,
+            https_port,
+            confirmed,
+        } = attempt;
         let id = found.id.clone();
-        let connected = tokio::time::timeout(SETTING_UP, onvif::connect(&found, &login)).await;
+        let verdict = trust::check(pin.as_ref(), &found, https_port, confirmed.as_deref()).await;
+        let pin = match verdict {
+            Verdict::Trusted(pin) => pin,
+            Verdict::Untrusted(why) => {
+                let doubt = Doubt { ip: found.ip, why };
+                let _ = events
+                    .send(Event::Untrusted {
+                        id,
+                        generation,
+                        doubt,
+                    })
+                    .await;
+                return;
+            }
+            Verdict::NoAnswer => {
+                let why =
+                    "its HTTPS didn't answer, so it couldn't show it's the same camera".into();
+                let _ = events
+                    .send(Event::Unreachable {
+                        id,
+                        generation,
+                        why,
+                    })
+                    .await;
+                return;
+            }
+        };
+        let certificate = pin.certificate.clone();
+        let connected =
+            tokio::time::timeout(SETTING_UP, onvif::connect(&found, &login, certificate)).await;
         let connected = connected.unwrap_or_else(|_| {
             Err(HttpError::Unreachable(
                 "it took too long to answer while being set up".into(),
@@ -327,6 +476,7 @@ fn connect(found: Found, login: Login, generation: u64, events: mpsc::Sender<Eve
                 id,
                 generation,
                 ready: Box::new(Ready { soap, info }),
+                pin,
             },
             Err(HttpError::Refused) => Event::Refused { id, generation },
             Err(HttpError::Unreachable(why) | HttpError::Failed(why)) => Event::Unreachable {
@@ -344,16 +494,20 @@ async fn apply(
     settings: &Settings,
     ctx: &ProtocolContext,
     refusals: &mut Refusals,
+    trust: &mut Trust,
     cams: &mut BTreeMap<String, Cam>,
     events_tx: &mpsc::Sender<Event>,
 ) -> Result<(), ProtocolError> {
     let (id, generation) = match &event {
         Event::Connected { id, generation, .. }
+        | Event::Untrusted { id, generation, .. }
         | Event::Refused { id, generation }
         | Event::Unreachable { id, generation, .. }
         | Event::Detected { id, generation, .. }
         | Event::Presets { id, generation, .. }
         | Event::Extras { id, generation, .. } => (id.clone(), *generation),
+        // Handled in the loop, since it may start a login.
+        Event::Claimed { .. } => return Ok(()),
         Event::Watched { id, started } => {
             if let Some(cam) = cams.get_mut(id) {
                 let before = cam.watched;
@@ -376,11 +530,13 @@ async fn apply(
         return Ok(());
     }
     match event {
-        Event::Connected { ready, .. } => {
+        Event::Connected { ready, pin, .. } => {
             let info = &ready.info;
             if let Some(Ok(login)) = settings.cameras.get(&id).map(|given| &given.0) {
                 refusals.accepted(ctx, &id, login).await;
             }
+            trust.pin(ctx, &id, pin).await;
+            cam.doubt = None;
             tracing::info!(
                 camera = %id,
                 profiles = %info
@@ -428,6 +584,19 @@ async fn apply(
             start_tasks(cam, &id, generation, &ready, settings, events_tx);
             cam.stage = Stage::Ready(ready);
         }
+        Event::Untrusted { doubt, .. } => {
+            tracing::warn!(camera = %id, ip = %doubt.ip, "something answered as a camera and couldn't show it's that camera, so it got no login: {}", doubt.why);
+            cam.stop_tasks();
+            if cam.described {
+                available(ctx, &id, Availability::Unavailable).await;
+            }
+            cam.stage = Stage::Unreachable {
+                why: doubt.why.clone(),
+                retry: Instant::now() + RETRY,
+            };
+            cam.doubt = Some(doubt);
+        }
+        Event::Claimed { .. } => {}
         Event::Refused { .. } => {
             tracing::warn!(camera = %id, "a camera refused its login; it won't be tried again until it's given a different one");
             if let Some(Ok(login)) = settings.cameras.get(&id).map(|given| &given.0) {
@@ -552,7 +721,7 @@ fn start_tasks(
         .as_deref()
         .is_some_and(|maker| maker.to_ascii_lowercase().contains("reolink"));
     if reolink && let Some(login) = ready.soap.login.clone() {
-        let port = settings.reolink_port.unwrap_or(reolink::PORT);
+        let port = settings.https_port.unwrap_or(reolink::PORT);
         let api = reolink::Api::new(ready.soap.camera.clone(), port, login);
         let (calls_tx, calls) = mpsc::channel(4);
         let (reports_tx, mut reports) = mpsc::channel(8);
@@ -1007,6 +1176,9 @@ fn name_of(text: &str) -> Name {
 fn waiting(cams: &BTreeMap<String, Cam>) -> Vec<Waiting> {
     cams.values()
         .filter_map(|cam| {
+            if let Some(doubt) = &cam.doubt {
+                return Some(moved_here(cam, doubt));
+            }
             let reason = match &cam.stage {
                 Stage::NeedsLogin => "it needs the camera's login".to_owned(),
                 Stage::BadLogin(why) => why.clone(),
@@ -1047,5 +1219,29 @@ fn health(cams: &BTreeMap<String, Cam>) -> Health {
         [] => Health::Running,
         [why] => Health::Degraded(format!("a camera can't be set up: {why}")),
         many => Health::Degraded(format!("{} cameras can't be set up", many.len())),
+    }
+}
+
+/// The waiting entry for a camera something else answered as: type the new address to say the
+/// camera really moved there.
+fn moved_here(cam: &Cam, doubt: &Doubt) -> Waiting {
+    Waiting {
+        unique_id: UniqueId::try_from(cam.found.id.as_str())
+            .unwrap_or_else(|_| UniqueId::try_from("camera").expect("a valid id")),
+        name: name_of(cam.found.hardware.as_deref().unwrap_or(&cam.found.name)),
+        reason: format!(
+            "something answered as this camera, but {}, so it wasn't sent the login. If you \
+             moved the camera, or reset it, type its new address to trust it there",
+            doubt.why
+        ),
+        secret: Some(SecretRequest {
+            path: vec!["moved".to_owned(), cam.found.id.clone()],
+            label: "Its new address".to_owned(),
+            hint: Some(format!(
+                "{}, if that's your camera; otherwise leave this, and nothing gets the login",
+                doubt.ip
+            )),
+            username: None,
+        }),
     }
 }

@@ -129,8 +129,16 @@ fn at(step: &'static str) -> impl Fn(HttpError) -> HttpError {
     }
 }
 
-pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpError> {
-    let camera = Camera { ip: found.ip };
+/// `certificate` is the one it's known by (`trust.rs`), which its HTTPS must show.
+pub async fn connect(
+    found: &Found,
+    login: &Login,
+    certificate: Option<String>,
+) -> Result<(Soap, Info), HttpError> {
+    let camera = Camera {
+        ip: found.ip,
+        certificate,
+    };
     let offset = clock(&camera, &found.device_service).await?;
     let soap = Soap {
         camera,
