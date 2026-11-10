@@ -9,7 +9,7 @@
 mod broker;
 pub mod settings;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use irori_ha_discovery::discovery::{AvailabilityTopic, EntityTopics};
 use irori_ha_discovery::{discovery, map, state, topic};
@@ -18,6 +18,7 @@ use irori_protocol::{
     ServiceError,
 };
 use irori_types::{Availability, State, StateReport, UniqueId};
+use tokio::time::Instant;
 
 use crate::broker::{BrokerEvent, Connectivity, Message, Publisher};
 use crate::settings::Settings;
@@ -79,27 +80,39 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
         .map_err(ProtocolError::new)?;
 
     let mut registry = Registry::default();
-    ctx.set_health(Health::Degraded("connecting to the broker".to_owned()))
-        .await;
+    let mut health = ConnectionHealth::new();
+    ctx.set_health(health.shown.clone()).await;
 
     let outcome = loop {
+        let steady_at = health.clears_at;
         tokio::select! {
             call = ctx.next_call() => {
                 let Some(incoming) = call else { break Ok(()) };
                 route(incoming, &registry, &broker).await;
             }
+            // Not while events are waiting: one of them may be the connection dropping again,
+            // and showing Running first would only flash it on the card.
+            () = until(steady_at), if events.is_empty() => {
+                if let Some(shown) = health.due(Instant::now()) {
+                    ctx.set_health(shown).await;
+                }
+            }
             event = events.recv() => {
-                match event {
+                let change = match event {
                     Some(BrokerEvent::Message(message)) => {
                         apply(message, &settings, &mut registry, &broker, &ctx).await;
+                        None
                     }
                     Some(BrokerEvent::Connectivity(Connectivity::Connected)) => {
-                        ctx.set_health(Health::Running).await;
+                        health.connected(Instant::now())
                     }
-                    Some(BrokerEvent::Connectivity(Connectivity::Disconnected)) => {
-                        ctx.set_health(Health::Degraded("disconnected from the broker".to_owned())).await;
+                    Some(BrokerEvent::Connectivity(Connectivity::Disconnected(reason))) => {
+                        health.lost(reason)
                     }
                     None => break Err(ProtocolError::new("stopped listening to the broker")),
+                };
+                if let Some(shown) = change {
+                    ctx.set_health(shown).await;
                 }
             }
         }
@@ -108,6 +121,82 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
     drop(events);
     broker_task.abort();
     outcome
+}
+
+/// What the extension's card says about the broker connection. After a problem it stays
+/// degraded, with the problem's reason, until the connection has held for
+/// [`broker::STEADY_AFTER`]: a message too big to receive drops the connection again right after
+/// each reconnect, and showing Running in between would only make the card flicker.
+#[derive(Debug)]
+struct ConnectionHealth {
+    /// What was last shown.
+    shown: Health,
+    /// The problem being shown, kept until the connection has held long enough.
+    problem: Option<String>,
+    /// Whether it has ever connected. Failing to reach a broker that isn't up yet is shown, but
+    /// isn't a problem to wait out once it is: the first connection shows Running at once.
+    connected_before: bool,
+    /// When the problem can be cleared, once reconnected.
+    clears_at: Option<Instant>,
+}
+
+impl ConnectionHealth {
+    fn new() -> Self {
+        Self {
+            shown: Health::Degraded("connecting to the broker".to_owned()),
+            problem: None,
+            connected_before: false,
+            clears_at: None,
+        }
+    }
+
+    /// Connected: Running straight away if nothing went wrong before, otherwise once it holds.
+    fn connected(&mut self, now: Instant) -> Option<Health> {
+        self.connected_before = true;
+        if self.problem.is_some() {
+            self.clears_at = Some(now + broker::STEADY_AFTER);
+            None
+        } else {
+            self.show(Health::Running)
+        }
+    }
+
+    fn lost(&mut self, reason: String) -> Option<Health> {
+        self.clears_at = None;
+        if self.connected_before {
+            self.problem = Some(reason.clone());
+        }
+        self.show(Health::Degraded(reason))
+    }
+
+    /// Running again, when the connection has held since [`Self::clears_at`] was set.
+    fn due(&mut self, now: Instant) -> Option<Health> {
+        if self.clears_at.is_some_and(|at| at <= now) {
+            self.clears_at = None;
+            self.problem = None;
+            self.show(Health::Running)
+        } else {
+            None
+        }
+    }
+
+    /// `health`, if it differs from what's shown.
+    fn show(&mut self, health: Health) -> Option<Health> {
+        if self.shown == health {
+            None
+        } else {
+            self.shown = health.clone();
+            Some(health)
+        }
+    }
+}
+
+/// Waits until `deadline`, or forever when there's none.
+async fn until(deadline: Option<Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
+    }
 }
 
 /// Applies one incoming broker message: a discovery config, a state report, an availability
@@ -206,7 +295,9 @@ async fn describe(
         }
         if let Some(unique_id) = registry.config_topics.remove(&message.topic) {
             if let Some(old) = registry.entities.remove(&unique_id) {
+                let listened = listened_to(&unique_id, &old.topics, registry);
                 deindex(&unique_id, &old.topics, registry);
+                unsubscribe_unused(listened, registry, broker).await;
             }
             if let Err(e) = ctx.remove_entity(unique_id.clone()).await {
                 tracing::warn!(%unique_id, error = %e, "couldn't remove an entity");
@@ -256,11 +347,12 @@ async fn describe(
     // A redescribe (the same entity's discovery config firing again, e.g. Z2M republishing on
     // its own restart) must drop this entity's old topic-index entries first — otherwise a topic
     // it no longer uses keeps reporting for it, and one it still uses ends up listed twice.
-    let (last_state, last_on) = if let Some(old) = registry.entities.remove(&unique_id) {
+    let (last_state, last_on, listened) = if let Some(old) = registry.entities.remove(&unique_id) {
+        let listened = listened_to(&unique_id, &old.topics, registry);
         deindex(&unique_id, &old.topics, registry);
-        (old.last_state, old.last_on)
+        (old.last_state, old.last_on, listened)
     } else {
-        (None, None)
+        (None, None, BTreeSet::new())
     };
 
     for (topic, _) in state::topics_of(&unique_id, &parsed.topics) {
@@ -288,6 +380,8 @@ async fn describe(
             });
         let _ = broker.subscribe(&topic).await;
     }
+    // Only what the new config dropped: a topic it still uses stays subscribed.
+    unsubscribe_unused(listened, registry, broker).await;
     registry
         .config_topics
         .insert(message.topic.clone(), unique_id.clone());
@@ -328,6 +422,43 @@ fn deindex(unique_id: &UniqueId, old_topics: &EntityTopics, registry: &mut Regis
     registry.config_topics.retain(|_, id| id != unique_id);
 }
 
+/// The state and availability topics `unique_id` listens on, by the indexes.
+fn listened_to(
+    unique_id: &UniqueId,
+    topics: &EntityTopics,
+    registry: &Registry,
+) -> BTreeSet<String> {
+    let mut listened: BTreeSet<String> = state::topics_of(unique_id, topics)
+        .into_iter()
+        .map(|(topic, _)| topic)
+        .collect();
+    for (topic, listeners) in &registry.availability_topics {
+        if listeners
+            .iter()
+            .any(|listener| &listener.unique_id == unique_id)
+        {
+            listened.insert(topic.clone());
+        }
+    }
+    listened
+}
+
+/// Unsubscribes each of `topics` that no entity listens on any more, so the broker stops sending
+/// it and it isn't subscribed to again after the next reconnect.
+async fn unsubscribe_unused(
+    topics: BTreeSet<String>,
+    registry: &Registry,
+    broker: &impl Publisher,
+) {
+    for topic in topics {
+        if !registry.state_topics.contains_key(&topic)
+            && !registry.availability_topics.contains_key(&topic)
+        {
+            let _ = broker.unsubscribe(&topic).await;
+        }
+    }
+}
+
 /// Sends a service call to the broker for the entity it belongs to.
 async fn route(incoming: IncomingCall, registry: &Registry, broker: &impl Publisher) {
     let Some(entity) = registry.entities.get(&incoming.call.unique_id) else {
@@ -361,6 +492,7 @@ async fn route(incoming: IncomingCall, registry: &Registry, broker: &impl Publis
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use irori_ha_discovery::topic::Component;
     use irori_protocol::host;
@@ -378,6 +510,7 @@ mod tests {
     struct FakePublisher {
         published: Arc<Mutex<Vec<Published>>>,
         subscribed: Arc<Mutex<Vec<String>>>,
+        unsubscribed: Arc<Mutex<Vec<String>>>,
     }
 
     impl Publisher for FakePublisher {
@@ -391,6 +524,14 @@ mod tests {
 
         async fn subscribe(&self, topic: &str) -> Result<(), String> {
             self.subscribed
+                .lock()
+                .expect("not poisoned")
+                .push(topic.to_owned());
+            Ok(())
+        }
+
+        async fn unsubscribe(&self, topic: &str) -> Result<(), String> {
+            self.unsubscribed
                 .lock()
                 .expect("not poisoned")
                 .push(topic.to_owned());
@@ -974,6 +1115,110 @@ mod tests {
         assert!(
             matches!(answered, Err(ref e) if e.code == irori_protocol::ServiceErrorCode::Unavailable),
             "got {answered:?}"
+        );
+    }
+
+    #[test]
+    fn the_first_connection_shows_running_straight_away() {
+        let mut health = ConnectionHealth::new();
+        assert_eq!(health.connected(Instant::now()), Some(Health::Running));
+        assert_eq!(health.clears_at, None);
+    }
+
+    #[test]
+    fn after_a_problem_the_card_stays_degraded_until_the_connection_holds() {
+        let start = Instant::now();
+        let mut health = ConnectionHealth::new();
+        health.connected(start);
+        let reason = "a message of 51 KB is over the 10 KB limit".to_owned();
+        assert_eq!(
+            health.lost(reason.clone()),
+            Some(Health::Degraded(reason.clone()))
+        );
+
+        // Reconnected, then the same message drops it again before 30 s: still degraded with the
+        // same reason, and nothing new to show.
+        assert_eq!(health.connected(start), None);
+        assert_eq!(health.due(start + Duration::from_secs(10)), None);
+        assert_eq!(health.lost(reason.clone()), None);
+        assert_eq!(health.clears_at, None);
+        assert_eq!(health.due(start + Duration::from_secs(60)), None);
+
+        // Reconnected and held for 30 s: Running.
+        let later = start + Duration::from_secs(100);
+        assert_eq!(health.connected(later), None);
+        assert_eq!(health.due(later + Duration::from_secs(29)), None);
+        assert_eq!(
+            health.due(later + broker::STEADY_AFTER),
+            Some(Health::Running)
+        );
+        assert_eq!(health.problem, None);
+    }
+
+    #[test]
+    fn a_broker_that_isnt_up_yet_shows_running_as_soon_as_it_connects() {
+        let mut health = ConnectionHealth::new();
+        let reason = "the broker connection dropped or failed (refused)".to_owned();
+        assert_eq!(health.lost(reason.clone()), Some(Health::Degraded(reason)));
+        assert_eq!(health.connected(Instant::now()), Some(Health::Running));
+        assert_eq!(health.clears_at, None);
+    }
+
+    #[tokio::test]
+    async fn topics_no_entity_uses_any_more_are_unsubscribed() {
+        let (ctx, host) = host::connect();
+        let _drain = drain_ops(host.ops);
+        let publisher = FakePublisher::default();
+        let mut registry = Registry::default();
+        let topic = "homeassistant/light/0x0017880104e45520_light/config";
+        let discovered = topic::parse(topic, "homeassistant").expect("a discovery topic");
+        describe(
+            discovered.clone(),
+            &message(topic, Z2M_LIGHT),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+
+        // Renamed in Z2M: the state topic moves, the availability topic stays.
+        let renamed = std::str::from_utf8(Z2M_LIGHT)
+            .expect("utf-8")
+            .replace("zigbee2mqtt/Living room lamp", "zigbee2mqtt/Lounge lamp");
+        describe(
+            discovered.clone(),
+            &message(topic, renamed.as_bytes()),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let unsubscribed = |publisher: &FakePublisher| {
+            publisher.unsubscribed.lock().expect("not poisoned").clone()
+        };
+        assert_eq!(
+            unsubscribed(&publisher),
+            ["zigbee2mqtt/Living room lamp"],
+            "only the topic the new config dropped"
+        );
+
+        describe(
+            discovered,
+            &message(topic, b""),
+            &mut registry,
+            &publisher,
+            &ctx,
+        )
+        .await;
+        let mut gone = unsubscribed(&publisher);
+        gone.sort();
+        assert_eq!(
+            gone,
+            [
+                "zigbee2mqtt/Living room lamp",
+                "zigbee2mqtt/Lounge lamp",
+                "zigbee2mqtt/bridge/state",
+            ]
         );
     }
 }
