@@ -39,6 +39,8 @@ pub struct Info {
     pub snapshot: Option<Target>,
     /// How its speaker is reached, when it has one that can be talked through.
     pub talk: Option<crate::talk::TalkTrack>,
+    /// Whether it's on a cable (`true`) or Wi-Fi, when it says.
+    pub wired: Option<bool>,
 }
 
 impl Info {
@@ -159,6 +161,17 @@ pub async fn connect(found: &Found, login: &Login) -> Result<(Soap, Info), HttpE
     info.media = media;
     info.events = events;
     info.ptz_service = ptz;
+
+    // For the network map; a camera that won't say is just drawn without knowing.
+    info.wired = soap
+        .call(
+            device,
+            &format!("{DEVICE}/GetNetworkInterfaces"),
+            "<tds:GetNetworkInterfaces/>",
+        )
+        .await
+        .ok()
+        .and_then(|answer| wired(&answer));
 
     if let Some(media) = info.media.clone() {
         let answer = soap
@@ -291,6 +304,48 @@ fn uri_in(answer: &str) -> Option<String> {
     text(media_uri, &["Uri"])
 }
 
+/// Whether a camera is on a cable or Wi-Fi, from its network interfaces: the first one switched
+/// on. Wi-Fi when it has 802.11 settings, its type is 71 (IANA's `ieee80211`) or its name is a
+/// wireless one; a cable when its type is 6 (`ethernetCsmacd`) or it's called `eth…`.
+pub fn wired(answer: &str) -> Option<bool> {
+    let doc = roxmltree::Document::parse(answer).ok()?;
+    let response = find(doc.root(), "GetNetworkInterfacesResponse")?;
+    let interfaces = find_all(response, "NetworkInterfaces");
+    let mut first = None;
+    for interface in interfaces {
+        if text(interface, &["Enabled"]).as_deref() == Some("false") {
+            continue;
+        }
+        let name = text(interface, &["Info", "Name"])
+            .or_else(|| attribute(interface, "token"))
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let types: Vec<String> = interface
+            .descendants()
+            .filter(|node| node.tag_name().name() == "InterfaceType")
+            .filter_map(|node| node.text().map(|text| text.trim().to_owned()))
+            .collect();
+        let wifi = find(interface, "Dot11").is_some()
+            || types.iter().any(|kind| kind == "71")
+            || ["wlan", "wl", "ra", "wifi"]
+                .iter()
+                .any(|start| name.starts_with(start));
+        let cable = types.iter().any(|kind| kind == "6") || name.starts_with("eth");
+        tracing::info!(%name, ?types, wifi, cable, "a camera's network interface");
+        let said = if wifi {
+            Some(false)
+        } else if cable {
+            Some(true)
+        } else {
+            None
+        };
+        if first.is_none() {
+            first = said;
+        }
+    }
+    first
+}
+
 pub fn device_information(answer: &str) -> Info {
     let Ok(doc) = roxmltree::Document::parse(answer) else {
         return Info::default();
@@ -367,6 +422,35 @@ pub fn profiles(answer: &str) -> Vec<Profile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_camera_says_whether_its_wired_or_on_wifi() {
+        let interfaces = |inside: &str| {
+            format!(
+                "<s:Envelope xmlns:s=\"s\" xmlns:tds=\"d\" xmlns:tt=\"t\"><s:Body>\
+                 <tds:GetNetworkInterfacesResponse>{inside}</tds:GetNetworkInterfacesResponse>\
+                 </s:Body></s:Envelope>"
+            )
+        };
+        let cable = interfaces(
+            "<tds:NetworkInterfaces token=\"eth0\"><tt:Enabled>true</tt:Enabled>\
+             <tt:Info><tt:Name>eth0</tt:Name></tt:Info>\
+             <tt:Link><tt:InterfaceType>6</tt:InterfaceType></tt:Link></tds:NetworkInterfaces>",
+        );
+        assert_eq!(wired(&cable), Some(true));
+        let wifi = interfaces(
+            "<tds:NetworkInterfaces token=\"wlan0\"><tt:Enabled>true</tt:Enabled>\
+             <tt:Extension><tt:InterfaceType>71</tt:InterfaceType><tt:Dot11/></tt:Extension>\
+             </tds:NetworkInterfaces>",
+        );
+        assert_eq!(wired(&wifi), Some(false));
+        let off_then_wifi = interfaces(
+            "<tds:NetworkInterfaces token=\"eth0\"><tt:Enabled>false</tt:Enabled></tds:NetworkInterfaces>\
+             <tds:NetworkInterfaces token=\"ra0\"><tt:Enabled>true</tt:Enabled></tds:NetworkInterfaces>",
+        );
+        assert_eq!(wired(&off_then_wifi), Some(false));
+        assert_eq!(wired("not xml"), None);
+    }
 
     #[test]
     fn profiles_are_sorted_into_full_size_and_small() {

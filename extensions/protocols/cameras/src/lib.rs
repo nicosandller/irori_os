@@ -19,6 +19,7 @@ mod flac;
 mod fmp4;
 mod http;
 mod live;
+mod network;
 mod onvif;
 mod ptz;
 mod refused;
@@ -131,6 +132,8 @@ struct Cam {
     extras: Option<mpsc::Sender<(reolink::Part, IncomingCall)>>,
     /// The extras described for it.
     parts: Vec<reolink::Part>,
+    /// What the network map says of it, once it has been logged into.
+    on_map: Option<network::Member>,
 }
 
 impl Cam {
@@ -201,6 +204,7 @@ pub(crate) async fn drive(
     let mut reported_health = Health::Running;
     ctx.set_health(reported_health.clone()).await;
     let mut reported_waiting: Vec<Waiting> = Vec::new();
+    let mut reported_map: Vec<network::Member> = Vec::new();
 
     loop {
         tokio::select! {
@@ -227,7 +231,24 @@ pub(crate) async fn drive(
             ctx.set_waiting(waiting.clone()).await;
             reported_waiting = waiting;
         }
+        let map = on_map(&cams);
+        if map != reported_map {
+            ctx.set_network(network::draw(&map)).await;
+            reported_map = map;
+        }
     }
+}
+
+/// The cameras added, as the network map draws them: connected while logged into.
+fn on_map(cams: &BTreeMap<String, Cam>) -> Vec<network::Member> {
+    cams.values()
+        .filter(|cam| cam.described)
+        .filter_map(|cam| {
+            let mut member = cam.on_map.clone()?;
+            member.online = matches!(cam.stage, Stage::Ready(_));
+            Some(member)
+        })
+        .collect()
 }
 
 /// A camera answered discovery.
@@ -254,6 +275,7 @@ fn arrive(
         sensors: Vec::new(),
         extras: None,
         parts: Vec::new(),
+        on_map: None,
     });
     let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
     cam.found = found;
@@ -385,6 +407,15 @@ async fn apply(
                 return Ok(());
             }
             cam.described = true;
+            if let Ok(device) = UniqueId::try_from(id.as_str()) {
+                cam.on_map = Some(network::Member {
+                    device,
+                    name: device_name(&cam.found, info).to_string(),
+                    model: info.model.clone(),
+                    online: true,
+                    wired: info.wired,
+                });
+            }
             cam.sensors = info.detects.clone();
             cam.presets = info
                 .turns
