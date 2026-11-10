@@ -262,6 +262,8 @@ pub struct Offers {
     pub parts: Vec<Part>,
     /// The spotlight can be dimmed.
     pub dimmable: bool,
+    /// On a cable (`true`) or Wi-Fi, as the camera's own API says: ONVIF doesn't, on a Reolink.
+    pub wired: Option<bool>,
 }
 
 /// What one part is doing now, as the camera says.
@@ -370,7 +372,33 @@ async fn offers(api: &mut Api) -> Result<Offers, ApiError> {
             parts.push(part);
         }
     }
-    Ok(Offers { parts, dimmable })
+    let wired = match api.call("GetLocalLink", 0, json!({})).await {
+        Ok(value) => link_wired(&value),
+        Err(error) => {
+            tracing::debug!("a Reolink didn't say how it's connected: {error}");
+            None
+        }
+    };
+    Ok(Offers {
+        parts,
+        dimmable,
+        wired,
+    })
+}
+
+/// Whether `GetLocalLink` says the camera is on its cable: `activeLink` is `LAN` or `Wifi`.
+fn link_wired(value: &Value) -> Option<bool> {
+    let link = value["LocalLink"]["activeLink"]
+        .as_str()?
+        .to_ascii_lowercase();
+    tracing::info!(%link, "a Reolink's active link");
+    if link.contains("wifi") || link.contains("wlan") {
+        Some(false)
+    } else if link == "lan" || link.contains("eth") {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 /// Runs one camera's extras until `calls` closes: says what it has, keeps what each part is
@@ -400,7 +428,7 @@ pub async fn run(
             }
         }
     };
-    if offers.parts.is_empty() {
+    if offers.parts.is_empty() && offers.wired.is_none() {
         api.log_out().await;
         return;
     }

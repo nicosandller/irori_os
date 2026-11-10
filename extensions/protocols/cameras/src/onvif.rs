@@ -306,7 +306,7 @@ fn uri_in(answer: &str) -> Option<String> {
 
 /// Whether a camera is on a cable or Wi-Fi, from its network interfaces: the first one switched
 /// on. Wi-Fi when it has 802.11 settings, its type is 71 (IANA's `ieee80211`) or its name is a
-/// wireless one; a cable when its type is 6 (`ethernetCsmacd`) or it's called `eth…`.
+/// wireless one; a cable when its type is 6 (`ethernetCsmacd`). Few cameras fill the type in.
 pub fn wired(answer: &str) -> Option<bool> {
     let doc = roxmltree::Document::parse(answer).ok()?;
     let response = find(doc.root(), "GetNetworkInterfacesResponse")?;
@@ -330,8 +330,8 @@ pub fn wired(answer: &str) -> Option<bool> {
             || ["wlan", "wl", "ra", "wifi"]
                 .iter()
                 .any(|start| name.starts_with(start));
-        let cable = types.iter().any(|kind| kind == "6") || name.starts_with("eth");
-        tracing::info!(%name, ?types, wifi, cable, "a camera's network interface");
+        // Not by its name: Tapos that have only Wi-Fi call theirs `eth0`.
+        let cable = types.iter().any(|kind| kind == "6");
         let said = if wifi {
             Some(false)
         } else if cable {
@@ -438,6 +438,12 @@ mod tests {
              <tt:Link><tt:InterfaceType>6</tt:InterfaceType></tt:Link></tds:NetworkInterfaces>",
         );
         assert_eq!(wired(&cable), Some(true));
+        // A Tapo with only Wi-Fi calls its one `eth0`, and gives no type.
+        let unsaid = interfaces(
+            "<tds:NetworkInterfaces token=\"eth0\"><tt:Enabled>true</tt:Enabled>\
+             <tt:Info><tt:Name>eth0</tt:Name></tt:Info></tds:NetworkInterfaces>",
+        );
+        assert_eq!(wired(&unsaid), None);
         let wifi = interfaces(
             "<tds:NetworkInterfaces token=\"wlan0\"><tt:Enabled>true</tt:Enabled>\
              <tt:Extension><tt:InterfaceType>71</tt:InterfaceType><tt:Dot11/></tt:Extension>\

@@ -485,6 +485,9 @@ async fn apply(
             }
             match report {
                 reolink::Report::Offers(offers) => {
+                    if let (Some(member), Some(wired)) = (cam.on_map.as_mut(), offers.wired) {
+                        member.wired = Some(wired);
+                    }
                     for part in offers.parts {
                         if ctx
                             .describe_entity(extra(&id, part, offers.dimmable)?)
