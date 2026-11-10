@@ -101,7 +101,7 @@ pub fn check(chunk: &[u8]) -> Result<(), String> {
             chunk.len()
         ));
     }
-    if chunk.len() % 2 != 0 {
+    if !chunk.len().is_multiple_of(2) {
         return Err("sound comes in whole 16-bit samples".into());
     }
     Ok(())
@@ -129,9 +129,8 @@ pub fn encode(chunk: &[u8]) -> String {
 
 /// The samples in a chunk.
 pub fn samples(chunk: &[u8]) -> impl Iterator<Item = i16> + '_ {
-    chunk
-        .chunks_exact(2)
-        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+    let (pairs, _) = chunk.as_chunks::<2>();
+    pairs.iter().map(|pair| i16::from_le_bytes(*pair))
 }
 
 #[cfg(test)]

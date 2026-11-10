@@ -10626,6 +10626,7 @@ mod tests {
         ("PATCH", "/api/entities/{id}", Run),
         ("GET", "/api/entities/{id}/picture", Hidden),
         ("GET", "/api/entities/{id}/live", Hidden),
+        ("GET", "/api/entities/{id}/talk", Hidden),
         ("PUT", "/api/extensions/{id}/secrets", Run),
         ("POST", "/api/extensions/{id}/settings", Run),
         ("POST", "/api/extensions/{id}/actions/{action_id}", Run),
