@@ -838,11 +838,19 @@
        under it; in full screen, by a small slider beside the talk button instead. */
     .camera-live.zoomed video { cursor: grab; touch-action: pan-y; will-change: scale, translate; }
     .camera-live video.dragging { cursor: grabbing; transition: none; }
-    .camera-strip { display: block; width: 100%; max-width: 40rem; margin-top: .45rem;
-      border-radius: .4rem; border: 1px solid var(--line); background: #000; cursor: pointer;
-      touch-action: none; animation: drop-in var(--dur-base) var(--ease-out); }
-    .camera-strip[hidden] { display: none; }
-    .camera-strip:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    .camera-strip-wrap { position: relative; width: 100%; max-width: 40rem; margin-top: .45rem;
+      overflow: hidden; border-radius: .4rem; border: 1px solid var(--line);
+      animation: drop-in var(--dur-base) var(--ease-out); }
+    .camera-strip-wrap[hidden] { display: none; }
+    .camera-strip { display: block; width: 100%; background: #000; cursor: pointer;
+      touch-action: none; }
+    /* The slice's box: its own layer, moved like the video. Its shadow dims the rest. */
+    .camera-strip-box { position: absolute; top: 0; bottom: 0; left: 0; width: 100%;
+      pointer-events: none; border: 2px solid rgba(255, 255, 255, .9); border-radius: .25rem;
+      box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .5); will-change: translate;
+      transition: translate var(--dur-expressive) var(--ease-emphasized); }
+    .camera-strip-box.dragging { transition: none; }
+    .camera-strip:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
     .camera-pan { display: none; }
     .camera-live-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
                        max-width: 40rem; color: var(--muted); }
@@ -851,6 +859,10 @@
     .camera-live.playing .camera-live-state { color: var(--fg); }
     .camera-live.playing .camera-dot { background: #e5484d;
                                        animation: recording 1.6s ease-in-out infinite; }
+    /* A camera's own card on its device page (device.rs): its row, then its picture, open. */
+    .camera-card .entity-row { border: 0; padding: 0; }
+    .camera-card-view { margin-top: .75rem; }
+    .camera-card-view .camera-view { margin: 0; }
     .camera-live-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
     .live-button { padding: .3rem .65rem; font: inherit; font-size: .8rem; color: var(--fg);
                    background: var(--card); border: 1px solid var(--line); border-radius: .45rem;
@@ -920,6 +932,17 @@
     .live-icon:hover { border-color: var(--ember); }
     .live-icon .icon { width: 1.05rem; height: 1.05rem; }
     .live-icon .glyph-first, .live-icon .glyph-second { display: grid; place-items: center; }
+    /* The camera's own infrared lights and siren (camera_extras.rs): filled while on. The
+       siren asks for a second press, pulsing red until it gets one or gives up. */
+    .live-extra.on { color: var(--paper); background: var(--ember); border-color: var(--ember); }
+    .live-siren.on { background: #c62828; border-color: #c62828;
+      animation: siren-on 1s ease-in-out infinite; }
+    .live-siren.armed { color: #c62828; border-color: #c62828;
+      animation: siren-armed .6s ease-in-out infinite alternate; }
+    .live-extra.waiting { opacity: .6; }
+    @keyframes siren-on { 50% { box-shadow: 0 0 0 .35rem rgba(198, 40, 40, .35); } }
+    @keyframes siren-armed { to { box-shadow: 0 0 0 .3rem rgba(198, 40, 40, .3); } }
+    @media (prefers-reduced-motion: reduce) { .live-siren.on, .live-siren.armed { animation: none; } }
 
     /* Full screen (camera_live.js `full`): the camera block fills the screen, black around the
        video, and its controls float over it: the bar along the bottom, the talk button in the
@@ -936,7 +959,7 @@
       max-width: none; padding: 3.5rem 1.25rem 1.1rem; color: var(--paper);
       background: linear-gradient(to top, rgba(0, 0, 0, .7), transparent); }
     .camera-stage.is-full .live-segs { display: none; }
-    .camera-stage.is-full .camera-strip { display: none; }
+    .camera-stage.is-full .camera-strip-wrap { display: none; }
     /* The full-screen slider: a thick track and a big thumb, in a box a finger can find. */
     .camera-stage.is-full .camera-live.zoomed .camera-pan { display: block; position: absolute;
       right: calc(50% + 3rem); bottom: 3.2rem; width: clamp(8rem, 28vw, 16rem); height: 2.75rem;
@@ -965,6 +988,8 @@
       color: var(--paper); background: rgba(20, 16, 14, .45); border-color: rgba(255, 255, 255, .18);
       backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
     .camera-stage.is-full .live-icon .icon { width: 1.2rem; height: 1.2rem; }
+    .camera-stage.is-full .live-extra.on { background: var(--ember); border-color: var(--ember); }
+    .camera-stage.is-full .live-siren.on { background: #c62828; border-color: #c62828; }
     .camera-stage.is-full .camera-talk { position: absolute; left: 50%; bottom: 1rem;
       translate: -50% 0; margin: 0; flex-direction: column; z-index: 2; }
     .camera-stage.is-full .talk-button { flex-direction: column; gap: .35rem; padding: 0;

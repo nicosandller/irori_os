@@ -95,6 +95,7 @@ pub fn CameraLive(
     #[prop(optional, into)]
     talking: Option<Signal<bool>>,
 ) -> impl IntoView {
+    let extras_for = id.clone();
     let video = NodeRef::<leptos::html::Video>::new();
     let standing = RwSignal::new(Standing::Starting);
     let sound = RwSignal::new(false);
@@ -361,10 +362,10 @@ pub fn CameraLive(
                     on:resize=move |_| measure()
                 ></video>
             </div>
+            <div class="camera-strip-wrap" hidden=move || !zoomed()>
             <canvas
                 node_ref=strip
                 class="camera-strip"
-                hidden=move || !zoomed()
                 tabindex="0"
                 role="slider"
                 aria-label="Which part of the picture is shown"
@@ -372,6 +373,8 @@ pub fn CameraLive(
                 aria-valuemax="100"
                 title="The whole picture: drag the box, or use the arrow keys"
             ></canvas>
+            <div class="camera-strip-box" aria-hidden="true"></div>
+            </div>
             // In full screen, a small slider beside the talk button instead of the strip.
             <input
                 node_ref=slider
@@ -450,6 +453,7 @@ pub fn CameraLive(
                             <span class="glyph-second">{icon(Icon::ZoomOut)}</span>
                         </button>
                     })}
+                    <crate::camera_extras::CameraExtras camera=extras_for />
                     <button
                         type="button"
                         class="live-icon glyph live-full"

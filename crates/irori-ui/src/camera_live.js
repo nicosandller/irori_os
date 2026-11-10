@@ -326,62 +326,70 @@
     let frame = null;
     pan = Math.min(1, Math.max(0, Number(pan) || 0.5));
     const context = canvas.getContext('2d');
+    // The slice's box over the strip: its own layer, moved like the video, so a drag draws
+    // nothing. Outside it is dimmed by its shadow, clipped to the strip.
+    const box = canvas.parentElement && canvas.parentElement.querySelector('.camera-strip-box');
 
-    // How much of the picture's width the slice is.
-    function slice() {
+    // Sizes, measured when something changes size rather than on every move: reading them
+    // right after moving the picture would make the browser lay the page out again each time.
+    let part = 1;
+    function measure() {
       const width = video.videoWidth;
       const height = video.videoHeight;
-      if (!width || !height || !video.clientHeight) return 1;
-      return Math.min(1, (video.clientWidth / video.clientHeight) / (width / height));
+      const shownWidth = video.clientWidth;
+      const shownHeight = video.clientHeight;
+      part = !width || !height || !shownHeight
+        ? 1
+        : Math.min(1, (shownWidth / shownHeight) / (width / height));
+      if (box) box.style.width = (part * 100).toFixed(3) + '%';
+      placed = '';
     }
 
     // The scale and move for the slice; percentages of the frame's width, so they hold as
-    // the frame changes size. Set again with each frame, for a frame that went full screen or
-    // a picture that changed size.
+    // the frame changes size.
     let placed = '';
     function place() {
-      const grow = 1 / slice();
+      const grow = 1 / part;
       const move = ((0.5 - pan) * (grow - 1) * 100).toFixed(3) + '% 0';
       const now = grow.toFixed(4) + '|' + move;
-      if (now !== placed) {
-        placed = now;
-        video.style.scale = grow.toFixed(4);
-        video.style.translate = move;
+      if (now === placed) return;
+      placed = now;
+      video.style.scale = grow.toFixed(4);
+      video.style.translate = move;
+      // The box's move is in its own widths: the slice's left edge over the strip.
+      if (box) {
+        box.style.translate = part < 1 ? ((pan * (1 - part) / part) * 100).toFixed(3) + '% 0' : '0 0';
       }
       canvas.setAttribute('aria-valuenow', String(Math.round(pan * 100)));
       if (range) range.value = String(Math.round(pan * 1000));
     }
 
-    function paint() {
+    // The whole picture in the strip: a copy of a camera frame, which costs, so a few times a
+    // second at most, and not while the slice is being dragged.
+    let painted = 0;
+    let dragging = false;
+    function paint(force) {
       if (stopped) return;
+      const now = performance.now();
+      if (!force && (dragging || now - painted < 125)) return;
       const width = video.videoWidth;
       const height = video.videoHeight;
       const shown = canvas.clientWidth;
-      place();
-      if (width && height && shown) {
-        const ratio = window.devicePixelRatio || 1;
-        const w = Math.round(shown * ratio);
-        const h = Math.round((shown * height / width) * ratio);
-        if (canvas.width !== w || canvas.height !== h) {
-          canvas.width = w;
-          canvas.height = h;
-          canvas.style.aspectRatio = width + ' / ' + height;
-        }
-        context.drawImage(video, 0, 0, w, h);
-        const part = slice();
-        const left = pan * (1 - part) * w;
-        // Outside the slice dimmed, the slice outlined.
-        context.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        context.fillRect(0, 0, left, h);
-        context.fillRect(left + part * w, 0, w - left - part * w, h);
-        context.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-        context.lineWidth = 2 * ratio;
-        context.strokeRect(left + ratio, ratio, part * w - 2 * ratio, h - 2 * ratio);
+      if (!width || !height || !shown) return;
+      painted = now;
+      const ratio = window.devicePixelRatio || 1;
+      const w = Math.round(shown * ratio);
+      const h = Math.round((shown * height / width) * ratio);
+      if (canvas.width !== w || canvas.height !== h) {
+        canvas.width = w;
+        canvas.height = h;
+        canvas.style.aspectRatio = width + ' / ' + height;
       }
+      context.drawImage(video, 0, 0, w, h);
     }
 
     function draw() {
-      paint();
+      paint(false);
       next();
     }
 
@@ -395,43 +403,45 @@
       }
     }
 
-    // The picture moves at once; the strip, which copies a whole camera frame, is drawn again
-    // at most once a screen refresh, however fast the pointer sends moves.
-    let repaint = null;
+    // Everything moves at once: the picture and the box are only restyled.
     function set(to) {
       pan = Math.min(1, Math.max(0, to));
       place();
-      if (repaint === null) {
-        repaint = requestAnimationFrame(() => {
-          repaint = null;
-          paint();
-        });
-      }
+    }
+
+    function resize() {
+      measure();
+      place();
+      paint(true);
     }
 
     // The strip: the slice centres on the pointer.
+    // Where the strip is, measured once when the drag starts.
+    let stripDrag = null;
     function toPointer(event) {
-      const box = canvas.getBoundingClientRect();
-      const part = slice();
-      if (part >= 1 || !box.width) return;
-      const centre = (event.clientX - box.left) / box.width;
+      if (!stripDrag || part >= 1 || !stripDrag.width) return;
+      const centre = (event.clientX - stripDrag.left) / stripDrag.width;
       set((centre - part / 2) / (1 - part));
     }
-    let stripDrag = false;
     function stripDown(event) {
-      stripDrag = true;
+      const at = canvas.getBoundingClientRect();
+      stripDrag = { left: at.left, width: at.width };
+      dragging = true;
       canvas.setPointerCapture(event.pointerId);
       video.classList.add('dragging');
+      if (box) box.classList.add('dragging');
       toPointer(event);
       event.preventDefault();
     }
     function stripMove(event) {
-      if (stripDrag) toPointer(event);
+      toPointer(event);
     }
     function stripUp() {
       if (!stripDrag) return;
-      stripDrag = false;
+      stripDrag = null;
+      dragging = false;
       video.classList.remove('dragging');
+      if (box) box.classList.remove('dragging');
       onPan(pan);
     }
 
@@ -439,18 +449,19 @@
     let videoDrag = null;
     function videoDown(event) {
       if (event.button !== 0) return;
-      videoDrag = { x: event.clientX, pan };
+      videoDrag = { x: event.clientX, pan, spare: video.clientWidth * (1 / part - 1) };
+      dragging = true;
       video.setPointerCapture(event.pointerId);
       video.classList.add('dragging');
     }
     function videoMove(event) {
       if (!videoDrag) return;
-      const spare = video.clientWidth * (1 / slice() - 1);
-      if (spare > 0) set(videoDrag.pan - (event.clientX - videoDrag.x) / spare);
+      if (videoDrag.spare > 0) set(videoDrag.pan - (event.clientX - videoDrag.x) / videoDrag.spare);
     }
     function videoUp() {
       if (!videoDrag) return;
       videoDrag = null;
+      dragging = false;
       video.classList.remove('dragging');
       onPan(pan);
     }
@@ -467,6 +478,7 @@
     // The slider: held, the picture follows it at once (like the drags); a key press on it
     // still glides.
     function slideDown() {
+      dragging = true;
       video.classList.add('dragging');
       // Let go anywhere, even off the slider or without moving it.
       window.addEventListener('pointerup', slideUp, { once: true });
@@ -475,6 +487,7 @@
     function slideUp() {
       window.removeEventListener('pointerup', slideUp);
       window.removeEventListener('pointercancel', slideUp);
+      dragging = false;
       video.classList.remove('dragging');
     }
     function slide() {
@@ -486,7 +499,7 @@
 
     // A frame that changes size (full screen, a turned phone) needs a new zoom even when no
     // new picture comes, as when the video has stopped.
-    const resized = window.ResizeObserver ? new ResizeObserver(paint) : null;
+    const resized = window.ResizeObserver ? new ResizeObserver(resize) : null;
 
     canvas.addEventListener('pointerdown', stripDown);
     if (range) {
@@ -494,7 +507,12 @@
       range.addEventListener('input', slide);
       range.addEventListener('change', slid);
     }
-    if (resized) resized.observe(video);
+    if (resized) {
+      resized.observe(video);
+      resized.observe(canvas);
+    }
+    video.addEventListener('loadedmetadata', resize);
+    video.addEventListener('resize', resize);
     canvas.addEventListener('pointermove', stripMove);
     canvas.addEventListener('pointerup', stripUp);
     canvas.addEventListener('pointercancel', stripUp);
@@ -503,6 +521,7 @@
     video.addEventListener('pointermove', videoMove);
     video.addEventListener('pointerup', videoUp);
     video.addEventListener('pointercancel', videoUp);
+    measure();
     place();
     next();
 
@@ -513,7 +532,6 @@
           video.cancelVideoFrameCallback(frame.video);
         }
         if (frame && frame.animation !== undefined) cancelAnimationFrame(frame.animation);
-        if (repaint !== null) cancelAnimationFrame(repaint);
         if (range) {
           range.removeEventListener('pointerdown', slideDown);
           range.removeEventListener('input', slide);
@@ -530,6 +548,8 @@
         video.removeEventListener('pointermove', videoMove);
         video.removeEventListener('pointerup', videoUp);
         video.removeEventListener('pointercancel', videoUp);
+        video.removeEventListener('loadedmetadata', resize);
+        video.removeEventListener('resize', resize);
         video.classList.remove('dragging');
         video.style.scale = '';
         video.style.translate = '';

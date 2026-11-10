@@ -55,6 +55,10 @@ pub enum Icon {
     /// Looking closer at part of a wide picture, and back out to all of it.
     ZoomIn,
     ZoomOut,
+    /// A camera's siren.
+    Siren,
+    /// A camera's infrared lights: seeing at night.
+    Night,
     // The kinds of device on the Floorplan.
     Bulb,
     Tv,
@@ -409,6 +413,13 @@ fn drawing(icon: Icon) -> &'static str {
         }
         Icon::ZoomOut => {
             r#"<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6"/>"#
+        }
+        Icon::Siren => concat!(
+            r#"<path d="M7 18v-4.500a5 5 0 0 1 10 0V18"/><path d="M5 18h14v3H5Z"/>"#,
+            r#"<path d="M12 3v2.500M4.500 6.500l1.600 1.600M19.500 6.500l-1.600 1.600"/>"#,
+        ),
+        Icon::Night => {
+            r#"<path d="M19.500 14.500A8 8 0 1 1 9.500 4.500a6.500 6.500 0 0 0 10 10Z"/>"#
         }
         Icon::Bulb => concat!(
             r#"<path d="M9 17.5h6M10 20.5h4"/>"#,

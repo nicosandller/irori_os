@@ -11,6 +11,7 @@ mod api;
 mod app_frame;
 mod assistant;
 mod backups;
+mod camera_extras;
 mod camera_live;
 mod camera_talk;
 mod camera_turn;
