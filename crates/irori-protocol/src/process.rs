@@ -123,6 +123,16 @@ pub enum FromExt {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// The camera is listening on a talk (`docs/specs/protocols.md` §5.4).
+    TalkReady {
+        stream: u64,
+    },
+    /// A talk is over, with why when it failed.
+    TalkEnd {
+        stream: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     // --- Engine operations (`docs/specs/automations.md` §B2). Each needs an API scope and is
     // answered with `ToExt::Answer`.
     /// Every entity, and whether time and sun triggers can be armed. `registry:read`.
@@ -250,6 +260,21 @@ pub enum ToExt {
     },
     /// Nobody watches that stream any more: stop it. Nothing more is read for it.
     LiveStop {
+        stream: u64,
+    },
+    /// A page wants to talk through one of its cameras (`docs/specs/protocols.md` §5.4).
+    /// Answered with `talk_ready`, then `talk_end` when it's over.
+    TalkStart {
+        stream: u64,
+        unique_id: UniqueId,
+    },
+    /// Some of a talk's sound: 16-bit little-endian PCM at 8 kHz, one channel, base64.
+    TalkAudio {
+        stream: u64,
+        data: String,
+    },
+    /// The page has stopped talking: close the camera's speaker. Nothing more is read for it.
+    TalkStop {
         stream: u64,
     },
     Stop,
@@ -759,6 +784,22 @@ fn handle_host_line(
             }
         }
         ToExt::LiveStop { stream } => pending.stop_live(stream),
+        ToExt::TalkStart { stream, unique_id } => {
+            let (incoming, audio, words) = host::incoming_talk(unique_id);
+            match actions.try_send(incoming) {
+                Ok(()) => pending.start_talk(stream, audio, words, out, runtime),
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => enqueue_json(
+                    out,
+                    &FromExt::TalkEnd {
+                        stream,
+                        error: Some("the extension is busy and can't take this yet".into()),
+                    },
+                ),
+            }
+        }
+        ToExt::TalkAudio { stream, data } => pending.talk_audio(stream, &data),
+        ToExt::TalkStop { stream } => pending.stop_talk(stream),
         ToExt::Stop => return ReadControl::Stop,
         // Engine traffic is read by `engine::run`, not by a protocol extension's `serve`.
         // A line that arrives here is consumed so the reader stays up; the same messages
@@ -806,9 +847,84 @@ struct Pending {
     /// Where live video lines go: their own queue (see `serve`). Unset in tests, which read
     /// everything off one queue.
     live_out: Option<mpsc::Sender<String>>,
+    /// Each talk running, by the host's stream number: where its sound goes, and the task that
+    /// passes the protocol's words back.
+    talks: Arc<Mutex<HashMap<u64, Talk>>>,
+}
+
+#[derive(Debug)]
+struct Talk {
+    audio: mpsc::Sender<Vec<u8>>,
+    words: tokio::task::AbortHandle,
 }
 
 impl Pending {
+    /// Passes a talk's words to the host as lines until it ends; its sound goes to the protocol
+    /// as `talk_audio` arrives.
+    fn start_talk(
+        &self,
+        stream: u64,
+        audio: mpsc::Sender<Vec<u8>>,
+        mut words: mpsc::Receiver<crate::TalkWord>,
+        out: &mpsc::Sender<String>,
+        runtime: &tokio::runtime::Handle,
+    ) {
+        let lines = out.clone();
+        let talks = Arc::clone(&self.talks);
+        let mut table = self.talks.lock().unwrap_or_else(PoisonError::into_inner);
+        let task = runtime.spawn(async move {
+            loop {
+                let message = match words.recv().await {
+                    Some(crate::TalkWord::Ready) => FromExt::TalkReady { stream },
+                    Some(crate::TalkWord::End { error }) => FromExt::TalkEnd { stream, error },
+                    None => FromExt::TalkEnd {
+                        stream,
+                        error: Some("the protocol stopped the talk".into()),
+                    },
+                };
+                let over = matches!(message, FromExt::TalkEnd { .. });
+                if send_line(&lines, &message).await.is_err() || over {
+                    break;
+                }
+            }
+            talks
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .remove(&stream);
+        });
+        table.insert(
+            stream,
+            Talk {
+                audio,
+                words: task.abort_handle(),
+            },
+        );
+    }
+
+    /// Some sound for a talk. Dropped when the protocol hasn't kept up, or isn't right.
+    fn talk_audio(&self, stream: u64, data: &str) {
+        let Ok(chunk) = crate::talk::decode(data) else {
+            return;
+        };
+        let talks = self.talks.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(talk) = talks.get(&stream) {
+            let _ = talk.audio.try_send(chunk);
+        }
+    }
+
+    /// The host stopped the talk: dropping its sender ends the protocol's sound, which is its
+    /// sign to close the speaker.
+    fn stop_talk(&self, stream: u64) {
+        if let Some(talk) = self
+            .talks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&stream)
+        {
+            talk.words.abort();
+        }
+    }
+
     /// Forwards a stream's chunks to the host as lines until it ends or the host stops it.
     fn start_live(
         &self,
@@ -1357,6 +1473,47 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), live.feed.closed())
             .await
             .expect("the protocol is told nobody watches");
+    }
+
+    #[tokio::test]
+    async fn a_talk_brings_sound_in_and_words_out_until_the_host_stops_it() {
+        let pending = Pending::default();
+        let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
+        let (actions, mut actions_rx) = tokio::sync::mpsc::channel(1);
+        let (out_tx, mut out_rx) = mpsc::channel(STDOUT_QUEUE);
+        let runtime = tokio::runtime::Handle::current();
+        let line =
+            |text: &str| handle_host_line(text, &pending, &calls, &actions, &out_tx, &runtime);
+
+        assert_eq!(
+            line(r#"{"type":"talk_start","stream":5,"unique_id":"porch"}"#),
+            ReadControl::Continue
+        );
+        let crate::Incoming::Talk(mut talk) = actions_rx.try_recv().expect("queued").sorted()
+        else {
+            panic!("a talk arrives as one");
+        };
+        assert_eq!(talk.unique_id.as_str(), "porch");
+        talk.line.ready();
+        let said = out_rx.recv().await.expect("ready");
+        assert!(said.contains(r#""type":"talk_ready","stream":5"#), "{said}");
+
+        // Two samples, 1 and -1.
+        line(r#"{"type":"talk_audio","stream":5,"data":"AQD//w=="}"#);
+        assert_eq!(talk.audio.recv().await, Some(vec![1, 0, 255, 255]));
+        // Half a sample isn't sound, and a stream nobody started is nobody's.
+        line(r#"{"type":"talk_audio","stream":5,"data":"AQ=="}"#);
+        line(r#"{"type":"talk_audio","stream":9,"data":"AQD//w=="}"#);
+        assert!(talk.audio.try_recv().is_err());
+
+        assert_eq!(
+            line(r#"{"type":"talk_stop","stream":5}"#),
+            ReadControl::Continue
+        );
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(1), talk.audio.recv())
+            .await
+            .expect("the protocol's sound ends");
+        assert_eq!(ended, None);
     }
 
     #[tokio::test]

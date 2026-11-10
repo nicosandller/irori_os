@@ -233,6 +233,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/entities/{id}", patch(edit_entity))
         .route("/api/entities/{id}/picture", get(camera_picture))
         .route("/api/entities/{id}/live", get(live::camera))
+        .route("/api/entities/{id}/talk", get(live::talk))
         .route("/api/extensions/{id}/secrets", put(give_secret))
         .route(
             "/api/extensions/{id}/settings",
@@ -4830,6 +4831,9 @@ mod tests {
                     irori_protocol::Incoming::Live(live) => {
                         live.feed.end(Some("no cameras on this mesh".into()));
                     }
+                    irori_protocol::Incoming::Talk(talk) => {
+                        talk.line.end(Some("no cameras on this mesh".into()));
+                    }
                 }
             }
             Ok(())
@@ -6986,6 +6990,227 @@ mod tests {
             }
         };
         assert!(ended["ended"]["reason"].is_string(), "{ended}");
+        serve.abort();
+        Ok(())
+    }
+
+    /// What the test camera's speaker has played.
+    static PORCH_HEARD: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
+
+    /// A camera with a speaker: it listens at once and keeps what it's sent.
+    struct Porch;
+    impl irori_protocol::Protocol for Porch {
+        type Config = irori_protocol::NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "porch"
+            name = "Porch"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["camera"]
+        "#;
+        async fn run(
+            _: irori_protocol::NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            use irori_types::{
+                CameraCapabilities, CameraState, CameraStatus, Capabilities, EntityDescription,
+                State, StateReport,
+            };
+            let uid = |id: &str| irori_types::UniqueId::try_from(id).expect("valid");
+            ctx.describe_entity(EntityDescription {
+                unique_id: uid("porch-camera"),
+                name: Some(Name::try_from("Porch")?),
+                device_unique_id: None,
+                suggested_object_id: Some(irori_types::ObjectId::try_from("porch")?),
+                capabilities: Capabilities::Camera(CameraCapabilities {
+                    talk: true,
+                    ..CameraCapabilities::default()
+                }),
+                entity_category: None,
+            })
+            .await?;
+            ctx.report_state(StateReport {
+                unique_id: uid("porch-camera"),
+                state: Some(State::Camera(CameraState {
+                    state: CameraStatus::Idle,
+                    motion_detection: None,
+                    presets: None,
+                })),
+                attributes: Default::default(),
+                caused_by: None,
+                replayed: false,
+            });
+            while let Some(incoming) = ctx.next().await {
+                if let irori_protocol::Incoming::Talk(talk) = incoming {
+                    let irori_protocol::IncomingTalk {
+                        mut audio, line, ..
+                    } = talk;
+                    tokio::spawn(async move {
+                        line.ready();
+                        while let Some(chunk) = audio.recv().await {
+                            PORCH_HEARD
+                                .lock()
+                                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                                .extend(chunk);
+                        }
+                        line.end(None);
+                    });
+                }
+            }
+            Ok(())
+        }
+    }
+
+    /// Opens a camera's talk socket, or says how it was turned away.
+    async fn open_talk(
+        address: std::net::SocketAddr,
+        camera: &str,
+        origin: Option<&str>,
+    ) -> anyhow::Result<Result<CameraSocket, StatusCode>> {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request =
+            format!("ws://{address}/api/entities/{camera}/talk").into_client_request()?;
+        if let Some(origin) = origin {
+            request.headers_mut().insert("origin", origin.parse()?);
+        }
+        match tokio_tungstenite::connect_async(request).await {
+            Ok((socket, _)) => Ok(Ok(socket)),
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                Ok(Err(StatusCode::from_u16(response.status().as_u16())?))
+            }
+            Err(other) => Err(other.into()),
+        }
+    }
+
+    /// The next word a talk socket says, skipping anything else.
+    async fn talk_word(socket: &mut CameraSocket) -> anyhow::Result<serde_json::Value> {
+        use futures_util::StreamExt as _;
+        loop {
+            let frame = tokio::time::timeout(Duration::from_secs(10), socket.next())
+                .await?
+                .ok_or_else(|| anyhow::anyhow!("the socket closed without a word"))??;
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+                return Ok(serde_json::from_str(&text)?);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_camera_is_talked_through_by_one_person_at_a_time() -> anyhow::Result<()> {
+        use futures_util::SinkExt as _;
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<Porch>().map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let porch = EntityId::try_from("camera.porch")?;
+        let garden = EntityId::try_from("camera.garden_camera_1")?;
+        for _ in 0..500 {
+            if core.state(&porch).is_some() && core.state(&garden).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core.clone())?;
+        let app = server.app()?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let serve = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let own = format!("http://{address}");
+        let mut first = open_talk(address, "camera.porch", Some(&own))
+            .await?
+            .map_err(|status| anyhow::anyhow!("turned away: {status}"))?;
+        assert_eq!(talk_word(&mut first).await?, serde_json::json!("listening"));
+        // Two samples, then half of one, which isn't sound.
+        first
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                vec![1u8, 0, 255, 255].into(),
+            ))
+            .await?;
+        for _ in 0..200 {
+            if !PORCH_HEARD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            *PORCH_HEARD
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![1, 0, 255, 255]
+        );
+
+        // One person at a time, only from Irori's own page, and only a camera with a speaker.
+        assert_eq!(
+            open_talk(address, "camera.porch", None).await?.err(),
+            Some(StatusCode::CONFLICT),
+            "someone is already talking"
+        );
+        assert_eq!(
+            open_talk(address, "camera.porch", Some("http://elsewhere.example"))
+                .await?
+                .err(),
+            Some(StatusCode::FORBIDDEN)
+        );
+        for (camera, wanted) in [
+            ("camera.garden_camera_1", StatusCode::CONFLICT),
+            ("camera.nowhere", StatusCode::NOT_FOUND),
+            ("light.living_room_lamp", StatusCode::NOT_FOUND),
+        ] {
+            assert_eq!(
+                open_talk(address, camera, None).await?.err(),
+                Some(wanted),
+                "{camera}"
+            );
+        }
+
+        first
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                vec![1u8].into(),
+            ))
+            .await?;
+        let ended = talk_word(&mut first).await?;
+        assert!(
+            ended["ended"]["reason"]
+                .as_str()
+                .is_some_and(|why| why.contains("16-bit")),
+            "{ended}"
+        );
+
+        // The camera is free again, and a page that goes quiet is let go.
+        let mut again = loop {
+            if let Ok(socket) = open_talk(address, "camera.porch", None).await? {
+                break socket;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        assert_eq!(talk_word(&mut again).await?, serde_json::json!("listening"));
+        let quiet = talk_word(&mut again).await?;
+        assert!(
+            quiet["ended"]["reason"]
+                .as_str()
+                .is_some_and(|why| why.contains("nothing was said")),
+            "{quiet}"
+        );
+
+        host.shutdown().await;
         serve.abort();
         Ok(())
     }

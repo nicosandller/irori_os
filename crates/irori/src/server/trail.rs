@@ -144,6 +144,7 @@ pub const ACTIONS: &[(&str, &str, Log)] = &[
     ("POST", "/api/backups/upload", Later("backup_uploaded")),
     ("PUT", "/api/backups/settings", Later("backup_settings_changed")),
     ("GET", "/api/backups/key", Now("backup_key_shown")),
+    ("GET", "/api/entities/{id}/talk", Now("camera_talked")),
     ("POST", "/api/backups/key", Now("backup_key_changed")),
     ("POST", "/api/backups/restore/cancel", Later("restore_cancelled")),
     ("POST", "/api/backups/restore/seen", Quiet),

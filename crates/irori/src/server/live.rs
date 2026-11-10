@@ -700,6 +700,8 @@ enum CameraWord {
     Playing { mime: String },
     /// The stream is over, and why.
     Ended { reason: String },
+    /// On a talk: the camera is listening, so what's sent now comes out of its speaker.
+    Listening,
 }
 
 /// How long the page has to say what it can play.
@@ -838,6 +840,160 @@ async fn watch_camera(
             }
         }
     };
+    if let Some(reason) = reason {
+        let _ = say_ended(&mut socket, reason).await;
+    } else {
+        let _ = socket.send(Message::Close(None)).await;
+    }
+}
+
+/// How long a talk may go without sound before it's ended: a page holding the button sends
+/// sound all the time, silence included, so a gap means the page has gone.
+const TALK_QUIET: Duration = Duration::from_secs(3);
+
+/// The longest one talk may last.
+const TALK_LONGEST: Duration = Duration::from_secs(10 * 60);
+
+/// Talking through a camera (`docs/specs/api.md`, `docs/specs/protocols.md` §5.4): the page
+/// sends its microphone as binary frames, 16-bit little-endian PCM at 8 kHz, one channel, from
+/// the moment it's told `listening` until it lets go. `ended` says why it stopped.
+///
+/// The same doors as watching it live, and the same as a command: a browser only from Irori's
+/// own page, a camera in the person's rooms, and closed when either stops being so. One person
+/// at a time per camera; a second is told someone else is talking (409).
+pub async fn talk(
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Extension(who): Extension<Actor>,
+    axum::extract::Path(id): axum::extract::Path<irori_types::EntityId>,
+) -> Response {
+    if let Err(response) = same_server(&headers) {
+        return *response;
+    }
+    if id.kind() != irori_types::EntityKind::Camera {
+        return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
+    }
+    let reach = who.reach(&state.0.core);
+    if state.0.core.seen(&reach).state(&id).is_none() {
+        return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
+    }
+    let speaks = state.0.core.entity(&id).is_some_and(|entity| {
+        matches!(
+            &entity.capabilities,
+            irori_types::Capabilities::Camera(camera) if camera.talk
+        )
+    });
+    if !speaks {
+        return refused(
+            StatusCode::CONFLICT,
+            format!("`{id}` has no speaker to talk through"),
+        );
+    }
+    let ws = match ws {
+        Ok(ws) => ws,
+        Err(rejection) => return axum::response::IntoResponse::into_response(rejection),
+    };
+    // Taken before the upgrade, so a second person is told plainly that someone is talking.
+    let talking = match state.0.core.talk(&id).await {
+        Ok(talking) => talking,
+        Err(irori_core::TalkError::Busy) => {
+            return refused(
+                StatusCode::CONFLICT,
+                irori_core::TalkError::Busy.to_string(),
+            );
+        }
+        Err(irori_core::TalkError::Cant(why)) => return refused(StatusCode::CONFLICT, why),
+        Err(irori_core::TalkError::NotRunning(why)) => {
+            return refused(StatusCode::SERVICE_UNAVAILABLE, why);
+        }
+    };
+    let seat = seat_kind(&state, &who, &headers).await;
+    let signed_in = matches!(seat, SeatKind::Session { .. });
+    let closed = state.0.sockets.open(seat);
+    ws.on_upgrade(move |socket| talk_through(socket, state, closed, who, signed_in, id, talking))
+}
+
+async fn talk_through(
+    mut socket: WebSocket,
+    state: AppState,
+    mut closed: watch::Receiver<bool>,
+    who: Actor,
+    signed_in: bool,
+    id: irori_types::EntityId,
+    mut talking: irori_core::Talking,
+) {
+    let mut people = tokio::time::interval(PEOPLE_EVERY);
+    people.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let started = tokio::time::Instant::now();
+    let longest = tokio::time::sleep_until(started + TALK_LONGEST);
+    tokio::pin!(longest);
+    let mut listening = false;
+    // Until the camera listens, the wait is the camera's; then it's the page's to keep talking.
+    let mut quiet_until = started + irori_core::TALK_START_TIMEOUT;
+    let reason = loop {
+        tokio::select! {
+            biased;
+            changed = closed.changed() => {
+                if changed.is_err() || *closed.borrow() {
+                    break None;
+                }
+            }
+            _ = people.tick() => {
+                if signed_in && !still_the_same_person(&state, &who).await {
+                    break None;
+                }
+                let reach = who.reach(&state.0.core);
+                if state.0.core.seen(&reach).state(&id).is_none() {
+                    break Some("the camera isn't yours to talk through any more".to_owned());
+                }
+            }
+            () = &mut longest => break Some("a talk can last ten minutes at most".to_owned()),
+            () = tokio::time::sleep_until(quiet_until) => {
+                break Some(if listening {
+                    "nothing was said for a few seconds".to_owned()
+                } else {
+                    "the camera didn't start listening in time".to_owned()
+                });
+            }
+            word = talking.words.recv() => match word {
+                Some(irori_protocol::TalkWord::Ready) if !listening => {
+                    listening = true;
+                    quiet_until = tokio::time::Instant::now() + TALK_QUIET;
+                    if send_word(&mut socket, &CameraWord::Listening).await.is_err() {
+                        break None;
+                    }
+                }
+                Some(irori_protocol::TalkWord::Ready) => {}
+                Some(irori_protocol::TalkWord::End { error }) => {
+                    break Some(error.unwrap_or_else(|| "the camera stopped listening".to_owned()));
+                }
+                None => break Some("the camera stopped listening".to_owned()),
+            },
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Binary(chunk))) => {
+                    // Sound from before the camera listens has nowhere to go.
+                    if !listening {
+                        continue;
+                    }
+                    if let Err(why) = irori_protocol::talk::check(&chunk) {
+                        break Some(why);
+                    }
+                    quiet_until = tokio::time::Instant::now() + TALK_QUIET;
+                    // A camera that hasn't kept up loses this bit, rather than everything after
+                    // it arriving late.
+                    if let Err(mpsc::error::TrySendError::Closed(_)) =
+                        talking.audio.try_send(chunk.to_vec())
+                    {
+                        break Some("the camera stopped listening".to_owned());
+                    }
+                }
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break None,
+                Some(Ok(_)) => {}
+            },
+        }
+    };
+    drop(talking);
     if let Some(reason) = reason {
         let _ = say_ended(&mut socket, reason).await;
     } else {

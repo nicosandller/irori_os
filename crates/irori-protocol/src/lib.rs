@@ -28,8 +28,10 @@ pub mod engine;
 pub mod home;
 pub mod live;
 mod process;
+pub mod talk;
 pub use live::{IncomingLive, LiveChunk, LiveClosed, LiveFeed, Sent};
 pub use process::{ExtProcess, FromExt, ToExt, WireCommand, serve, spawn};
+pub use talk::{IncomingTalk, TalkLine, TalkWord};
 
 /// A built-in protocol.
 ///
@@ -330,6 +332,9 @@ pub struct IncomingAction {
     /// Set when it's a page asking to watch a camera live, which travels the same way too.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Live`].
     live: Option<IncomingLive>,
+    /// Set when it's a page asking to talk through a camera, which travels the same way too.
+    /// [`ProtocolContext::next`] hands those out as [`Incoming::Talk`].
+    talk: Option<IncomingTalk>,
     reply: ActionReply,
 }
 
@@ -384,9 +389,23 @@ impl IncomingAction {
         self.live
     }
 
+    /// Whether it's a talk, for the host.
+    pub fn talking(&self) -> bool {
+        self.talk.is_some()
+    }
+
+    /// Takes the talk out, if that's what this is: the host passes the sound to the protocol
+    /// and its words back.
+    pub fn into_talk(self) -> Option<IncomingTalk> {
+        self.talk
+    }
+
     fn sorted(self) -> Incoming {
         if let Some(live) = self.live {
             return Incoming::Live(live);
+        }
+        if let Some(talk) = self.talk {
+            return Incoming::Talk(talk);
         }
         match (self.unpair, self.picture, self.reply) {
             (Some((unique_id, force)), _, ActionReply::Done(reply)) => {
@@ -407,6 +426,7 @@ impl IncomingAction {
                 unpair,
                 picture,
                 live: None,
+                talk: None,
                 reply,
             }),
         }
@@ -459,6 +479,7 @@ pub enum Incoming {
     Unpair(IncomingUnpair),
     Picture(IncomingPicture),
     Live(IncomingLive),
+    Talk(IncomingTalk),
 }
 
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
@@ -651,6 +672,9 @@ impl ProtocolContext {
                         }
                         Incoming::Live(live) => {
                             live.feed.end(Some("this protocol has no live video".into()));
+                        }
+                        Incoming::Talk(talk) => {
+                            talk.line.end(Some("this protocol can't talk through a camera".into()));
                         }
                         Incoming::Call(_) => {}
                     }
@@ -1074,6 +1098,7 @@ pub mod host {
             unpair: None,
             picture: None,
             live: None,
+            talk: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, result)
@@ -1124,6 +1149,7 @@ pub mod host {
             unpair: None,
             picture: Some(unique_id),
             live: None,
+            talk: None,
             reply: ActionReply::Picture(reply),
         };
         (incoming, result)
@@ -1153,9 +1179,42 @@ pub mod host {
                 accepts,
                 feed,
             }),
+            talk: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, chunks)
+    }
+
+    /// Builds a request to talk through a camera, as it travels: on the actions channel. The
+    /// sound goes in the sender (dropping it ends the talk) and the protocol's words come back
+    /// on the receiver.
+    pub fn incoming_talk(
+        unique_id: UniqueId,
+    ) -> (
+        IncomingAction,
+        mpsc::Sender<Vec<u8>>,
+        mpsc::Receiver<crate::TalkWord>,
+    ) {
+        let (audio_tx, audio) = mpsc::channel(crate::talk::TALK_QUEUE);
+        let (line, words) = crate::TalkLine::channel();
+        // Nobody waits on this: the line is the answer.
+        let (reply, _) = oneshot::channel();
+        let incoming = IncomingAction {
+            action_id: String::new(),
+            stop: false,
+            way: None,
+            fields: BTreeMap::new(),
+            unpair: None,
+            picture: None,
+            live: None,
+            talk: Some(crate::IncomingTalk {
+                unique_id,
+                audio,
+                line,
+            }),
+            reply: ActionReply::Done(reply),
+        };
+        (incoming, audio_tx, words)
     }
 }
 

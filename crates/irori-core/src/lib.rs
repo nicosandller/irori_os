@@ -13,6 +13,7 @@ mod live;
 mod people;
 mod reach;
 mod services;
+mod talk;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
@@ -44,6 +45,7 @@ pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};
 pub use home::HeldDevice;
 pub use installs::QueuedInstall;
 pub use live::{LIVE_GRACE, LIVE_START_TIMEOUT};
+pub use talk::{TALK_START_TIMEOUT, TalkError, Talking};
 
 use home::{Home, Stamp};
 
@@ -389,6 +391,8 @@ struct Shared {
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
     /// The cameras being watched live, and who watches each.
     live: Arc<live::LiveHub>,
+    /// The cameras someone is talking through.
+    talking: Arc<talk::TalkSlots>,
     /// Which update is installing on each protocol, and which wait their turn.
     installs: Mutex<installs::Installs>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
@@ -486,6 +490,7 @@ impl Core {
             place: RwLock::default(),
             busy: Mutex::default(),
             live: Arc::default(),
+            talking: Arc::default(),
             installs: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
@@ -1356,6 +1361,45 @@ impl Core {
             }
         });
         Ok(chunks)
+    }
+
+    /// Starts talking through a camera (`docs/specs/protocols.md` §5.4): one person at a time
+    /// per camera. The protocol's words (ready, then the end) arrive on the [`Talking`]; dropping
+    /// it ends the talk.
+    pub async fn talk(&self, entity_id: &EntityId) -> Result<Talking, TalkError> {
+        let (protocol, unique_id) = {
+            let home = read(&self.0.home);
+            let entity = home
+                .entity(entity_id)
+                .ok_or_else(|| TalkError::Cant(format!("there's no `{entity_id}`")))?;
+            let talks = matches!(
+                &entity.capabilities,
+                irori_types::Capabilities::Camera(camera) if camera.talk
+            );
+            if !talks {
+                return Err(TalkError::Cant(format!(
+                    "`{entity_id}` has no speaker to talk through"
+                )));
+            }
+            (entity.protocol.clone(), entity.unique_id.clone())
+        };
+        let extension =
+            ExtensionId::try_from(protocol.as_str()).map_err(|e| TalkError::Cant(e.to_string()))?;
+        let slot = self.0.talking.take(entity_id).ok_or(TalkError::Busy)?;
+        let sender = read(&self.0.action_links)
+            .get(&extension)
+            .cloned()
+            .ok_or_else(|| TalkError::NotRunning(format!("`{extension}` isn't running")))?;
+        let (incoming, audio, words) = irori_protocol::host::incoming_talk(unique_id);
+        match tokio::time::timeout(PICTURE_TIMEOUT, sender.send(incoming)).await {
+            Ok(Ok(())) => Ok(Talking::new(audio, words, slot)),
+            Ok(Err(_)) => Err(TalkError::NotRunning(format!(
+                "`{extension}` isn't running"
+            ))),
+            Err(_) => Err(TalkError::NotRunning(format!(
+                "`{extension}` is too busy to start talking"
+            ))),
+        }
     }
 
     async fn ask(

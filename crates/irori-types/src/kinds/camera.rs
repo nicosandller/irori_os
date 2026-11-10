@@ -17,7 +17,7 @@ use crate::{InvariantError, Service, ServiceName};
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 ///
-/// What came with format 27 (`live`, `qualities`, `pan_tilt`, `zoom`, `presets`) is left out
+/// What came with format 27 (`live`, `qualities`, `pan_tilt`, `zoom`, `presets`, `talk`) is left out
 /// when it's off, so a camera that has none of it reads the same to a core from before.
 pub struct CameraCapabilities {
     /// Can be turned off and on again: a privacy switch.
@@ -42,6 +42,9 @@ pub struct CameraCapabilities {
     /// Has positions saved on it that it can be sent to. Which ones is state (`presets`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub presets: bool,
+    /// Has a speaker a page can talk through (`docs/specs/protocols.md` §5.4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub talk: bool,
 }
 
 impl CameraCapabilities {

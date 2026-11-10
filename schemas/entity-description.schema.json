@@ -1148,7 +1148,7 @@
           ]
         },
         {
-          "description": "What came with format 27 (`live`, `qualities`, `pan_tilt`, `zoom`, `presets`) is left out\nwhen it's off, so a camera that has none of it reads the same to a core from before.",
+          "description": "What came with format 27 (`live`, `qualities`, `pan_tilt`, `zoom`, `presets`, `talk`) is left out\nwhen it's off, so a camera that has none of it reads the same to a core from before.",
           "type": "object",
           "properties": {
             "kind": {
@@ -1184,6 +1184,10 @@
                 "$ref": "#/$defs/LiveQuality"
               },
               "maxItems": 2
+            },
+            "talk": {
+              "description": "Has a speaker a page can talk through (`docs/specs/protocols.md` §5.4).",
+              "type": "boolean"
             },
             "zoom": {
               "description": "Can zoom in and out.",

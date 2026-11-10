@@ -42,12 +42,13 @@ use crate::{Entity, EntityKind, EntityState};
 /// 24. Adds `timer`.
 /// 25. Adds `schedule`.
 /// 26. Adds `camera`.
-/// 27. Adds live video (`live`, `qualities`) and turning (`pan_tilt`, `zoom`, `presets`) to
-///     cameras' capabilities, and `presets` to their state.
+/// 27. Adds live video (`live`, `qualities`), turning (`pan_tilt`, `zoom`, `presets`) and
+///     talking through it (`talk`) to cameras' capabilities, and `presets` to their state.
 pub const ENTITY_FORMAT: u32 = 27;
 
 /// The camera capabilities format 27 added, which an older reader is sent without.
-const CAMERA_27_CAPABILITIES: &[&str] = &["live", "qualities", "pan_tilt", "zoom", "presets"];
+const CAMERA_27_CAPABILITIES: &[&str] =
+    &["live", "qualities", "pan_tilt", "zoom", "presets", "talk"];
 
 pub(crate) fn first() -> u32 {
     1
@@ -379,7 +380,8 @@ mod tests {
         let camera: Entity = serde_json::from_str(
             r#"{"id": "camera.driveway", "protocol": "cameras", "unique_id": "d",
                 "name": "Driveway", "capabilities": {"kind": "camera", "motion_detection": true,
-                "live": true, "qualities": ["low", "high"], "pan_tilt": true, "presets": true}}"#,
+                "live": true, "qualities": ["low", "high"], "pan_tilt": true, "presets": true,
+                "talk": true}}"#,
         )
         .expect("valid");
         let old = entity_for(26, &camera).expect("cameras are in format 26");
@@ -390,6 +392,7 @@ mod tests {
         assert_eq!(entity_for(25, &camera), None);
         let now = entity_for(ENTITY_FORMAT, &camera).expect("current");
         assert_eq!(now["capabilities"]["pan_tilt"], true);
+        assert_eq!(now["capabilities"]["talk"], true);
 
         let state: EntityState = serde_json::from_str(
             r#"{"entity_id": "camera.driveway", "availability": "available",
