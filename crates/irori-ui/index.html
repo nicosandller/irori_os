@@ -948,6 +948,11 @@
       display: none; }
     .camera-stage.is-full :is(.camera-live-bar, .camera-talk, .camera-turn) {
       transition: opacity var(--dur-layout) var(--ease-out); }
+    /* A moved, filtered or contained box (a drawer sliding in) would hold the full-screen stage
+       inside itself instead of the screen; none of those while a camera fills it. */
+    :has(.camera-stage.is-full) {
+      translate: none !important; transform: none !important; filter: none !important;
+      contain: none !important; backdrop-filter: none !important; }
     .camera-stage.is-full[data-idle]:not(:has(.talk-button.held)) { cursor: none; }
     .camera-stage.is-full[data-idle]:not(:has(.talk-button.held))
       :is(.camera-live-bar, .camera-talk, .camera-turn) { opacity: 0; }
