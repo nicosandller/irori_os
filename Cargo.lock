@@ -5013,6 +5013,7 @@ dependencies = [
  "brotli",
  "flate2",
  "irori-flow-types",
+ "irori-protocol",
  "irori-protocol-cast",
  "irori-protocol-matter",
  "irori-protocol-mqtt",

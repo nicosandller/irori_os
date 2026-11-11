@@ -1,0 +1,5 @@
+{"from": "core", "message": {"type": "service_call", "id": 7, "call": {"service": "light.turn_on", "unique_id": "lamp-light", "data": {"brightness": 255}, "context": {"id": "01K5B2Q9A1B2C3D4E5F6G7H8J9", "origin": {"type": "user", "user_id": "nico"}}}}}
+{"from": "extension", "message": {"type": "service_result", "id": 7}}
+{"from": "extension", "message": {"type": "state_report", "report": {"unique_id": "lamp-light", "state": {"kind": "light", "on": true, "brightness": 255}, "caused_by": "01K5B2Q9A1B2C3D4E5F6G7H8J9"}}}
+{"from": "core", "message": {"type": "service_call", "id": 8, "call": {"service": "light.turn_off", "unique_id": "lamp-light", "context": {"id": "01K5B2Q9A1B2C3D4E5F6G7H8JA", "origin": {"type": "user", "user_id": "nico"}}}}}
+{"from": "extension", "message": {"type": "service_result", "id": 8, "error": {"code": "unavailable", "message": "the lamp didn't answer"}}}
