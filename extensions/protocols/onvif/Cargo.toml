@@ -1,5 +1,5 @@
 [package]
-name = "irori-protocol-cameras"
+name = "irori-protocol-onvif"
 description = "IP cameras on the local network, over ONVIF and RTSP, with extras for Reolink."
 version.workspace = true
 edition.workspace = true
@@ -46,7 +46,7 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [[bin]]
-name = "irori-ext-cameras"
+name = "irori-ext-onvif"
 path = "src/main.rs"
 
 [lints]

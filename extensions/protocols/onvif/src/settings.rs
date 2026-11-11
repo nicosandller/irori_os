@@ -1,4 +1,4 @@
-//! What the Cameras extension can be told.
+//! What the ONVIF Cameras extension can be told.
 //!
 //! `hosts` is plain settings: cameras to ask directly, for a network where the discovery
 //! multicast doesn't reach. Each camera's login lives in `secrets.toml`, in this extension's own

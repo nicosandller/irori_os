@@ -108,7 +108,7 @@ pub fn draw(members: &[Member]) -> Network {
         });
     }
     Network {
-        name: Some("Cameras".to_owned()),
+        name: Some("ONVIF Cameras".to_owned()),
         detail: Some("ONVIF cameras, wired and on Wi-Fi".to_owned()),
         scanned_at: None,
         nodes,

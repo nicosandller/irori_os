@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn a_camera_reaches_an_older_reader_without_live_video_or_turning() {
         let camera: Entity = serde_json::from_str(
-            r#"{"id": "camera.driveway", "protocol": "cameras", "unique_id": "d",
+            r#"{"id": "camera.driveway", "protocol": "onvif", "unique_id": "d",
                 "name": "Driveway", "capabilities": {"kind": "camera", "motion_detection": true,
                 "live": true, "qualities": ["low", "high"], "pan_tilt": true, "presets": true,
                 "talk": true}}"#,
@@ -401,7 +401,7 @@ mod tests {
                 "last_changed": "2026-11-01T08:21:54Z", "last_updated": "2026-11-01T08:21:54Z",
                 "last_reported": "2026-11-01T08:21:54Z",
                 "context": {"id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
-                            "origin": {"type": "device", "protocol": "cameras"}}}"#,
+                            "origin": {"type": "device", "protocol": "onvif"}}}"#,
         )
         .expect("valid");
         let old = state_for(26, &state).expect("readable");

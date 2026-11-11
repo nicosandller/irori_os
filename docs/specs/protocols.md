@@ -451,7 +451,7 @@ What draws a map today:
   sensor.
 - **SwitchBot**: Irori, then "SwitchBot cloud" over the internet, then each hub and each device on
   Wi-Fi of its own, and the devices behind a hub hanging off it over Bluetooth.
-- **Cameras**: each camera, wired straight to Irori or on the home's Wi-Fi. A Reolink says which
+- **ONVIF Cameras**: each camera, wired straight to Irori or on the home's Wi-Fi. A Reolink says which
   through its own API; another camera through ONVIF's network interfaces when it gives their
   type, and one that doesn't say is drawn on Wi-Fi.
 - **Demo**: all three, made up, so the map can be seen without hardware.

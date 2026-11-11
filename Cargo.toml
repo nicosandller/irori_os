@@ -17,7 +17,7 @@ members = [
     "crates/irori",
     "extensions/demo",
     "extensions/automations",
-    "extensions/protocols/cameras",
+    "extensions/protocols/onvif",
     "extensions/protocols/cast",
     "extensions/protocols/esphome",
     "extensions/protocols/matter",
@@ -59,7 +59,7 @@ irori-node-runtime = { path = "crates/irori-node-runtime" }
 irori-cloud = { path = "crates/irori-cloud" }
 irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
 irori-protocol-demo = { path = "extensions/demo" }
-irori-protocol-cameras = { path = "extensions/protocols/cameras" }
+irori-protocol-onvif = { path = "extensions/protocols/onvif" }
 irori-protocol-cast = { path = "extensions/protocols/cast" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
 irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }

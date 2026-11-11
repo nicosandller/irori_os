@@ -1,6 +1,6 @@
-//! External process for the Cameras extension.
+//! External process for the ONVIF Cameras extension.
 
-use irori_protocol_cameras::Cameras;
+use irori_protocol_onvif::Cameras;
 
 #[tokio::main]
 async fn main() {

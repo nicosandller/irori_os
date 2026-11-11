@@ -2037,37 +2037,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "irori-protocol-cameras"
-version = "0.0.0"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures-util",
- "getrandom 0.4.3",
- "http-auth",
- "http-body-util",
- "hyper 1.11.1",
- "hyper-util",
- "irori-protocol",
- "irori-types",
- "jiff",
- "md-5",
- "retina",
- "roxmltree",
- "rustls",
- "schemars",
- "serde",
- "serde_json",
- "sha1",
- "sha2 0.11.0",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "url",
-]
-
-[[package]]
 name = "irori-protocol-cast"
 version = "0.0.0"
 dependencies = [
@@ -2147,6 +2116,37 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "irori-protocol-onvif"
+version = "0.0.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "getrandom 0.4.3",
+ "http-auth",
+ "http-body-util",
+ "hyper 1.11.1",
+ "hyper-util",
+ "irori-protocol",
+ "irori-types",
+ "jiff",
+ "md-5",
+ "retina",
+ "roxmltree",
+ "rustls",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -5259,10 +5259,10 @@ dependencies = [
  "brotli",
  "flate2",
  "irori-flow-types",
- "irori-protocol-cameras",
  "irori-protocol-cast",
  "irori-protocol-matter",
  "irori-protocol-mqtt",
+ "irori-protocol-onvif",
  "irori-protocol-switchbot",
  "irori-protocol-tplink",
  "irori-protocol-zigbee",

@@ -1,8 +1,8 @@
 //! A camera's own siren and infrared lights, as buttons in its video's bar, so they're at hand
 //! beside the picture and in full screen. They stay in the device's list of entities too.
 //!
-//! The siren is any siren on the camera's device. The infrared lights are the Cameras
-//! extension's switch for them (its unique id starts `infrared:`): nothing in a switch says
+//! The siren is any siren on the camera's device. The infrared lights are the ONVIF
+//! Cameras extension's switch for them (its unique id starts `infrared:`): nothing in a switch says
 //! what it switches, so they're found by the name that extension gives them.
 
 use std::time::Duration;
@@ -39,7 +39,7 @@ fn companions(home: &Home, camera: &EntityId) -> (Option<EntityId>, Option<Entit
     let infrared = mine()
         .find(|entity| {
             matches!(entity.capabilities, Capabilities::Switch(_))
-                && entity.protocol.as_str() == "cameras"
+                && entity.protocol.as_str() == "onvif"
                 && entity.unique_id.as_str().starts_with("infrared:")
         })
         .map(|entity| entity.id.clone());
@@ -200,7 +200,7 @@ mod tests {
     fn entity(id: &str, unique: &str, device: &str, capabilities: Capabilities) -> Entity {
         Entity {
             id: EntityId::try_from(id).expect("an id"),
-            protocol: ProtocolId::try_from("cameras").expect("a protocol"),
+            protocol: ProtocolId::try_from("onvif").expect("a protocol"),
             unique_id: UniqueId::try_from(unique).expect("a unique id"),
             name: Name::try_from("Something").expect("a name"),
             device_id: Some(DeviceId::try_from(device).expect("a device")),
@@ -217,37 +217,37 @@ mod tests {
                 entity(
                     "camera.duo",
                     "camera:a",
-                    "cameras_a",
+                    "onvif_a",
                     Capabilities::Camera(CameraCapabilities::default()),
                 ),
                 entity(
                     "switch.duo_status",
                     "status_light:a",
-                    "cameras_a",
+                    "onvif_a",
                     Capabilities::Switch(SwitchCapabilities::default()),
                 ),
                 entity(
                     "switch.duo_infrared",
                     "infrared:a",
-                    "cameras_a",
+                    "onvif_a",
                     Capabilities::Switch(SwitchCapabilities::default()),
                 ),
                 entity(
                     "siren.duo",
                     "siren:a",
-                    "cameras_a",
+                    "onvif_a",
                     Capabilities::Siren(SirenCapabilities::default()),
                 ),
                 entity(
                     "siren.other",
                     "siren:b",
-                    "cameras_b",
+                    "onvif_b",
                     Capabilities::Siren(SirenCapabilities::default()),
                 ),
                 entity(
                     "camera.tapo",
                     "camera:b",
-                    "cameras_c",
+                    "onvif_c",
                     Capabilities::Camera(CameraCapabilities::default()),
                 ),
             ],

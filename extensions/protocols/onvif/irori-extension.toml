@@ -1,6 +1,6 @@
 [extension]
-id = "cameras"
-name = "Cameras"
+id = "onvif"
+name = "ONVIF Cameras"
 version = "0.1.0"
 # 1.6.0 is the first core that plays live video and asks for a username with a password.
 irori = ">=1.6.0"
@@ -11,7 +11,7 @@ icon = "icon.svg"
 [[contributes.protocol]]
 iot_class = "local_push"
 entity_kinds = ["camera", "binary_sensor", "light", "siren", "switch"]
-run = { command = "bin/irori-ext-cameras" }
+run = { command = "bin/irori-ext-onvif" }
 
 # Finding cameras (WS-Discovery, UDP 3702), asking them things (ONVIF over HTTP), their pictures
 # and their video (RTSP) all stay on the local network. There is no vendor account and no cloud
