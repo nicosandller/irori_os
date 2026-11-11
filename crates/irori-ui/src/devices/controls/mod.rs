@@ -317,16 +317,39 @@ pub(crate) fn knob(
         let heading = heading.clone();
         move || heading() == Some(true)
     };
-    let heading_off = move || heading() == Some(false);
+    let heading_off = {
+        let heading = heading.clone();
+        move || heading() == Some(false)
+    };
+    // Once the device says it's where it was sent, that ask is done: if something else switches
+    // it back a moment later, the knob shows that, not the old ask.
+    if let Some(on) = on {
+        let entity_id = entity_id.clone();
+        Effect::new(move || {
+            let reached = controls
+                .asked
+                .with_untracked(|asked| asked.get(&entity_id).is_some_and(|(to, _)| *to == on));
+            if reached {
+                controls.asked.update(|asked| {
+                    asked.remove(&entity_id);
+                });
+            }
+        });
+    }
     // What the click means is "I want it off", not "flip whatever it is now": the page sends the
-    // state the person asked for, so a second click on a stale row can't undo the first.
-    let wanted = !on.unwrap_or(false);
+    // state the person asked for, so a second click on a stale row can't undo the first. While
+    // the knob is still on its way, the click is about where it's going, not where it was.
+    let wanted = {
+        let heading = heading.clone();
+        move || !heading().or(on).unwrap_or(false)
+    };
     let click = {
         let entity_id = entity_id.clone();
+        let wanted = wanted.clone();
         move |event: ev::MouseEvent| {
             // A swipe already said what it wanted when it let go.
             if !crate::gesture::swallow_click(&event) {
-                controls.set_on.run((entity_id.clone(), wanted));
+                controls.set_on.run((entity_id.clone(), wanted()));
             }
         }
     };
@@ -341,7 +364,10 @@ pub(crate) fn knob(
             }
         }
     };
-    let label = format!("Turn {} {}", entity.name, if wanted { "on" } else { "off" });
+    let label = {
+        let name = entity.name.clone();
+        move || format!("Turn {} {}", name, if wanted() { "on" } else { "off" })
+    };
     // A screen reader is told what the knob shows. `mixed` is how ARIA says "neither", which is
     // what an entity that has never reported is: saying `false` would claim it's off.
     let pressed = match on {

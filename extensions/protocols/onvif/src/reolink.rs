@@ -132,6 +132,19 @@ impl Api {
 
     async fn log_in(&mut self) -> Result<(), ApiError> {
         self.token = None;
+        if self.camera.turned_down.is_set() {
+            return Err(ApiError::Refused("the camera turned the login down".into()));
+        }
+        // This login carries the password itself, so it only goes to the certificate the
+        // camera is known by. One added while its HTTPS was off has none until it's logged into
+        // again with HTTPS on.
+        if self.camera.certificate.is_none() {
+            return Err(ApiError::Failed(
+                "the camera's HTTPS wasn't on when it was added, so Irori doesn't know its \
+                 certificate and won't send its password there"
+                    .into(),
+            ));
+        }
         let body = json!([{
             "cmd": "Login",
             "param": { "User": {

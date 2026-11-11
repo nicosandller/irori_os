@@ -8,11 +8,16 @@
 //!
 //! Before a login goes anywhere, [`check`] decides, sending nothing but a TLS handshake:
 //! - a camera with nothing remembered is taken as it is, and remembered once its login works;
-//! - one that shows the remembered certificate is the same camera, wherever it answers from,
-//!   since the handshake proves it holds that certificate's key;
+//! - one that shows the remembered certificate is taken as the same camera, wherever it answers
+//!   from, since the handshake proves whatever answers on its HTTPS holds that certificate's key;
 //! - one that had no certificate is the same camera only at the remembered address;
 //! - anything else gets no login. It waits for the person to say it moved, by typing its new
-//!   address (`moved` in the settings), which is taken once.
+//!   address (`moved` in the settings). What they type is kept for the certificate they were
+//!   asked about ([`moved_key`]): a later reset that changes it again asks again.
+//!
+//! This stops something else on the network claiming to be the camera. It can't stop something
+//! in between that passes the real camera's HTTPS through: the login then goes over the camera's
+//! plain HTTP and RTSP, which is how ONVIF works.
 
 use std::collections::BTreeMap;
 
@@ -35,7 +40,7 @@ pub struct Pin {
     /// The fingerprint of the certificate it showed then, if it showed one.
     #[serde(default)]
     pub certificate: Option<String>,
-    /// The new address a person last confirmed for it, so a confirmation counts once.
+    /// The new address a person last confirmed for it.
     #[serde(default)]
     pub confirmed: Option<String>,
 }
@@ -56,16 +61,28 @@ pub enum Verdict {
     NoAnswer,
 }
 
-/// Decides whether `found` gets its camera's login. `confirmed` is the new address the person
-/// typed for it, if any. Sends nothing but a TLS handshake to `https_port`.
+/// Decides whether `found` gets its camera's login. `moved` is what the person typed to say a
+/// camera moved, by [`moved_key`]. Sends nothing but a TLS handshake to `https_port`. Also
+/// returns the key the person's answer goes under, should they be asked.
 pub async fn check(
     pin: Option<&Pin>,
     found: &Found,
     https_port: u16,
-    confirmed: Option<&str>,
-) -> Verdict {
+    moved: &BTreeMap<String, String>,
+) -> (Verdict, String) {
     let shown = http::certificate(found.ip, https_port).await;
-    decide(pin, found, &shown, confirmed)
+    let key = moved_key(&found.id, &shown);
+    let confirmed = moved.get(&key).map(String::as_str);
+    (decide(pin, found, &shown, confirmed), key)
+}
+
+/// Where the person's "it moved here" goes in the settings: the camera's id with the start of
+/// the certificate it was asked about, so an answer only ever stands for that certificate.
+pub fn moved_key(id: &str, shown: &Shown) -> String {
+    match shown {
+        Shown::Certificate(print) => format!("{id}@{}", print.get(..16).unwrap_or(print)),
+        Shown::Nothing | Shown::NoAnswer => format!("{id}@none"),
+    }
 }
 
 fn decide(pin: Option<&Pin>, found: &Found, shown: &Shown, confirmed: Option<&str>) -> Verdict {
@@ -84,11 +101,9 @@ fn decide(pin: Option<&Pin>, found: &Found, shown: &Shown, confirmed: Option<&st
             confirmed: None,
         });
     };
-    // The person said it moved here, and hasn't said so for this address before.
+    // The person said it moved here, for what it shows now.
     let ip = found.ip.to_string();
-    if confirmed.is_some_and(|typed| typed.trim() == ip)
-        && pin.confirmed.as_deref() != Some(ip.as_str())
-    {
+    if confirmed.is_some_and(|typed| typed.trim() == ip) {
         if *shown == Shown::NoAnswer {
             return Verdict::NoAnswer;
         }
@@ -305,10 +320,23 @@ mod tests {
             ),
             "only the address that was typed"
         );
-        // Once taken, the same words don't let something else in at that address later.
+        // What was typed stands for the certificate it was asked about: a new one there later
+        // is asked about again, under another key, and can be confirmed again.
+        let typed = BTreeMap::from([(
+            moved_key("cam", &shown("cccccccccccccccccccc")),
+            "192.168.1.9".to_owned(),
+        )]);
+        let key = moved_key("cam", &shown("dddddddddddddddddddd"));
+        assert!(!typed.contains_key(&key));
         assert!(matches!(
-            decide(Some(&confirmed), &moved, &shown("dd"), Some("192.168.1.9")),
+            decide(Some(&confirmed), &moved, &shown("dd"), None),
             Verdict::Untrusted(_)
         ));
+        assert!(matches!(
+            decide(Some(&confirmed), &moved, &shown("dd"), Some("192.168.1.9")),
+            Verdict::Trusted(_)
+        ));
+        assert_eq!(moved_key("cam", &shown("ab")), "cam@ab");
+        assert_eq!(moved_key("cam", &Shown::Nothing), "cam@none");
     }
 }

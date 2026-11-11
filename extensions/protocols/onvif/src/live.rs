@@ -87,7 +87,7 @@ async fn stream_to(
     accepts: &[String],
     feed: &mut LiveFeed,
 ) -> Ended {
-    let url = match address(stream, ip) {
+    let mut url = match address(stream, ip) {
         Ok(url) => url,
         Err(why) => return Ended::Failed(why),
     };
@@ -97,6 +97,32 @@ async fn stream_to(
             password: login.password.clone(),
         }))
         .user_agent("Irori".to_owned());
+    // Never a login the camera would read as it is: the video library answers Basic too.
+    let how = tokio::select! {
+        () = feed.closed() => return Ended::Stopped,
+        how = crate::talk::video_login(&url) => how,
+    };
+    // Ends with the stream: dropping it aborts the relay.
+    let mut _relay = None;
+    match how {
+        Ok(crate::talk::VideoLogin::Direct) => {}
+        Ok(crate::talk::VideoLogin::AroundBasic) => {
+            let camera = std::net::SocketAddr::new(ip, url.port().unwrap_or(554));
+            let (here, task) = match crate::relay::start(camera).await {
+                Ok(started) => started,
+                Err(why) => return Ended::Failed(why),
+            };
+            _relay = Some(AbortOnDrop(task));
+            if url.set_ip_host(here.ip()).is_err() || url.set_port(Some(here.port())).is_err() {
+                return Ended::Failed("the camera's video couldn't be relayed".into());
+            }
+            tracing::debug!(%ip, "a camera's video is opened around its Basic login");
+        }
+        Err(why) => {
+            tracing::info!(%ip, "a camera's video wasn't opened: {why}");
+            return Ended::Failed(why);
+        }
+    }
     let opened = tokio::select! {
         () = feed.closed() => return Ended::Stopped,
         opened = tokio::time::timeout(OPENING, open(url, options, accepts)) => opened,
@@ -568,6 +594,15 @@ fn cant_play(family: &str) -> String {
                             camera to H.264, or watch the smaller stream"
             .into(),
         _ => "this browser can't play the camera's video".into(),
+    }
+}
+
+/// Aborts its task when dropped.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
     }
 }
 

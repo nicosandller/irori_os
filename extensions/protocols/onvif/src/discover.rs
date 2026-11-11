@@ -35,6 +35,9 @@ const REPEAT: usize = 3;
 const REPEAT_GAP: Duration = Duration::from_millis(250);
 /// The most cameras one probe takes answers from.
 const MAX_FOUND: usize = 64;
+/// The most cameras one address answers for: a recorder may stand for a few, and one device
+/// answering for many mustn't crowd the others out.
+pub const MAX_PER_ADDRESS: usize = 4;
 
 /// A camera that answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +135,13 @@ async fn probe(hosts: &[String], known: &[IpAddr]) -> Result<Vec<Found>, String>
             continue;
         };
         for found in matches(text, from.ip()) {
+            let from_there = answers
+                .values()
+                .filter(|known| known.ip == found.ip)
+                .count();
+            if from_there >= MAX_PER_ADDRESS || answers.len() >= MAX_FOUND {
+                break;
+            }
             answers.entry(found.id.clone()).or_insert(found);
         }
     }

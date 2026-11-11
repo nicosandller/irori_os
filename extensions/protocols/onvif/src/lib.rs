@@ -23,6 +23,7 @@ mod network;
 mod onvif;
 mod ptz;
 mod refused;
+mod relay;
 mod reolink;
 pub mod settings;
 mod soap;
@@ -148,6 +149,8 @@ struct Cam {
 struct Doubt {
     ip: std::net::IpAddr,
     why: String,
+    /// Where the person's answer goes in `moved` ([`trust::moved_key`]).
+    key: String,
 }
 
 impl Cam {
@@ -182,6 +185,7 @@ enum Event {
         id: String,
         found: Found,
         verdict: Verdict,
+        key: String,
     },
     Refused {
         id: String,
@@ -243,12 +247,20 @@ pub(crate) async fn drive(
             }
             found = discovery.recv() => {
                 let Some(found) = found else { break Ok(()) };
-                addresses.saw(&ctx, &found.id, found.ip).await;
+                let (id, ip) = (found.id.clone(), found.ip);
                 arrive(found, &settings, &refusals, &trust, &mut cams, &mut generations, &events_tx);
+                // Only an address the camera was taken at is remembered, not one still checked.
+                if cams.get(&id).is_some_and(|cam| cam.found.ip == ip) {
+                    addresses.saw(&ctx, &id, ip).await;
+                }
             }
             Some(event) = events.recv() => {
-                if let Event::Claimed { id, found, verdict } = event {
-                    claimed(id, found, verdict, &settings, &refusals, &trust, &mut cams, &mut generations, &events_tx);
+                if let Event::Claimed { id, found, verdict, key } = event {
+                    let ip = found.ip;
+                    claimed(id.clone(), found, (verdict, key), &settings, &refusals, &trust, &mut cams, &mut generations, &events_tx);
+                    if cams.get(&id).is_some_and(|cam| cam.found.ip == ip) {
+                        addresses.saw(&ctx, &id, ip).await;
+                    }
                 } else {
                     apply(event, &settings, &ctx, &mut refusals, &mut trust, &mut cams, &events_tx).await?;
                 }
@@ -284,6 +296,10 @@ fn on_map(cams: &BTreeMap<String, Cam>) -> Vec<network::Member> {
         .collect()
 }
 
+/// The most cameras the add-on keeps track of, so answers with made-up ids can't grow the
+/// table without end.
+const MAX_CAMERAS: usize = 128;
+
 /// A camera answered discovery.
 fn arrive(
     found: Found,
@@ -295,6 +311,10 @@ fn arrive(
     events: &mpsc::Sender<Event>,
 ) {
     if !cams.contains_key(&found.id) {
+        if cams.len() >= MAX_CAMERAS {
+            tracing::warn!(ip = %found.ip, "something answered as one camera too many; left out");
+            return;
+        }
         tracing::info!(camera = %found.id, ip = %found.ip, "found a camera");
     }
     let cam = cams.entry(found.id.clone()).or_insert_with(|| Cam {
@@ -314,6 +334,12 @@ fn arrive(
         checking: None,
     });
     let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
+    // A running camera answering from where it is: whatever answered as it from elsewhere
+    // before is no longer worth asking the person about.
+    if !moved && matches!(cam.stage, Stage::Ready(_)) && cam.doubt.is_some() {
+        tracing::info!(camera = %found.id, "a camera answered from its own address again; the doubt is cleared");
+        cam.doubt = None;
+    }
     // A camera that's running stays where it is while whatever answered from somewhere else
     // is checked: anything can answer as it, and that mustn't take a working camera down.
     if moved && matches!(cam.stage, Stage::Ready(_)) {
@@ -322,12 +348,19 @@ fn arrive(
             cam.checking = Some(address);
             let pin = trust.get(&found.id).cloned();
             let port = settings.https_port.unwrap_or(reolink::PORT);
-            let confirmed = settings.moved.get(&found.id).cloned();
+            let moved = settings.moved.clone();
             let events = events.clone();
             tokio::spawn(async move {
-                let verdict = trust::check(pin.as_ref(), &found, port, confirmed.as_deref()).await;
+                let (verdict, key) = trust::check(pin.as_ref(), &found, port, &moved).await;
                 let id = found.id.clone();
-                let _ = events.send(Event::Claimed { id, found, verdict }).await;
+                let _ = events
+                    .send(Event::Claimed {
+                        id,
+                        found,
+                        verdict,
+                        key,
+                    })
+                    .await;
             });
         }
         return;
@@ -354,7 +387,7 @@ fn arrive(
 fn claimed(
     id: String,
     found: Found,
-    verdict: Verdict,
+    (verdict, key): (Verdict, String),
     settings: &Settings,
     refusals: &Refusals,
     trust: &Trust,
@@ -374,7 +407,11 @@ fn claimed(
         }
         Verdict::Untrusted(why) => {
             tracing::warn!(camera = %id, ip = %found.ip, "something answered as a camera and couldn't show it's that camera, so it got no login: {why}");
-            cam.doubt = Some(Doubt { ip: found.ip, why });
+            cam.doubt = Some(Doubt {
+                ip: found.ip,
+                why,
+                key,
+            });
         }
         Verdict::NoAnswer => {}
     }
@@ -405,7 +442,7 @@ fn log_in(
                     generation: cam.generation,
                     pin: trust.get(&cam.found.id).cloned(),
                     https_port: settings.https_port.unwrap_or(reolink::PORT),
-                    confirmed: settings.moved.get(&cam.found.id).cloned(),
+                    moved: settings.moved.clone(),
                 },
                 events.clone(),
             );
@@ -421,7 +458,7 @@ struct Attempt {
     generation: u64,
     pin: Option<trust::Pin>,
     https_port: u16,
-    confirmed: Option<String>,
+    moved: BTreeMap<String, String>,
 }
 
 /// Logs into a camera in the background, once it has shown it's the camera the login is for.
@@ -433,14 +470,18 @@ fn connect(attempt: Attempt, events: mpsc::Sender<Event>) {
             generation,
             pin,
             https_port,
-            confirmed,
+            moved,
         } = attempt;
         let id = found.id.clone();
-        let verdict = trust::check(pin.as_ref(), &found, https_port, confirmed.as_deref()).await;
+        let (verdict, key) = trust::check(pin.as_ref(), &found, https_port, &moved).await;
         let pin = match verdict {
             Verdict::Trusted(pin) => pin,
             Verdict::Untrusted(why) => {
-                let doubt = Doubt { ip: found.ip, why };
+                let doubt = Doubt {
+                    ip: found.ip,
+                    why,
+                    key,
+                };
                 let _ = events
                     .send(Event::Untrusted {
                         id,
@@ -752,16 +793,12 @@ fn start_tasks(
         let detects = ready.info.detects.clone();
         let tx = events_tx.clone();
         let who = id.to_owned();
+        let device = cam.found.device_service.clone();
         cam.tasks.push(tokio::spawn(async move {
             if let Err(HttpError::Refused) =
                 events::follow(&soap, &target, &detects, &changes_tx).await
             {
-                let _ = tx
-                    .send(Event::Refused {
-                        id: who,
-                        generation,
-                    })
-                    .await;
+                report_refusal(&tx, &soap, &device, who, generation).await;
             }
         }));
         let tx = events_tx.clone();
@@ -797,6 +834,8 @@ fn start_tasks(
         )));
         let tx = events_tx.clone();
         let who = id.to_owned();
+        let soap = ready.soap.clone();
+        let device = cam.found.device_service.clone();
         cam.tasks.push(tokio::spawn(async move {
             while let Some(report) = reports.recv().await {
                 let event = match report {
@@ -805,10 +844,10 @@ fn start_tasks(
                         generation,
                         presets,
                     },
-                    ptz::Report::Refused => Event::Refused {
-                        id: who.clone(),
-                        generation,
-                    },
+                    ptz::Report::Refused => {
+                        report_refusal(&tx, &soap, &device, who.clone(), generation).await;
+                        continue;
+                    }
                 };
                 if tx.send(event).await.is_err() {
                     return;
@@ -909,13 +948,16 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
                 return;
             };
             let generation = cams.get(&id).map_or(0, |cam| cam.generation);
+            let device = cams.get(&id).map(|cam| cam.found.device_service.clone());
             let events = events.clone();
             tokio::spawn(async move {
                 match onvif::picture(&ready.soap, &snapshot).await {
                     Ok(taken) => picture.reply(Ok(taken)),
                     Err(HttpError::Refused) => {
                         picture.reply(Err("the camera refused its login".into()));
-                        let _ = events.send(Event::Refused { id, generation }).await;
+                        if let Some(device) = device {
+                            report_refusal(&events, &ready.soap, &device, id, generation).await;
+                        }
                     }
                     Err(error) => picture.reply(Err(error.to_string())),
                 }
@@ -941,7 +983,12 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
                     .end(Some("this camera has no video stream".into()));
                 return;
             };
+            if ready.soap.camera.turned_down.is_set() {
+                live.feed.end(Some("the camera refused its login".into()));
+                return;
+            }
             let generation = cams.get(&id).map_or(0, |cam| cam.generation);
+            let device = cams.get(&id).map(|cam| cam.found.device_service.clone());
             let ip = ready.soap.camera.ip;
             let events = events.clone();
             tokio::spawn(async move {
@@ -958,7 +1005,9 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
                         started: false,
                     })
                     .await;
-                if ended == live::Ended::Refused {
+                if ended == live::Ended::Refused
+                    && login_really_refused(&ready.soap, device.as_ref(), ip).await
+                {
                     let _ = events.send(Event::Refused { id, generation }).await;
                 }
             });
@@ -976,14 +1025,60 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
                 talk.line.end(Some("this camera has no speaker".into()));
                 return;
             };
+            if ready.soap.camera.turned_down.is_set() {
+                talk.line.end(Some("the camera refused its login".into()));
+                return;
+            }
             let generation = cams.get(&id).map_or(0, |cam| cam.generation);
+            let device = cams.get(&id).map(|cam| cam.found.device_service.clone());
             let ip = ready.soap.camera.ip;
             let events = events.clone();
             tokio::spawn(async move {
-                if talk::run(&track, ip, &login, talk).await == talk::Ended::Refused {
+                if talk::run(&track, ip, &login, talk).await == talk::Ended::Refused
+                    && login_really_refused(&ready.soap, device.as_ref(), ip).await
+                {
                     let _ = events.send(Event::Refused { id, generation }).await;
                 }
             });
+        }
+    }
+}
+
+/// A call made after logging in was turned down. Cameras say the same when the login is wrong
+/// and when it only lacks the right for that one call (a view-only account pressing an arrow),
+/// so it counts as a refused login only when ONVIF turns it down too.
+async fn report_refusal(
+    events: &mpsc::Sender<Event>,
+    soap: &Soap,
+    device: &crate::http::Target,
+    id: String,
+    generation: u64,
+) {
+    if login_really_refused(soap, Some(device), soap.camera.ip).await {
+        let _ = events.send(Event::Refused { id, generation }).await;
+    }
+}
+
+/// Whether a login a call turned down is really refused: asked once more over ONVIF, which is
+/// what counts. RTSP also says no for a stale nonce or too many sessions, any call can be one
+/// the account isn't allowed, and a refusal stops the camera until someone types a new password.
+async fn login_really_refused(
+    soap: &Soap,
+    device: Option<&crate::http::Target>,
+    ip: std::net::IpAddr,
+) -> bool {
+    let Some(device) = device else {
+        return false;
+    };
+    match onvif::still_takes_login(soap, device).await {
+        Err(HttpError::Refused) => true,
+        Ok(()) => {
+            tracing::info!(%ip, "a camera's video or speaker turned its login down, but ONVIF still takes it; not counted");
+            false
+        }
+        Err(error) => {
+            tracing::info!(%ip, "a camera's video or speaker turned its login down, and ONVIF couldn't be asked ({error}); not counted");
+            false
         }
     }
 }
@@ -1235,7 +1330,7 @@ fn moved_here(cam: &Cam, doubt: &Doubt) -> Waiting {
             doubt.why
         ),
         secret: Some(SecretRequest {
-            path: vec!["moved".to_owned(), cam.found.id.clone()],
+            path: vec!["moved".to_owned(), doubt.key.clone()],
             label: "Its new address".to_owned(),
             hint: Some(format!(
                 "{}, if that's your camera; otherwise leave this, and nothing gets the login",

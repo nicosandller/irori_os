@@ -11,6 +11,7 @@
 
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -118,6 +119,28 @@ pub struct Camera {
     /// The fingerprint of the certificate it showed when it was trusted (`trust.rs`): HTTPS to
     /// it refuses any other. `None` takes any, for a camera that had none to show.
     pub certificate: Option<String>,
+    /// Whether the camera has turned this login down, shared by every copy of it.
+    pub turned_down: TurnedDown,
+}
+
+/// Set once a camera turns its login down, and seen by every task using that login, so the
+/// password isn't sent again by the others meanwhile: each failure counts towards a lockout.
+#[derive(Debug, Clone, Default)]
+pub struct TurnedDown(Arc<AtomicBool>);
+
+impl TurnedDown {
+    pub fn is_set(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+
+    /// The camera took the login after all: what turned it down was one call it isn't allowed.
+    pub fn clear(&self) {
+        self.0.store(false, Ordering::Relaxed);
+    }
 }
 
 impl Camera {
@@ -148,6 +171,9 @@ impl Camera {
         let Some(login) = login else {
             return Err(HttpError::Refused);
         };
+        if self.turned_down.is_set() {
+            return Err(HttpError::Refused);
+        }
         let Some(answer) = Challenge::pick(&first.challenges)
             .map(|challenge| challenge.answer(login, method.as_str(), &target.path))
         else {
@@ -161,6 +187,7 @@ impl Camera {
             .once(&method, target, body.as_ref(), Some(answer))
             .await?;
         if second.status == StatusCode::UNAUTHORIZED.as_u16() {
+            self.turned_down.set();
             return Err(HttpError::Refused);
         }
         Ok(second.response)

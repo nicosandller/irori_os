@@ -138,6 +138,7 @@ pub async fn connect(
     let camera = Camera {
         ip: found.ip,
         certificate,
+        turned_down: crate::http::TurnedDown::default(),
     };
     let offset = clock(&camera, &found.device_service).await?;
     let soap = Soap {
@@ -232,6 +233,28 @@ pub async fn connect(
         }
     }
     Ok((soap, info))
+}
+
+/// Whether the camera still takes the login, asked the way the login was first checked. For
+/// when something else (its video, its speaker) turned it down: those also say no for reasons
+/// that aren't the login, such as a stale nonce or too many sessions, and only a real refusal
+/// may count against it.
+pub async fn still_takes_login(soap: &Soap, device: &Target) -> Result<(), HttpError> {
+    // Asked even when a call has just turned the login down: that's what's being checked.
+    let mut asking = soap.clone();
+    asking.camera.turned_down = crate::http::TurnedDown::default();
+    let asked = asking
+        .call(
+            device,
+            &format!("{DEVICE}/GetDeviceInformation"),
+            "<tds:GetDeviceInformation/>",
+        )
+        .await
+        .map(|_| ());
+    if asked.is_ok() {
+        soap.camera.turned_down.clear();
+    }
+    asked
 }
 
 /// Takes a picture. JPEG is what ONVIF cameras send.

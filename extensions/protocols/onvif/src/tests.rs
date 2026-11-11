@@ -753,12 +753,28 @@ async fn something_answering_as_a_camera_from_elsewhere_gets_no_login() {
             .contains(&Availability::Unavailable),
         "the working camera is left alone"
     );
+    // The camera answering from its own address again ends the question.
+    world.sees(&camera).await;
+    world
+        .until("the question is gone", |log| !doubted(log))
+        .await;
     world.stop().await;
 
     // After a restart, when it answers first.
     let world = world_again(settings(Some(("admin", "right"))), &store).await;
     world.sees(&impostor).await;
     world.until("it asks about the new address", doubted).await;
+    // Where the person's answer goes: for the certificate it was asked about.
+    let key = world
+        .log
+        .lock()
+        .expect("log")
+        .waiting
+        .iter()
+        .find_map(|waiting| waiting.secret.as_ref().map(|secret| secret.path.clone()))
+        .expect("a question");
+    assert_eq!(key[0], "moved");
+    assert!(key[1].starts_with(&format!("{ID}@")), "{key:?}");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(impostor.seen().logins, 0, "{:?}", impostor.seen());
     assert!(
@@ -769,7 +785,7 @@ async fn something_answering_as_a_camera_from_elsewhere_gets_no_login() {
 
     // The person says the camera moved there.
     let mut moved = settings(Some(("admin", "right")));
-    moved.moved.insert(ID.to_owned(), "127.0.0.1".to_owned());
+    moved.moved.insert(key[1].clone(), "127.0.0.1".to_owned());
     let world = world_again(moved, &store).await;
     world.sees(&impostor).await;
     world
@@ -823,4 +839,84 @@ async fn something_showing_another_certificate_gets_no_login() {
     );
     assert_eq!(other.seen().logins, 0, "no API login");
     world.stop().await;
+}
+
+/// A camera that turns a login down for one task has it held back from all the others: every
+/// failure counts towards a lockout.
+#[tokio::test]
+async fn a_login_turned_down_once_is_held_back_by_every_task() {
+    let fake = FakeCamera::start("admin", "right", true).await;
+    let camera = crate::http::Camera {
+        ip: "127.0.0.1".parse().expect("ip"),
+        certificate: None,
+        turned_down: crate::http::TurnedDown::default(),
+    };
+    let soap = |camera: crate::http::Camera, password: &str| crate::soap::Soap {
+        camera,
+        login: Some(crate::settings::Login {
+            username: "admin".into(),
+            password: password.into(),
+        }),
+        offset: crate::soap::ClockOffset::default(),
+    };
+    let snapshot = Target {
+        port: fake.port,
+        path: "/snap.jpg".into(),
+    };
+    // Two tasks with the same login, as the camera's tasks share it.
+    let first = soap(camera.clone(), "wrong");
+    let second = soap(camera.clone(), "wrong");
+    assert!(matches!(
+        crate::onvif::picture(&first, &snapshot).await,
+        Err(crate::http::HttpError::Refused)
+    ));
+    assert!(matches!(
+        crate::onvif::picture(&second, &snapshot).await,
+        Err(crate::http::HttpError::Refused)
+    ));
+    assert_eq!(fake.seen().refused, 1, "the second never sent the password");
+    assert!(camera.turned_down.is_set());
+
+    // One call turned down while ONVIF still takes the login (a view-only account pressing an
+    // arrow): asking ONVIF lets every task use the login again.
+    let device = Target {
+        port: fake.port,
+        path: "/onvif/device_service".into(),
+    };
+    let right = soap(camera.clone(), "right");
+    assert!(
+        crate::onvif::still_takes_login(&right, &device)
+            .await
+            .is_ok()
+    );
+    assert!(!camera.turned_down.is_set());
+}
+
+/// The video or speaker turning a login down only counts when ONVIF does too.
+#[tokio::test]
+async fn a_video_refusal_counts_only_when_onvif_agrees() {
+    let fake = FakeCamera::start("admin", "right", true).await;
+    let soap = |password: &str| crate::soap::Soap {
+        camera: crate::http::Camera {
+            ip: "127.0.0.1".parse().expect("ip"),
+            certificate: None,
+            turned_down: crate::http::TurnedDown::default(),
+        },
+        login: Some(crate::settings::Login {
+            username: "admin".into(),
+            password: password.into(),
+        }),
+        offset: crate::soap::ClockOffset::default(),
+    };
+    let device = Target {
+        port: fake.port,
+        path: "/onvif/device_service".into(),
+    };
+    let ip = "127.0.0.1".parse().expect("ip");
+    assert!(!crate::login_really_refused(&soap("right"), Some(&device), ip).await);
+    assert!(crate::login_really_refused(&soap("wrong"), Some(&device), ip).await);
+    assert!(
+        !crate::login_really_refused(&soap("wrong"), None, ip).await,
+        "nothing to ask: not counted"
+    );
 }
