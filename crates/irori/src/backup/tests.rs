@@ -13,7 +13,6 @@ fn home() -> anyhow::Result<tempfile::TempDir> {
     let conn = Connection::open(&db.path)?;
     conn.execute_batch(
         "CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (42);
-         CREATE TABLE state_history (id INTEGER PRIMARY KEY, entity_id TEXT, updated_ns INTEGER, state TEXT);
          INSERT INTO state_history (entity_id, updated_ns, state) VALUES ('a', 1, 'then');",
     )?;
     // Left open on purpose: the snapshot has to work with a live writer.
@@ -664,5 +663,139 @@ fn the_last_three_safety_copies_are_kept() -> anyhow::Result<()> {
         .filter(|e| e.file_name().to_string_lossy().starts_with(SAFETY_PREFIX))
         .count();
     assert_eq!(kept, 3);
+    Ok(())
+}
+
+fn version(db: &Path) -> anyhow::Result<u32> {
+    crate::db::version_of(db)
+}
+
+fn set_version(db: &Path, version: u32) -> anyhow::Result<()> {
+    Connection::open(db)?.pragma_update(None, "user_version", version)?;
+    Ok(())
+}
+
+/// A backup keeps the database's version, and a restore of it leaves the home at the version
+/// this build writes: otherwise a migration would run a second time on a file that had it.
+#[test]
+fn a_backup_and_its_restore_keep_the_database_version() -> anyhow::Result<()> {
+    use crate::db::migrations::LATEST;
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let tree = tempfile::tempdir()?;
+    unpack(&backup, None, tree.path(), room_at(&data))?;
+    assert_eq!(version(&tree.path().join("data/irori.db"))?, LATEST);
+    for parts in [Parts::ALL, Parts::USUAL] {
+        restore_now(&backup, None, parts, &config, &data)?;
+        assert_eq!(version(&data.join("irori.db"))?, LATEST, "{parts:?}");
+        assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
+    }
+    Ok(())
+}
+
+/// A backup whose database a newer Irori wrote is refused before anything is staged, a
+/// development build included.
+#[test]
+fn a_backup_with_a_newer_database_is_refused() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let tree = tempfile::tempdir()?;
+    let manifest = unpack(&backup, None, tree.path(), room_at(&data))?;
+    checked(&manifest, tree.path())?;
+    set_version(
+        &tree.path().join("data/irori.db"),
+        crate::db::migrations::LATEST + 1,
+    )?;
+    let error = format!(
+        "{:#}",
+        checked(&manifest, tree.path()).expect_err("refused")
+    );
+    assert!(error.contains("update Irori first"), "{error}");
+    Ok(())
+}
+
+/// A backup from before versions is brought up to date before its tables are mixed with the
+/// home's, and keeps its rows.
+#[test]
+fn a_backup_from_before_versions_is_brought_up_to_date() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let tree = tempfile::tempdir()?;
+    unpack(&backup, None, tree.path(), room_at(&data))?;
+    let old = tree.path().join("data/irori.db");
+    set_version(&old, 0)?;
+    Connection::open(&old)?.execute_batch("UPDATE t SET n = 7")?;
+    compose_database(&data.join("irori.db"), &old, Parts::USUAL)?;
+    assert_eq!(
+        version(&data.join("irori.db"))?,
+        crate::db::migrations::LATEST
+    );
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "7");
+    assert_eq!(sql(&data, "SELECT count(*) FROM state_history")?, "1");
+    Ok(())
+}
+
+/// After going back to an older Irori, the home's file is newer than it and Irori won't start
+/// on it; restoring the backup made before the update is the way back. The home's own history
+/// and log can't be mixed into a file this build reads, so the backup is taken whole, and the
+/// safety copy keeps the newer home.
+#[test]
+fn restoring_after_going_back_to_an_older_irori_takes_the_backup_whole() -> anyhow::Result<()> {
+    use crate::db::migrations::LATEST;
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let db = data.join("irori.db");
+    // The newer Irori moved on: new rows, and a version this build doesn't know.
+    Connection::open(&db)?.execute_batch(
+        "UPDATE t SET n = 9; INSERT INTO state_history (entity_id, updated_ns, state) \
+         VALUES ('b', 2, 'newer')",
+    )?;
+    set_version(&db, LATEST + 1)?;
+    assert!(crate::db::open(&data).is_err(), "Irori won't start on it");
+
+    let done = restore_now(&backup, None, Parts::USUAL, &config, &data)?;
+    assert_eq!(version(&db)?, LATEST);
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
+    assert_eq!(sql(&data, "SELECT count(*) FROM state_history")?, "1");
+    crate::db::open(&data)?;
+
+    let safety = dir(&data).join(done.safety_copy.expect("a safety copy"));
+    let kept = tempfile::tempdir()?;
+    unpack(&safety, None, kept.path(), room_at(&data))?;
+    let kept = kept.path().join("data/irori.db");
+    assert_eq!(
+        version(&kept)?,
+        LATEST + 1,
+        "the safety copy is the newer home"
+    );
+    Ok(())
+}
+
+/// A restore that fails half way onto a newer home puts that home back as it was, newer file and
+/// all.
+#[test]
+fn a_failed_restore_onto_a_newer_home_puts_it_back() -> anyhow::Result<()> {
+    use crate::db::migrations::LATEST;
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let db = data.join("irori.db");
+    Connection::open(&db)?.execute_batch("UPDATE t SET n = 9")?;
+    set_version(&db, LATEST + 1)?;
+    stage(&backup, None, Parts::USUAL, &data)?;
+    fs::write(
+        data.join(PENDING).join("tree/data/irori.db"),
+        b"not a database",
+    )?;
+    let done = apply_pending(&config, &data).context("nothing was staged")?;
+    assert!(!done.ok);
+    let error = done.error.expect("says why");
+    assert!(error.contains("put back as it was"), "{error}");
+    assert_eq!(version(&db)?, LATEST + 1);
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "9");
     Ok(())
 }

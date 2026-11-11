@@ -544,6 +544,15 @@ fn checked(manifest: &Manifest, root: &Path) -> anyhow::Result<Verified> {
             verdict == "ok",
             "the backup's database is damaged: {verdict}"
         );
+        // Also for a development build, which the release number above lets through.
+        let version = crate::db::migrations::version(&conn)?;
+        ensure!(
+            version <= crate::db::migrations::LATEST,
+            "this backup's database is at version {version}, newer than this Irori ({}) knows \
+             ({}); update Irori first",
+            crate::build_info::VERSION,
+            crate::db::migrations::LATEST
+        );
     }
     // A config that doesn't load is what the home was. Say so; don't refuse to give it back.
     let mut store = irori_config::Store::new(root.join("config"));
@@ -874,7 +883,13 @@ fn put_back(tree: &Path, config: &Path, data: &Path, parts: Parts) -> anyhow::Re
 /// Builds `irori.db` from the backup's and the current one: each of the three kinds of thing in
 /// it (state, history, the activity log) from whichever the parts say. Nothing is replaced until
 /// the new file is whole.
+///
+/// Tables are only mixed between files at the same version, so the backup's copy is brought to
+/// this build's version first, and so is the current file when it is not newer. A current file
+/// newer than this build (Irori was taken back to an older release) can't be mixed with: the
+/// backup is then taken whole, and the safety copy made just before holds the home as it was.
 fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Result<()> {
+    use crate::db::migrations::LATEST;
     if !(parts.state || parts.history || parts.activity) || !staged.exists() {
         return Ok(());
     }
@@ -885,30 +900,42 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
             .context("the path isn't UTF-8")?
             .replace('\'', "''"))
     };
-    if (parts.state && parts.history && parts.activity) || !current.exists() {
+    // A table the backup didn't have is one its home never had, even once bringing it up to
+    // date has made it: it must not take the place of the home's own.
+    let had = table_names(staged)?;
+    // Only a safety copy of a home a newer Irori wrote is newer than us (a backup like that is
+    // refused before it is staged), and that is only ever put back whole.
+    let staged_newer = crate::db::version_of(staged)? > LATEST;
+    if !staged_newer {
+        crate::db::connect(staged).context("couldn't bring the backup's database up to date")?;
+    }
+    let mix_with_current = current.exists() && crate::db::version_of(current)? <= LATEST;
+    if mix_with_current {
+        crate::db::connect(current).context("couldn't bring the database up to date")?;
+    }
+    if (parts.state && parts.history && parts.activity) || !mix_with_current {
         // The backup's database is a finished file of its own (it was written by VACUUM INTO).
         fs::copy(staged, &out)?;
         // A backup from before the activity log existed has no table for it, and must not take
         // the home's own rows with it.
-        if current.exists() {
+        if mix_with_current && !staged_newer {
             let conn = Connection::open(&out)?;
             conn.execute_batch(&format!(
                 "ATTACH DATABASE '{}' AS other",
                 sql_path(current)?
             ))?;
             for table in crate::audit::TABLES {
-                let in_backup: i64 = conn.query_row(
-                    "SELECT count(*) FROM main.sqlite_master WHERE type = 'table' AND name = ?1",
-                    [table],
-                    |row| row.get(0),
-                )?;
-                if in_backup == 0 {
+                if !had.iter().any(|name| name == table) {
                     copy_table(&conn, table)?;
                 }
             }
             conn.execute_batch("DETACH DATABASE other")?;
         }
     } else {
+        ensure!(
+            !staged_newer,
+            "this database is newer than this Irori, and can only be put back whole"
+        );
         // The base is the file that has the rest (everything but the two kinds below), which is
         // the backup's when the state is asked for. The tables of a kind the base is not the
         // source of are then copied across from the other file.
@@ -931,6 +958,10 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
                 continue;
             }
             for table in tables {
+                // From the backup, but it never had one: what the home has stays.
+                if wanted_from_staged && !had.iter().any(|name| name == table) {
+                    continue;
+                }
                 copy_table(&conn, table)?;
             }
         }
@@ -941,6 +972,16 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
     }
     fs::rename(&out, current)?;
     Ok(())
+}
+
+/// The tables in the database at `path`.
+fn table_names(path: &Path) -> anyhow::Result<Vec<String>> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut rows = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?;
+    let names = rows
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(names)
 }
 
 /// Replaces `table` in `main` with the one in `other`, making it first if `main` has none (a

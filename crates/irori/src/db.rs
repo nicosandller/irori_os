@@ -1,13 +1,17 @@
 //! Opens the home's SQLite database.
 //!
-//! Entity history lives in this same file, on the recorder's own connection (`irori-recorder`).
-//! What is opened here is everything else: a version row, and the small private values a
-//! protocol remembers across restarts.
+//! Everything Irori keeps is in this one file, `irori.db`: sign-ins, tokens, the assistant's
+//! chats, the activity log, what protocols remember, and entity history (on the recorder's own
+//! connection, `irori-recorder`). Which tables it has is decided by its version
+//! ([`migrations`]); [`open`] brings it up to date when Irori starts, and refuses a file a newer
+//! Irori wrote.
+
+pub mod migrations;
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context as _, ensure};
+use anyhow::{Context as _, bail, ensure};
 use rusqlite::Connection;
 
 /// How long a connection waits when another one is writing `irori.db`.
@@ -27,7 +31,9 @@ pub struct Database {
     pub journal_mode: String,
 }
 
-/// Creates `data_dir` if needed, opens `irori.db` in WAL mode, and checks it is writable.
+/// Creates `data_dir` if needed, opens `irori.db` in WAL mode, checks it is writable, and brings
+/// it to this build's version. A file a newer Irori wrote is refused before anything is written
+/// to it.
 pub fn open(data_dir: &Path) -> anyhow::Result<Database> {
     std::fs::create_dir_all(data_dir)
         .with_context(|| format!("failed to create data dir {}", data_dir.display()))?;
@@ -35,6 +41,11 @@ pub fn open(data_dir: &Path) -> anyhow::Result<Database> {
     let conn = Connection::open(&path)
         .with_context(|| format!("failed to open database {}", path.display()))?;
     wait_when_busy(&conn)?;
+    let found = migrations::version(&conn)
+        .with_context(|| format!("failed to read database {}", path.display()))?;
+    if found > migrations::LATEST {
+        bail!("{}", too_new(&path, found));
+    }
 
     let journal_mode: String =
         conn.pragma_update_and_check(None, "journal_mode", "wal", |row| row.get(0))?;
@@ -44,15 +55,55 @@ pub fn open(data_dir: &Path) -> anyhow::Result<Database> {
         path.display()
     );
     conn.pragma_update(None, "synchronous", "NORMAL")?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
-    )?;
+    migrations::run(&conn, migrations::MIGRATIONS).map_err(|error| match error {
+        migrations::Error::Newer { found, .. } => anyhow::anyhow!("{}", too_new(&path, found)),
+        other => anyhow::Error::new(other).context(format!("database {}", path.display())),
+    })?;
     conn.execute(
         "INSERT OR IGNORE INTO meta (key, value) VALUES ('created_by_version', ?1)",
         [crate::build_info::VERSION],
     )?;
 
     Ok(Database { path, journal_mode })
+}
+
+/// What Irori says when it won't start on a file a newer Irori wrote, and the ways out.
+fn too_new(path: &Path, found: u32) -> String {
+    format!(
+        "{path} was written by a newer Irori: it is at database version {found}, and this Irori \
+         ({ours}) knows versions up to {latest}. Starting would risk losing what the newer one \
+         wrote, so Irori won't start on it. If you went back to an older Irori (`irori.previous`), \
+         run the newer one again; or, to stay on this one, restore the backup made before the \
+         update with `irori backup restore pre-update-…` (it is in the backups folder).",
+        path = path.display(),
+        ours = crate::build_info::VERSION,
+        latest = migrations::LATEST,
+    )
+}
+
+/// Opens another connection to `irori.db`, for a part of Irori that keeps its own: it waits when
+/// the file is busy, and has every table this build expects. [`open`] has already brought the
+/// file up to date by the time any of these run, so here that is one read; a file nobody has
+/// opened yet (a test's) is brought up here, and a newer one is refused.
+pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
+    let conn = Connection::open(path)?;
+    wait_when_busy(&conn)?;
+    migrations::run(&conn, migrations::MIGRATIONS).map_err(|error| match error {
+        migrations::Error::Sqlite(error) => error,
+        newer @ migrations::Error::Newer { .. } => rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some(newer.to_string()),
+        ),
+    })?;
+    Ok(conn)
+}
+
+/// The version of the database at `path`, read without changing it.
+pub fn version_of(path: &Path) -> anyhow::Result<u32> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("couldn't open {}", path.display()))?;
+    wait_when_busy(&conn)?;
+    Ok(migrations::version(&conn)?)
 }
 
 /// Protocols' small private values, kept in `irori.db` so they outlast restarts
@@ -65,17 +116,8 @@ pub struct SqliteStorage {
 
 impl SqliteStorage {
     pub fn open(db: &Database) -> anyhow::Result<Self> {
-        let conn = Connection::open(&db.path)
+        let conn = connect(&db.path)
             .with_context(|| format!("failed to open database {}", db.path.display()))?;
-        wait_when_busy(&conn)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS extension_kv (
-                extension TEXT NOT NULL,
-                key TEXT NOT NULL,
-                value TEXT NOT NULL,
-                PRIMARY KEY (extension, key)
-            )",
-        )?;
         Ok(Self {
             conn: std::sync::Mutex::new(conn),
         })
@@ -156,6 +198,107 @@ mod tests {
 
         // Opening an existing database must not fail or reset it.
         open(&data)?;
+        Ok(())
+    }
+
+    fn tables(conn: &Connection) -> rusqlite::Result<Vec<String>> {
+        conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")?
+            .query_map([], |row| row.get(0))?
+            .collect()
+    }
+
+    /// A new home's file is made at the latest version, with every table.
+    #[test]
+    fn a_new_database_starts_at_the_latest_version() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let db = open(dir.path())?;
+        let conn = Connection::open(&db.path)?;
+        assert_eq!(migrations::version(&conn)?, migrations::LATEST);
+        let tables = tables(&conn)?;
+        for table in [
+            "meta",
+            "extension_kv",
+            "sessions",
+            "tokens",
+            "assistant_message",
+            "audit",
+            "state_history",
+            "statistics",
+        ] {
+            assert!(tables.iter().any(|t| t == table), "{table} in {tables:?}");
+        }
+        Ok(())
+    }
+
+    /// A file Irori 1.5 or earlier wrote has no version. It is taken as version 1 as it is: its
+    /// rows stay, and the tables a part of Irori it never used would have made are added.
+    #[test]
+    fn a_database_from_before_versions_keeps_its_rows() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("irori.db");
+        {
+            // Made the way 1.5 made them, each by the part of Irori that used it; this home
+            // never opened the assistant.
+            let conn = Connection::open(&path)?;
+            conn.pragma_update(None, "journal_mode", "wal")?;
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 INSERT INTO meta VALUES ('created_by_version', '1.4.2');
+                 CREATE TABLE IF NOT EXISTS extension_kv (
+                     extension TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                     PRIMARY KEY (extension, key));
+                 INSERT INTO extension_kv VALUES ('helpers', 'toggle.guests', 'true');
+                 CREATE TABLE IF NOT EXISTS sessions (
+                     token_hash TEXT PRIMARY KEY, user TEXT NOT NULL, expires INTEGER NOT NULL);
+                 INSERT INTO sessions VALUES ('h', 'owner', 99);
+                 CREATE TABLE IF NOT EXISTS state_history (
+                     id INTEGER PRIMARY KEY, entity_id TEXT NOT NULL,
+                     updated_ns INTEGER NOT NULL, state TEXT NOT NULL);
+                 CREATE INDEX IF NOT EXISTS state_history_entity_time
+                     ON state_history (entity_id, updated_ns, id);
+                 INSERT INTO state_history (entity_id, updated_ns, state)
+                     VALUES ('light.hall', 1, '{}');",
+            )?;
+            assert_eq!(migrations::version(&conn)?, 0);
+        }
+        open(dir.path())?;
+        let conn = Connection::open(&path)?;
+        assert_eq!(migrations::version(&conn)?, migrations::LATEST);
+        let one = |q: &str| conn.query_row(q, [], |row| row.get::<_, String>(0));
+        assert_eq!(
+            one("SELECT value FROM meta WHERE key = 'created_by_version'")?,
+            "1.4.2",
+            "the version that made it is still the one that made it"
+        );
+        assert_eq!(one("SELECT value FROM extension_kv")?, "true");
+        assert_eq!(one("SELECT user FROM sessions")?, "owner");
+        assert_eq!(one("SELECT entity_id FROM state_history")?, "light.hall");
+        assert!(tables(&conn)?.iter().any(|t| t == "assistant_message"));
+        Ok(())
+    }
+
+    /// A file a newer Irori wrote (after going back to `irori.previous`, say) is refused with a
+    /// way out, and nothing is written to it.
+    #[test]
+    fn a_database_from_a_newer_irori_is_refused_and_left_alone() -> anyhow::Result<()> {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("irori.db");
+        let newer = migrations::LATEST + 1;
+        Connection::open(&path)?.pragma_update(None, "user_version", newer)?;
+
+        let error = format!("{:#}", open(dir.path()).expect_err("refused"));
+        assert!(error.contains("newer Irori"), "{error}");
+        assert!(error.contains("irori.previous"), "{error}");
+        assert!(error.contains("irori backup restore"), "{error}");
+
+        let conn = Connection::open(&path)?;
+        assert_eq!(migrations::version(&conn)?, newer);
+        assert_eq!(tables(&conn)?, Vec::<String>::new(), "nothing was made");
+        let journal: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(journal, "delete", "not even the journal mode was changed");
+        // A part of Irori that opens the file on its own refuses it too.
+        let error = connect(&path).expect_err("refused").to_string();
+        assert!(error.contains("newer Irori"), "{error}");
         Ok(())
     }
 

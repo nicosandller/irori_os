@@ -75,6 +75,10 @@ pub const HISTORY_TABLES: &[&str] = &[
     "statistics",
 ];
 
+/// The history tables as this crate's code expects them, for a file nobody has versioned: this
+/// crate's own tests. Irori makes them through the migrations of `irori.db`
+/// (`crates/irori/src/db/migrations.rs`), before the recorder opens the file; a change to them is
+/// a new migration there, and the same change here.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS state_history (
     id INTEGER PRIMARY KEY,
@@ -578,9 +582,15 @@ fn open_connection(path: &Path) -> Result<Connection, Error> {
     connection
         .pragma_update(None, "synchronous", "NORMAL")
         .map_err(|error| Error::new(format!("failed to set synchronous mode: {error}")))?;
-    connection
-        .execute_batch(SCHEMA)
-        .map_err(|error| Error::new(format!("failed to prepare history: {error}")))?;
+    // A file with a version is Irori's, which has made these tables already (`SCHEMA`).
+    let version: u32 = connection
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|error| Error::new(format!("failed to read the database version: {error}")))?;
+    if version == 0 {
+        connection
+            .execute_batch(SCHEMA)
+            .map_err(|error| Error::new(format!("failed to prepare history: {error}")))?;
+    }
     Ok(connection)
 }
 

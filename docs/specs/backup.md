@@ -167,7 +167,15 @@ the home's own log.
 "Everything but history" builds the database from the backup's and copies the current history
 tables into it. Each of the three kinds in it (state, history, the activity log) comes from
 whichever the parts say. A config that doesn't load is what the home was: it is said as a note, not a
-refusal. A backup from a newer Irori is refused (a `0.0.0` development build reads anything).
+refusal. A backup from a newer Irori is refused (a `0.0.0` development build reads anything), and so
+is one whose database is at a version this build doesn't know (§9), development build or not.
+
+Tables are only mixed between files at the same version: the backup's database is brought up to
+this build's version first, and so is the home's. A table the backup didn't have before that
+(it is older than the table) still counts as missing, so the home keeps its own. When the home's
+file is **newer** than this build (Irori was taken back to an older release, §9), nothing can be
+mixed into it: the backup's database is taken whole, whatever the parts, and the safety copy
+keeps the newer home.
 
 **After.** If the restore replaced who is signed in, the person signs in again with the
 backup's people and passwords. The official extensions the backup's home had installed are
@@ -200,3 +208,35 @@ refuses when a server answers at `<data>/cli.url`.
 A backup holds password hashes and secrets. The routes are not in the auth table's read list, so
 only the owner's session with the page's `x-irori-ui: 1` header gets in, and a token never does
 (`docs/specs/api.md` §1). The one exception is §6's setup routes.
+
+## 9. Database versions
+
+Everything Irori keeps is in one SQLite file, `irori.db`: what protocols remember
+(`extension_kv`), sign-ins (`sessions`), tokens (`tokens`), the assistant's chats
+(`assistant_*`), the activity log (`audit`), entity history (`state_history`, `converted_units`,
+`statistic_entities`, `statistics_short_term`, `statistics`) and `meta`, whose
+`created_by_version` row names the release that first made the file.
+
+The file says which version of these tables it holds in `PRAGMA user_version`. The versions, and
+what turns each into the next, are one ordered list in `crates/irori/src/db/migrations.rs`. When
+Irori starts it brings the file up to the latest version, running each step it hasn't had in
+order, in one transaction with the new version number, so a step happens whole and once. A new
+home's file is made at the latest version.
+
+- **Version 1** is the tables as they were before versions began (Irori 1.5). A file from then
+  has `user_version` 0 and is taken as version 1 as it is: its rows stay, and a table a part of
+  Irori it never used would have made is added.
+- **A file newer than the build is refused.** Irori won't start on it, and writes nothing to it
+  first. Opening it could hide what the newer release wrote (history rows that don't parse are
+  skipped) or lose it. The message gives both versions and the two ways out: run the newer Irori
+  again, or, to stay on this one, `irori backup restore pre-update-…` (the backup made just before
+  the update, §1). The same check is made by every part of Irori that opens the file itself.
+- **After going back to `irori.previous`** (an update is undone by putting the old binary back):
+  if the update changed the database, the old binary refuses it as above, rather than starting on
+  a file it doesn't understand. Restoring the pre-update backup with that binary is the way to stay
+  on it; what the newer release recorded since is kept in the restore's safety copy. Releases
+  before versions began don't read `user_version`, so going back to one of them is not caught.
+
+**Adding a change to the database** is one step: add an entry to the end of the list, with the
+next number and what it does. Never edit an entry that has shipped: a home that ran it won't run
+it again.

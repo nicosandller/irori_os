@@ -3514,29 +3514,7 @@ pub fn check_scope(scope: &str) -> Result<(), String> {
 }
 
 fn open_db(db: &Path) -> Result<rusqlite::Connection, String> {
-    let conn = rusqlite::Connection::open(db).map_err(|error| error.to_string())?;
-    crate::db::wait_when_busy(&conn).map_err(|error| error.to_string())?;
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS assistant_message (
-            scope TEXT NOT NULL,
-            seq INTEGER NOT NULL,
-            role TEXT NOT NULL,
-            body TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY (scope, seq)
-        );
-        CREATE TABLE IF NOT EXISTS assistant_reach (
-            user TEXT PRIMARY KEY,
-            entities TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS assistant_usage (
-            scope TEXT PRIMARY KEY,
-            used INTEGER NOT NULL,
-            size INTEGER
-        )",
-    )
-    .map_err(|error| error.to_string())?;
-    Ok(conn)
+    crate::db::connect(db).map_err(|error| error.to_string())
 }
 
 fn load_turns(db: &Path, scope: &str) -> Result<Vec<Remembered>, String> {
