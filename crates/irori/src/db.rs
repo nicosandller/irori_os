@@ -74,7 +74,7 @@ fn too_new(path: &Path, found: u32) -> String {
          ({ours}) knows versions up to {latest}. Starting would risk losing what the newer one \
          wrote, so Irori won't start on it. If you went back to an older Irori (`irori.previous`), \
          run the newer one again; or, to stay on this one, restore the backup made before the \
-         update with `irori backup restore pre-update-…` (it is in the backups folder).",
+         update with `irori backup restore pre-update-…` (`irori backup list` shows its name).",
         path = path.display(),
         ours = crate::build_info::VERSION,
         latest = migrations::LATEST,

@@ -758,6 +758,11 @@ fn restoring_after_going_back_to_an_older_irori_takes_the_backup_whole() -> anyh
     assert!(crate::db::open(&data).is_err(), "Irori won't start on it");
 
     let done = restore_now(&backup, None, Parts::USUAL, &config, &data)?;
+    assert!(
+        done.warnings.iter().any(|w| w.contains("put back whole")),
+        "the owner is told the parts weren't kept to: {:?}",
+        done.warnings
+    );
     assert_eq!(version(&db)?, LATEST);
     assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
     assert_eq!(sql(&data, "SELECT count(*) FROM state_history")?, "1");

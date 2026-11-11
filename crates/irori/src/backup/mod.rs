@@ -773,6 +773,17 @@ pub fn apply_pending(config: &Path, data: &Path) -> Option<Restored> {
         extensions_handled: false,
         audited: false,
     };
+    let parts = plan.parts;
+    let mixes_database = (parts.state || parts.history || parts.activity)
+        && !(parts.state && parts.history && parts.activity);
+    if mixes_database && home_is_newer(data) {
+        done.warnings.push(
+            "this home's database was written by a newer Irori, so the backup's database was put \
+             back whole, history and activity log included, whatever parts were chosen; the \
+             pre-restore backup keeps the home as it was"
+                .to_owned(),
+        );
+    }
     match swap_in(&pending.join("tree"), config, data, plan.parts) {
         Ok(safety) => {
             done.ok = true;
@@ -785,6 +796,13 @@ pub fn apply_pending(config: &Path, data: &Path) -> Option<Restored> {
         let _ = fs::write(data.join(RESULT), bytes);
     }
     Some(done)
+}
+
+/// Whether the home's `irori.db` is at a version newer than this build (it went back to an older
+/// release), in which case nothing can be mixed into it (`compose_database`).
+fn home_is_newer(data: &Path) -> bool {
+    let db = data.join("irori.db");
+    db.exists() && crate::db::version_of(&db).is_ok_and(|v| v > crate::db::migrations::LATEST)
 }
 
 fn swap_in(
