@@ -2092,13 +2092,13 @@ fn pids_in(file: &std::path::Path) -> Vec<String> {
 }
 
 /// Whether a process with this pid is still running. A killed child whose parent died is
-/// reaped by init a moment later, so callers wait for this to turn false.
+/// reaped by init a moment later, so callers wait for this to turn false. Asked directly: a slim
+/// Debian has no `kill` program.
 fn running(pid: &str) -> bool {
-    std::process::Command::new("kill")
-        .args(["-0", pid])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
+    pid.parse()
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+        .is_some_and(|pid| rustix::process::test_kill_process(pid).is_ok())
 }
 
 /// An extension that won't stop is killed when its grace runs out, and so is everything it

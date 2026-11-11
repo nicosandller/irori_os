@@ -1589,7 +1589,7 @@ async fn supervise_package(
                 mut child,
                 stdin,
                 stdout,
-                group,
+                mut group,
             } = proc;
             let mut outgoing = Outgoing::Process(stdin);
             let incoming = Incoming::Process(Reader::spawn(stdout));
@@ -1700,7 +1700,7 @@ async fn supervise_package(
         // The whole group, whether the extension is still running, was killed, or exited by
         // itself: a crash leaves what it started running, holding a dongle or a port the
         // restarted extension needs (issue #101).
-        if let Some(group) = &link.group {
+        if let Some(group) = link.group.as_mut() {
             group.kill();
         }
         if let Some(child) = link.child.as_mut() {
@@ -2103,7 +2103,7 @@ async fn drive(
             }
             () = &mut grace => {
                 tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
-                if let Some(group) = &link.group {
+                if let Some(group) = link.group.as_mut() {
                     group.kill();
                 }
                 let _ = child.start_kill();

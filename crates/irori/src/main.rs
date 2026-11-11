@@ -483,7 +483,7 @@ fn check_bind(bind: SocketAddr, allow_unauthenticated_lan: bool) -> anyhow::Resu
     Ok(())
 }
 
-/// Resolves on Ctrl-C or, on Unix, SIGTERM (what systemd sends).
+/// Resolves on Ctrl-C or, on Unix, SIGTERM (what systemd sends) or SIGHUP (the terminal closing).
 async fn shutdown_signal(restart: Arc<Notify>) {
     let ctrl_c = async {
         if let Err(err) = tokio::signal::ctrl_c().await {
@@ -507,12 +507,32 @@ async fn shutdown_signal(restart: Arc<Notify>) {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    // The terminal closing. Extensions run in process groups of their own, so the hang-up reaches
+    // Irori alone, and Irori has to stop them: dying of it would leave them all running.
+    #[cfg(unix)]
+    let hangup = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(err) => {
+                tracing::error!(%err, "failed to listen for SIGHUP");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let hangup = std::future::pending::<()>();
+
     tokio::select! {
         () = ctrl_c => {
             tracing::info!("shutting down");
         }
         () = terminate => {
             tracing::info!("shutting down");
+        }
+        () = hangup => {
+            tracing::info!("terminal closed; shutting down");
         }
         // The Settings page's Restart button. The handler's notify_one retains the notification,
         // so this resolves however the ordering falls out — even a request that lands before

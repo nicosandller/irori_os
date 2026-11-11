@@ -900,7 +900,9 @@ pub struct ExtProcess {
 ///
 /// The group keeps its id after the extension itself has exited and been reaped, for as long as
 /// anything is left in it, and an id isn't handed out again while a group still has it. So
-/// killing the group of an extension that crashed reaches what it left behind, and nothing else.
+/// killing the group of an extension that crashed reaches what it left behind. Once the group is
+/// empty its id is free for anyone, so the group is killed once only: the first kill forgets it,
+/// and dropping it after that does nothing.
 #[derive(Debug)]
 pub struct ProcessGroup {
     #[cfg(unix)]
@@ -919,10 +921,10 @@ impl ProcessGroup {
         }
     }
 
-    /// Kills everything left in the group. Nothing left is not an error.
-    pub fn kill(&self) {
+    /// Kills everything left in the group, the first time only. Nothing left is not an error.
+    pub fn kill(&mut self) {
         #[cfg(unix)]
-        if let Some(id) = self.id {
+        if let Some(id) = self.id.take() {
             let _ = rustix::process::kill_process_group(id, rustix::process::Signal::KILL);
         }
     }
