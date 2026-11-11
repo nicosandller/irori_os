@@ -987,10 +987,17 @@ impl ExtProcess {
         stdin.flush().await.map_err(|e| e.to_string())
     }
 
+    /// Reads the next message. See [`ExtProcess::recv_on`]: not safe inside `select!`.
     pub async fn recv(&mut self) -> Result<FromExt, String> {
         Self::recv_on(&mut self.stdout).await
     }
 
+    /// Reads the next message from `stdout`.
+    ///
+    /// **Not cancel-safe: never use it as a branch of `select!`.** A message longer than one read
+    /// arrives in pieces; if another branch wins after the first piece, that piece is gone and
+    /// the rest of the line won't parse. Read from a task of its own that sends whole messages
+    /// into a channel, and `select!` on the channel instead, as the host's `Reader` does.
     pub async fn recv_on(stdout: &mut BufReader<ChildStdout>) -> Result<FromExt, String> {
         read_json(stdout).await
     }

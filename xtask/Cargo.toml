@@ -18,10 +18,15 @@ irori-protocol-switchbot.workspace = true
 irori-protocol-tplink.workspace = true
 irori-protocol-zigbee.workspace = true
 anyhow.workspace = true
+brotli.workspace = true
+flate2.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
