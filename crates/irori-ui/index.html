@@ -863,6 +863,9 @@
     .camera-card .entity-row { border: 0; padding: 0; }
     .camera-card-view { margin-top: .75rem; }
     .camera-card-view .camera-view { margin: 0; }
+    /* The video and everything under it, as one column centred in the card. */
+    .camera-card-view > :is(.camera-stage:not(.is-full), .camera-view) { max-width: 40rem;
+      margin-inline: auto; }
     .camera-live-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
     .live-button { padding: .3rem .65rem; font: inherit; font-size: .8rem; color: var(--fg);
                    background: var(--card); border: 1px solid var(--line); border-radius: .45rem;
