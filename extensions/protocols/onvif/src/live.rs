@@ -251,6 +251,8 @@ struct AudioTrack {
     /// The audio clock's reading that lines up with the first keyframe; set by the first
     /// audio frame, from where the video is when it comes.
     zero: Option<i64>,
+    /// Where the next frame starts, just after the last one ends.
+    next: Option<u64>,
 }
 
 impl Muxer {
@@ -312,6 +314,7 @@ impl Muxer {
                         clock: i64::from(clock),
                         flac: None,
                         zero: None,
+                        next: None,
                     });
                 }
             }
@@ -335,6 +338,7 @@ impl Muxer {
                         clock: i64::from(rate),
                         flac: Some((law, encoder)),
                         zero: None,
+                        next: None,
                     });
                 }
             }
@@ -439,6 +443,12 @@ impl Muxer {
         if samples.is_empty() {
             return Ok(());
         }
+        let at = follow(audio.next, at, audio.clock);
+        let length: u64 = samples
+            .iter()
+            .map(|sample| u64::from(sample.duration))
+            .sum();
+        audio.next = Some(at + length);
         let fragment = fmp4::fragment(self.next_sequence(), AUDIO_TRACK, at, &samples);
         // Not a place to start watching from: that's a video keyframe.
         feed.fragment(false, fragment)
@@ -450,6 +460,21 @@ impl Muxer {
         let sequence = self.sequence;
         self.sequence = self.sequence.wrapping_add(1);
         sequence
+    }
+}
+
+/// Where an audio frame the camera says starts `at` goes: right after the last one (`next`),
+/// unless the two are more than half a second apart.
+///
+/// A camera's sound timestamps wobble: a Reolink's are off by up to a tenth of a second either
+/// way, frame to frame. Placed as stamped, the frames overlap or leave gaps, and a browser drops
+/// sound at each overlap and goes quiet at each gap, so it sounds choppy. Laid end to end they
+/// play smoothly; only a real jump, such as sound lost on the way, moves them back to the stamp.
+fn follow(next: Option<u64>, at: u64, clock: i64) -> u64 {
+    let slack = u64::try_from(clock / 2).unwrap_or(0);
+    match next {
+        Some(next) if at.abs_diff(next) <= slack => next,
+        _ => at,
     }
 }
 
@@ -566,6 +591,32 @@ pub fn address(stream: &str, ip: IpAddr) -> Result<url::Url, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn sound_frames_are_laid_end_to_end_unless_they_jump() {
+        use super::follow;
+        assert_eq!(
+            follow(None, 500, 16_000),
+            500,
+            "the first goes where it's stamped"
+        );
+        assert_eq!(
+            follow(Some(1024), 960, 16_000),
+            1024,
+            "stamped a little early"
+        );
+        assert_eq!(
+            follow(Some(1024), 1924, 16_000),
+            1024,
+            "stamped a little late"
+        );
+        assert_eq!(
+            follow(Some(1024), 1024 + 9_000, 16_000),
+            1024 + 9_000,
+            "more than half a second off: sound was lost, so back to the stamp"
+        );
+        assert_eq!(follow(Some(9_000), 100, 16_000), 100, "and the other way");
+    }
+
     use super::*;
 
     #[test]
