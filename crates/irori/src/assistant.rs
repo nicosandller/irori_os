@@ -482,13 +482,8 @@ pub async fn save(
         file.local.tag = tag.to_owned();
     }
     if let Some(preset) = body.get("preset").and_then(|value| value.as_str()) {
-        file.cloud.preset = match preset {
-            "openai" => CloudPreset::Openai,
-            "anthropic" => CloudPreset::Anthropic,
-            "grok" => CloudPreset::Grok,
-            "compatible" => CloudPreset::Compatible,
-            _ => return Err("preset is openai, anthropic, grok, or compatible".to_owned()),
-        };
+        file.cloud.preset = preset_named(preset)
+            .ok_or_else(|| "preset is openai, anthropic, grok, or compatible".to_owned())?;
         if body
             .get("base_url")
             .and_then(|value| value.as_str())
@@ -1392,6 +1387,131 @@ pub async fn check(config: &Config) -> Result<(), String> {
         Ok(Err(error)) => Err(explained(&scrub(&error, &key))),
         Err(_) => Err("The provider didn't answer within half a minute.".to_owned()),
     }
+}
+
+/// The most of a provider's list of models that is read: far more than any provider's.
+const MOST_LISTED: usize = 4 * 1024 * 1024;
+
+/// The models a cloud provider says its key can use, to suggest in the Settings card while the
+/// model is typed. `body` is the card's fields as they are: `preset`, `base_url` and `api_key`,
+/// each optional, the saved one standing in for any left out. Nothing of the home is sent, only
+/// the key. Anything that goes wrong is an empty list: no suggestions, and the model is typed.
+///
+/// The saved key only goes where it was saved for. Fields that name another provider or
+/// endpoint, with no key typed, are asked nothing, except an OpenAI-compatible endpoint, which
+/// is asked with no key at all.
+pub async fn models(config: &Config, body: &Value) -> Vec<String> {
+    let file = load_file(&config.dir().await);
+    let named = body.get("preset").and_then(Value::as_str);
+    let preset = match named {
+        None => file.cloud.preset,
+        Some(name) => match preset_named(name) {
+            Some(preset) => preset,
+            None => return Vec::new(),
+        },
+    };
+    let base = match body.get("base_url").and_then(Value::as_str) {
+        Some(url) => url.to_owned(),
+        None if named.is_some() => preset.default_base_url().to_owned(),
+        None => file.cloud.base_url.clone(),
+    };
+    let base = base.trim().trim_end_matches('/');
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return Vec::new();
+    }
+    let typed = body
+        .get("api_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty());
+    let saved_for_here =
+        preset == file.cloud.preset && base == file.cloud.base_url.trim().trim_end_matches('/');
+    let key = match typed {
+        Some(key) => key.to_owned(),
+        None if saved_for_here => config.assistant_key().await.unwrap_or_default(),
+        None => String::new(),
+    };
+    if key.is_empty() && preset != CloudPreset::Compatible {
+        return Vec::new();
+    }
+    let Ok(client) = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        // A redirect would carry the key somewhere nobody named.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return Vec::new();
+    };
+    let request = if preset.is_anthropic() {
+        client
+            .get(format!("{base}/v1/models?limit=1000"))
+            .header("x-api-key", &key)
+            .header("anthropic-version", "2023-06-01")
+    } else if key.is_empty() {
+        client.get(format!("{base}/models"))
+    } else {
+        client.get(format!("{base}/models")).bearer_auth(&key)
+    };
+    let Ok(mut response) = request.send().await else {
+        return Vec::new();
+    };
+    if !response.status().is_success()
+        || response
+            .content_length()
+            .is_some_and(|length| length > MOST_LISTED as u64)
+    {
+        return Vec::new();
+    }
+    let mut read = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if read.len() + chunk.len() <= MOST_LISTED => {
+                read.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            _ => return Vec::new(),
+        }
+    }
+    // Anthropic's comes newest first, which is the order worth keeping. The others' has none.
+    model_names(&read, !preset.is_anthropic())
+}
+
+fn preset_named(name: &str) -> Option<CloudPreset> {
+    match name {
+        "openai" => Some(CloudPreset::Openai),
+        "anthropic" => Some(CloudPreset::Anthropic),
+        "grok" => Some(CloudPreset::Grok),
+        "compatible" => Some(CloudPreset::Compatible),
+        _ => None,
+    }
+}
+
+/// The model ids in a provider's answer to `/models`: `{"data": [{"id": …}, …]}`, the shape
+/// OpenAI, Anthropic and xAI all answer with. Anything else is no models.
+fn model_names(body: &[u8], sorted: bool) -> Vec<String> {
+    let Ok(answer) = serde_json::from_slice::<Value>(body) else {
+        return Vec::new();
+    };
+    let Some(listed) = answer.get("data").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    for id in listed.iter().filter_map(|model| model.get("id")?.as_str()) {
+        let id = id.trim();
+        if id.is_empty() || id.len() > 200 || !seen.insert(id) {
+            continue;
+        }
+        names.push(id.to_owned());
+        if names.len() == 1000 {
+            break;
+        }
+    }
+    if sorted {
+        names.sort();
+    }
+    names
 }
 
 enum Outcome {
@@ -4120,6 +4240,31 @@ pub fn model_log(data_dir: &Path) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_providers_list_of_models_is_read_for_its_ids() {
+        let openai = br#"{"object":"list","data":[
+            {"id":"gpt-4o-mini","object":"model","owned_by":"system"},
+            {"id":"gpt-4o","object":"model"},
+            {"id":"gpt-4o","object":"model"},
+            {"id":"  "},
+            {"object":"model"}
+        ]}"#;
+        assert_eq!(model_names(openai, true), ["gpt-4o", "gpt-4o-mini"]);
+        // Anthropic's is newest first, and stays so.
+        let anthropic = br#"{"data":[
+            {"type":"model","id":"claude-opus-5-5","display_name":"Claude Opus 5.5"},
+            {"type":"model","id":"claude-haiku-5-5"}
+        ],"has_more":false}"#;
+        assert_eq!(
+            model_names(anthropic, false),
+            ["claude-opus-5-5", "claude-haiku-5-5"]
+        );
+        // Anything that isn't a list of models is no suggestions, not an error.
+        for nothing in [&b"not json"[..], b"{}", b"[]", br#"{"data":{}}"#, b""] {
+            assert!(model_names(nothing, true).is_empty());
+        }
+    }
 
     #[test]
     fn a_local_model_is_sent_only_the_end_of_a_long_conversation() {

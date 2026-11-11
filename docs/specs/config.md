@@ -629,6 +629,17 @@ context.
 has none). The API key is not in this file. It is `api_key` under `[assistant]` in
 `secrets.toml` (§3.4), written owner-only, and no request reads it back.
 
+Settings suggests a `model` from the provider's own list, and links to the page where the
+provider's keys are made (none for `compatible`). The list is asked for by Irori, not the page,
+with `POST /api/assistant/models` (owner only): the card's `preset`, `base_url` and a typed
+`api_key`, each optional. Irori asks `GET {base_url}/models` with the key as a bearer token, or
+`GET {base_url}/v1/models` with `x-api-key` and `anthropic-version` for `anthropic`, and answers
+`{"models": [...]}` with the ids it got back. The request carries the key and nothing of the
+home, and follows no redirect. The saved key is sent only to the preset and endpoint it was
+saved with; for another, with no key typed, nothing is asked, except a `compatible` endpoint,
+which is asked with no key. A provider that refuses, can't be reached, or answers with
+anything else is an empty list, and the model is typed as before.
+
 ### 3.9 `home.toml`
 
 Where the home is, and what time it is there. Two answers only a person can give, and what the
