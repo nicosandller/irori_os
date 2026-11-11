@@ -13,7 +13,7 @@
 //!
 //! Automation traces are not stored here. The Automations extension keeps its own runs.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -191,9 +191,6 @@ impl Error {
 enum Job {
     Append(Box<Change>),
     Forget(EntityId),
-    /// Delete every row whose entity is not in this list. Sent when a listener fell behind and
-    /// may have missed a removal.
-    ForgetMissing(Vec<EntityId>),
     /// This entity is summarized. The class is recorded once; later notices do not change it.
     Notice {
         entity_id: EntityId,
@@ -310,11 +307,7 @@ fn abandon(job: Job) {
         Job::Configure { reply, .. } => {
             let _ = reply.send(());
         }
-        Job::Append(_)
-        | Job::Forget(_)
-        | Job::ForgetMissing(_)
-        | Job::Notice { .. }
-        | Job::Convert { .. } => {}
+        Job::Append(_) | Job::Forget(_) | Job::Notice { .. } | Job::Convert { .. } => {}
     }
 }
 
@@ -498,16 +491,6 @@ impl Recorder {
                 before,
             },
             "a sensor's stored readings were not converted",
-        );
-    }
-
-    /// Deletes history for every entity that is not in `live`. Same ordering rules as
-    /// [`Self::forget`]: it lands after saves already accepted, and a full save queue does not
-    /// drop it or make the caller wait.
-    pub fn forget_missing(&self, live: &[EntityId]) {
-        self.enqueue(
-            Job::ForgetMissing(live.to_vec()),
-            "history for entities that left could not be deleted",
         );
     }
 
@@ -784,12 +767,6 @@ fn apply(
                 convert_once(connection, &entity_id, &from_unit, (scale, offset), before),
             );
         }
-        Job::ForgetMissing(live) => {
-            let keep: HashSet<&EntityId> = live.iter().collect();
-            batch.retain(|change| keep.contains(&change.state.entity_id));
-            write_batch(connection, batch, last_write_ok);
-            note_write(last_write_ok, forget_missing(connection, &live));
-        }
         Job::Query {
             entity_id,
             since,
@@ -1038,57 +1015,6 @@ fn delete_entity(connection: &Connection, table: &str, entity_id: &EntityId) -> 
         .execute(sql, [entity_id.as_str()])
         .map(|_| ())
         .map_err(|error| error.to_string())
-}
-
-/// Deletes rows for entities that are not in `live`. A temp table, so a large home is not
-/// limited by SQLite's bound-variable cap. An empty `live` deletes every row: nothing in the
-/// home means nothing to keep.
-fn forget_missing(connection: &mut Connection, live: &[EntityId]) -> Result<(), String> {
-    if live.is_empty() {
-        connection
-            .execute_batch(
-                "DELETE FROM state_history;
-                 DELETE FROM statistics_short_term;
-                 DELETE FROM statistics;
-                 DELETE FROM statistic_entities",
-            )
-            .map_err(|error| error.to_string())?;
-        return Ok(());
-    }
-    let transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute_batch(
-            "CREATE TEMP TABLE IF NOT EXISTS history_live (entity_id TEXT PRIMARY KEY);
-             DELETE FROM history_live",
-        )
-        .map_err(|error| error.to_string())?;
-    {
-        let mut statement = transaction
-            .prepare("INSERT INTO history_live (entity_id) VALUES (?1)")
-            .map_err(|error| error.to_string())?;
-        for id in live {
-            statement
-                .execute([id.as_str()])
-                .map_err(|error| error.to_string())?;
-        }
-    }
-    for sql in [
-        "DELETE FROM state_history
-         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
-        "DELETE FROM statistics_short_term
-         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
-        "DELETE FROM statistics
-         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
-        "DELETE FROM statistic_entities
-         WHERE entity_id NOT IN (SELECT entity_id FROM history_live)",
-    ] {
-        transaction
-            .execute(sql, [])
-            .map_err(|error| error.to_string())?;
-    }
-    transaction.commit().map_err(|error| error.to_string())
 }
 
 fn read(
@@ -1484,20 +1410,6 @@ mod tests {
         let seen = recorder.since(&entity("switch.plug"), at("1970-01-01T00:00:00Z"));
         assert_eq!(seen.len(), 1, "rows stay when the cutoff cannot be built");
         assert!(recorder.check());
-    }
-
-    #[test]
-    fn entities_that_are_no_longer_in_the_home_lose_their_rows() {
-        let dir = tempfile::tempdir().expect("a temp dir");
-        let recorder = open(&dir);
-        let when = now();
-        let plug = entity("switch.plug");
-        let other = entity("switch.other");
-        recorder.append(sample("switch.plug", true, when));
-        recorder.append(sample("switch.other", false, when));
-        recorder.forget_missing(std::slice::from_ref(&other));
-        assert!(recorder.since(&plug, at("1970-01-01T00:00:00Z")).is_empty());
-        assert_eq!(recorder.since(&other, at("1970-01-01T00:00:00Z")).len(), 1);
     }
 
     #[test]

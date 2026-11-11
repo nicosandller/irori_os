@@ -27,7 +27,7 @@ pub use irori_types as types;
 pub mod engine;
 pub mod home;
 mod process;
-pub use process::{ExtProcess, FromExt, ProcessGroup, ToExt, WireCommand, serve, spawn};
+pub use process::{ExtProcess, FromExt, ProcessGroup, ToExt, WireCommand, schemas, serve, spawn};
 
 /// A built-in protocol.
 ///
@@ -177,7 +177,9 @@ impl fmt::Display for Rejected {
 impl std::error::Error for Rejected {}
 
 /// What the protocol says about itself (spec §6.5).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Health {
     Running,
@@ -186,7 +188,9 @@ pub enum Health {
 }
 
 /// Which entities a change of availability applies to (spec §6.4).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AvailabilityTarget {
     /// Every entity of this device.

@@ -20,6 +20,17 @@
       "description": "The broker's hostname or IP address, on the local network.\n\nThis extension declares `lan` and nothing else, so the address is checked here, by what\nis written, not by looking it up. A private, loopback, or link-local IP is accepted, as\nis `localhost` or a name under `.local`, `.home.arpa`, `.internal`, `.lan`, or `.home`.\nA bare name such as `broker` is refused: a search domain or `/etc/hosts` can point it at\na public address, and this check does not resolve names. A public address or an internet\nhostname is refused. JSON Schema can't express that, so this check is what enforces it.",
       "type": "string"
     },
+    "max_message_kib": {
+      "description": "The largest message accepted from the broker, in KiB, 10 to 65536. 1024 (1 MiB) when left\nout. A bigger message, such as a camera snapshot, drops the connection: the MQTT library\ncan't skip it. The extension then shows the message's size and retries with growing\npauses.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "default": null,
+      "maximum": 65536,
+      "minimum": 10
+    },
     "password": {
       "anyOf": [
         {

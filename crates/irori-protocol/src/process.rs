@@ -27,8 +27,9 @@ use crate::{
     Rejected, ServiceError, ServiceErrorCode, host,
 };
 
-/// A message from the extension process to the host.
-#[derive(Debug, Serialize, Deserialize)]
+/// A message from the extension process to the host. Its JSON Schema is
+/// `schemas/extension-to-core.schema.json` (`docs/specs/protocols.md` §10).
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromExt {
     DescribeDevice {
@@ -171,8 +172,9 @@ pub enum FromExt {
 /// talks to a core that has it.
 pub type WireCommand = String;
 
-/// A message from the host to the extension process.
-#[derive(Debug, Serialize, Deserialize)]
+/// A message from the host to the extension process. Its JSON Schema is
+/// `schemas/core-to-extension.schema.json` (`docs/specs/protocols.md` §10).
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToExt {
     Hello {
@@ -252,8 +254,17 @@ pub enum ToExt {
     },
 }
 
+/// The JSON Schemas of the two directions of the wire, for `cargo xtask schemas`: what someone
+/// writing an extension in another language checks their messages against.
+pub fn schemas() -> Vec<irori_types::SchemaDoc> {
+    vec![
+        irori_types::SchemaDoc::for_type::<FromExt>("extension-to-core"),
+        irori_types::SchemaDoc::for_type::<ToExt>("core-to-extension"),
+    ]
+}
+
 /// A picture on the wire: its type, and its bytes as base64.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WirePicture {
     pub content_type: String,
     pub data: String,
@@ -285,7 +296,7 @@ impl TryFrom<WirePicture> for Picture {
 }
 
 /// A failed service call on the wire (`docs/specs/protocols.md` §7.3).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WireServiceError {
     pub code: String,
     pub message: String,
@@ -1038,10 +1049,17 @@ impl ExtProcess {
         stdin.flush().await.map_err(|e| e.to_string())
     }
 
+    /// Reads the next message. See [`ExtProcess::recv_on`]: not safe inside `select!`.
     pub async fn recv(&mut self) -> Result<FromExt, String> {
         Self::recv_on(&mut self.stdout).await
     }
 
+    /// Reads the next message from `stdout`.
+    ///
+    /// **Not cancel-safe: never use it as a branch of `select!`.** A message longer than one read
+    /// arrives in pieces; if another branch wins after the first piece, that piece is gone and
+    /// the rest of the line won't parse. Read from a task of its own that sends whole messages
+    /// into a channel, and `select!` on the channel instead, as the host's `Reader` does.
     pub async fn recv_on(stdout: &mut BufReader<ChildStdout>) -> Result<FromExt, String> {
         read_json(stdout).await
     }

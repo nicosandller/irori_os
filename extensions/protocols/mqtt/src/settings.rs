@@ -12,6 +12,10 @@ use std::net::IpAddr;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Deserializer};
 
+/// The largest message accepted, in KiB, when the settings don't say: 1 MiB, the same limit the
+/// Zigbee extension's own broker uses (`irori_ha_discovery::MAX_MESSAGE_BYTES`).
+pub const DEFAULT_MAX_MESSAGE_KIB: u32 = (irori_ha_discovery::MAX_MESSAGE_BYTES / 1024) as u32;
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Settings {
@@ -36,10 +40,35 @@ pub struct Settings {
     /// The topic prefix Home Assistant MQTT Discovery configs are published under.
     #[serde(default = "default_discovery_prefix")]
     pub discovery_prefix: String,
+    /// The largest message accepted from the broker, in KiB, 10 to 65536. 1024 (1 MiB) when left
+    /// out. A bigger message, such as a camera snapshot, drops the connection: the MQTT library
+    /// can't skip it. The extension then shows the message's size and retries with growing
+    /// pauses.
+    #[serde(default, deserialize_with = "max_message_kib")]
+    #[schemars(range(min = 10, max = 65536))]
+    pub max_message_kib: Option<u32>,
     #[serde(default)]
     pub username: Option<Secret>,
     #[serde(default)]
     pub password: Option<Secret>,
+}
+
+impl Settings {
+    /// The largest message accepted, in bytes.
+    pub fn max_message_bytes(&self) -> usize {
+        let kib = self.max_message_kib.unwrap_or(DEFAULT_MAX_MESSAGE_KIB);
+        usize::try_from(kib).map_or(usize::MAX, |kib| kib.saturating_mul(1024))
+    }
+}
+
+fn max_message_kib<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<u32>, D::Error> {
+    let value = Option::<u32>::deserialize(deserializer)?;
+    match value {
+        Some(kib) if !(10..=65536).contains(&kib) => Err(serde::de::Error::custom(
+            "max_message_kib is between 10 and 65536",
+        )),
+        other => Ok(other),
+    }
 }
 
 fn default_port() -> u16 {
@@ -175,6 +204,24 @@ mod tests {
         assert!(!settings.tls);
         assert_eq!(settings.discovery_prefix, "homeassistant");
         assert!(settings.username.is_none());
+        assert_eq!(settings.max_message_kib, None);
+        assert_eq!(settings.max_message_bytes(), 1024 * 1024);
+    }
+
+    #[test]
+    fn the_message_size_limit_can_be_set_within_its_range() {
+        let load = |kib: u32| {
+            serde_json::from_value::<Settings>(
+                serde_json::json!({ "host": "192.168.1.10", "max_message_kib": kib }),
+            )
+        };
+        assert!(load(9).is_err());
+        assert!(load(65537).is_err());
+        assert_eq!(load(10).expect("valid").max_message_bytes(), 10 * 1024);
+        assert_eq!(
+            load(65536).expect("valid").max_message_bytes(),
+            64 * 1024 * 1024
+        );
     }
 
     #[test]

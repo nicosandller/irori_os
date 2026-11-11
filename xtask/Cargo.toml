@@ -11,6 +11,7 @@ license.workspace = true
 irori-types.workspace = true
 irori-rules.workspace = true
 irori-flow-types.workspace = true
+irori-protocol.workspace = true
 irori-protocol-cast.workspace = true
 irori-protocol-matter.workspace = true
 irori-protocol-mqtt.workspace = true
@@ -18,10 +19,15 @@ irori-protocol-switchbot.workspace = true
 irori-protocol-tplink.workspace = true
 irori-protocol-zigbee.workspace = true
 anyhow.workspace = true
+brotli.workspace = true
+flate2.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true

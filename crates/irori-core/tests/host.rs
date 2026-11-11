@@ -1863,6 +1863,195 @@ async fn what_a_stopped_install_left_is_cleared_and_a_stopped_update_is_undone()
     host.shutdown().await;
 }
 
+// --- History hears about a removal without the event bus ------------------------------------
+
+/// Remembers which entities it was told to forget.
+#[derive(Debug, Default)]
+struct Forgets(std::sync::Mutex<Vec<EntityId>>);
+impl irori_core::HistorySource for Forgets {
+    fn changes(
+        &self,
+        _: &EntityId,
+        _: irori_protocol::types::Timestamp,
+    ) -> Vec<irori_protocol::types::EntityState> {
+        Vec::new()
+    }
+
+    fn forget(&self, entity_id: &EntityId) {
+        self.0.lock().expect("not poisoned").push(entity_id.clone());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn removing_a_device_tells_history_directly() {
+    let core = Core::new(Arc::new(SystemClock));
+    let history = Arc::new(Forgets::default());
+    core.use_history(history.clone());
+    let _host = start(&core, builtin::<Lamp>().expect("valid"));
+    eventually("the lamp is in the home", || {
+        core.entity(&lamp_id("lamp")).is_some()
+    })
+    .await;
+    // Nothing listens on the event bus: a history task that fell behind would miss the removal.
+    let device = core.devices()[0].id.clone();
+    core.forget_device(&device)
+        .expect("the lamp can be removed");
+    assert!(core.entity(&lamp_id("lamp")).is_none());
+    assert_eq!(
+        *history.0.lock().expect("not poisoned"),
+        vec![lamp_id("lamp")],
+        "history was told the lamp's entity left, without reading the bus"
+    );
+}
+
+/// A message longer than one read — a camera's picture, a network map — must arrive whole even
+/// when a call lands while it is half read (issue #91). Reading a line isn't safe to interrupt:
+/// before each extension had a reader of its own, the call won the host's `select!`, the half
+/// read so far was thrown away, the rest didn't parse, and the extension was restarted as if it
+/// had failed.
+#[tokio::test]
+async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
+    use irori_protocol::FromExt;
+    use irori_protocol::types::AttributeKey;
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("lamp");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "lamp"
+            name = "Lamp"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/prog" }
+        "#,
+    )
+    .expect("wrote the manifest");
+
+    // What the extension says, written by the same types the host reads it with.
+    let line = |message: &FromExt| serde_json::to_string(message).expect("serializes") + "\n";
+    let head = line(&FromExt::DescribeDevice {
+        id: 1,
+        device: DeviceDescription {
+            unique_id: uid("lamp"),
+            name: Name::try_from("Lamp").expect("valid"),
+            manufacturer: None,
+            model: None,
+            sw_version: None,
+            hw_version: None,
+            serial_number: None,
+            suggested_area: None,
+            via_device_unique_id: None,
+        },
+    }) + &line(&FromExt::DescribeEntity {
+        id: 2,
+        entity: EntityDescription {
+            unique_id: uid("lamp-light"),
+            name: None,
+            device_unique_id: Some(uid("lamp")),
+            suggested_object_id: None,
+            capabilities: Capabilities::Light(LightCapabilities {
+                brightness: true,
+                color_temp_kelvin: None,
+                rgb: false,
+            }),
+            entity_category: None,
+        },
+    });
+    const BLOB: usize = 1_000_000;
+    let mut big = light(true, Some(100), None);
+    big.attributes.insert(
+        AttributeKey::try_from("blob").expect("valid"),
+        serde_json::Value::String("x".repeat(BLOB)),
+    );
+    let big = line(&FromExt::StateReport { report: big });
+    let (first_half, second_half) = big.split_at(big.len() / 2);
+    let dir = packages_dir.path();
+    std::fs::write(dir.join("head.jsonl"), head).expect("wrote");
+    std::fs::write(dir.join("first.part"), first_half).expect("wrote");
+    std::fs::write(dir.join("second.part"), second_half).expect("wrote");
+
+    // Counts its starts, describes the lamp, and sends the first half of the big line. It says
+    // so in a file, then holds the second half back until a call reaches it: the call always
+    // lands while the line is half read. Then it stays up until it's told to stop.
+    let program = package.join("bin/prog");
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh\n\
+             echo started >> '{dir}/starts'\n\
+             read hello\n\
+             cat '{dir}/head.jsonl'\n\
+             cat '{dir}/first.part'\n\
+             touch '{dir}/half'\n\
+             while read line; do case \"$line\" in *'\"service_call\"'*) break;; esac; done\n\
+             cat '{dir}/second.part'\n\
+             while read line; do case \"$line\" in *'\"stop\"'*) exit 0;; esac; done\n",
+            dir = dir.display()
+        ),
+    )
+    .expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+
+    let lamp = lamp_id("lamp");
+    eventually("the lamp is described", || core.entity(&lamp).is_some()).await;
+    // The pipe holds far less than half the line, so the host has read most of the first half.
+    eventually("the first half is sent", || dir.join("half").exists()).await;
+    {
+        let (core, lamp) = (core.clone(), lamp.clone());
+        // Never answered by this extension; only its arrival matters.
+        tokio::spawn(async move {
+            let _ = core
+                .call_service(&lamp, Command::toggle(), user_context())
+                .await;
+        });
+    }
+
+    let blob = AttributeKey::try_from("blob").expect("valid");
+    let arrived = || {
+        core.state(&lamp)
+            .and_then(|state| state.attributes.get(&blob).cloned())
+            .is_some_and(|value| value.as_str().is_some_and(|s| s.len() == BLOB))
+    };
+    let starts = || {
+        std::fs::read_to_string(dir.join("starts"))
+            .expect("read the starts")
+            .lines()
+            .count()
+    };
+    eventually(
+        "the long message arrives, or the extension restarts",
+        || arrived() || starts() > 1,
+    )
+    .await;
+    assert_eq!(
+        starts(),
+        1,
+        "the extension was restarted: {:?}",
+        status(&core, "lamp")
+    );
+    assert!(arrived(), "the long message arrived whole");
+
+    host.shutdown().await;
+}
+
 /// A package whose program is the shell `script`, under `packages_dir/<id>`.
 fn script_package(packages_dir: &std::path::Path, id: &str, script: &str) {
     use std::os::unix::fs::PermissionsExt;
