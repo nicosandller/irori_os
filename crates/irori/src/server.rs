@@ -10640,6 +10640,7 @@ mod tests {
         ("GET", "/api/assistant/turns/{scope}", Filtered),
         ("POST", "/api/assistant/turns/{scope}/stop", Asks),
         ("POST", "/api/assistant/check", Run),
+        ("POST", "/api/assistant/models", Run),
         ("POST", "/api/assistant/pull", Run),
         ("POST", "/api/assistant/forget", Run),
         ("POST", "/api/assistant/install", Run),
