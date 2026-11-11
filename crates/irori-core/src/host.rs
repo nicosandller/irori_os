@@ -2037,6 +2037,10 @@ async fn drive(
     // Live streams running in the extension, by the number this end gave each: where its video
     // goes. A feed whose far end has closed (nobody watches) is told to stop.
     let mut live_feeds: HashMap<u64, irori_protocol::LiveFeed> = HashMap::new();
+    // Once a second, streams nobody watches any more are stopped. Its own pace: a sleep made
+    // afresh each time round would never finish while the extension keeps talking.
+    let mut sweep = tokio::time::interval(Duration::from_secs(1));
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // Talks running in the extension, by the same numbers: where its words go. Their sound
     // comes through `talk_out`, from a task per talk, so the pump never waits on a page.
     let mut talk_lines: HashMap<u64, irori_protocol::TalkLine> = HashMap::new();
@@ -2106,12 +2110,7 @@ async fn drive(
                     return Outcome::Ended(reason);
                 }
             }
-            () = async {
-                if live_feeds.is_empty() {
-                    std::future::pending::<()>().await;
-                }
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            } => {
+            _ = sweep.tick(), if !live_feeds.is_empty() => {
                 let unwatched: Vec<u64> = live_feeds
                     .iter()
                     .filter(|(_, feed)| feed.is_closed())

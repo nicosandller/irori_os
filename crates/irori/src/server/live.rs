@@ -531,6 +531,22 @@ mod tests {
     }
 
     #[test]
+    fn a_camera_page_asks_for_low_or_high_and_says_what_it_plays() {
+        use irori_types::LiveQuality;
+        assert_eq!(asked_quality(None), Ok(LiveQuality::Low));
+        assert_eq!(asked_quality(Some("quality=high")), Ok(LiveQuality::High));
+        assert_eq!(asked_quality(Some("x=1&quality=low")), Ok(LiveQuality::Low));
+        assert!(asked_quality(Some("quality=huge")).is_err());
+        let watching: Watching =
+            serde_json::from_str(r#"{"accepts":["avc1","mp4a"]}"#).expect("what it plays");
+        assert_eq!(watching.accepts, ["avc1", "mp4a"]);
+        assert!(
+            serde_json::from_str::<Watching>(r#"{"accepts":[],"more":1}"#).is_err(),
+            "nothing else"
+        );
+    }
+
+    #[test]
     fn a_state_change_names_the_entity_and_anything_else_is_a_nudge() {
         let whole = irori_core::Reach::Whole;
         let entity_id = EntityId::try_from("light.hall").expect("valid");

@@ -1316,6 +1316,7 @@ impl Core {
         accepts: Vec<String>,
     ) -> Result<mpsc::Receiver<irori_protocol::LiveChunk>, CallActionError> {
         irori_protocol::live::check_accepts(&accepts).map_err(CallActionError::Failed)?;
+        let accepts = irori_protocol::live::known_accepts(accepts);
         let (protocol, unique_id) = {
             let home = read(&self.0.home);
             let entity = home

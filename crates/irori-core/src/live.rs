@@ -27,6 +27,10 @@ pub const LIVE_START_TIMEOUT: Duration = Duration::from_secs(15);
 /// How many viewers can be waiting to join one stream at once.
 const JOINING: usize = 16;
 
+/// How many streams one camera sends at once: each is a session on the camera, and cameras only
+/// allow a few, the vendor's own app included.
+pub const STREAMS_PER_CAMERA: usize = 4;
+
 /// Which stream a viewer wants. Two pages that can play the same codecs share one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct StreamKey {
@@ -88,6 +92,18 @@ impl LiveHub {
                 }
             }
         }
+        let sending = streams
+            .keys()
+            .filter(|running| running.entity == key.entity && **running != key)
+            .count();
+        if sending >= STREAMS_PER_CAMERA {
+            let (feed, chunks) = LiveFeed::channel(1);
+            feed.end(Some(format!(
+                "this camera is already sending {STREAMS_PER_CAMERA} streams, as many as it \
+                 can; try the quality others are watching"
+            )));
+            return (Joined::Running, chunks);
+        }
         let (entry, joins) = mpsc::channel(JOINING);
         streams.insert(key.clone(), entry.clone());
         let (first, chunks) = LiveFeed::channel(LIVE_QUEUE);
@@ -126,8 +142,21 @@ impl LiveHub {
 impl Starting {
     /// The first viewer could not be started: says why, and frees the slot.
     pub fn fail(self, error: String) {
-        self.hub.leave(&self.key, &self.entry);
-        self.first.end(Some(error));
+        let Self {
+            key,
+            first,
+            mut joins,
+            hub,
+            entry,
+        } = self;
+        hub.leave(&key, &entry);
+        drop(entry);
+        // Whoever joined meanwhile hears why too.
+        joins.close();
+        while let Ok(viewer) = joins.try_recv() {
+            viewer.end(Some(error.clone()));
+        }
+        first.end(Some(error));
     }
 
     /// Passes the protocol's chunks to everyone watching until the stream ends, or nobody has
@@ -327,6 +356,64 @@ mod tests {
                 error: Some("the camera didn't start its video in time".into())
             }
         );
+    }
+
+    #[tokio::test]
+    async fn someone_joining_a_stream_that_fails_to_start_hears_why() {
+        let hub = Arc::new(LiveHub::default());
+        let (starting, mut first) = start(&hub);
+        let (Joined::Running, mut second) = hub.join(key()) else {
+            panic!("joins the stream being started");
+        };
+        starting.fail("the camera isn't running".into());
+        let why = LiveChunk::End {
+            error: Some("the camera isn't running".into()),
+        };
+        assert_eq!(first.recv().await, Some(why.clone()));
+        assert_eq!(second.recv().await, Some(why));
+    }
+
+    #[tokio::test]
+    async fn a_camera_sends_only_a_few_streams_at_once() {
+        let hub = Arc::new(LiveHub::default());
+        let entity = EntityId::try_from("camera.driveway").expect("valid");
+        let wanting = |n: usize| {
+            StreamKey::new(
+                entity.clone(),
+                LiveQuality::Low,
+                (0..=n)
+                    .map(|i| ["avc1", "hvc1", "mp4a", "flac", "x"][i].to_owned())
+                    .collect(),
+            )
+        };
+        let mut started = Vec::new();
+        for n in 0..STREAMS_PER_CAMERA {
+            let (Joined::Start(starting), viewer) = hub.join(wanting(n)) else {
+                panic!("stream {n} starts");
+            };
+            started.push((starting, viewer));
+        }
+        let (Joined::Running, mut refused) = hub.join(wanting(STREAMS_PER_CAMERA)) else {
+            panic!("one more doesn't start");
+        };
+        assert!(matches!(
+            refused.recv().await,
+            Some(LiveChunk::End { error: Some(why) }) if why.contains("already sending")
+        ));
+        assert!(
+            matches!(hub.join(wanting(0)).0, Joined::Running),
+            "a stream already running is still shared"
+        );
+        let other = EntityId::try_from("camera.porch").expect("valid");
+        assert!(
+            matches!(
+                hub.join(StreamKey::new(other, LiveQuality::Low, vec!["avc1".into()]))
+                    .0,
+                Joined::Start(_)
+            ),
+            "another camera has its own"
+        );
+        assert_eq!(hub.running(), STREAMS_PER_CAMERA + 1);
     }
 
     #[test]

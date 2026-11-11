@@ -33,6 +33,18 @@ pub const LIVE_QUEUE: usize = 32;
 /// `mp4a`, `flac`). At most this many.
 pub const MAX_ACCEPTS: usize = 16;
 
+/// The codec families a stream can be in. A page's `accepts` is kept to these, so names made up
+/// to look different can't each start a stream of their own.
+pub const CODEC_FAMILIES: [&str; 4] = ["avc1", "hvc1", "mp4a", "flac"];
+
+/// `accepts` with anything that isn't one of [`CODEC_FAMILIES`] left out.
+pub fn known_accepts(accepts: Vec<String>) -> Vec<String> {
+    accepts
+        .into_iter()
+        .filter(|codec| CODEC_FAMILIES.contains(&codec.as_str()))
+        .collect()
+}
+
 /// One piece of a stream.
 #[derive(Clone, PartialEq, Eq)]
 pub enum LiveChunk {
@@ -276,6 +288,19 @@ mod tests {
 
     /// A full queue drops what doesn't fit and everything after it up to the next keyframe, so
     /// what arrives always decodes.
+    #[test]
+    fn only_known_codec_families_are_kept() {
+        assert_eq!(
+            known_accepts(vec![
+                "avc1".into(),
+                "x1".into(),
+                "flac".into(),
+                "AVC1".into()
+            ]),
+            vec!["avc1".to_owned(), "flac".to_owned()]
+        );
+    }
+
     #[tokio::test]
     async fn a_full_feed_skips_to_the_next_keyframe() {
         let (mut feed, mut rx) = LiveFeed::channel(2);

@@ -211,13 +211,15 @@ camera's protocol for a stream.
   the core nor the page knows anything about codecs.
 - **The request says what to send**: one of the camera's `qualities` (`low`, its small stream, or
   `high`, its full size) and `accepts`, the codec families the page can play as MP4 names them
-  (`avc1`, `hvc1`, `mp4a`, `flac`). The protocol sends video the page can play, and sound only in
-  a codec it can; when there's no video it can play, it ends the stream saying so.
+  (`avc1`, `hvc1`, `mp4a`, `flac`; the core leaves out any other name). The protocol sends video
+  the page can play, and sound only in a codec it can; when there's no video it can play, it ends
+  the stream saying so.
 - **One stream for everyone.** The core asks for one stream per camera, quality and `accepts`,
   however many pages watch it. A page that comes later is sent the init segment the protocol
   already sent, and joins at the next keyframe. When the last page leaves, the stream runs on for
   10 seconds, so a page reloading doesn't make the camera start over, and then the core tells the
-  protocol to stop.
+  protocol to stop. A camera sends **at most 4 streams** at once (each is a session on the
+  camera, and cameras allow only a few); a page asking for a fifth is told so.
 - **Video never waits.** Every hop between the camera and the page is a small queue that drops
   what doesn't fit instead of waiting, and then drops everything up to the next keyframe, since a
   decoder shows nothing useful until then anyway. A slow page costs its own frames, never the
