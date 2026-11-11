@@ -132,6 +132,10 @@ impl irori_core::HistorySource for History {
         let entity_id = entity_id.clone();
         off_the_runtime(move || recorder.since(&entity_id, since))
     }
+
+    fn forget(&self, entity_id: &EntityId) {
+        self.recorder.forget(entity_id);
+    }
 }
 
 /// A history read waits on the writer thread. On the multi-thread runtime that wait must not
@@ -215,9 +219,9 @@ fn pressed(entity_id: EntityId, context: irori_types::Context) -> EntityState {
 /// the runtime shutting down. A listener that falls behind skips ahead to now: a missed change
 /// is a gap, which is better than grinding through the backlog. Falling behind never deletes
 /// anything: at startup the home is still filling in, so "not in the home right now" is not
-/// "removed". A removal missed during a lag leaves its rows behind. Retention ages out its
-/// changes and five-minute summaries; its hourly statistics stay until the device is removed or
-/// forgotten again.
+/// "removed". A removal does not depend on this task: the core tells history directly as the
+/// entity leaves (`HistorySource::forget`). The `EntityRemoved` here is a second pass, which
+/// also clears a change for that entity that was still on the bus when it was removed.
 pub async fn record(core: Core, history: History, mut events: broadcast::Receiver<Event>) {
     // Entities whose stored readings have been asked to be converted since Irori started. The
     // recorder remembers for good; this only saves asking it with every reading.
@@ -258,7 +262,7 @@ pub async fn record(core: Core, history: History, mut events: broadcast::Receive
             }) => history.record(entity_id.clone(), pressed(entity_id, context)),
             Ok(_) => {}
             Err(broadcast::error::RecvError::Lagged(missed)) => {
-                tracing::warn!(missed, "history fell behind; {missed} changes not recorded");
+                tracing::warn!(missed, "history fell behind; {missed} events missed");
             }
             Err(broadcast::error::RecvError::Closed) => return,
         }
@@ -416,5 +420,10 @@ mod tests {
         let kept = history.changes(&plug(), at("1970-01-01T00:00:00Z"));
         assert_eq!(kept.len(), 1, "the row from before the lag is still there");
         assert_eq!(kept[0].last_updated, earlier);
+        // The channel kept its last two events; the task carried on and recorded them.
+        let other: EntityId = "switch.other".parse().expect("a valid entity id");
+        let after = history.changes(&other, at("1970-01-01T00:00:00Z"));
+        assert_eq!(after.len(), 2, "the changes after the lag are recorded");
+        assert_eq!(after[0].last_updated, later(earlier, 4));
     }
 }
