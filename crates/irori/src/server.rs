@@ -2379,7 +2379,7 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
                     name: item.name.to_string(),
                     category: item.category,
                     description: item.description,
-                    version: item.version,
+                    version: item.version.to_string(),
                     official: true,
                     full_access: item.full_access,
                     network: item.network,
