@@ -29,16 +29,26 @@
     return window.ManagedMediaSource || window.MediaSource || null;
   }
 
+  function supported(M, type) {
+    try {
+      return M.isTypeSupported(type);
+    } catch (_) {
+      return false;
+    }
+  }
+
+  // `type` as this browser takes it, or null. Safari only knows FLAC by its box's name,
+  // `fLaC`; Chrome and Firefox take `flac`.
+  function playable(M, type) {
+    if (supported(M, type)) return type;
+    const boxed = type.replace(/\bflac\b/, 'fLaC');
+    return boxed !== type && supported(M, boxed) ? boxed : null;
+  }
+
   function accepts() {
     const M = Source();
     if (!M) return [];
-    return PROBES.filter(([, type]) => {
-      try {
-        return M.isTypeSupported(type);
-      } catch (_) {
-        return false;
-      }
-    }).map(([family]) => family);
+    return PROBES.filter(([, type]) => playable(M, type)).map(([family]) => family);
   }
 
   // Plays `path` (e.g. /api/entities/camera.door/live?quality=low) in `video`, and calls
@@ -118,9 +128,10 @@
       trim(KEEP);
     }
 
-    function begin(mime) {
+    function begin(named) {
       const M = Source();
-      if (!M || !M.isTypeSupported(mime)) {
+      const mime = M && playable(M, named);
+      if (!mime) {
         stop("this browser can't play this camera's video");
         return;
       }
@@ -144,7 +155,7 @@
         feed();
       });
       // Whether it has sound, so the page offers to turn it on.
-      const sound = /mp4a|flac/.test(mime);
+      const sound = /mp4a|flac/i.test(mime);
       video.addEventListener(
         'playing',
         () => {
