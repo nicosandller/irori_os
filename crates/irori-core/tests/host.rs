@@ -1863,6 +1863,47 @@ async fn what_a_stopped_install_left_is_cleared_and_a_stopped_update_is_undone()
     host.shutdown().await;
 }
 
+// --- History hears about a removal without the event bus ------------------------------------
+
+/// Remembers which entities it was told to forget.
+#[derive(Debug, Default)]
+struct Forgets(std::sync::Mutex<Vec<EntityId>>);
+impl irori_core::HistorySource for Forgets {
+    fn changes(
+        &self,
+        _: &EntityId,
+        _: irori_protocol::types::Timestamp,
+    ) -> Vec<irori_protocol::types::EntityState> {
+        Vec::new()
+    }
+
+    fn forget(&self, entity_id: &EntityId) {
+        self.0.lock().expect("not poisoned").push(entity_id.clone());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn removing_a_device_tells_history_directly() {
+    let core = Core::new(Arc::new(SystemClock));
+    let history = Arc::new(Forgets::default());
+    core.use_history(history.clone());
+    let _host = start(&core, builtin::<Lamp>().expect("valid"));
+    eventually("the lamp is in the home", || {
+        core.entity(&lamp_id("lamp")).is_some()
+    })
+    .await;
+    // Nothing listens on the event bus: a history task that fell behind would miss the removal.
+    let device = core.devices()[0].id.clone();
+    core.forget_device(&device)
+        .expect("the lamp can be removed");
+    assert!(core.entity(&lamp_id("lamp")).is_none());
+    assert_eq!(
+        *history.0.lock().expect("not poisoned"),
+        vec![lamp_id("lamp")],
+        "history was told the lamp's entity left, without reading the bus"
+    );
+}
+
 /// A message longer than one read — a camera's picture, a network map — must arrive whole even
 /// when a call lands while it is half read (issue #91). Reading a line isn't safe to interrupt:
 /// before each extension had a reader of its own, the call won the host's `select!`, the half
