@@ -10,8 +10,6 @@
 
 /// The most samples one frame holds; a longer packet is split.
 pub const MAX_BLOCK: usize = 4096;
-/// The fewest a frame should hold (only the last frame of a stream may hold fewer).
-const MIN_BLOCK: u16 = 16;
 
 /// Which G.711.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,8 +73,12 @@ impl Encoder {
     /// The MP4 sample entry (`fLaC`, holding `dfLa`) for this stream.
     pub fn sample_entry(&self) -> Vec<u8> {
         let mut streaminfo = Vec::with_capacity(34);
-        streaminfo.extend_from_slice(&MIN_BLOCK.to_be_bytes());
-        streaminfo.extend_from_slice(&u16::try_from(MAX_BLOCK).unwrap_or(u16::MAX).to_be_bytes());
+        // The fewest and most samples a frame holds, both said as the most. A camera's frames
+        // are shorter (160 samples at 8 kHz), and every decoder tried plays them, but Safari
+        // turns the whole stream away when the fewest said is under 256 or so, video and all.
+        let block = u16::try_from(MAX_BLOCK).unwrap_or(u16::MAX).to_be_bytes();
+        streaminfo.extend_from_slice(&block);
+        streaminfo.extend_from_slice(&block);
         // Smallest and largest frame: unknown.
         streaminfo.extend_from_slice(&[0; 6]);
         // 20 bits of rate, 3 of channels - 1, 5 of bits per sample - 1, then 36 of total
@@ -303,6 +305,9 @@ mod tests {
         assert_eq!(packed >> 44, 8_000);
         assert_eq!((packed >> 41) & 0x7, 0, "one channel");
         assert_eq!((packed >> 36) & 0x1f, 15, "16 bits a sample");
+        // Safari turns away a stream whose fewest samples a frame is said to be under 256.
+        let fewest = u16::from_be_bytes(streaminfo[..2].try_into().expect("2"));
+        assert!(fewest >= 256, "Safari plays it: fewest {fewest}");
     }
 
     /// The real decoder agrees, when it's installed: `flac -t` on a file of these frames.
