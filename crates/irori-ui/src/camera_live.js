@@ -24,6 +24,8 @@
   const KEEP = 8;
   // The most fragments waiting to be appended: past this the page can't keep up.
   const MAX_QUEUE = 120;
+  // Two pile-ups closer together than this, in ms, in front of someone: the page can't keep up.
+  const CATCH_UP_EVERY = 15000;
 
   function Source() {
     return window.ManagedMediaSource || window.MediaSource || null;
@@ -61,6 +63,8 @@
     let closed = false;
     let ended = false;
     let timer = null;
+    // When it last started again because the stream piled up.
+    let lastCatchUp = 0;
 
     function say(state, reason) {
       try {
@@ -188,7 +192,19 @@
           return;
         }
         if (queue.length >= MAX_QUEUE) {
-          stop("this page couldn't keep up with the camera");
+          // Safari pauses a video in a window nobody's looking at, and slows the page, without
+          // saying the tab is hidden. The stream piles up meanwhile, so it starts again from
+          // now. Only when that keeps happening in front of someone has the page fallen behind.
+          const now = Date.now();
+          const again = now - lastCatchUp < CATCH_UP_EVERY && document.hasFocus();
+          lastCatchUp = now;
+          if (again) {
+            stop("this page couldn't keep up with the camera");
+          } else {
+            stop(null);
+            reset();
+            open();
+          }
           return;
         }
         queue.push(event.data);

@@ -43,6 +43,40 @@ impl Mounted {
 /// The address of a camera's live video.
 /// Where a camera's SD or HD is remembered, in this browser: a phone on the go may want SD
 /// while the computer at home wants HD.
+/// Turns a new stream's sound on, as it was before. A browser that won't play sound nobody just
+/// asked for pauses the video instead; then it goes back to muted and plays on.
+fn sound_back(video: NodeRef<leptos::html::Video>, muted: RwSignal<bool>) {
+    let Some(element) = video.get_untracked() else {
+        return;
+    };
+    let element: JsValue = element.into();
+    let mute = |element: &JsValue, on: bool| {
+        let _ = Reflect::set(
+            element,
+            &JsValue::from_str("muted"),
+            &JsValue::from_bool(on),
+        );
+    };
+    mute(&element, false);
+    leptos::task::spawn_local(async move {
+        gloo_timers::future::sleep(std::time::Duration::from_millis(250)).await;
+        let paused = Reflect::get(&element, &JsValue::from_str("paused"))
+            .ok()
+            .and_then(|paused| paused.as_bool())
+            .unwrap_or(false);
+        if paused {
+            mute(&element, true);
+            let _ = muted.try_set(true);
+            if let Some(play) = Reflect::get(&element, &JsValue::from_str("play"))
+                .ok()
+                .and_then(|play| play.dyn_into::<Function>().ok())
+            {
+                let _ = play.call0(&element);
+            }
+        }
+    });
+}
+
 fn quality_key(id: &EntityId) -> String {
     format!("irori.camera.quality.{id}")
 }
@@ -224,13 +258,19 @@ pub fn CameraLive(
             return;
         };
         standing.set(Standing::Starting);
+        // The sound stays as it was (on or off) through SD/HD and coming back to the tab; the
+        // player starts every stream muted, and it's turned on again once it plays.
         sound.set(false);
-        muted.set(true);
         let on_state =
             Closure::<dyn Fn(String, String)>::new(move |state: String, reason: String| {
                 let next = match state.as_str() {
                     "playing" => {
-                        let _ = sound.try_set(reason == "sound");
+                        let has_sound = reason == "sound";
+                        let _ = sound.try_set(has_sound);
+                        let hushed = talking.is_some_and(|talking| talking.get_untracked());
+                        if has_sound && muted.try_get_untracked() == Some(false) && !hushed {
+                            sound_back(video, muted);
+                        }
                         Standing::Playing
                     }
                     "paused" => Standing::Paused,
