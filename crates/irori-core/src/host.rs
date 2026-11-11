@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 use irori_types::{
     EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, PackagePath, ProtocolId,
 };
-use tokio::io::BufReader;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle};
@@ -1787,12 +1787,13 @@ struct Reader {
 
 impl Reader {
     fn spawn(mut stdout: BufReader<ChildStdout>) -> Self {
-        // The same room a program that dials in gets. Full, the reader waits, the pipe fills,
-        // and the extension waits on its next line: the pace it had before.
-        let (tx, messages) = mpsc::channel(64);
+        // Room for one message while the next is read. Full, the reader waits, the pipe fills,
+        // and the extension waits on its next line, so a fast extension can't pile whole
+        // messages up in the host's memory.
+        let (tx, messages) = mpsc::channel(1);
         let task = tokio::spawn(async move {
             loop {
-                let message = ExtProcess::recv_on(&mut stdout).await;
+                let message = read_message(&mut stdout).await;
                 let failed = message.is_err();
                 // Its first failure is its last word: whatever follows can't be trusted.
                 if tx.send(message).await.is_err() || failed {
@@ -1808,6 +1809,19 @@ impl Reader {
             .recv()
             .await
             .unwrap_or_else(|| Err("the extension stopped talking".to_owned()))
+    }
+}
+
+/// What the reader says when the extension's stdout ends.
+const OUTPUT_CLOSED: &str = "the extension closed its output";
+
+/// Reads one line of an extension's stdout as a message, in the host's words when it fails.
+async fn read_message(stdout: &mut BufReader<ChildStdout>) -> Result<FromExt, String> {
+    let mut line = String::new();
+    match stdout.read_line(&mut line).await {
+        Ok(0) => Err(OUTPUT_CLOSED.to_owned()),
+        Ok(_) => serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}")),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -1990,7 +2004,13 @@ async fn drive(
                     Some(child) => exit_reason(child.wait().await),
                     None => std::future::pending().await,
                 }
-            } => return Outcome::Ended(reason),
+            } => {
+                last_messages(
+                    &mut link.incoming, core, extension, protocol, kinds, engine,
+                    &mut pending_calls, &mut pending_actions,
+                ).await;
+                return Outcome::Ended(reason);
+            }
             () = settings_changed(settings, extension, started_with) => {
                 break Outcome::Reconfigured;
             }
@@ -2042,7 +2062,7 @@ async fn drive(
                             Err(reason) => return Outcome::Ended(reason),
                         }
                     }
-                    Err(reason) => return Outcome::Ended(reason),
+                    Err(reason) => return Outcome::Ended(exited_instead(child, reason).await),
                 }
             }
         }
@@ -2054,11 +2074,17 @@ async fn drive(
     let _ = link.outgoing.deliver(ToExt::Stop).await;
     let grace = tokio::time::sleep(timing.stop_grace);
     tokio::pin!(grace);
+    // Once the output fails it stays failed: asking again would answer at once, every time.
+    let mut talking = true;
     loop {
         tokio::select! {
             biased;
             status = child.wait() => {
                 let _ = status;
+                last_messages(
+                    &mut link.incoming, core, extension, protocol, kinds, engine,
+                    &mut pending_calls, &mut pending_actions,
+                ).await;
                 return why;
             }
             () = &mut grace => {
@@ -2066,9 +2092,12 @@ async fn drive(
                 let _ = child.start_kill();
                 return why;
             }
-            msg = link.incoming.take() => {
-                if let Ok(from) = msg
-                    && let Some(from) = engine.handle(core, extension, from)
+            msg = link.incoming.take(), if talking => {
+                let Ok(from) = msg else {
+                    talking = false;
+                    continue;
+                };
+                if let Some(from) = engine.handle(core, extension, from)
                     && let Ok(Some(reply)) = apply_from_ext(
                         core, extension, protocol, kinds, from, &mut pending_calls,
                         &mut pending_actions,
@@ -2078,6 +2107,54 @@ async fn drive(
                 }
             }
         }
+    }
+}
+
+/// How long an exited extension's last messages get to arrive.
+const LAST_MESSAGES: Duration = Duration::from_secs(1);
+
+/// Applies what an extension said just before it exited: a final report or its health would
+/// otherwise be dropped with the reader. Its replies have no one to go to.
+#[allow(clippy::too_many_arguments)]
+async fn last_messages(
+    incoming: &mut Incoming,
+    core: &Core,
+    extension: &ExtensionId,
+    protocol: &ProtocolId,
+    kinds: &[EntityKind],
+    engine: &mut EngineLink,
+    pending_calls: &mut HashMap<u64, IncomingCall>,
+    pending_actions: &mut HashMap<u64, IncomingAction>,
+) {
+    let until = Instant::now() + LAST_MESSAGES;
+    while let Ok(Ok(from)) = tokio::time::timeout_at(until, incoming.take()).await {
+        if let Some(from) = engine.handle(core, extension, from) {
+            let _ = apply_from_ext(
+                core,
+                extension,
+                protocol,
+                kinds,
+                from,
+                pending_calls,
+                pending_actions,
+            )
+            .await;
+        }
+    }
+}
+
+/// How long to wait, once an extension's output fails, for the process to say why it ended.
+const EXIT_AFTER_OUTPUT: Duration = Duration::from_millis(200);
+
+/// An extension's output usually ends because the process did: its exit says more than the
+/// closed pipe. Any other failure, such as a line that didn't parse, is the reason as it is.
+async fn exited_instead(child: &mut Option<Child>, reason: String) -> String {
+    let Some(child) = child.as_mut().filter(|_| reason == OUTPUT_CLOSED) else {
+        return reason;
+    };
+    match tokio::time::timeout(EXIT_AFTER_OUTPUT, child.wait()).await {
+        Ok(status) => exit_reason(status),
+        Err(_) => reason,
     }
 }
 

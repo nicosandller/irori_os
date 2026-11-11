@@ -1938,8 +1938,9 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
     std::fs::write(dir.join("first.part"), first_half).expect("wrote");
     std::fs::write(dir.join("second.part"), second_half).expect("wrote");
 
-    // Counts its starts, describes the lamp, then sends the big line in two halves with a pause
-    // between them, and stays up until it's told to stop.
+    // Counts its starts, describes the lamp, and sends the first half of the big line. It says
+    // so in a file, then holds the second half back until a call reaches it: the call always
+    // lands while the line is half read. Then it stays up until it's told to stop.
     let program = package.join("bin/prog");
     std::fs::write(
         &program,
@@ -1949,7 +1950,8 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
              read hello\n\
              cat '{dir}/head.jsonl'\n\
              cat '{dir}/first.part'\n\
-             sleep 2\n\
+             touch '{dir}/half'\n\
+             while read line; do case \"$line\" in *'\"service_call\"'*) break;; esac; done\n\
              cat '{dir}/second.part'\n\
              while read line; do case \"$line\" in *'\"stop\"'*) exit 0;; esac; done\n",
             dir = dir.display()
@@ -1969,9 +1971,9 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
 
     let lamp = lamp_id("lamp");
     eventually("the lamp is described", || core.entity(&lamp).is_some()).await;
-    // The first half is in by now and the second is two seconds away: calls land in the middle.
-    tokio::time::sleep(Duration::from_millis(500)).await;
-    for _ in 0..3 {
+    // The pipe holds far less than half the line, so the host has read most of the first half.
+    eventually("the first half is sent", || dir.join("half").exists()).await;
+    {
         let (core, lamp) = (core.clone(), lamp.clone());
         // Never answered by this extension; only its arrival matters.
         tokio::spawn(async move {
@@ -1979,23 +1981,32 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
                 .call_service(&lamp, Command::toggle(), user_context())
                 .await;
         });
-        tokio::time::sleep(Duration::from_millis(200)).await;
     }
 
     let blob = AttributeKey::try_from("blob").expect("valid");
-    eventually("the long message arrives whole", || {
+    let arrived = || {
         core.state(&lamp)
             .and_then(|state| state.attributes.get(&blob).cloned())
             .is_some_and(|value| value.as_str().is_some_and(|s| s.len() == BLOB))
-    })
+    };
+    let starts = || {
+        std::fs::read_to_string(dir.join("starts"))
+            .expect("read the starts")
+            .lines()
+            .count()
+    };
+    eventually(
+        "the long message arrives, or the extension restarts",
+        || arrived() || starts() > 1,
+    )
     .await;
-    let starts = std::fs::read_to_string(dir.join("starts")).expect("read the starts");
     assert_eq!(
-        starts.lines().count(),
+        starts(),
         1,
         "the extension was restarted: {:?}",
         status(&core, "lamp")
     );
+    assert!(arrived(), "the long message arrived whole");
 
     host.shutdown().await;
 }
