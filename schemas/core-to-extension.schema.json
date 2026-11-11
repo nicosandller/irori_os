@@ -1,0 +1,5513 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ToExt",
+  "description": "A message from the host to the extension process. Its JSON Schema is\n`schemas/core-to-extension.schema.json` (`docs/specs/protocols.md` §10).",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "settings": true,
+        "type": {
+          "type": "string",
+          "const": "hello"
+        }
+      },
+      "required": [
+        "type",
+        "settings"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "reply"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "loaded"
+        },
+        "value": {
+          "default": null
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "call": {
+          "$ref": "#/$defs/ServiceCall"
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "service_call"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "call"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string"
+        },
+        "fields": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "stop": {
+          "description": "End the action's open window early instead of starting it.",
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "const": "action_call"
+        },
+        "way": {
+          "description": "Which of the action's ways the person picked, and what they typed into its fields.\nAbsent for a plain button, so older extensions read the message unchanged.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "action_id"
+      ]
+    },
+    {
+      "description": "Take a device off the protocol's network. Only sent to a protocol whose manifest says\n`unpairs`. Answered with `action_result`.",
+      "type": "object",
+      "properties": {
+        "force": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "unpair_device"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "unique_id"
+      ]
+    },
+    {
+      "description": "A page wants a picture from one of its cameras. Answered with `picture_result`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "camera_picture"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "unique_id"
+      ]
+    },
+    {
+      "description": "A page wants to watch one of its cameras live. Answered with `live_init`, then\n`live_fragment`s, until `live_end` or `live_stop`.",
+      "type": "object",
+      "properties": {
+        "accepts": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "quality": {
+          "$ref": "#/$defs/LiveQuality"
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "live_start"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "unique_id",
+        "quality"
+      ]
+    },
+    {
+      "description": "Nobody watches that stream any more: stop it. Nothing more is read for it.",
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "live_stop"
+        }
+      },
+      "required": [
+        "type",
+        "stream"
+      ]
+    },
+    {
+      "description": "A page wants to talk through one of its cameras (`docs/specs/protocols.md` §5.4).\nAnswered with `talk_ready`, then `talk_end` when it's over.",
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_start"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "unique_id"
+      ]
+    },
+    {
+      "description": "Some of a talk's sound: 16-bit little-endian PCM at 8 kHz, one channel, base64.",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_audio"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ]
+    },
+    {
+      "description": "The page has stopped talking: close the camera's speaker. Nothing more is read for it.",
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_stop"
+        }
+      },
+      "required": [
+        "type",
+        "stream"
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "stop"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The answer to an engine operation. `error` starts with a code for `call_service`\n(`unavailable: …`).",
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "answer"
+        },
+        "value": true
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "description": "A state changed somewhere in the home (after `subscribe { states: true }`).",
+      "type": "object",
+      "properties": {
+        "entity_id": {
+          "$ref": "#/$defs/EntityId"
+        },
+        "new_state": {
+          "$ref": "#/$defs/EntityState"
+        },
+        "old_state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EntityState"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "state_changed"
+        }
+      },
+      "required": [
+        "type",
+        "entity_id",
+        "new_state"
+      ]
+    },
+    {
+      "description": "An entity or device was added, changed or removed (after `subscribe { registry: true }`).\nAsk again with `get_registry`.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "registry_changed"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
+      "description": "The extension's page asked it something.",
+      "type": "object",
+      "properties": {
+        "caller": {
+          "description": "Who asked, put there by the core. Left out for the home's own.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Caller"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "default": null
+        },
+        "type": {
+          "type": "string",
+          "const": "app_request"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "method"
+      ]
+    }
+  ],
+  "$defs": {
+    "AlarmStatus": {
+      "description": "What a panel is doing. Home Assistant's `AlarmControlPanelState`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "disarmed",
+            "armed_home",
+            "armed_away",
+            "armed_night",
+            "armed_vacation",
+            "armed_custom_bypass",
+            "disarming"
+          ]
+        },
+        {
+          "description": "Something tripped it, and it's counting down before it sounds.",
+          "type": "string",
+          "const": "pending"
+        },
+        {
+          "description": "Told to arm, and counting down so people can leave.",
+          "type": "string",
+          "const": "arming"
+        },
+        {
+          "description": "Going off.",
+          "type": "string",
+          "const": "triggered"
+        }
+      ]
+    },
+    "AttributeKey": {
+      "description": "Format of a slug (attribute key): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "Availability": {
+      "type": "string",
+      "enum": [
+        "available",
+        "unavailable"
+      ]
+    },
+    "Caller": {
+      "description": "Who is asking on the engine's page, as the core saw it (`docs/specs/access.md` §4.1). The\ncore puts this on every question; the page cannot.",
+      "type": "object",
+      "properties": {
+        "owner": {
+          "description": "Whether they may change how the home is set up. A regular user's flows are theirs alone.",
+          "type": "boolean"
+        },
+        "user": {
+          "description": "The person signed in. Absent while Irori is open and nobody has been set up.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UserId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "owner"
+      ]
+    },
+    "CameraGoToPreset": {
+      "description": "Data for `camera.go_to_preset`.",
+      "type": "object",
+      "properties": {
+        "preset": {
+          "description": "One of its `presets`' ids.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset"
+      ]
+    },
+    "CameraMove": {
+      "description": "Data for `camera.move`: how fast to turn each way, from -1 (left, down, out) to 1 (right, up,\nin). It moves for `seconds` and then stops on its own, so a lost `camera.stop` never leaves it\nturning.",
+      "type": "object",
+      "properties": {
+        "pan": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        },
+        "seconds": {
+          "description": "How long to keep moving: 0.5 seconds unless told.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 10.0,
+          "minimum": 0.1
+        },
+        "tilt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        },
+        "zoom": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "CameraPreset": {
+      "description": "A position saved on a camera, which it can be sent back to.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "What the camera calls it, for `camera.go_to_preset`.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "name": {
+          "description": "What a person called it.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
+      ]
+    },
+    "CameraStatus": {
+      "description": "What a camera is doing. Home Assistant's camera states, with `off` for one turned off.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "idle",
+            "recording"
+          ]
+        },
+        {
+          "description": "Someone is watching it live.",
+          "type": "string",
+          "const": "streaming"
+        }
+      ]
+    },
+    "CivilDate": {
+      "type": "string",
+      "examples": [
+        "2026-10-14"
+      ],
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
+    },
+    "ClimateFanMode": {
+      "description": "Data for `climate.set_fan_mode`.",
+      "type": "object",
+      "properties": {
+        "fan_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fan_mode"
+      ]
+    },
+    "ClimateHvacMode": {
+      "description": "Data for `climate.set_hvac_mode`.",
+      "type": "object",
+      "properties": {
+        "hvac_mode": {
+          "$ref": "#/$defs/HvacMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "hvac_mode"
+      ]
+    },
+    "ClimatePresetMode": {
+      "description": "Data for `climate.set_preset_mode`.",
+      "type": "object",
+      "properties": {
+        "preset_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset_mode"
+      ]
+    },
+    "ClimateSetTemperature": {
+      "description": "Data for `climate.set_temperature`: a single target, or a range, in °C; optionally the mode\nto switch to at the same time.",
+      "type": "object",
+      "properties": {
+        "hvac_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HvacMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_temp_high": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "target_temp_low": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "temperature": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ClimateSwingMode": {
+      "description": "Data for `climate.set_swing_mode`.",
+      "type": "object",
+      "properties": {
+        "swing_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "swing_mode"
+      ]
+    },
+    "ClockTime": {
+      "type": "string",
+      "examples": [
+        "06:45:00"
+      ],
+      "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$"
+    },
+    "ColorMode": {
+      "type": "string",
+      "enum": [
+        "color_temp",
+        "rgb"
+      ]
+    },
+    "Context": {
+      "description": "Why something happened. Every state change and service call carries one, so any change can\nbe traced back to its cause (`docs/specs/entities.md` §6).",
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ContextId"
+        },
+        "origin": {
+          "$ref": "#/$defs/Origin"
+        },
+        "parent_id": {
+          "description": "The context that caused this one, e.g. the motion event that triggered a rule run.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ContextId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "origin"
+      ]
+    },
+    "ContextId": {
+      "description": "A ULID: 26 characters, uppercase Crockford base32.",
+      "type": "string",
+      "pattern": "^[0-7][0-9A-HJKMNP-TV-Z]{25}$"
+    },
+    "DateSetValue": {
+      "description": "Data for `date.set_value`. Home Assistant's field name.",
+      "type": "object",
+      "properties": {
+        "date": {
+          "$ref": "#/$defs/CivilDate"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "date"
+      ]
+    },
+    "DatetimeSetValue": {
+      "description": "Data for `datetime.set_value`.",
+      "type": "object",
+      "properties": {
+        "datetime": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "datetime"
+      ]
+    },
+    "EntityId": {
+      "description": "An entity id: `<kind>.<object_id>`, e.g. `light.hallway`. The object id uses lowercase letters a-z and digits in words separated by single `_`, 1-64 characters.",
+      "type": "string",
+      "anyOf": [
+        {
+          "maxLength": 70,
+          "pattern": "^light\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^switch\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 78,
+          "pattern": "^binary_sensor\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^number\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^select\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^text\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^button\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^event\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^cover\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^lock\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 68,
+          "pattern": "^fan\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^valve\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^siren\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 72,
+          "pattern": "^climate\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^water_heater\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^humidifier\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 77,
+          "pattern": "^media_player\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^update\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 84,
+          "pattern": "^alarm_control_panel\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^date\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^time\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^datetime\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^vacuum\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 75,
+          "pattern": "^lawn_mower\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^scene\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 79,
+          "pattern": "^device_tracker\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^timer\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^schedule\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^camera\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        }
+      ]
+    },
+    "EntityState": {
+      "description": "The current state of one entity.",
+      "type": "object",
+      "properties": {
+        "attributes": {
+          "description": "Free-form extras from the protocol, e.g. Zigbee link quality. Readable by rules but not type-checked.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/AttributeKey"
+          }
+        },
+        "availability": {
+          "description": "Whether the device is reachable. When `unavailable`, `state` keeps the last known value.",
+          "$ref": "#/$defs/Availability"
+        },
+        "context": {
+          "description": "What caused the last change.",
+          "$ref": "#/$defs/Context"
+        },
+        "entity_id": {
+          "description": "Its kind must match `state.kind`.",
+          "$ref": "#/$defs/EntityId"
+        },
+        "last_changed": {
+          "description": "When `state` or `availability` last changed.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "last_reported": {
+          "description": "When the protocol last reported anything, even an identical value.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "last_updated": {
+          "description": "When `state`, `availability`, or `attributes` last changed.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "state": {
+          "description": "The typed value, or `null` if the entity has never reported one (\"unknown\"). Must be\npresent even when `null`, so a producer can't mark an entity unknown by forgetting it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/State"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^light\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "light"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^switch\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "switch"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^sensor\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "sensor"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^binary_sensor\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "binary_sensor"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^number\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "number"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^select\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "select"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^text\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "text"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^button\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "button"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^event\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "event"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^cover\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "cover"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^lock\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "lock"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^fan\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "fan"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^valve\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "valve"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^siren\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "siren"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^climate\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "climate"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^water_heater\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "water_heater"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^humidifier\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "humidifier"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^media_player\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "media_player"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^update\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "update"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^alarm_control_panel\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "alarm_control_panel"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^date\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "date"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^time\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "time"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^datetime\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "datetime"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^vacuum\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "vacuum"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^lawn_mower\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "lawn_mower"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^scene\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "scene"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^device_tracker\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "device_tracker"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^timer\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "timer"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^schedule\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "schedule"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "entity_id": {
+                "pattern": "^camera\\."
+              }
+            },
+            "required": [
+              "entity_id"
+            ]
+          },
+          "then": {
+            "properties": {
+              "state": {
+                "properties": {
+                  "kind": {
+                    "const": "camera"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ],
+      "required": [
+        "entity_id",
+        "availability",
+        "last_changed",
+        "last_updated",
+        "last_reported",
+        "context",
+        "state"
+      ]
+    },
+    "ExtensionId": {
+      "description": "Format of a slug (extension id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "FanDirection": {
+      "type": "string",
+      "enum": [
+        "forward",
+        "reverse"
+      ]
+    },
+    "FanOscillate": {
+      "description": "Data for `fan.oscillate`.",
+      "type": "object",
+      "properties": {
+        "oscillating": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "oscillating"
+      ]
+    },
+    "FanPercentage": {
+      "description": "Data for `fan.set_percentage`. 0 turns it off.",
+      "type": "object",
+      "properties": {
+        "percentage": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "percentage"
+      ]
+    },
+    "FanPresetMode": {
+      "description": "Data for `fan.set_preset_mode`.",
+      "type": "object",
+      "properties": {
+        "preset_mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset_mode"
+      ]
+    },
+    "FanSetDirection": {
+      "description": "Data for `fan.set_direction`.",
+      "type": "object",
+      "properties": {
+        "direction": {
+          "$ref": "#/$defs/FanDirection"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "direction"
+      ]
+    },
+    "FanTurnOn": {
+      "description": "Data for `fan.turn_on`: optionally, the speed or mode to come on in.",
+      "type": "object",
+      "properties": {
+        "percentage": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 1
+        },
+        "preset_mode": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HumidifierAction": {
+      "description": "What it's doing right now.",
+      "type": "string",
+      "enum": [
+        "off",
+        "humidifying",
+        "drying",
+        "idle"
+      ]
+    },
+    "HumidifierMode": {
+      "description": "Data for `humidifier.set_mode`.",
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mode"
+      ]
+    },
+    "HvacAction": {
+      "description": "What it's doing right now, which can differ from its mode: set to heat, but idle because\nthe room is warm enough.",
+      "type": "string",
+      "enum": [
+        "off",
+        "preheating",
+        "heating",
+        "cooling",
+        "drying",
+        "idle",
+        "fan",
+        "defrosting"
+      ]
+    },
+    "HvacMode": {
+      "description": "What it's set to do: Home Assistant's modes.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "off",
+            "heat",
+            "cool",
+            "dry",
+            "fan_only"
+          ]
+        },
+        {
+          "description": "Heats or cools to stay within a range.",
+          "type": "string",
+          "const": "heat_cool"
+        },
+        {
+          "description": "Follows its own schedule or logic.",
+          "type": "string",
+          "const": "auto"
+        }
+      ]
+    },
+    "LightTurnOn": {
+      "description": "Data for `light.turn_on`. Everything is optional: with no data, the light turns on at its\nlast brightness and color.",
+      "type": "object",
+      "properties": {
+        "brightness": {
+          "description": "1-255. Needs a dimmable light.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint8",
+          "maximum": 255,
+          "minimum": 1
+        },
+        "color_temp_kelvin": {
+          "description": "Needs color temperature support, within the light's range. Not together with `rgb`.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 20000,
+          "minimum": 1000
+        },
+        "rgb": {
+          "description": "Needs RGB support. Not together with `color_temp_kelvin`.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "integer",
+            "format": "uint8",
+            "maximum": 255,
+            "minimum": 0
+          },
+          "maxItems": 3,
+          "minItems": 3
+        }
+      },
+      "additionalProperties": false,
+      "not": {
+        "properties": {
+          "color_temp_kelvin": {
+            "type": "integer"
+          },
+          "rgb": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "color_temp_kelvin",
+          "rgb"
+        ]
+      }
+    },
+    "LiveQuality": {
+      "description": "How sharp live video is. A camera usually sends the same picture twice: a small stream that's\ncheap to watch, and its full size.",
+      "oneOf": [
+        {
+          "description": "Its small stream: quick to start, light on the network. Home Assistant's \"fluent\".",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Its full size. Home Assistant's \"clear\".",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
+    "LockCode": {
+      "description": "Data for `lock.lock`, `lock.unlock` and `lock.open`: the code, for a lock that needs one.\n\nIts `Debug` never shows the code, so a call that ends up in a log or an error message doesn't\ntake the code with it.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "LockStatus": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "locked",
+            "unlocked",
+            "locking",
+            "unlocking",
+            "open",
+            "opening"
+          ]
+        },
+        {
+          "description": "Stuck: it tried and couldn't finish.",
+          "type": "string",
+          "const": "jammed"
+        }
+      ]
+    },
+    "MediaSeek": {
+      "description": "Data for `media_player.media_seek`. `position` is seconds from the start.",
+      "type": "object",
+      "properties": {
+        "position": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ]
+    },
+    "MowerActivity": {
+      "description": "What a mower is doing. Home Assistant's `LawnMowerActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "mowing",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "NumberSetValue": {
+      "description": "Data for `number.set_value`.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "description": "Within the number's `min` and `max`.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ]
+    },
+    "NumberStep": {
+      "description": "Data for `number.increment` and `number.decrement`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "How much to add or take away. Left out, the number's own `step`.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "OpenState": {
+      "description": "Where something that opens and closes is: a cover's or a valve's.",
+      "type": "string",
+      "enum": [
+        "open",
+        "opening",
+        "closed",
+        "closing"
+      ]
+    },
+    "Origin": {
+      "description": "Where a context started.",
+      "oneOf": [
+        {
+          "description": "Reported by a device through a protocol, e.g. someone pressed a physical switch.",
+          "type": "object",
+          "properties": {
+            "protocol": {
+              "$ref": "#/$defs/ProtocolId"
+            },
+            "type": {
+              "type": "string",
+              "const": "device"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "protocol"
+          ]
+        },
+        {
+          "description": "A person, through the UI or CLI.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user"
+            },
+            "user_id": {
+              "$ref": "#/$defs/UserId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "user_id"
+          ]
+        },
+        {
+          "description": "An automation engine run (any installed engine, not a core scheduler).",
+          "type": "object",
+          "properties": {
+            "extension": {
+              "$ref": "#/$defs/ExtensionId"
+            },
+            "run_id": {
+              "$ref": "#/$defs/ContextId"
+            },
+            "type": {
+              "type": "string",
+              "const": "automation"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "extension",
+            "run_id"
+          ]
+        },
+        {
+          "description": "An API client authenticated with an access token.",
+          "type": "object",
+          "properties": {
+            "token_id": {
+              "$ref": "#/$defs/TokenId"
+            },
+            "type": {
+              "type": "string",
+              "const": "api"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "token_id"
+          ]
+        },
+        {
+          "description": "Irori itself, e.g. restoring state at startup or reloading config.",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "system"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "type"
+          ]
+        }
+      ]
+    },
+    "PlayMedia": {
+      "description": "Data for `media_player.play_media`.",
+      "type": "object",
+      "properties": {
+        "album": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "artist": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "content_id": {
+          "type": "string",
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "content_type": {
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "image_url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 2048,
+          "minLength": 1
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "content_type",
+        "content_id"
+      ]
+    },
+    "Playback": {
+      "description": "What it's doing. The primary value automations compare.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "playing",
+            "paused",
+            "buffering"
+          ]
+        },
+        {
+          "description": "Switched off, or the TV isn't showing this source.",
+          "type": "string",
+          "const": "off"
+        },
+        {
+          "description": "On, with nothing playing. A backdrop counts as this.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "The TV is in standby. Only when the device says so.",
+          "type": "string",
+          "const": "standby"
+        }
+      ]
+    },
+    "ProtocolId": {
+      "description": "Format of a slug (protocol id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "SelectOption": {
+      "description": "Data for `select.select_option`.",
+      "type": "object",
+      "properties": {
+        "option": {
+          "description": "One of the select's options.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "option"
+      ]
+    },
+    "SensorValue": {
+      "description": "A sensor reading: a finite number or text, matching the sensor's `value_type`.",
+      "anyOf": [
+        {
+          "type": "number",
+          "maximum": 1.7976931348623157e+308,
+          "minimum": -1.7976931348623157e+308
+        },
+        {
+          "type": "string"
+        }
+      ]
+    },
+    "ServiceCall": {
+      "description": "The core asking a protocol to act on one of its entities.",
+      "type": "object",
+      "properties": {
+        "context": {
+          "$ref": "#/$defs/Context"
+        },
+        "data": {
+          "description": "The service's parameters. Leave out when there are none.",
+          "type": "object"
+        },
+        "service": {
+          "$ref": "#/$defs/ServiceName"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        }
+      },
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "light.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LightTurnOn"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "light.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "switch.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "switch.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "number.set_value"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/NumberSetValue"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "number.increment"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/NumberStep"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "number.decrement"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/NumberStep"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "select.select_option"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/SelectOption"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "text.set_value"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/TextSetValue"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "button.press"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "cover.open"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "cover.close"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "cover.stop"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "cover.set_position"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/SetPosition"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "cover.set_tilt"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/SetTilt"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "lock.lock"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "lock.unlock"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "lock.open"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "fan.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/FanTurnOn"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "fan.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "fan.set_percentage"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/FanPercentage"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "fan.oscillate"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/FanOscillate"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "fan.set_direction"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/FanSetDirection"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "fan.set_preset_mode"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/FanPresetMode"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "valve.open"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "valve.close"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "valve.stop"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "valve.set_position"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/SetPosition"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "siren.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/SirenTurnOn"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "siren.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.set_hvac_mode"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ClimateHvacMode"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.set_temperature"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ClimateSetTemperature"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.set_humidity"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/SetHumidity"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.set_fan_mode"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ClimateFanMode"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.set_swing_mode"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ClimateSwingMode"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.set_preset_mode"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/ClimatePresetMode"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "climate.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "water_heater.set_temperature"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/WaterHeaterSetTemperature"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "water_heater.set_operation_mode"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/WaterHeaterOperationMode"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "water_heater.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "water_heater.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "humidifier.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "humidifier.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "humidifier.set_humidity"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/SetHumidity"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "humidifier.set_mode"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/HumidifierMode"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.volume_set"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/VolumeSet"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.volume_mute"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/VolumeMute"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.media_play"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.media_pause"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.media_play_pause"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.media_stop"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.media_seek"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/MediaSeek"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.media_next_track"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.media_previous_track"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "media_player.play_media"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/PlayMedia"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "update.install"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "update.check"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "update.skip"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "update.clear_skipped"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "alarm_control_panel.alarm_arm_home"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "alarm_control_panel.alarm_arm_away"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "alarm_control_panel.alarm_arm_night"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "alarm_control_panel.alarm_arm_vacation"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "alarm_control_panel.alarm_arm_custom_bypass"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "alarm_control_panel.alarm_disarm"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "alarm_control_panel.alarm_trigger"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/LockCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "date.set_value"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/DateSetValue"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "time.set_value"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/TimeSetValue"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "datetime.set_value"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/DatetimeSetValue"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "vacuum.start"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "vacuum.pause"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "vacuum.stop"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "vacuum.return_to_base"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "vacuum.locate"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "vacuum.clean_spot"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "vacuum.set_fan_speed"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/VacuumFanSpeed"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "lawn_mower.start_mowing"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "lawn_mower.pause"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "lawn_mower.dock"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "scene.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.turn_on"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.turn_off"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.enable_motion_detection"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.disable_motion_detection"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.move"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/CameraMove"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.stop"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.go_to_preset"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/CameraGoToPreset"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "timer.start"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/TimerStart"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "timer.pause"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "timer.cancel"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "timer.finish"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "timer.change"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/TimerChange"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        }
+      ],
+      "required": [
+        "service",
+        "unique_id",
+        "context"
+      ]
+    },
+    "ServiceName": {
+      "description": "The name of a standard service: `<kind>.<action>`.",
+      "type": "string",
+      "enum": [
+        "light.turn_on",
+        "light.turn_off",
+        "switch.turn_on",
+        "switch.turn_off",
+        "number.set_value",
+        "number.increment",
+        "number.decrement",
+        "select.select_option",
+        "text.set_value",
+        "button.press",
+        "cover.open",
+        "cover.close",
+        "cover.stop",
+        "cover.set_position",
+        "cover.set_tilt",
+        "lock.lock",
+        "lock.unlock",
+        "lock.open",
+        "fan.turn_on",
+        "fan.turn_off",
+        "fan.set_percentage",
+        "fan.oscillate",
+        "fan.set_direction",
+        "fan.set_preset_mode",
+        "valve.open",
+        "valve.close",
+        "valve.stop",
+        "valve.set_position",
+        "siren.turn_on",
+        "siren.turn_off",
+        "climate.set_hvac_mode",
+        "climate.set_temperature",
+        "climate.set_humidity",
+        "climate.set_fan_mode",
+        "climate.set_swing_mode",
+        "climate.set_preset_mode",
+        "climate.turn_on",
+        "climate.turn_off",
+        "water_heater.set_temperature",
+        "water_heater.set_operation_mode",
+        "water_heater.turn_on",
+        "water_heater.turn_off",
+        "humidifier.turn_on",
+        "humidifier.turn_off",
+        "humidifier.set_humidity",
+        "humidifier.set_mode",
+        "media_player.turn_on",
+        "media_player.turn_off",
+        "media_player.volume_set",
+        "media_player.volume_mute",
+        "media_player.media_play",
+        "media_player.media_pause",
+        "media_player.media_play_pause",
+        "media_player.media_stop",
+        "media_player.media_seek",
+        "media_player.media_next_track",
+        "media_player.media_previous_track",
+        "media_player.play_media",
+        "update.install",
+        "update.check",
+        "update.skip",
+        "update.clear_skipped",
+        "alarm_control_panel.alarm_arm_home",
+        "alarm_control_panel.alarm_arm_away",
+        "alarm_control_panel.alarm_arm_night",
+        "alarm_control_panel.alarm_arm_vacation",
+        "alarm_control_panel.alarm_arm_custom_bypass",
+        "alarm_control_panel.alarm_disarm",
+        "alarm_control_panel.alarm_trigger",
+        "date.set_value",
+        "time.set_value",
+        "datetime.set_value",
+        "vacuum.start",
+        "vacuum.pause",
+        "vacuum.stop",
+        "vacuum.return_to_base",
+        "vacuum.locate",
+        "vacuum.clean_spot",
+        "vacuum.set_fan_speed",
+        "lawn_mower.start_mowing",
+        "lawn_mower.pause",
+        "lawn_mower.dock",
+        "scene.turn_on",
+        "camera.turn_on",
+        "camera.turn_off",
+        "camera.enable_motion_detection",
+        "camera.disable_motion_detection",
+        "camera.move",
+        "camera.stop",
+        "camera.go_to_preset",
+        "timer.start",
+        "timer.pause",
+        "timer.cancel",
+        "timer.finish",
+        "timer.change"
+      ]
+    },
+    "SetHumidity": {
+      "description": "Data for `climate.set_humidity` and `humidifier.set_humidity`, in %.",
+      "type": "object",
+      "properties": {
+        "humidity": {
+          "type": "number",
+          "format": "double",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "humidity"
+      ]
+    },
+    "SetPosition": {
+      "description": "Data for `cover.set_position` and `valve.set_position`.",
+      "type": "object",
+      "properties": {
+        "position": {
+          "description": "0 (closed) to 100 (open).",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "position"
+      ]
+    },
+    "SetTilt": {
+      "description": "Data for `cover.set_tilt`.",
+      "type": "object",
+      "properties": {
+        "tilt": {
+          "description": "0 (closed) to 100 (open).",
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "tilt"
+      ]
+    },
+    "SirenTurnOn": {
+      "description": "Data for `siren.turn_on`: all optional.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "How long to sound, in seconds.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 86400,
+          "minimum": 1
+        },
+        "tone": {
+          "description": "One of its `tones`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "volume_level": {
+          "description": "0.0 (silent) to 1.0 (loudest).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": 0.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "State": {
+      "description": "A typed value, tagged with the entity kind it belongs to.",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "brightness": {
+              "description": "1-255, when the light supports dimming. Kept while off: the level it returns to.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 255,
+              "minimum": 1
+            },
+            "color_mode": {
+              "description": "Which color setting is active, when the light supports more than one.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ColorMode"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "color_temp_kelvin": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint16",
+              "maximum": 20000,
+              "minimum": 1000
+            },
+            "kind": {
+              "type": "string",
+              "const": "light"
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "rgb": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "integer",
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0
+              },
+              "maxItems": 3,
+              "minItems": 3
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "switch"
+            },
+            "on": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "sensor"
+            },
+            "value": {
+              "$ref": "#/$defs/SensorValue"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "binary_sensor"
+            },
+            "on": {
+              "description": "`true` means detected/open/wet/etc., depending on the device class.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "number"
+            },
+            "value": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "select"
+            },
+            "option": {
+              "description": "The choice it's on: one of its options.",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "option"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "text"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event_type": {
+              "description": "What happened last: one of its `event_types`.",
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "event"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "event_type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "cover"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            },
+            "tilt": {
+              "description": "0 (closed) to 100 (open), for one whose slats tilt.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "lock"
+            },
+            "state": {
+              "$ref": "#/$defs/LockStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "direction": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/FanDirection"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "fan"
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "oscillating": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "percentage": {
+              "description": "Its speed, 1-100, when it has speeds. Kept while off: the speed it comes back on at.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "preset_mode": {
+              "description": "One of its `preset_modes`, when it's in one.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "valve"
+            },
+            "position": {
+              "description": "0 (closed) to 100 (open), when it can say.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            },
+            "state": {
+              "$ref": "#/$defs/OpenState"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "siren"
+            },
+            "on": {
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "current_humidity": {
+              "description": "In %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "current_temperature": {
+              "description": "The room's temperature, as it measures it, in °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "fan_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "hvac_action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HvacAction"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "hvac_mode": {
+              "$ref": "#/$defs/HvacMode"
+            },
+            "kind": {
+              "type": "string",
+              "const": "climate"
+            },
+            "preset_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "swing_mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "target_humidity": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temp_high": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temp_low": {
+              "description": "In °C, for one that takes a range.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "target_temperature": {
+              "description": "In °C, for one that takes a single target.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "hvac_mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "current_temperature": {
+              "description": "The water's temperature, in °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "water_heater"
+            },
+            "operation_mode": {
+              "$ref": "#/$defs/WaterHeaterMode"
+            },
+            "target_temperature": {
+              "description": "In °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operation_mode"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/HumidifierAction"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "current_humidity": {
+              "description": "The room's humidity, as it measures it, in %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "humidifier"
+            },
+            "mode": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "on": {
+              "type": "boolean"
+            },
+            "target_humidity": {
+              "description": "In %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "album": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "app": {
+              "description": "The app that's showing, when it says.",
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "artist": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "content_type": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "duration": {
+              "description": "How long the current media is, in seconds.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "kind": {
+              "type": "string",
+              "const": "media_player"
+            },
+            "muted": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "position": {
+              "description": "Where playback is, in seconds, when it can seek.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "state": {
+              "description": "What it's doing. Its typed value, for rules (`text()`).",
+              "$ref": "#/$defs/Playback"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 255,
+              "minLength": 1
+            },
+            "volume": {
+              "description": "0–100, when volume can be set.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint8",
+              "maximum": 100,
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "available": {
+              "description": "A newer version than the installed one is there to install, and it isn't the skipped one.",
+              "type": "boolean"
+            },
+            "in_progress": {
+              "description": "An install is running.",
+              "type": "boolean",
+              "default": false
+            },
+            "installed_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "update"
+            },
+            "last_error": {
+              "description": "Why the last install didn't finish: the protocol's reason when it has one, otherwise the\ncore's. The next install clears it.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "latest_version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "progress": {
+              "description": "How far the install has got, in %, from a device that says.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 100.0,
+              "minimum": 0.0
+            },
+            "release_summary": {
+              "description": "A few words on what the latest version changes.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "release_url": {
+              "description": "Where the full release notes are.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "skipped_version": {
+              "description": "The version someone chose to pass over. The core sets it; a protocol's is ignored.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "description": "What the software is called, when that isn't the device's name.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "available"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "alarm_control_panel"
+            },
+            "state": {
+              "$ref": "#/$defs/AlarmStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "date"
+            },
+            "value": {
+              "$ref": "#/$defs/CivilDate"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "time"
+            },
+            "value": {
+              "$ref": "#/$defs/ClockTime"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "datetime"
+            },
+            "value": {
+              "$ref": "#/$defs/Timestamp"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/VacuumActivity"
+            },
+            "fan_speed": {
+              "description": "One of its `fan_speeds` (checked by the core).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "vacuum"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "$ref": "#/$defs/MowerActivity"
+            },
+            "kind": {
+              "type": "string",
+              "const": "lawn_mower"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "activity"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "accuracy": {
+              "description": "How far off the position may be, in metres.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "home": {
+              "description": "At home.",
+              "type": "boolean"
+            },
+            "kind": {
+              "type": "string",
+              "const": "device_tracker"
+            },
+            "latitude": {
+              "description": "Degrees north, -90 to 90.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 90.0,
+              "minimum": -90.0
+            },
+            "longitude": {
+              "description": "Degrees east, -180 to 180.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 180.0,
+              "minimum": -180.0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "home"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "duration": {
+              "description": "How long it runs when started without being told, in seconds.",
+              "type": "number",
+              "format": "double",
+              "minimum": 0.0
+            },
+            "finishes_at": {
+              "description": "When it runs out. While it's active, and only then.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "timer"
+            },
+            "remaining": {
+              "description": "Seconds left. While it's paused, and only then.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "state": {
+              "$ref": "#/$defs/TimerStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state",
+            "duration"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "schedule"
+            },
+            "next_change": {
+              "description": "When it next turns on or off. Absent for a schedule that never changes (an empty week).",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Timestamp"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "on": {
+              "description": "Within one of its times now.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "camera"
+            },
+            "motion_detection": {
+              "description": "Whether it's watching for motion, for one with `motion_detection`.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "presets": {
+              "description": "The positions saved on it, for one with `presets`. In the camera's own order.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/CameraPreset"
+              },
+              "maxItems": 256
+            },
+            "state": {
+              "$ref": "#/$defs/CameraStatus"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "state"
+          ]
+        }
+      ]
+    },
+    "TextSetValue": {
+      "description": "Data for `text.set_value`.",
+      "type": "object",
+      "properties": {
+        "value": {
+          "description": "Within the text's `min_length` and `max_length`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "value"
+      ]
+    },
+    "TimeSetValue": {
+      "description": "Data for `time.set_value`.",
+      "type": "object",
+      "properties": {
+        "time": {
+          "$ref": "#/$defs/ClockTime"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "time"
+      ]
+    },
+    "TimerChange": {
+      "description": "Data for `timer.change`.",
+      "type": "object",
+      "properties": {
+        "by": {
+          "description": "Seconds to add to a running timer, or to take away when negative.",
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "by"
+      ]
+    },
+    "TimerStart": {
+      "description": "Data for `timer.start`.",
+      "type": "object",
+      "properties": {
+        "duration": {
+          "description": "How long to run for, in seconds. Left out, its own `duration`, or what was left when it\nwas paused.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "exclusiveMinimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "TimerStatus": {
+      "oneOf": [
+        {
+          "description": "Not counting: never started, run out, or cancelled.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "Counting down.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "Stopped part of the way, with time left.",
+          "type": "string",
+          "const": "paused"
+        }
+      ]
+    },
+    "Timestamp": {
+      "description": "RFC 3339 timestamp with an offset, e.g. 2026-09-15T22:04:31.120Z. Uppercase T and Z, seconds 00-59 (no leap seconds), at most 9 fractional digits, offset -23:59 to +23:59. Serialized in UTC.",
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    },
+    "TokenId": {
+      "description": "Format of a slug (token id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "UniqueId": {
+      "description": "Stable id assigned by the protocol (e.g. a Zigbee IEEE address). Unique within the protocol.",
+      "type": "string",
+      "maxLength": 255,
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+    },
+    "UserId": {
+      "description": "Format of a slug (user id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "VacuumActivity": {
+      "description": "What a vacuum is doing. Home Assistant's `VacuumActivity`.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "cleaning",
+            "docked",
+            "paused"
+          ]
+        },
+        {
+          "description": "Off its dock and doing nothing.",
+          "type": "string",
+          "const": "idle"
+        },
+        {
+          "description": "On its way back to the dock.",
+          "type": "string",
+          "const": "returning"
+        },
+        {
+          "description": "Stuck, or something is wrong with it.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "VacuumFanSpeed": {
+      "description": "Data for `vacuum.set_fan_speed`.",
+      "type": "object",
+      "properties": {
+        "fan_speed": {
+          "description": "One of the vacuum's `fan_speeds`.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "fan_speed"
+      ]
+    },
+    "VolumeMute": {
+      "description": "Data for `media_player.volume_mute`.",
+      "type": "object",
+      "properties": {
+        "mute": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "mute"
+      ]
+    },
+    "VolumeSet": {
+      "description": "Data for `media_player.volume_set`.",
+      "type": "object",
+      "properties": {
+        "volume": {
+          "type": "integer",
+          "format": "uint8",
+          "maximum": 100,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "volume"
+      ]
+    },
+    "WaterHeaterMode": {
+      "description": "Home Assistant's operation modes.",
+      "type": "string",
+      "enum": [
+        "off",
+        "eco",
+        "electric",
+        "gas",
+        "heat_pump",
+        "high_demand",
+        "performance"
+      ]
+    },
+    "WaterHeaterOperationMode": {
+      "description": "Data for `water_heater.set_operation_mode`.",
+      "type": "object",
+      "properties": {
+        "operation_mode": {
+          "$ref": "#/$defs/WaterHeaterMode"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "operation_mode"
+      ]
+    },
+    "WaterHeaterSetTemperature": {
+      "description": "Data for `water_heater.set_temperature`, in °C; optionally the mode to switch to with it.",
+      "type": "object",
+      "properties": {
+        "operation_mode": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaterHeaterMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "temperature": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "temperature"
+      ]
+    }
+  }
+}

@@ -73,7 +73,7 @@ impl Place {
 
 /// Who is asking on the engine's page, as the core saw it (`docs/specs/access.md` §4.1). The
 /// core puts this on every question; the page cannot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Caller {
     /// The person signed in. Absent while Irori is open and nobody has been set up.
     #[serde(default, skip_serializing_if = "Option::is_none")]

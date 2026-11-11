@@ -1,0 +1,9 @@
+{"from": "core", "message": {"type": "hello", "settings": {"host": "192.168.1.20"}}}
+{"from": "extension", "message": {"type": "set_health", "health": "running"}}
+{"from": "extension", "message": {"type": "describe_device", "id": 1, "device": {"unique_id": "lamp", "name": "Desk lamp", "manufacturer": "Acme"}}}
+{"from": "core", "message": {"type": "reply", "id": 1}}
+{"from": "extension", "message": {"type": "describe_entity", "id": 2, "entity": {"unique_id": "lamp-light", "device_unique_id": "lamp", "capabilities": {"kind": "light", "brightness": true}}}}
+{"from": "core", "message": {"type": "reply", "id": 2}}
+{"from": "extension", "message": {"type": "state_report", "report": {"unique_id": "lamp-light", "state": {"kind": "light", "on": true, "brightness": 128}}}}
+{"from": "extension", "message": {"type": "set_health", "health": {"degraded": "1 of 3 lamps unreachable"}}}
+{"from": "core", "message": {"type": "stop"}}

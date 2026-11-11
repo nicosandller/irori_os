@@ -77,10 +77,17 @@ pub const PICTURE_TIMEOUT: Duration = Duration::from_secs(5);
 pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Where the recent history of entity states comes from, for engines that ask for it
-/// (`history:read`). The binary keeps it; the core only passes it on.
+/// (`history:read`). The binary keeps it; the core passes it on, and tells it when an entity
+/// leaves the home.
 pub trait HistorySource: Send + Sync + fmt::Debug {
     /// This entity's states since `since`, oldest first.
     fn changes(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState>;
+
+    /// Deletes what is kept for an entity that has left the home. The core calls it as the
+    /// entity is removed, before the removal goes out as an event, so the deletion does not
+    /// depend on a listener keeping up with the event bus. Called from wherever the home
+    /// changes, so it must not block.
+    fn forget(&self, entity_id: &EntityId);
 }
 
 /// A question from an extension's page to its engine, on its way to the engine's process.
@@ -1478,6 +1485,14 @@ impl Core {
                     .heard(entity_id, update, tokio::time::Instant::now());
                 if let Some(protocol) = ended {
                     self.install_over(&protocol, entity_id);
+                }
+            }
+            // History is told directly: a listener that falls behind the bus would miss the
+            // event, and the entity's rows would outlive it.
+            if let Event::EntityRemoved { entity_id } = &event {
+                let history = read(&self.0.history).clone();
+                if let Some(history) = history {
+                    history.forget(entity_id);
                 }
             }
             // No listeners is fine.
