@@ -509,8 +509,17 @@ async fn shutdown_signal(restart: Arc<Notify>) {
 
     // The terminal closing. Extensions run in process groups of their own, so the hang-up reaches
     // Irori alone, and Irori has to stop them: dying of it would leave them all running.
+    //
+    // Only when Irori reads from a terminal. `nohup irori` asks to outlive the terminal: nohup
+    // ignores the hang-up and points stdin away from the terminal, and listening for the signal
+    // would undo the ignoring. Under systemd or Docker there's no terminal to close.
+    #[cfg(unix)]
+    let on_terminal = std::io::IsTerminal::is_terminal(&std::io::stdin());
     #[cfg(unix)]
     let hangup = async {
+        if !on_terminal {
+            std::future::pending::<()>().await;
+        }
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
             Ok(mut signal) => {
                 signal.recv().await;
