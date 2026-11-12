@@ -887,6 +887,53 @@ pub struct ExtProcess {
     pub child: Child,
     pub stdin: ChildStdin,
     pub stdout: BufReader<ChildStdout>,
+    /// The extension and everything it starts (issue #101).
+    pub group: ProcessGroup,
+}
+
+/// The process group an extension runs in, together with every program it starts: Zigbee2MQTT,
+/// the Matter server, a shell's children (issue #101).
+///
+/// Killing only the extension leaves those running, and they keep what they hold, a USB dongle
+/// or a port, so the restarted extension can't open it. Killing the group takes them too. So
+/// does dropping this, whatever path the extension's end takes.
+///
+/// The group keeps its id after the extension itself has exited and been reaped, for as long as
+/// anything is left in it, and an id isn't handed out again while a group still has it. So
+/// killing the group of an extension that crashed reaches what it left behind. Once the group is
+/// empty its id is free for anyone, so the group is killed once only: the first kill forgets it,
+/// and dropping it after that does nothing.
+#[derive(Debug)]
+pub struct ProcessGroup {
+    #[cfg(unix)]
+    id: Option<rustix::process::Pid>,
+}
+
+impl ProcessGroup {
+    /// The group `child` leads: it was started in a group of its own ([`spawn`]).
+    fn led_by(child: &Child) -> Self {
+        Self {
+            #[cfg(unix)]
+            id: child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .and_then(rustix::process::Pid::from_raw),
+        }
+    }
+
+    /// Kills everything left in the group, the first time only. Nothing left is not an error.
+    pub fn kill(&mut self) {
+        #[cfg(unix)]
+        if let Some(id) = self.id.take() {
+            let _ = rustix::process::kill_process_group(id, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 /// Runs `command`, and tries again when the kernel says the program file is still busy.
@@ -959,6 +1006,10 @@ pub fn spawn(
         // to the person looking at the extension's card.
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // A group of its own, so what it starts can be stopped with it ([`ProcessGroup`]). It also
+    // means Ctrl-C in a terminal reaches Irori alone, which stops its extensions in order.
+    #[cfg(unix)]
+    child_command.process_group(0);
     let mut child = spawn_child(&mut child_command)
         .map_err(|e| format!("couldn't start {}: {e}", command.display()))?;
     let stdin = child
@@ -973,11 +1024,13 @@ pub fn spawn(
         .stderr
         .take()
         .ok_or_else(|| "child stderr missing".to_owned())?;
+    let group = ProcessGroup::led_by(&child);
     Ok((
         ExtProcess {
             child,
             stdin,
             stdout: BufReader::new(stdout),
+            group,
         },
         stderr,
     ))
