@@ -2563,6 +2563,9 @@
     .modal { width: 100%; max-width: 34rem; max-height: 100%; display: flex;
              flex-direction: column; background: var(--card); border: 1px solid var(--line);
              border-radius: .6rem; box-shadow: 0 1.5rem 3rem rgba(28, 23, 20, .25); }
+    /* The window takes the focus as it opens (modal.rs), so Tab starts inside it; it is not
+       itself a thing to act on, and draws no ring. */
+    .modal:focus { outline: none; }
     .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
                   padding: .9rem 1.25rem; border-bottom: 1px solid var(--line); }
     .modal-head h2 { margin: 0; font-size: 1.05rem; }
