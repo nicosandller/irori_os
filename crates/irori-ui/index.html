@@ -172,6 +172,8 @@
                               scale var(--dur-base) var(--ease-spring); }
     .sidebar a.mark:hover .mark-spark { rotate: 90deg; scale: 1.15; }
     .mark-ember { transform-box: fill-box; transform-origin: center; }
+    /* Each letter is a box of its own, for the catching below: never broken across lines. */
+    .mark-letters { white-space: nowrap; }
     .mark-letters span { display: inline-block; }
     /* A model has just become ready: the name catches, letter by letter from the left, like
        fire along a fuse, while the ember in the mark flares. Then it burns back down to the
@@ -260,20 +262,32 @@
     .folded .sidebar .settings-link { justify-content: center; padding: .5rem 0; }
 
     /* A phone has no room beside the page: the sidebar becomes a bar along the top, and folding
-       means nothing there. */
+       means nothing there. Nor is there room for every name in a row: the bar is icons, and
+       only the page being read is spelled out (the rest keep their names for screen readers and
+       in their titles). With more pages than fit, the row of them scrolls sideways. */
     @media (max-width: 720px) {
       .shell, .shell.folded { grid-template-columns: 1fr; }
       .sidebar { position: static; height: auto; flex-direction: row; align-items: center;
                  padding: .5rem .75rem; border-right: none; border-bottom: 1px solid var(--line); }
-      .sidebar-top { margin: 0; }
-      .sidebar nav { flex-direction: row; }
-      .sidebar nav a { padding: .4rem .5rem; border-left: none; }
+      .sidebar-top { margin: 0; flex: none; }
+      .sidebar nav { flex: 1; min-width: 0; flex-direction: row; overflow-x: auto;
+                     scrollbar-width: none; }
+      .sidebar nav::-webkit-scrollbar { display: none; }
+      .sidebar nav a, .sidebar .settings-link { flex: none; gap: .45rem; padding: .4rem .5rem;
+                                                border-left: none; }
       .sidebar > .glide { display: none; }
       .fold { display: none; }
-      .sidebar-bottom { flex-direction: row; align-items: center; margin: 0 0 0 auto; gap: .25rem; }
-      .sidebar .live { padding: 0; }
+      .sidebar-bottom { flex: none; flex-direction: row; align-items: center; margin: 0;
+                        gap: .25rem; }
+      .sidebar .live { padding: 0 .25rem; }
       .folded .sidebar .label { position: static; width: auto; height: auto; clip: auto; }
-      .folded .mark-spark { position: static; width: .8rem; height: .8rem; margin-left: -.3rem; }
+      .sidebar .mark-letters, .sidebar .live .label,
+      .sidebar nav a:not([aria-current="page"]) .label,
+      .sidebar .settings-link:not([aria-current="page"]) .label {
+          position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+          white-space: nowrap; }
+      .sidebar .mark-spark { position: absolute; top: -.05rem; right: -.05rem; width: .7rem;
+                             height: .7rem; margin: 0; }
       .folded .sidebar-top { flex-direction: row; }
       main { padding: 1.25rem 1rem 3rem; }
     }
@@ -401,6 +415,12 @@
     .entity-line.offline .reading.on { color: var(--muted); }
     .entity-block > .drawer { background: var(--bg); }
     @media (max-width: 720px) {
+      /* A group's name keeps its line, and how it stands goes under it, level with the name:
+         side by side, a long name was squeezed onto three lines. */
+      .grouped .fold-toggle { flex-wrap: wrap; row-gap: 0; }
+      .grouped .fold-title { flex: 1; }
+      .grouped .fold-state { flex-basis: 100%; padding-left: 1.5rem; }
+      .grouped .fold-toggle:has(> .chevron + :not(.fold-title)) .fold-state { padding-left: 3.35rem; }
       .entity-list .line { grid-template-columns: 1fr; row-gap: .3rem; padding-left: 2.6rem; }
       .entity-line .of-device { display: none; }
       .entity-line .control { justify-content: flex-start; }
@@ -502,9 +522,10 @@
     .ext-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
                 gap: 1rem; }
     /* Every card the same height, whatever its extension has to say: two lines of what it's
-       for, and the rest behind "Show more". */
+       for, and the rest behind "Show more". A name too long for one line makes its card, and
+       the row it's in, a line taller, rather than pushing the button out through the bottom. */
     .ext-card { position: relative; display: flex; flex-direction: column; gap: .45rem;
-                height: 14.75rem; padding: 1rem 1.1rem; border: 1px solid var(--line);
+                min-height: 14.75rem; padding: 1rem 1.1rem; border: 1px solid var(--line);
                 border-radius: .6rem; background: var(--card);
                 transition: border-color var(--dur-fast), translate var(--dur-base) var(--ease-out); }
     .ext-card:hover { border-color: var(--muted); translate: 0 -2px; }
@@ -1527,7 +1548,7 @@
     .meter { border-bottom: 1px solid var(--line); }
     .meter:last-child { border-bottom: none; }
     .meter-head { display: grid; align-items: center; gap: .75rem; width: 100%;
-                  grid-template-columns: 1.15rem 6rem 2.6rem minmax(4rem, 1fr) minmax(0, max-content) auto;
+                  grid-template-columns: 1.15rem 6rem 2.6rem minmax(4rem, 1fr) 8.75rem auto;
                   padding: .6rem .8rem; font: inherit; color: var(--fg); text-align: left;
                   background: transparent; border: none; cursor: pointer;
                   transition: background-color var(--dur-fast); }
@@ -1545,8 +1566,10 @@
                   transition: scale var(--dur-expressive) var(--ease-emphasized),
                               background-color var(--dur-base); }
     .meter-bar.high .meter-fill { background: var(--error); }
+    /* The same width on every meter, so the bars are one length and can be read against each
+       other: 73% must not come out longer than 77%. */
     .meter-words { color: var(--muted); font: .72rem var(--mono); white-space: nowrap;
-                   overflow: hidden; text-overflow: ellipsis; }
+                   overflow: hidden; text-overflow: ellipsis; text-align: right; }
     .meter.open .unroll-mark { rotate: 225deg; margin-top: .25rem; }
     .meter-more { display: grid; gap: .75rem; padding: .75rem .8rem .9rem 2.7rem; }
     .volumes { display: grid; gap: .45rem; margin: 0; padding: 0; list-style: none; }
