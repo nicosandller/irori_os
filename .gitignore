@@ -29,6 +29,8 @@ opencode.json
 # target dir; the page's trunk output is packed into the extension (`cargo xtask ui`).
 /extensions/automations/app/target
 /extensions/automations/app/dist
+/extensions/protocols/tesla/app/target
+/extensions/protocols/tesla/app/dist
 /crates/irori-ui-kit/target
 # State of `dev/native` (its own data and config, kept apart from ./data and ./config).
 /dev/.native

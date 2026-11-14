@@ -4,6 +4,7 @@ target
 **/target
 crates/irori-ui/dist
 extensions/automations/app/dist
+extensions/protocols/tesla/app/dist
 # The image builds the pages itself and copies them in. A UI built on the host
 # must not be the one the binary embeds.
 crates/irori/ui/*

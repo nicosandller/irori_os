@@ -76,6 +76,7 @@ COPY crates/irori-node-runtime crates/irori-node-runtime
 COPY extensions/protocols/cast extensions/protocols/cast
 COPY extensions/protocols/matter extensions/protocols/matter
 COPY extensions/protocols/switchbot extensions/protocols/switchbot
+COPY extensions/protocols/tesla extensions/protocols/tesla
 COPY extensions/protocols/mqtt extensions/protocols/mqtt
 COPY extensions/protocols/zigbee extensions/protocols/zigbee
 COPY crates/irori-ui crates/irori-ui
@@ -117,13 +118,14 @@ RUN for dir in \
     done
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/target \
-    mkdir -p /ui-out/embedded /ui-out/automations \
+    mkdir -p /ui-out/embedded /ui-out/automations /ui-out/tesla \
     && if [ "$FEATURES" != "--no-default-features" ]; then \
          cargo xtask ui \
          && cp -a crates/irori/ui/. /ui-out/embedded/ \
-         && cp -a extensions/automations/app/dist/. /ui-out/automations/ ; \
+         && cp -a extensions/automations/app/dist/. /ui-out/automations/ \
+         && cp -a extensions/protocols/tesla/app/dist/. /ui-out/tesla/ ; \
        else \
-         touch /ui-out/embedded/.gitkeep /ui-out/automations/.gitkeep ; \
+         touch /ui-out/embedded/.gitkeep /ui-out/automations/.gitkeep /ui-out/tesla/.gitkeep ; \
        fi
 
 FROM wasmtools AS build
@@ -143,6 +145,7 @@ COPY . .
 # The host's crates/irori/ui is dockerignored. These are the pages from the ui stage.
 COPY --from=ui /ui-out/embedded/ crates/irori/ui/
 COPY --from=ui /ui-out/automations/ extensions/automations/app/dist/
+COPY --from=ui /ui-out/tesla/ extensions/protocols/tesla/app/dist/
 # Barebones is irori without the ui feature and without extension binaries. The
 # catalog the smoke test reads is compiled into the binary from official.toml.
 # The lab emulator is its own workspace and is not part of a plain or barebones image.
@@ -159,10 +162,10 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
            -p irori \
            -p irori-protocol-demo -p irori-protocol-esphome -p irori-protocol-cast \
            -p irori-protocol-mqtt -p irori-protocol-zigbee -p irori-protocol-matter \
-           -p irori-protocol-switchbot -p irori-engine-automations \
+           -p irori-protocol-switchbot -p irori-protocol-tesla -p irori-engine-automations \
          && cp /target/release/irori /irori \
          && mkdir -p /official/demo/bin /official/esphome/bin /official/cast/bin /official/mqtt/bin \
-           /official/zigbee/bin /official/matter/bin /official/switchbot/bin /official/automations/bin \
+           /official/zigbee/bin /official/matter/bin /official/switchbot/bin /official/tesla/bin /official/automations/bin \
          && cp extensions/demo/irori-extension.toml extensions/demo/icon.svg /official/demo/ \
          && cp /target/release/irori-ext-demo /official/demo/bin/ \
          && cp extensions/protocols/esphome/irori-extension.toml extensions/protocols/esphome/icon.svg /official/esphome/ \
@@ -180,6 +183,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
          && cp extensions/protocols/switchbot/irori-extension.toml extensions/protocols/switchbot/config.schema.json \
               extensions/protocols/switchbot/icon.svg /official/switchbot/ \
          && cp /target/release/irori-ext-switchbot /official/switchbot/bin/ \
+         && cp extensions/protocols/tesla/irori-extension.toml extensions/protocols/tesla/config.schema.json \
+              extensions/protocols/tesla/icon.svg /official/tesla/ \
+         && cp /target/release/irori-ext-tesla /official/tesla/bin/ \
+         && if [ -f extensions/protocols/tesla/app/dist/index.html ]; then \
+              cp -r extensions/protocols/tesla/app/dist /official/tesla/app ; \
+            fi \
          && cp extensions/automations/irori-extension.toml extensions/automations/icon.svg /official/automations/ \
          && cp /target/release/irori-ext-automations /official/automations/bin/ \
          && if [ -f extensions/automations/app/dist/index.html ]; then \
