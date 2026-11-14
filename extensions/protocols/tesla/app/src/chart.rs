@@ -172,7 +172,7 @@ fn columns(
     let tip_format = format.clone();
 
     view! {
-        <div class="chart" role="img"
+        <div class="chart" role="group"
             aria-label=format!("Each day's spend in {}; the table view lists the figures.", time::month_name(&name))>
             <div class="grid" aria-hidden="true">
                 {lines.iter().rev().map(|value| view! {
