@@ -3936,6 +3936,28 @@
       "description": "Something a protocol found but can't use yet, because it needs a person first: a device\nthat wants an encryption key, one that has to be paired, an account that has to be signed in\nto. See `docs/specs/protocols.md` §6.6.\n\nNot a device in the registry. It has no entities and nothing is known about it beyond what\nit announced, so putting it there would show a device that can't do anything. It's listed on\nits extension instead, where the UI can offer to fix it.",
       "type": "object",
       "properties": {
+        "copy": {
+          "description": "Text to put somewhere else, shown with a Copy button: a public key a vendor wants on the\nperson's own website, say.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitingCopy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "link": {
+          "description": "A page to open for the step, if the person has to do it somewhere else: signing in to a\nvendor's account, adding a key to a car in its app.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WaitingLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "name": {
           "description": "What it calls itself, for recognising it.",
           "$ref": "#/$defs/Name"
@@ -3965,6 +3987,43 @@
         "unique_id",
         "name",
         "reason"
+      ]
+    },
+    "WaitingCopy": {
+      "description": "Text a waiting step asks the person to put somewhere else.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "What it is, e.g. \"Public key\".",
+          "type": "string"
+        },
+        "text": {
+          "description": "At most [`MAX_WAITING_COPY`] bytes.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "text"
+      ]
+    },
+    "WaitingLink": {
+      "description": "A page a waiting step sends the person to. Always `https`; the UI opens it in a new tab.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "What the link says, e.g. \"Sign in to Tesla\".",
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "url"
       ]
     },
     "WaterHeaterMode": {
