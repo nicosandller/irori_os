@@ -63,6 +63,25 @@ pub fn official_by_id(id: &ExtensionId) -> Option<Official> {
     official().into_iter().find(|item| &item.id == id)
 }
 
+/// An official extension's icon, compiled into this binary so the Extensions page can show it
+/// before the extension is installed: a not-yet-installed extension's package isn't on disk on a
+/// machine that downloaded the binary. The same file its package carries, which
+/// `each_official_icon_is_the_one_its_package_carries` keeps true.
+pub fn official_icon(id: &ExtensionId) -> Option<&'static str> {
+    Some(match id.as_str() {
+        "demo" => include_str!("../../../extensions/demo/icon.svg"),
+        "esphome" => include_str!("../../../extensions/protocols/esphome/icon.svg"),
+        "cast" => include_str!("../../../extensions/protocols/cast/icon.svg"),
+        "mqtt" => include_str!("../../../extensions/protocols/mqtt/icon.svg"),
+        "tplink" => include_str!("../../../extensions/protocols/tplink/icon.svg"),
+        "zigbee" => include_str!("../../../extensions/protocols/zigbee/icon.svg"),
+        "matter" => include_str!("../../../extensions/protocols/matter/icon.svg"),
+        "switchbot" => include_str!("../../../extensions/protocols/switchbot/icon.svg"),
+        "automations" => include_str!("../../../extensions/automations/icon.svg"),
+        _ => return None,
+    })
+}
+
 /// Where installed packages live (`$DATA/extensions`).
 pub fn packages_dir(data: &Path) -> PathBuf {
     data.join("extensions")
@@ -593,6 +612,37 @@ mod tests {
                  version; raise both",
                 item.id, item.source
             );
+        }
+    }
+
+    /// The icon this binary shows for an extension that isn't installed is the one installing it
+    /// brings, and every official extension has one: a card that changes picture on Install, or
+    /// has none until then, is what this is here to stop.
+    #[test]
+    fn each_official_icon_is_the_one_its_package_carries() {
+        for (item, manifest) in manifests() {
+            let path = manifest.extension.icon.as_ref().unwrap_or_else(|| {
+                panic!(
+                    "{}: {}/irori-extension.toml names no icon",
+                    item.id, item.source
+                )
+            });
+            let carried = std::fs::read_to_string(
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../..")
+                    .join(&item.source)
+                    .join(path.as_str()),
+            )
+            .unwrap_or_else(|e| panic!("{}: its icon: {e}", item.id));
+            assert_eq!(
+                official_icon(&item.id),
+                Some(carried.as_str()),
+                "{}: add it to `official_icon`, pointing at {}/{}",
+                item.id,
+                item.source,
+                path.as_str()
+            );
+            assert!(carried.trim_start().starts_with("<svg"), "{}", item.id);
         }
     }
 

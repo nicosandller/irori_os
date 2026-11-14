@@ -30,6 +30,7 @@ pub struct Mqtt;
 impl Protocol for Mqtt {
     type Config = Settings;
     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
+    const ICON: Option<&'static str> = Some(include_str!("../icon.svg"));
 
     async fn run(settings: Settings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         run(settings, ctx).await
