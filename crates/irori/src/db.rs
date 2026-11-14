@@ -90,9 +90,9 @@ pub fn connect(path: &Path) -> rusqlite::Result<Connection> {
     wait_when_busy(&conn)?;
     migrations::run(&conn, migrations::MIGRATIONS).map_err(|error| match error {
         migrations::Error::Sqlite(error) => error,
-        newer @ migrations::Error::Newer { .. } => rusqlite::Error::SqliteFailure(
+        other => rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
-            Some(newer.to_string()),
+            Some(other.to_string()),
         ),
     })?;
     Ok(conn)

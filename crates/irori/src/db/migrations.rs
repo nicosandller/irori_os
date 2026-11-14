@@ -10,6 +10,9 @@
 //! already ran it won't run it again, so the edit would only reach new homes. A migration runs in
 //! the same transaction as the version it moves to, so it happens whole or not at all, and once.
 //!
+//! A step that rebuilds a table (make the new one, copy, drop the old, rename) can't turn
+//! `PRAGMA foreign_keys` off for the copy: inside a transaction that pragma does nothing.
+//!
 //! Every table is made here and nowhere else; the code that reads and writes a table just opens
 //! the file (`super::connect`). The recorder, in a crate of its own, has a copy of its tables for
 //! its own tests; a change to them is a migration here and a change to that copy.
@@ -150,6 +153,12 @@ pub enum Error {
         found: u32,
         known: u32,
     },
+    /// A step failed; nothing it or the steps before it did was kept.
+    Step {
+        version: u32,
+        what: &'static str,
+        error: rusqlite::Error,
+    },
     Sqlite(rusqlite::Error),
 }
 
@@ -162,6 +171,14 @@ impl std::fmt::Display for Error {
                  {known}: a newer Irori wrote it",
                 crate::build_info::VERSION
             ),
+            Self::Step {
+                version,
+                what,
+                error,
+            } => write!(
+                f,
+                "couldn't update the database to version {version} ({what}): {error}"
+            ),
             Self::Sqlite(error) => write!(f, "couldn't update the database: {error}"),
         }
     }
@@ -171,7 +188,7 @@ impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Newer { .. } => None,
-            Self::Sqlite(error) => Some(error),
+            Self::Step { error, .. } | Self::Sqlite(error) => Some(error),
         }
     }
 }
@@ -215,7 +232,11 @@ pub fn run(conn: &Connection, list: &[Migration]) -> Result<u32, Error> {
             what = step.what,
             "updating the database"
         );
-        (step.apply)(&tx)?;
+        (step.apply)(&tx).map_err(|error| Error::Step {
+            version: step.version,
+            what: step.what,
+            error,
+        })?;
     }
     tx.pragma_update(None, "user_version", latest)?;
     tx.commit()?;
@@ -301,7 +322,9 @@ mod tests {
             },
         ];
         let conn = Connection::open_in_memory()?;
-        assert!(matches!(run(&conn, BROKEN), Err(Error::Sqlite(_))));
+        let error = run(&conn, BROKEN).expect_err("the step fails");
+        assert!(matches!(error, Error::Step { version: 2, .. }), "{error:?}");
+        assert!(error.to_string().contains("version 2 (fails)"), "{error}");
         assert_eq!(version(&conn)?, 0);
         let tables: i64 = conn.query_row(
             "SELECT count(*) FROM sqlite_master WHERE type = 'table'",

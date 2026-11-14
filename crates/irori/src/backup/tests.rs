@@ -800,7 +800,43 @@ fn a_failed_restore_onto_a_newer_home_puts_it_back() -> anyhow::Result<()> {
     assert!(!done.ok);
     let error = done.error.expect("says why");
     assert!(error.contains("put back as it was"), "{error}");
+    assert!(
+        !done.warnings.iter().any(|w| w.contains("put back whole")),
+        "nothing was put back, so the note isn't there: {:?}",
+        done.warnings
+    );
     assert_eq!(version(&db)?, LATEST + 1);
     assert_eq!(sql(&data, "SELECT n FROM t")?, "9");
+    Ok(())
+}
+
+/// A home's file older than this build is read from a copy brought up to date: the file itself
+/// is only replaced once the new one is whole, and the copy is gone afterwards.
+#[test]
+fn an_older_home_is_brought_up_to_date_in_a_copy() -> anyhow::Result<()> {
+    let tmp = home()?;
+    let (config, data) = paths(&tmp);
+    let backup = create(&config, &data, &dir(&data), Plan::PLAIN)?;
+    let tree = tempfile::tempdir()?;
+    unpack(&backup, None, tree.path(), room_at(&data))?;
+    let db = data.join("irori.db");
+    Connection::open(&db)?.execute_batch(
+        "INSERT INTO state_history (entity_id, updated_ns, state) VALUES ('b', 2, 'kept')",
+    )?;
+    set_version(&db, 0)?;
+    // The home's own history stays, so it has to come through the copy.
+    let keep_history = Parts {
+        history: false,
+        ..Parts::USUAL
+    };
+    compose_database(&db, &tree.path().join("data/irori.db"), keep_history)?;
+    assert_eq!(version(&db)?, crate::db::migrations::LATEST);
+    assert_eq!(sql(&data, "SELECT count(*) FROM state_history")?, "2");
+    assert_eq!(sql(&data, "SELECT n FROM t")?, "42");
+    let left: Vec<_> = fs::read_dir(&data)?
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".restore-"))
+        .collect();
+    assert!(left.is_empty(), "{left:?}");
     Ok(())
 }

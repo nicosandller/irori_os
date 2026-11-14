@@ -776,17 +776,20 @@ pub fn apply_pending(config: &Path, data: &Path) -> Option<Restored> {
     let parts = plan.parts;
     let mixes_database = (parts.state || parts.history || parts.activity)
         && !(parts.state && parts.history && parts.activity);
-    if mixes_database && home_is_newer(data) {
-        done.warnings.push(
-            "this home's database was written by a newer Irori, so the backup's database was put \
-             back whole, history and activity log included, whatever parts were chosen; the \
-             pre-restore backup keeps the home as it was"
-                .to_owned(),
-        );
-    }
+    // Looked at before the swap, which replaces the file; said only if the swap happened.
+    let taken_whole = mixes_database && home_is_newer(data);
     match swap_in(&pending.join("tree"), config, data, plan.parts) {
         Ok(safety) => {
             done.ok = true;
+            if taken_whole {
+                done.warnings.push(format!(
+                    "this home's database was written by a newer Irori, so the backup's database \
+                     was put back whole, history and activity log included, whatever parts were \
+                     chosen. What the newer Irori recorded since is only in the pre-restore \
+                     backup ({}), and only the last three of those are kept",
+                    safety.as_deref().unwrap_or("none was made")
+                ));
+            }
             done.safety_copy = safety;
         }
         Err(error) => done.error = Some(format!("{error:#}")),
@@ -903,7 +906,8 @@ fn put_back(tree: &Path, config: &Path, data: &Path, parts: Parts) -> anyhow::Re
 /// the new file is whole.
 ///
 /// Tables are only mixed between files at the same version, so the backup's copy is brought to
-/// this build's version first, and so is the current file when it is not newer. A current file
+/// this build's version first, and so is a copy of the current file when it is older; the current
+/// file itself is not touched. A current file
 /// newer than this build (Irori was taken back to an older release) can't be mixed with: the
 /// backup is then taken whole, and the safety copy made just before holds the home as it was.
 fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Result<()> {
@@ -927,10 +931,29 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
     if !staged_newer {
         crate::db::connect(staged).context("couldn't bring the backup's database up to date")?;
     }
-    let mix_with_current = current.exists() && crate::db::version_of(current)? <= LATEST;
-    if mix_with_current {
-        crate::db::connect(current).context("couldn't bring the database up to date")?;
-    }
+    let current_version = if current.exists() {
+        Some(crate::db::version_of(current)?)
+    } else {
+        None
+    };
+    let mix_with_current = current_version.is_some_and(|v| v <= LATEST);
+    // An older current file is read from a copy brought up to date, kept beside it until done.
+    let scratch = tempfile::Builder::new()
+        .prefix(".restore-")
+        .tempdir_in(current.parent().context("the database has no directory")?)?;
+    let source = if current_version.is_some_and(|v| v < LATEST) {
+        let copy = scratch.path().join("irori.db");
+        let conn =
+            Connection::open_with_flags(current, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        crate::db::wait_when_busy(&conn)?;
+        conn.execute_batch(&format!("VACUUM INTO '{}'", sql_path(&copy)?))?;
+        drop(conn);
+        crate::db::connect(&copy).context("couldn't bring the database up to date")?;
+        copy
+    } else {
+        current.to_path_buf()
+    };
+    let current_in = source.as_path();
     if (parts.state && parts.history && parts.activity) || !mix_with_current {
         // The backup's database is a finished file of its own (it was written by VACUUM INTO).
         fs::copy(staged, &out)?;
@@ -940,7 +963,7 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
             let conn = Connection::open(&out)?;
             conn.execute_batch(&format!(
                 "ATTACH DATABASE '{}' AS other",
-                sql_path(current)?
+                sql_path(current_in)?
             ))?;
             for table in crate::audit::TABLES {
                 if !had.iter().any(|name| name == table) {
@@ -958,9 +981,9 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
         // the backup's when the state is asked for. The tables of a kind the base is not the
         // source of are then copied across from the other file.
         let (base, other) = if parts.state {
-            (staged, current)
+            (staged, current_in)
         } else {
-            (current, staged)
+            (current_in, staged)
         };
         let base_is_staged = parts.state;
         let conn = Connection::open_with_flags(base, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;

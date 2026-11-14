@@ -171,11 +171,14 @@ refusal. A backup from a newer Irori is refused (a `0.0.0` development build rea
 is one whose database is at a version this build doesn't know (§9), development build or not.
 
 Tables are only mixed between files at the same version: the backup's database is brought up to
-this build's version first, and so is the home's. A table the backup didn't have before that
+this build's version first, and so is a copy of the home's (the home's file itself is only
+replaced once the new one is whole). A table the backup didn't have before that
 (it is older than the table) still counts as missing, so the home keeps its own. When the home's
 file is **newer** than this build (Irori was taken back to an older release, §9), nothing can be
 mixed into it: the backup's database is taken whole, whatever the parts, and the safety copy
-keeps the newer home.
+keeps the newer home. The restore result says so (on the page and from `irori backup restore`):
+what the newer release recorded since the backup, history and activity log included, is then
+only in that safety copy, and only the last three safety copies are kept.
 
 **After.** If the restore replaced who is signed in, the person signs in again with the
 backup's people and passwords. The official extensions the backup's home had installed are
@@ -239,4 +242,5 @@ home's file is made at the latest version.
 
 **Adding a change to the database** is one step: add an entry to the end of the list, with the
 next number and what it does. Never edit an entry that has shipped: a home that ran it won't run
-it again.
+it again. A step that rebuilds a table can't switch `PRAGMA foreign_keys` off: inside a
+transaction it does nothing.
