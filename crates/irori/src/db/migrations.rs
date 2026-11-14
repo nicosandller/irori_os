@@ -210,6 +210,11 @@ pub fn run(conn: &Connection, list: &[Migration]) -> Result<u32, Error> {
         return Err(refuse(from));
     }
     for step in list.iter().filter(|m| m.version > from) {
+        tracing::info!(
+            version = step.version,
+            what = step.what,
+            "updating the database"
+        );
         (step.apply)(&tx)?;
     }
     tx.pragma_update(None, "user_version", latest)?;
