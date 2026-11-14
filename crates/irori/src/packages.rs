@@ -71,6 +71,7 @@ pub fn official_icon(id: &ExtensionId) -> Option<&'static str> {
     Some(match id.as_str() {
         "demo" => include_str!("../../../extensions/demo/icon.svg"),
         "esphome" => include_str!("../../../extensions/protocols/esphome/icon.svg"),
+        "onvif" => include_str!("../../../extensions/protocols/onvif/icon.svg"),
         "cast" => include_str!("../../../extensions/protocols/cast/icon.svg"),
         "mqtt" => include_str!("../../../extensions/protocols/mqtt/icon.svg"),
         "tplink" => include_str!("../../../extensions/protocols/tplink/icon.svg"),
