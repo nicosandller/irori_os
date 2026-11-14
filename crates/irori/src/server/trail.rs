@@ -145,6 +145,7 @@ pub const ACTIONS: &[(&str, &str, Log)] = &[
     ("POST", "/api/backups/upload", Later("backup_uploaded")),
     ("PUT", "/api/backups/settings", Later("backup_settings_changed")),
     ("GET", "/api/backups/key", Now("backup_key_shown")),
+    ("GET", "/api/entities/{id}/talk", Now("camera_talked")),
     ("POST", "/api/backups/key", Now("backup_key_changed")),
     ("POST", "/api/backups/restore/cancel", Later("restore_cancelled")),
     ("POST", "/api/backups/restore/seen", Quiet),
@@ -180,7 +181,8 @@ fn first_capture(pattern: &str, path: &str) -> Option<String> {
 /// What the status says of how it went, when the handler said nothing.
 fn outcome_of(status: StatusCode) -> Outcome {
     match status.as_u16() {
-        200..=399 => Outcome::Ok,
+        // A socket that opened: talking through a camera is one.
+        101 | 200..=399 => Outcome::Ok,
         401 | 403 | 429 => Outcome::Denied,
         _ => Outcome::Failed,
     }
@@ -385,6 +387,7 @@ mod tests {
     #[test]
     fn a_status_is_an_outcome() {
         assert_eq!(outcome_of(StatusCode::NO_CONTENT), Outcome::Ok);
+        assert_eq!(outcome_of(StatusCode::SWITCHING_PROTOCOLS), Outcome::Ok);
         assert_eq!(outcome_of(StatusCode::FORBIDDEN), Outcome::Denied);
         assert_eq!(outcome_of(StatusCode::UNAUTHORIZED), Outcome::Denied);
         assert_eq!(outcome_of(StatusCode::TOO_MANY_REQUESTS), Outcome::Denied);

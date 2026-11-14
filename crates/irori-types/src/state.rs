@@ -207,8 +207,8 @@ impl State {
             | Self::Datetime(_)
             | Self::Vacuum(_)
             | Self::LawnMower(_)
-            | Self::Schedule(_)
-            | Self::Camera(_) => Ok(()),
+            | Self::Schedule(_) => Ok(()),
+            Self::Camera(camera) => camera.validate(),
         }
     }
 

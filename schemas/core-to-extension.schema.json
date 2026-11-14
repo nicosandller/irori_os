@@ -181,6 +181,124 @@
       ]
     },
     {
+      "description": "A page wants to watch one of its cameras live. Answered with `live_init`, then\n`live_fragment`s, until `live_end` or `live_stop`.",
+      "type": "object",
+      "properties": {
+        "accepts": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        },
+        "quality": {
+          "$ref": "#/$defs/LiveQuality"
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "live_start"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "unique_id",
+        "quality"
+      ]
+    },
+    {
+      "description": "Nobody watches that stream any more: stop it. Nothing more is read for it.",
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "live_stop"
+        }
+      },
+      "required": [
+        "type",
+        "stream"
+      ]
+    },
+    {
+      "description": "A page wants to talk through one of its cameras (`docs/specs/protocols.md` §5.4).\nAnswered with `talk_ready`, then `talk_end` when it's over.",
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_start"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "unique_id"
+      ]
+    },
+    {
+      "description": "Some of a talk's sound: 16-bit little-endian PCM at 8 kHz, one channel, base64.",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_audio"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ]
+    },
+    {
+      "description": "The page has stopped talking: close the camera's speaker. Nothing more is read for it.",
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_stop"
+        }
+      },
+      "required": [
+        "type",
+        "stream"
+      ]
+    },
+    {
       "type": "object",
       "properties": {
         "type": {
@@ -369,6 +487,89 @@
       },
       "required": [
         "owner"
+      ]
+    },
+    "CameraGoToPreset": {
+      "description": "Data for `camera.go_to_preset`.",
+      "type": "object",
+      "properties": {
+        "preset": {
+          "description": "One of its `presets`' ids.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preset"
+      ]
+    },
+    "CameraMove": {
+      "description": "Data for `camera.move`: how fast to turn each way, from -1 (left, down, out) to 1 (right, up,\nin). It moves for `seconds` and then stops on its own, so a lost `camera.stop` never leaves it\nturning.",
+      "type": "object",
+      "properties": {
+        "pan": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        },
+        "seconds": {
+          "description": "How long to keep moving: 0.5 seconds unless told.",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 10.0,
+          "minimum": 0.1
+        },
+        "tilt": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        },
+        "zoom": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "maximum": 1.0,
+          "minimum": -1.0
+        }
+      },
+      "additionalProperties": false
+    },
+    "CameraPreset": {
+      "description": "A position saved on a camera, which it can be sent back to.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "What the camera calls it, for `camera.go_to_preset`.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "name": {
+          "description": "What a person called it.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
       ]
     },
     "CameraStatus": {
@@ -1643,6 +1844,21 @@
           "rgb"
         ]
       }
+    },
+    "LiveQuality": {
+      "description": "How sharp live video is. A camera usually sends the same picture twice: a small stream that's\ncheap to watch, and its full size.",
+      "oneOf": [
+        {
+          "description": "Its small stream: quick to start, light on the network. Home Assistant's \"fluent\".",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Its full size. Home Assistant's \"clear\".",
+          "type": "string",
+          "const": "high"
+        }
+      ]
     },
     "LockCode": {
       "description": "Data for `lock.lock`, `lock.unlock` and `lock.open`: the code, for a lock that needs one.\n\nIts `Debug` never shows the code, so a call that ends up in a log or an error message doesn't\ntake the code with it.",
@@ -3770,6 +3986,70 @@
           "if": {
             "properties": {
               "service": {
+                "const": "camera.move"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/CameraMove"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.stop"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "type": "object",
+                "maxProperties": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
+                "const": "camera.go_to_preset"
+              }
+            },
+            "required": [
+              "service"
+            ]
+          },
+          "then": {
+            "properties": {
+              "data": {
+                "$ref": "#/$defs/CameraGoToPreset"
+              }
+            },
+            "required": [
+              "data"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "service": {
                 "const": "timer.start"
               }
             },
@@ -3965,6 +4245,9 @@
         "camera.turn_off",
         "camera.enable_motion_detection",
         "camera.disable_motion_detection",
+        "camera.move",
+        "camera.stop",
+        "camera.go_to_preset",
         "timer.start",
         "timer.pause",
         "timer.cancel",
@@ -4977,6 +5260,17 @@
                 "boolean",
                 "null"
               ]
+            },
+            "presets": {
+              "description": "The positions saved on it, for one with `presets`. In the camera's own order.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/CameraPreset"
+              },
+              "maxItems": 256
             },
             "state": {
               "$ref": "#/$defs/CameraStatus"

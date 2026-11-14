@@ -47,6 +47,18 @@ pub enum Icon {
     Power,
     Volume,
     Muted,
+    /// Talking through something: a microphone.
+    Mic,
+    /// Filling the screen, and coming back out of it.
+    Expand,
+    Shrink,
+    /// Looking closer at part of a wide picture, and back out to all of it.
+    ZoomIn,
+    ZoomOut,
+    /// A camera's siren.
+    Siren,
+    /// A camera's infrared lights: seeing at night.
+    Night,
     // The kinds of device on the Floorplan.
     Bulb,
     Tv,
@@ -389,6 +401,25 @@ fn drawing(icon: Icon) -> &'static str {
         ),
         Icon::Muted => {
             r#"<path d="M4 9.500h3l4.500-4v13l-4.500-4H4Z"/><path d="m16 9.500 5 5M21 9.500l-5 5"/>"#
+        }
+        Icon::Mic => concat!(
+            r#"<rect x="9" y="3" width="6" height="11.500" rx="3"/>"#,
+            r#"<path d="M5.500 11a6.500 6.500 0 0 0 13 0M12 17.500V21M9 21h6"/>"#,
+        ),
+        Icon::Expand => r#"<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>"#,
+        Icon::Shrink => r#"<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>"#,
+        Icon::ZoomIn => {
+            r#"<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M10.5 7.5v6M7.5 10.5h6"/>"#
+        }
+        Icon::ZoomOut => {
+            r#"<circle cx="10.5" cy="10.5" r="6.5"/><path d="m15.5 15.5 5 5M7.5 10.5h6"/>"#
+        }
+        Icon::Siren => concat!(
+            r#"<path d="M7 18v-4.500a5 5 0 0 1 10 0V18"/><path d="M5 18h14v3H5Z"/>"#,
+            r#"<path d="M12 3v2.500M4.500 6.500l1.600 1.600M19.500 6.500l-1.600 1.600"/>"#,
+        ),
+        Icon::Night => {
+            r#"<path d="M19.500 14.500A8 8 0 1 1 9.500 4.500a6.500 6.500 0 0 0 10 10Z"/>"#
         }
         Icon::Bulb => concat!(
             r#"<path d="M9 17.5h6M10 20.5h4"/>"#,

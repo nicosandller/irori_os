@@ -17,6 +17,7 @@ members = [
     "crates/irori",
     "extensions/demo",
     "extensions/automations",
+    "extensions/protocols/onvif",
     "extensions/protocols/cast",
     "extensions/protocols/esphome",
     "extensions/protocols/matter",
@@ -58,6 +59,7 @@ irori-node-runtime = { path = "crates/irori-node-runtime" }
 irori-cloud = { path = "crates/irori-cloud" }
 irori-protocol-mqtt = { path = "extensions/protocols/mqtt" }
 irori-protocol-demo = { path = "extensions/demo" }
+irori-protocol-onvif = { path = "extensions/protocols/onvif" }
 irori-protocol-cast = { path = "extensions/protocols/cast" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
 irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
@@ -71,6 +73,8 @@ anyhow = "1.0.104"
 # Only to check an ESPHome encryption key is well-formed before handing it to `esphome-client`,
 # which already depends on this version.
 base64 = "0.22.1"
+# Shared byte buffers: one fragment of live video handed to every viewer without a copy.
+bytes = "1.12.1"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "json", "ws", "matched-path"] }
 clap = { version = "4.6.7", features = ["derive", "env"] }
 # The ESPHome native API: mDNS discovery, the protobuf protocol, and its Noise transport.
