@@ -70,6 +70,8 @@ pub(crate) struct Timing {
     pub save: Duration,
     /// How often a car that's awake but doing nothing is read: rarely, so it can fall asleep.
     pub idle: Duration,
+    /// How long after Wake the car is read to see it awake, and between tries.
+    pub woken: Duration,
 }
 
 impl Timing {
@@ -80,6 +82,7 @@ impl Timing {
             relist: Duration::from_secs(24 * 3600),
             save: Duration::from_secs(60),
             idle: usage::pace::LONGEST_GAP,
+            woken: Duration::from_secs(25),
         }
     }
 }

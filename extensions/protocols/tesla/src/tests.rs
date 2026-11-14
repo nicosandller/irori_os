@@ -469,6 +469,7 @@ mod protocol {
             relist: Duration::from_secs(3600),
             save: Duration::from_millis(50),
             idle: Duration::from_secs(3600),
+            woken: Duration::from_millis(50),
         };
         let drive = tokio::spawn(drive(settings, ctx, timing));
         Home {
@@ -1150,15 +1151,8 @@ mod controls {
             .await;
         assert_eq!(battery["value"], 61.0);
         assert!(home.fake.sent("/wake_up").is_empty());
-        home.call(&format!("{VIN}:refresh"), Service::ButtonPress)
-            .await
-            .expect("asleep: cached straight away");
-        assert_eq!(
-            home.fake.sent("/vehicle_data").len(),
-            3,
-            "not asked live again"
-        );
-        assert_eq!(home.fake.sent("/vehicle_data_cached").len(), 2);
+        let state = home.log.lock().expect("log").state(&format!("{VIN}:state"));
+        assert_eq!(state.expect("a state")["value"], "asleep");
     }
 
     #[tokio::test]
@@ -1171,6 +1165,14 @@ mod controls {
         fake.answer(
             &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data_cached"),
             vec![Answer::status(404)],
+        );
+        // Still coming up at the first look, awake at the second.
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data"),
+            vec![
+                Answer::with(408, json!({ "error": "asleep" })),
+                Answer::with(200, answer("vehicle_data")),
+            ],
         );
         let home = signed_in(fake, vec![car(VIN, "Red car", "asleep")], vec![]).await;
         home.until("the car", |log| log.devices.get(VIN).cloned())
@@ -1190,6 +1192,27 @@ mod controls {
         );
         assert_eq!(wakes["cost"], 20_000);
         assert_eq!(calls_for(&home, "wake_up").len(), 1);
+        home.until("the car shown awake", |log| {
+            (log.state(&format!("{VIN}:state"))?["value"] == "online").then_some(())
+        })
+        .await;
+        let looks = home
+            .until("both looks on the meter", |log| {
+                let calls: Vec<Value> = log
+                    .stored
+                    .get("usage/calls")?
+                    .as_array()?
+                    .iter()
+                    .filter(|call| call["endpoint"] == "vehicle_data")
+                    .cloned()
+                    .collect();
+                (calls.len() == 2).then_some(calls)
+            })
+            .await;
+        assert!(
+            looks.iter().all(|call| call["why"]["what"] == "Wake"),
+            "the looks are on the press, not the schedule: {looks:?}"
+        );
     }
 
     #[tokio::test]

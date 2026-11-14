@@ -38,8 +38,20 @@ const HISTORY_FLOOR: Duration = Duration::from_secs(30 * 60);
 /// How long a car or site Tesla refused waits before it's tried again.
 const REFUSED_WAIT: Duration = Duration::from_secs(6 * 3600);
 
-/// How long after Wake the car is read, to show it awake: most cars answer within half a minute.
-const WOKEN_READ: Duration = Duration::from_secs(30);
+/// How many reads after Wake look for the car awake, each [`crate::Timing::woken`] apart.
+const WAKE_TRIES: u8 = 3;
+
+/// Someone pressed Wake: the car is read until it answers awake, on their account.
+#[derive(Debug, Clone)]
+struct Woken {
+    why: Why,
+    tries: u8,
+}
+
+/// How often a site's day so far is read, given how often its power flows are.
+fn history_gap(site: Option<Duration>) -> Option<Duration> {
+    site.map(|gap| (gap * HISTORY_EVERY).clamp(HISTORY_FLOOR, LONGEST_GAP.max(HISTORY_FLOOR)))
+}
 
 /// A car Irori reads.
 pub(crate) struct CarSlot {
@@ -55,6 +67,8 @@ pub(crate) struct CarSlot {
     pub trouble: Option<String>,
     /// Refresh presses waiting for the read under way.
     refreshes: Vec<IncomingCall>,
+    /// Woken by a press, and not yet seen awake.
+    woken: Option<Woken>,
 }
 
 impl CarSlot {
@@ -69,6 +83,7 @@ impl CarSlot {
             cached_asked: false,
             trouble: None,
             refreshes: Vec::new(),
+            woken: None,
         }
     }
 }
@@ -230,10 +245,14 @@ impl World {
             .map(|(vin, _)| vin.clone())
             .collect();
         for vin in cars {
+            let mut why = Why::Schedule;
             if let Some(slot) = self.cars.get_mut(&vin) {
                 slot.next_read = None;
+                if let Some(woken) = &slot.woken {
+                    why = woken.why.clone();
+                }
             }
-            self.read_car(&vin, false, Why::Schedule);
+            self.read_car(&vin, false, why);
         }
         let sites: Vec<(String, Part)> = self
             .sites
@@ -475,6 +494,8 @@ impl World {
             match on_state(was_awake, slot.reading.awake(), mode) {
                 Next::Now if !slot.reading_now => slot.next_read = Some(now),
                 Next::Now | Next::Keep => {}
+                // A car someone just woke is still coming up: its reads stand.
+                Next::Never if slot.woken.is_some() => {}
                 Next::Never => slot.next_read = None,
             }
         }
@@ -518,6 +539,7 @@ impl World {
                 if !cached {
                     slot.reading.read_at = Some(unix_now);
                     slot.reading.state = Some("online".into());
+                    slot.woken = None;
                     let saving = mode == Mode::Saving;
                     let busy = slot.reading.busy(saving);
                     slot.next_read =
@@ -526,9 +548,19 @@ impl World {
                 self.account_worked();
             }
             Err(ApiError::Asleep) => {
-                // Billed all the same; it fell asleep since the last check.
+                // Billed all the same; it fell asleep since the last check, or hasn't woken yet.
                 slot.reading.state = Some("asleep".into());
                 slot.next_read = None;
+                if let Some(woken) = &mut slot.woken
+                    && !cached
+                {
+                    woken.tries = woken.tries.saturating_sub(1);
+                    if woken.tries > 0 {
+                        slot.next_read = Some(now + self.timing.woken);
+                    } else {
+                        slot.woken = None;
+                    }
+                }
                 self.account_worked();
             }
             Err(ApiError::NotFound) => {
@@ -591,9 +623,7 @@ impl World {
             }
         }
         let next = |gap: Option<Duration>| gap.map(|gap| now + gap);
-        let history_gap = plan
-            .site
-            .map(|gap| (gap * HISTORY_EVERY).clamp(HISTORY_FLOOR, LONGEST_GAP.max(HISTORY_FLOOR)));
+        let history_gap = history_gap(plan.site);
         match result {
             Ok(data) => {
                 slot.trouble = None;
@@ -788,8 +818,9 @@ impl World {
         if slot.reading_now {
             return;
         }
-        let awake = slot.reading.awake();
-        self.read_car(vin, !awake, Why::Refresh);
+        // Live first, even for a car thought asleep (the last check may be most of an hour
+        // old); one that's asleep answers so, and its last report is shown instead.
+        self.read_car(vin, false, Why::Refresh);
     }
 
     pub(crate) fn refresh_site(&mut self, id: &str, call: IncomingCall) {
@@ -838,10 +869,17 @@ impl World {
         match result {
             Ok(_) => {
                 self.account_worked();
-                if let Some(slot) = self.cars.get_mut(&vin)
-                    && !slot.reading_now
-                {
-                    slot.next_read = Some(Instant::now() + WOKEN_READ);
+                let wait = self.timing.woken;
+                if let Some(slot) = self.cars.get_mut(&vin) {
+                    let by = crate::account::asked_by(&call.call.context.origin);
+                    slot.woken = Some(Woken {
+                        why: Why::Command {
+                            what: "Wake".into(),
+                            by,
+                        },
+                        tries: WAKE_TRIES,
+                    });
+                    slot.next_read = Some(Instant::now() + wait);
                 }
                 call.reply(Ok(()));
             }
@@ -871,6 +909,9 @@ impl World {
         };
         let idle = self.timing.idle;
         for slot in self.cars.values_mut() {
+            if slot.woken.is_some() {
+                continue;
+            }
             if mode == Mode::Off || !slot.reading.awake() {
                 slot.next_read = None;
             } else if !slot.reading_now {
@@ -885,8 +926,7 @@ impl World {
         }
         for slot in self.sites.values_mut() {
             slot.next_live = soonest(slot.next_live, plan.site);
-            slot.next_history =
-                soonest(slot.next_history, plan.site.map(|gap| gap * HISTORY_EVERY));
+            slot.next_history = soonest(slot.next_history, history_gap(plan.site));
         }
     }
 

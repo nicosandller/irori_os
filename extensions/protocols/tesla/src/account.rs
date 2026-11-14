@@ -20,7 +20,12 @@ pub use crate::setup::ACCOUNT_DEVICE;
 /// The most a month's allowance can be set to, in the account's currency.
 const MOST_ALLOWANCE: f64 = 1_000.0;
 
-fn money(key: &'static str, name: &'static str, currency: &str, total: bool) -> Entity {
+fn money(
+    key: &'static str,
+    name: &'static str,
+    currency: &str,
+    state_class: Option<StateClass>,
+) -> Entity {
     Entity::new(
         key,
         name,
@@ -28,7 +33,7 @@ fn money(key: &'static str, name: &'static str, currency: &str, total: bool) -> 
             value_type: SensorValueType::Number,
             device_class: Some(SensorClass::Monetary),
             unit: Some(currency.to_owned()),
-            state_class: total.then_some(StateClass::Total),
+            state_class,
             options: Vec::new(),
         }),
     )
@@ -52,15 +57,22 @@ fn count(key: &'static str, name: &'static str) -> Entity {
 pub fn entities(currency: &str) -> Vec<Entity> {
     let modes: Vec<&str> = Mode::ALL.iter().map(|mode| mode.label()).collect();
     vec![
-        money("spent_irori", "Spent by Irori this month", currency, true),
+        // Only goes up, and starts again on the 1st: a drop is a new month.
+        money(
+            "spent_irori",
+            "Spent by Irori this month",
+            currency,
+            Some(StateClass::TotalIncreasing),
+        ),
         money(
             "spent_account",
             "Spent this month, all apps",
             currency,
-            true,
+            // An estimate that a new dashboard figure can lower.
+            Some(StateClass::Total),
         ),
-        money("projected", "Projected for the month", currency, false),
-        money("left", "Left of the allowance", currency, false),
+        money("projected", "Projected for the month", currency, None),
+        money("left", "Left of the allowance", currency, None),
         count("data_requests", "Data requests this month"),
         count("commands", "Commands this month"),
         count("wakes", "Wakes this month"),
