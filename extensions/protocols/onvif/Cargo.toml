@@ -1,0 +1,53 @@
+[package]
+name = "irori-protocol-onvif"
+description = "IP cameras on the local network, over ONVIF and RTSP, with extras for Reolink."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-protocol.workspace = true
+
+base64.workspace = true
+bytes = "1.12.1"
+getrandom.workspace = true
+http-body-util.workspace = true
+jiff.workspace = true
+hyper = { version = "1.11.1", default-features = false, features = ["client", "http1"] }
+hyper-util = { version = "0.1.20", default-features = false, features = ["tokio"] }
+# Camera logins: HTTP Digest (MD5) for pictures and RTSP, WS-Security's password digest (SHA-1)
+# for ONVIF. Both are what the cameras ask for, not choices made here.
+md-5 = "0.10.6"
+sha1 = "0.10.7"
+sha2.workspace = true
+# RTSP: the camera's live video, as H.264/H.265 frames and AAC/G.711 audio. Pure Rust.
+retina = "0.4.21"
+# RTSP's Digest login for talking through a camera, answered the way `retina` answers it for
+# video (the cameras turned down our own Digest answer on RTSP).
+http-auth = "0.1.10"
+# The RTSP address handed to `retina`, with the camera's host put back in.
+url = "2.5.7"
+# ONVIF answers are SOAP. Matched by local name only: vendors put the same element in
+# different namespaces.
+roxmltree = "0.20.0"
+# Reolink's own API, over HTTPS so its login isn't sent in the clear. Cameras' certificates
+# are their own, so the handshake's signature is checked but not who signed the certificate.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "irori-ext-onvif"
+path = "src/main.rs"
+
+[lints]
+workspace = true

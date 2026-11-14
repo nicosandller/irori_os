@@ -1958,6 +1958,49 @@ fn exit_reason(status: std::io::Result<std::process::ExitStatus>) -> String {
     }
 }
 
+/// Passes one chunk of a live stream on, without waiting. A chunk that's wrong ends the stream
+/// with why; a stream nobody watches any more is told to stop.
+fn live_chunk(
+    live_feeds: &mut HashMap<u64, irori_protocol::LiveFeed>,
+    stream: u64,
+    chunk: Result<irori_protocol::LiveChunk, String>,
+) -> Option<ToExt> {
+    let feed = live_feeds.get_mut(&stream)?;
+    let chunk = chunk.and_then(|chunk| chunk.check().map(|()| chunk));
+    match chunk {
+        Ok(chunk) => {
+            if feed.forward(chunk).is_ok() {
+                return None;
+            }
+            live_feeds.remove(&stream);
+        }
+        Err(why) => {
+            if let Some(feed) = live_feeds.remove(&stream) {
+                feed.end(Some(why));
+            }
+        }
+    }
+    Some(ToExt::LiveStop { stream })
+}
+
+/// How many talk messages wait for the pump: a second or so of sound for a couple of talks.
+const TALK_OUT: usize = 128;
+
+/// Passes a talk's sound to the extension as `talk_audio` until the page stops, then
+/// `talk_stop`. Sound the pump can't take at once is dropped, never waited on; the stop always
+/// gets through.
+async fn pass_talk(stream: u64, mut audio: mpsc::Receiver<Vec<u8>>, out: mpsc::Sender<ToExt>) {
+    while let Some(chunk) = audio.recv().await {
+        let data = irori_protocol::talk::encode(&chunk);
+        if let Err(mpsc::error::TrySendError::Closed(_)) =
+            out.try_send(ToExt::TalkAudio { stream, data })
+        {
+            return;
+        }
+    }
+    let _ = out.send(ToExt::TalkStop { stream }).await;
+}
+
 fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
     if let Some(unique_id) = incoming.picturing() {
         return ToExt::CameraPicture {
@@ -2005,6 +2048,17 @@ async fn drive(
     } = live;
     let mut pending_calls: HashMap<u64, IncomingCall> = HashMap::new();
     let mut pending_actions: HashMap<u64, IncomingAction> = HashMap::new();
+    // Live streams running in the extension, by the number this end gave each: where its video
+    // goes. A feed whose far end has closed (nobody watches) is told to stop.
+    let mut live_feeds: HashMap<u64, irori_protocol::LiveFeed> = HashMap::new();
+    // Once a second, streams nobody watches any more are stopped. Its own pace: a sleep made
+    // afresh each time round would never finish while the extension keeps talking.
+    let mut sweep = tokio::time::interval(Duration::from_secs(1));
+    sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Talks running in the extension, by the same numbers: where its words go. Their sound
+    // comes through `talk_out`, from a task per talk, so the pump never waits on a page.
+    let mut talk_lines: HashMap<u64, irori_protocol::TalkLine> = HashMap::new();
+    let (talk_tx, mut talk_out) = mpsc::channel::<ToExt>(TALK_OUT);
     let mut next_call: u64 = 0;
     let mut next_action: u64 = 0;
     let child = &mut link.child;
@@ -2021,7 +2075,7 @@ async fn drive(
             } => {
                 last_messages(
                     &mut link.incoming, core, extension, protocol, kinds, engine,
-                    &mut pending_calls, &mut pending_actions,
+                    &mut pending_calls, &mut pending_actions, &mut live_feeds, &mut talk_lines,
                 ).await;
                 return Outcome::Ended(reason);
             }
@@ -2043,8 +2097,50 @@ async fn drive(
             Some(incoming) = actions.recv() => {
                 let id = next_action;
                 next_action += 1;
-                let message = action_message(id, &incoming);
-                pending_actions.insert(id, incoming);
+                let message = if incoming.talking() {
+                    let Some(talk) = incoming.into_talk() else { continue };
+                    talk_lines.insert(id, talk.line);
+                    tokio::spawn(pass_talk(id, talk.audio, talk_tx.clone()));
+                    ToExt::TalkStart {
+                        stream: id,
+                        unique_id: talk.unique_id,
+                    }
+                } else if incoming.living().is_some() {
+                    let Some(live) = incoming.into_live() else { continue };
+                    let message = ToExt::LiveStart {
+                        stream: id,
+                        unique_id: live.unique_id,
+                        quality: live.quality,
+                        accepts: live.accepts,
+                    };
+                    live_feeds.insert(id, live.feed);
+                    message
+                } else {
+                    let message = action_message(id, &incoming);
+                    pending_actions.insert(id, incoming);
+                    message
+                };
+                if let Err(reason) = link.outgoing.deliver(message).await {
+                    return Outcome::Ended(reason);
+                }
+            }
+            _ = sweep.tick(), if !live_feeds.is_empty() => {
+                let unwatched: Vec<u64> = live_feeds
+                    .iter()
+                    .filter(|(_, feed)| feed.is_closed())
+                    .map(|(stream, _)| *stream)
+                    .collect();
+                for stream in unwatched {
+                    live_feeds.remove(&stream);
+                    if let Err(reason) = link.outgoing.deliver(ToExt::LiveStop { stream }).await {
+                        return Outcome::Ended(reason);
+                    }
+                }
+            }
+            Some(message) = talk_out.recv() => {
+                if let ToExt::TalkStop { stream } = &message {
+                    talk_lines.remove(stream);
+                }
                 if let Err(reason) = link.outgoing.deliver(message).await {
                     return Outcome::Ended(reason);
                 }
@@ -2065,7 +2161,7 @@ async fn drive(
                         };
                         match apply_from_ext(
                             core, extension, protocol, kinds, from, &mut pending_calls,
-                            &mut pending_actions,
+                            &mut pending_actions, &mut live_feeds, &mut talk_lines,
                         ).await {
                             Ok(Some(reply)) => {
                                 if let Err(reason) = link.outgoing.deliver(reply).await {
@@ -2097,7 +2193,7 @@ async fn drive(
                 let _ = status;
                 last_messages(
                     &mut link.incoming, core, extension, protocol, kinds, engine,
-                    &mut pending_calls, &mut pending_actions,
+                    &mut pending_calls, &mut pending_actions, &mut live_feeds, &mut talk_lines,
                 ).await;
                 return why;
             }
@@ -2117,7 +2213,7 @@ async fn drive(
                 if let Some(from) = engine.handle(core, extension, from)
                     && let Ok(Some(reply)) = apply_from_ext(
                         core, extension, protocol, kinds, from, &mut pending_calls,
-                        &mut pending_actions,
+                        &mut pending_actions, &mut live_feeds, &mut talk_lines,
                     ).await
                 {
                     let _ = link.outgoing.deliver(reply).await;
@@ -2142,6 +2238,8 @@ async fn last_messages(
     engine: &mut EngineLink,
     pending_calls: &mut HashMap<u64, IncomingCall>,
     pending_actions: &mut HashMap<u64, IncomingAction>,
+    live_feeds: &mut HashMap<u64, irori_protocol::LiveFeed>,
+    talk_lines: &mut HashMap<u64, irori_protocol::TalkLine>,
 ) {
     let until = Instant::now() + LAST_MESSAGES;
     while let Ok(Ok(from)) = tokio::time::timeout_at(until, incoming.take()).await {
@@ -2154,6 +2252,8 @@ async fn last_messages(
                 from,
                 pending_calls,
                 pending_actions,
+                live_feeds,
+                talk_lines,
             )
             .await;
         }
@@ -2184,6 +2284,8 @@ async fn apply_from_ext(
     from: FromExt,
     pending_calls: &mut HashMap<u64, IncomingCall>,
     pending_actions: &mut HashMap<u64, IncomingAction>,
+    live_feeds: &mut HashMap<u64, irori_protocol::LiveFeed>,
+    talk_lines: &mut HashMap<u64, irori_protocol::TalkLine>,
 ) -> Result<Option<ToExt>, String> {
     let reply_id = match &from {
         FromExt::DescribeDevice { id, .. }
@@ -2333,6 +2435,40 @@ async fn apply_from_ext(
                     (Some(picture), None) => irori_protocol::Picture::try_from(picture),
                     (None, None) => Err("it sent no picture".to_owned()),
                 });
+            }
+            Ok(None)
+        }
+        FromExt::LiveInit { stream, mime, data } => Ok(live_chunk(
+            live_feeds,
+            stream,
+            irori_protocol::live::decode(&data).map(|data| irori_protocol::LiveChunk::Init {
+                mime,
+                data: data.into(),
+            }),
+        )),
+        FromExt::LiveFragment { stream, key, data } => Ok(live_chunk(
+            live_feeds,
+            stream,
+            irori_protocol::live::decode(&data).map(|data| irori_protocol::LiveChunk::Fragment {
+                key,
+                data: data.into(),
+            }),
+        )),
+        FromExt::LiveEnd { stream, error } => {
+            if let Some(feed) = live_feeds.remove(&stream) {
+                feed.end(error);
+            }
+            Ok(None)
+        }
+        FromExt::TalkReady { stream } => {
+            if let Some(line) = talk_lines.get(&stream) {
+                line.ready();
+            }
+            Ok(None)
+        }
+        FromExt::TalkEnd { stream, error } => {
+            if let Some(line) = talk_lines.remove(&stream) {
+                line.end(error);
             }
             Ok(None)
         }

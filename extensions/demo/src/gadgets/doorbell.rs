@@ -61,6 +61,7 @@ impl Doorbell {
                 (true, false) => CameraStatus::Idle,
             },
             motion_detection: Some(self.detecting),
+            presets: None,
         }
     }
 }
@@ -91,6 +92,7 @@ impl Gadget for Doorbell {
                 Capabilities::Camera(CameraCapabilities {
                     on_off: true,
                     motion_detection: true,
+                    ..CameraCapabilities::default()
                 }),
             ),
             Entity::flag(DOORBELL_PERSON, "Person", BinarySensorClass::Occupancy),

@@ -189,6 +189,11 @@ fn cookie_needs(method: &Method, path: &str) -> Needs {
         if rest.ends_with("/icon.svg") {
             return Needs::Nothing;
         }
+        // Talking through a camera is a socket, so a GET, but it's a command: whoever may run
+        // the camera may speak through it (`docs/specs/access.md` §2).
+        if talk_path(rest) {
+            return Needs::Use;
+        }
         // A path nobody has named is closed. A new read has to be added to `named_read`.
         return if !named_read(rest) {
             Needs::Run
@@ -252,8 +257,15 @@ fn named_read(rest: &str) -> bool {
     ) || rest.starts_with("history/")
         // A picture is the camera's face on the page: an `<img>` that carries the cookie.
         || (rest.starts_with("entities/") && rest.ends_with("/picture"))
+        // Its live video, the same face moving: the same reach as its picture.
+        || (rest.starts_with("entities/") && rest.ends_with("/live"))
         || rest.starts_with("assistant/turns/")
         || rest.starts_with("assistant/transcript/")
+}
+
+/// `entities/{id}/talk`: the socket a page talks through a camera on.
+fn talk_path(rest: &str) -> bool {
+    rest.starts_with("entities/") && rest.ends_with("/talk")
 }
 
 fn strip_query(path: &str) -> &str {
@@ -294,13 +306,16 @@ pub(super) fn token_access(method: &Method, path: &str) -> TokenAccess {
     let reading = method == Method::GET || method == Method::HEAD;
     let scopes = if path == "/api/ws" {
         Some(SCOPE_LIVE)
-    } else if method == Method::POST && path == "/api/command" {
+    } else if (method == Method::POST && path == "/api/command")
+        || (method == Method::GET && path.strip_prefix("/api/").is_some_and(talk_path))
+    {
         Some(SCOPE_COMMAND)
     } else if reading && path == "/api/home" {
         Some(SCOPE_HOME)
     } else if reading
         && (path == "/api/states"
-            || (path.starts_with("/api/entities/") && path.ends_with("/picture")))
+            || (path.starts_with("/api/entities/")
+                && (path.ends_with("/picture") || path.ends_with("/live"))))
     {
         Some(SCOPE_STATES)
     } else if reading && (path == "/api/history" || path.starts_with("/api/history/")) {
@@ -1156,6 +1171,13 @@ mod tests {
                 "/api/entities/camera.garden_camera_1/picture",
                 Use,
             ),
+            (
+                Method::GET,
+                "/api/entities/camera.garden_camera_1/live?quality=low",
+                Use,
+            ),
+            // Talking through a camera runs it, like a command.
+            (Method::GET, "/api/entities/camera.porch/talk", Use),
             // The logs hold everybody's sign-ins and what the owner did.
             (Method::GET, "/api/system/log", Run),
             (Method::GET, "/api/audit", Run),
@@ -1186,6 +1208,8 @@ mod tests {
             (Method::POST, "/api/setup/backup/upload", Nothing),
             (Method::POST, "/api/setup/backup/restore", Nothing),
             (Method::PUT, "/api/assistant", Run),
+            // It can send the saved key to a provider.
+            (Method::POST, "/api/assistant/models", Run),
             (Method::POST, "/api/apps/automations/rpc", Use),
             (Method::PUT, "/api/extensions/mqtt/secrets", Run),
             (Method::GET, "/api/ws", Use),

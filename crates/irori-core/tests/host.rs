@@ -1042,6 +1042,7 @@ impl Protocol for Keyed {
                     path: vec!["key".into()],
                     label: "Key".into(),
                     hint: None,
+                    username: None,
                 }),
             }])
             .await;

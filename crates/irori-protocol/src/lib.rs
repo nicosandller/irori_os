@@ -26,8 +26,13 @@ pub use irori_types as types;
 
 pub mod engine;
 pub mod home;
+pub mod live;
 mod process;
+pub mod talk;
+pub use bytes::Bytes;
+pub use live::{IncomingLive, LiveChunk, LiveClosed, LiveFeed, Sent};
 pub use process::{ExtProcess, FromExt, ProcessGroup, ToExt, WireCommand, schemas, serve, spawn};
+pub use talk::{IncomingTalk, TalkLine, TalkWord};
 
 /// A built-in protocol.
 ///
@@ -329,6 +334,12 @@ pub struct IncomingAction {
     /// Set when it's a page asking a camera for a picture, which travels the same way too.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Picture`].
     picture: Option<UniqueId>,
+    /// Set when it's a page asking to watch a camera live, which travels the same way too.
+    /// [`ProtocolContext::next`] hands those out as [`Incoming::Live`].
+    live: Option<IncomingLive>,
+    /// Set when it's a page asking to talk through a camera, which travels the same way too.
+    /// [`ProtocolContext::next`] hands those out as [`Incoming::Talk`].
+    talk: Option<IncomingTalk>,
     reply: ActionReply,
 }
 
@@ -372,7 +383,35 @@ impl IncomingAction {
         self.picture.as_ref()
     }
 
+    /// The live stream wanted, if that's what this is. For the host.
+    pub fn living(&self) -> Option<&IncomingLive> {
+        self.live.as_ref()
+    }
+
+    /// Takes the live stream out, if that's what this is: the host keeps its feed and passes
+    /// what the protocol sends into it.
+    pub fn into_live(self) -> Option<IncomingLive> {
+        self.live
+    }
+
+    /// Whether it's a talk, for the host.
+    pub fn talking(&self) -> bool {
+        self.talk.is_some()
+    }
+
+    /// Takes the talk out, if that's what this is: the host passes the sound to the protocol
+    /// and its words back.
+    pub fn into_talk(self) -> Option<IncomingTalk> {
+        self.talk
+    }
+
     fn sorted(self) -> Incoming {
+        if let Some(live) = self.live {
+            return Incoming::Live(live);
+        }
+        if let Some(talk) = self.talk {
+            return Incoming::Talk(talk);
+        }
         match (self.unpair, self.picture, self.reply) {
             (Some((unique_id, force)), _, ActionReply::Done(reply)) => {
                 Incoming::Unpair(IncomingUnpair {
@@ -391,6 +430,8 @@ impl IncomingAction {
                 fields: self.fields,
                 unpair,
                 picture,
+                live: None,
+                talk: None,
                 reply,
             }),
         }
@@ -442,6 +483,8 @@ pub enum Incoming {
     Action(IncomingAction),
     Unpair(IncomingUnpair),
     Picture(IncomingPicture),
+    Live(IncomingLive),
+    Talk(IncomingTalk),
 }
 
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
@@ -631,6 +674,12 @@ impl ProtocolContext {
                         }
                         Incoming::Picture(picture) => {
                             picture.reply(Err("this protocol has no pictures".into()));
+                        }
+                        Incoming::Live(live) => {
+                            live.feed.end(Some("this protocol has no live video".into()));
+                        }
+                        Incoming::Talk(talk) => {
+                            talk.line.end(Some("this protocol can't talk through a camera".into()));
                         }
                         Incoming::Call(_) => {}
                     }
@@ -1053,6 +1102,8 @@ pub mod host {
             fields: BTreeMap::new(),
             unpair: None,
             picture: None,
+            live: None,
+            talk: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, result)
@@ -1102,9 +1153,73 @@ pub mod host {
             fields: BTreeMap::new(),
             unpair: None,
             picture: Some(unique_id),
+            live: None,
+            talk: None,
             reply: ActionReply::Picture(reply),
         };
         (incoming, result)
+    }
+
+    /// Builds a request to watch a camera live, as it travels: on the actions channel, with the
+    /// receiving end of its feed. [`ProtocolContext::next`] hands it out as [`Incoming::Live`].
+    /// Dropping the receiver tells the protocol to stop.
+    pub fn incoming_live(
+        unique_id: UniqueId,
+        quality: irori_types::LiveQuality,
+        accepts: Vec<String>,
+    ) -> (IncomingAction, mpsc::Receiver<crate::LiveChunk>) {
+        let (feed, chunks) = crate::LiveFeed::channel(crate::live::LIVE_QUEUE);
+        // Nobody waits on this: the stream itself is the answer.
+        let (reply, _) = oneshot::channel();
+        let incoming = IncomingAction {
+            action_id: String::new(),
+            stop: false,
+            way: None,
+            fields: BTreeMap::new(),
+            unpair: None,
+            picture: None,
+            live: Some(crate::IncomingLive {
+                unique_id,
+                quality,
+                accepts,
+                feed,
+            }),
+            talk: None,
+            reply: ActionReply::Done(reply),
+        };
+        (incoming, chunks)
+    }
+
+    /// Builds a request to talk through a camera, as it travels: on the actions channel. The
+    /// sound goes in the sender (dropping it ends the talk) and the protocol's words come back
+    /// on the receiver.
+    pub fn incoming_talk(
+        unique_id: UniqueId,
+    ) -> (
+        IncomingAction,
+        mpsc::Sender<Vec<u8>>,
+        mpsc::Receiver<crate::TalkWord>,
+    ) {
+        let (audio_tx, audio) = mpsc::channel(crate::talk::TALK_QUEUE);
+        let (line, words) = crate::TalkLine::channel();
+        // Nobody waits on this: the line is the answer.
+        let (reply, _) = oneshot::channel();
+        let incoming = IncomingAction {
+            action_id: String::new(),
+            stop: false,
+            way: None,
+            fields: BTreeMap::new(),
+            unpair: None,
+            picture: None,
+            live: None,
+            talk: Some(crate::IncomingTalk {
+                unique_id,
+                audio,
+                line,
+            }),
+            reply: ActionReply::Done(reply),
+        };
+        (incoming, audio_tx, words)
     }
 }
 

@@ -57,7 +57,10 @@ pub use kinds::alarm_control_panel::{
 };
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
-pub use kinds::camera::{CameraCapabilities, CameraState, CameraStatus};
+pub use kinds::camera::{
+    CameraCapabilities, CameraGoToPreset, CameraMove, CameraPreset, CameraState, CameraStatus,
+    LiveQuality,
+};
 pub use kinds::climate::{
     ClimateCapabilities, ClimateFanMode, ClimateHvacMode, ClimatePresetMode, ClimateSetTemperature,
     ClimateState, ClimateSwingMode, HumidityRange, HvacAction, HvacMode, SetHumidity,
@@ -112,7 +115,7 @@ pub use network::{
 };
 pub use protocol::{
     DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
-    StateReport, Unmodeled, Waiting,
+    StateReport, Unmodeled, UsernameRequest, Waiting,
 };
 pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};

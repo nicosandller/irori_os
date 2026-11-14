@@ -387,6 +387,128 @@
       ]
     },
     {
+      "description": "A live stream's init segment (`docs/specs/protocols.md` §5.3), base64.",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "mime": {
+          "type": "string"
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "live_init"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "mime",
+        "data"
+      ]
+    },
+    {
+      "description": "Some of a live stream's video, base64. `key` when it starts at a keyframe.",
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string"
+        },
+        "key": {
+          "type": "boolean"
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "live_fragment"
+        }
+      },
+      "required": [
+        "type",
+        "stream",
+        "data"
+      ]
+    },
+    {
+      "description": "A live stream is over, with why when it failed.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "live_end"
+        }
+      },
+      "required": [
+        "type",
+        "stream"
+      ]
+    },
+    {
+      "description": "The camera is listening on a talk (`docs/specs/protocols.md` §5.4).",
+      "type": "object",
+      "properties": {
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_ready"
+        }
+      },
+      "required": [
+        "type",
+        "stream"
+      ]
+    },
+    {
+      "description": "A talk is over, with why when it failed.",
+      "type": "object",
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stream": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "talk_end"
+        }
+      },
+      "required": [
+        "type",
+        "stream"
+      ]
+    },
+    {
       "description": "Every entity, and whether time and sun triggers can be armed. `registry:read`.",
       "type": "object",
       "properties": {
@@ -770,6 +892,29 @@
           "type": "string",
           "const": "update"
         }
+      ]
+    },
+    "CameraPreset": {
+      "description": "A position saved on a camera, which it can be sent back to.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "What the camera calls it, for `camera.go_to_preset`.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "name": {
+          "description": "What a person called it.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name"
       ]
     },
     "CameraStatus": {
@@ -1767,11 +1912,16 @@
           ]
         },
         {
+          "description": "What came with format 27 (`live`, `qualities`, `pan_tilt`, `zoom`, `presets`, `talk`) is left out\nwhen it's off, so a camera that has none of it reads the same to a core from before.",
           "type": "object",
           "properties": {
             "kind": {
               "type": "string",
               "const": "camera"
+            },
+            "live": {
+              "description": "Can be watched live (`docs/specs/protocols.md` §5.3).",
+              "type": "boolean"
             },
             "motion_detection": {
               "description": "Watches for motion, and can be told to stop and start again.",
@@ -1782,6 +1932,30 @@
               "description": "Can be turned off and on again: a privacy switch.",
               "type": "boolean",
               "default": false
+            },
+            "pan_tilt": {
+              "description": "Can be turned left and right, and up and down.",
+              "type": "boolean"
+            },
+            "presets": {
+              "description": "Has positions saved on it that it can be sent to. Which ones is state (`presets`).",
+              "type": "boolean"
+            },
+            "qualities": {
+              "description": "The qualities it can be watched in, for one that's `live`: at least one, each once.",
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/LiveQuality"
+              },
+              "maxItems": 2
+            },
+            "talk": {
+              "description": "Has a speaker a page can talk through (`docs/specs/protocols.md` §5.4).",
+              "type": "boolean"
+            },
+            "zoom": {
+              "description": "Can zoom in and out.",
+              "type": "boolean"
             }
           },
           "additionalProperties": false,
@@ -2296,6 +2470,21 @@
         "excellent"
       ]
     },
+    "LiveQuality": {
+      "description": "How sharp live video is. A camera usually sends the same picture twice: a small stream that's\ncheap to watch, and its full size.",
+      "oneOf": [
+        {
+          "description": "Its small stream: quick to start, light on the network. Home Assistant's \"fluent\".",
+          "type": "string",
+          "const": "low"
+        },
+        {
+          "description": "Its full size. Home Assistant's \"clear\".",
+          "type": "string",
+          "const": "high"
+        }
+      ]
+    },
     "LockStatus": {
       "oneOf": [
         {
@@ -2667,6 +2856,17 @@
           "items": {
             "type": "string"
           }
+        },
+        "username": {
+          "description": "Set when what's wanted is a login: a username as well as the secret, which is then its\npassword. The two land side by side, at `path` + `username` and `path` + `password`.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsernameRequest"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false,
@@ -3692,6 +3892,17 @@
                 "null"
               ]
             },
+            "presets": {
+              "description": "The positions saved on it, for one with `presets`. In the camera's own order.",
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/CameraPreset"
+              },
+              "maxItems": 256
+            },
             "state": {
               "$ref": "#/$defs/CameraStatus"
             }
@@ -3896,6 +4107,27 @@
       "maxLength": 64,
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
+    },
+    "UsernameRequest": {
+      "description": "The username half of a login a protocol asks for (`docs/specs/protocols.md` §6.6). Not a\nsecret, but kept with its password.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "What to call the field, e.g. \"Username\".",
+          "type": "string"
+        },
+        "placeholder": {
+          "description": "A likely answer to show in the empty field, e.g. \"admin\".",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "label"
+      ]
     },
     "VacuumActivity": {
       "description": "What a vacuum is doing. Home Assistant's `VacuumActivity`.",

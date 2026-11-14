@@ -641,6 +641,15 @@ mod tests {
             scopes(&Method::POST, "/api/command"),
             &[ApiScope::ServicesCall]
         );
+        assert_eq!(
+            scopes(&Method::GET, "/api/entities/camera.porch/talk"),
+            &[ApiScope::ServicesCall],
+            "talking through a camera runs it"
+        );
+        assert_eq!(
+            scopes(&Method::GET, "/api/entities/camera.porch/live"),
+            &[ApiScope::StatesRead]
+        );
         assert_eq!(scopes(&Method::GET, "/api/ws").len(), 3);
         assert_eq!(
             scopes(&Method::GET, "/api/history/light.hall"),

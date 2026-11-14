@@ -254,6 +254,13 @@ extras/        irori-assist (providers and prompts; the control plane is in the 
 xtask/         repository automation (`cargo xtask …`)
 ```
 
+## Maintainers
+
+- [@nicosandller](https://github.com/nicosandller)
+- [@superflyer11](https://github.com/superflyer11)
+
+Maintainers review and merge pull requests, triage issues and set milestones.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md): one change per pull request, the checks above before

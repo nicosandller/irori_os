@@ -9,9 +9,11 @@ mod home;
 mod home_access;
 mod host;
 mod installs;
+mod live;
 mod people;
 mod reach;
 mod services;
+mod talk;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::fmt;
@@ -42,6 +44,8 @@ pub use home::{SYSTEM_PROTOCOL, device_id_for, new_area_id, new_floor_id};
 
 pub use home::HeldDevice;
 pub use installs::QueuedInstall;
+pub use live::{LIVE_GRACE, LIVE_START_TIMEOUT};
+pub use talk::{TALK_START_TIMEOUT, TalkError, Talking};
 
 use home::{Home, Stamp};
 
@@ -392,6 +396,10 @@ struct Shared {
     place: RwLock<irori_types::HomeSettings>,
     /// One lock per entity, so calls on the same entity happen one after another.
     busy: Mutex<HashMap<EntityId, Arc<tokio::sync::Mutex<()>>>>,
+    /// The cameras being watched live, and who watches each.
+    live: Arc<live::LiveHub>,
+    /// The cameras someone is talking through.
+    talking: Arc<talk::TalkSlots>,
     /// Which update is installing on each protocol, and which wait their turn.
     installs: Mutex<installs::Installs>,
     extensions: RwLock<BTreeMap<ExtensionId, ExtensionOverview>>,
@@ -488,6 +496,8 @@ impl Core {
             config_dir: RwLock::default(),
             place: RwLock::default(),
             busy: Mutex::default(),
+            live: Arc::default(),
+            talking: Arc::default(),
             installs: Mutex::default(),
             extensions: RwLock::default(),
             extension_settings: watch::Sender::new(ExtensionSettings::default()),
@@ -1301,6 +1311,103 @@ impl Core {
         };
         picture.check().map_err(CallActionError::Failed)?;
         Ok(picture)
+    }
+
+    /// Starts watching a camera live (`docs/specs/protocols.md` §5.3): its chunks arrive on the
+    /// receiver, init segment first, until an end. Joins the stream already running for the
+    /// same camera, quality and codecs, if there is one. Dropping the receiver stops watching.
+    pub fn watch_live(
+        &self,
+        entity_id: &EntityId,
+        quality: irori_types::LiveQuality,
+        accepts: Vec<String>,
+    ) -> Result<mpsc::Receiver<irori_protocol::LiveChunk>, CallActionError> {
+        irori_protocol::live::check_accepts(&accepts).map_err(CallActionError::Failed)?;
+        let accepts = irori_protocol::live::known_accepts(accepts);
+        let (protocol, unique_id) = {
+            let home = read(&self.0.home);
+            let entity = home
+                .entity(entity_id)
+                .ok_or_else(|| CallActionError::Failed(format!("there's no `{entity_id}`")))?;
+            let irori_types::Capabilities::Camera(camera) = &entity.capabilities else {
+                return Err(CallActionError::Failed(format!(
+                    "`{entity_id}` isn't a camera"
+                )));
+            };
+            if !camera.live {
+                return Err(CallActionError::Failed(format!(
+                    "`{entity_id}` can't be watched live"
+                )));
+            }
+            if !camera.qualities.contains(&quality) {
+                return Err(CallActionError::Failed(format!(
+                    "`{entity_id}` can't be watched in {} quality",
+                    quality.as_str()
+                )));
+            }
+            (entity.protocol.clone(), entity.unique_id.clone())
+        };
+        let extension = ExtensionId::try_from(protocol.as_str())
+            .map_err(|e| CallActionError::Failed(e.to_string()))?;
+        let key = live::StreamKey::new(entity_id.clone(), quality, accepts);
+        let accepts = key.accepts.clone();
+        let (joined, chunks) = self.0.live.join(key);
+        let live::Joined::Start(starting) = joined else {
+            return Ok(chunks);
+        };
+        let Some(sender) = read(&self.0.action_links).get(&extension).cloned() else {
+            starting.fail(format!("`{extension}` isn't running"));
+            return Ok(chunks);
+        };
+        let (incoming, from_protocol) =
+            irori_protocol::host::incoming_live(unique_id, quality, accepts);
+        tokio::spawn(async move {
+            match tokio::time::timeout(PICTURE_TIMEOUT, sender.send(incoming)).await {
+                Ok(Ok(())) => starting.run(from_protocol).await,
+                Ok(Err(_)) => starting.fail(format!("`{extension}` isn't running")),
+                Err(_) => starting.fail(format!("`{extension}` is too busy to start the video")),
+            }
+        });
+        Ok(chunks)
+    }
+
+    /// Starts talking through a camera (`docs/specs/protocols.md` §5.4): one person at a time
+    /// per camera. The protocol's words (ready, then the end) arrive on the [`Talking`]; dropping
+    /// it ends the talk.
+    pub async fn talk(&self, entity_id: &EntityId) -> Result<Talking, TalkError> {
+        let (protocol, unique_id) = {
+            let home = read(&self.0.home);
+            let entity = home
+                .entity(entity_id)
+                .ok_or_else(|| TalkError::Cant(format!("there's no `{entity_id}`")))?;
+            let talks = matches!(
+                &entity.capabilities,
+                irori_types::Capabilities::Camera(camera) if camera.talk
+            );
+            if !talks {
+                return Err(TalkError::Cant(format!(
+                    "`{entity_id}` has no speaker to talk through"
+                )));
+            }
+            (entity.protocol.clone(), entity.unique_id.clone())
+        };
+        let extension =
+            ExtensionId::try_from(protocol.as_str()).map_err(|e| TalkError::Cant(e.to_string()))?;
+        let slot = self.0.talking.take(entity_id).ok_or(TalkError::Busy)?;
+        let sender = read(&self.0.action_links)
+            .get(&extension)
+            .cloned()
+            .ok_or_else(|| TalkError::NotRunning(format!("`{extension}` isn't running")))?;
+        let (incoming, audio, words) = irori_protocol::host::incoming_talk(unique_id);
+        match tokio::time::timeout(PICTURE_TIMEOUT, sender.send(incoming)).await {
+            Ok(Ok(())) => Ok(Talking::new(audio, words, slot)),
+            Ok(Err(_)) => Err(TalkError::NotRunning(format!(
+                "`{extension}` isn't running"
+            ))),
+            Err(_) => Err(TalkError::NotRunning(format!(
+                "`{extension}` is too busy to start talking"
+            ))),
+        }
     }
 
     async fn ask(

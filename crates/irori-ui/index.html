@@ -12,6 +12,13 @@
   <!-- The network map's drawing (src/network_map.js), for the Devices page's Network map tab. -->
   <link data-trunk rel="copy-file" href="src/network_map.js">
   <script src="/network_map.js" defer></script>
+  <!-- A camera's live video (src/camera_live.js), played through Media Source Extensions. -->
+  <link data-trunk rel="copy-file" href="src/camera_live.js">
+  <script src="/camera_live.js" defer></script>
+  <!-- Talking through a camera (src/camera_talk.js), and what turns the microphone into 8 kHz. -->
+  <link data-trunk rel="copy-file" href="src/camera_talk.js">
+  <link data-trunk rel="copy-file" href="src/camera_talk_worklet.js">
+  <script src="/camera_talk.js" defer></script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <style>
     /* Brand tokens (assets/README.md). Fonts are never downloaded: the UI works offline. */
@@ -706,9 +713,30 @@
        springs home from there. A horizontal swipe on a phone is the toggle's, not the page's. */
     .toggle { touch-action: pan-y; }
     .toggle[data-dragging] .knob { transition: width var(--dur-fast) var(--ease-out); }
-    .toggle.pending { cursor: progress; opacity: .8; }
-    .toggle.pending .knob { animation: knob-wait .9s ease-in-out infinite alternate; }
-    @keyframes knob-wait { to { scale: .78; } }
+    /* Clicked: the knob goes at once to where it was sent, and waits there for the device. A
+       small arc turns on the knob and the track shimmers toward the color it's heading for;
+       the track only goes solid when the device says it's there. Never dimmed: it isn't off
+       limits, it's on its way. A device that never follows lets the knob spring back. */
+    .toggle.pending { cursor: progress; }
+    .toggle.pending:disabled { opacity: 1; }
+    .toggle.heading-on .knob { transform: translateX(1.35rem); border-color: transparent; }
+    .toggle.heading-off .knob, .toggle[aria-pressed="true"].heading-off .knob { transform: none; }
+    .toggle.heading-on, .toggle.heading-off { background-size: 260% 100%;
+      animation: track-wait 1.15s linear infinite; }
+    .toggle.heading-on { border-color: var(--ember);
+      background-image: linear-gradient(105deg,
+        color-mix(in srgb, var(--ember) 55%, var(--sunk)) 35%, var(--ember) 50%,
+        color-mix(in srgb, var(--ember) 55%, var(--sunk)) 65%); }
+    .toggle.heading-off { border-color: var(--line);
+      background-image: linear-gradient(105deg, var(--sunk) 35%,
+        color-mix(in srgb, var(--ember) 35%, var(--sunk)) 50%, var(--sunk) 65%); }
+    @keyframes track-wait { from { background-position: 100% 0; } to { background-position: -160% 0; } }
+    .toggle .knob { position: relative; }
+    .toggle.pending .knob::after { content: ""; position: absolute; inset: -3px; border-radius: 50%;
+      border: 2px solid transparent; border-top-color: var(--ember);
+      animation: knob-turn .75s linear infinite; }
+    .toggle.heading-on .knob::after { border-top-color: var(--paper); }
+    @keyframes knob-turn { to { rotate: 1turn; } }
 
     /* A lit light's level and color, on its own line under the row: one slider per thing the
        light can set. The value a slider shows is the device's, not the last thing asked for. */
@@ -825,6 +853,222 @@
                        border: 1px solid var(--line); object-fit: cover;
                        animation: frame-in var(--dur-layout) var(--ease-out); }
     .camera-view.failed img { opacity: .45; }
+    /* Live video (camera_live.rs): the video where the picture would be, and a bar under it
+       with what it's doing, sound, SD/HD, and "Try again" once it stops. */
+    .camera-frame { position: relative; width: 100%; max-width: 40rem; aspect-ratio: 16 / 9;
+      overflow: hidden; border-radius: .6rem; background: #000; border: 1px solid var(--line); }
+    .camera-frame video { display: block; width: 100%; height: 100%; object-fit: contain;
+      transition: scale var(--dur-expressive) var(--ease-emphasized),
+                  translate var(--dur-expressive) var(--ease-emphasized); }
+    .camera-live.failed video { opacity: .45; }
+    /* The magnifier (camera_live.js `magnify`): the picture grows until it fills the frame's
+       height (`scale`) and slides to the slice that's wanted (`translate`), so turning it on
+       and off is a zoom. The slice is moved by dragging it or the strip of the whole picture
+       under it; in full screen, by a small slider beside the talk button instead. */
+    .camera-live.zoomed video { cursor: grab; touch-action: pan-y; will-change: scale, translate; }
+    .camera-live video.dragging { cursor: grabbing; transition: none; }
+    .camera-strip-wrap { position: relative; width: 100%; max-width: 40rem; margin-top: .45rem;
+      overflow: hidden; border-radius: .4rem; border: 1px solid var(--line);
+      animation: drop-in var(--dur-base) var(--ease-out); }
+    .camera-strip-wrap[hidden] { display: none; }
+    .camera-strip { display: block; width: 100%; background: #000; cursor: pointer;
+      touch-action: none; }
+    /* The slice's box: its own layer, moved like the video. Its shadow dims the rest. */
+    .camera-strip-box { position: absolute; top: 0; bottom: 0; left: 0; width: 100%;
+      pointer-events: none; border: 2px solid rgba(255, 255, 255, .9); border-radius: .25rem;
+      box-shadow: 0 0 0 100vmax rgba(0, 0, 0, .5); will-change: translate;
+      transition: translate var(--dur-expressive) var(--ease-emphasized); }
+    .camera-strip-box.dragging { transition: none; }
+    .camera-strip:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
+    .camera-pan { display: none; }
+    .camera-live-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
+                       max-width: 40rem; color: var(--muted); }
+    .camera-live-state { display: inline-flex; align-items: center; gap: .4rem; flex: 1;
+                         min-width: 0; }
+    .camera-live.playing .camera-live-state { color: var(--fg); }
+    .camera-live.playing .camera-dot { background: #e5484d;
+                                       animation: recording 1.6s ease-in-out infinite; }
+    /* A camera's own card on its device page (device.rs): its row, then its picture, open. */
+    .camera-card .entity-row { border: 0; padding: 0; }
+    .camera-card-view { margin-top: .75rem; }
+    .camera-card-view .camera-view { margin: 0; }
+    /* The video and everything under it, as one column centred in the card. */
+    .camera-card-view > :is(.camera-stage:not(.is-full), .camera-view) { max-width: 40rem;
+      margin-inline: auto; }
+    .camera-live-buttons { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+    .live-button { padding: .3rem .65rem; font: inherit; font-size: .8rem; color: var(--fg);
+                   background: var(--card); border: 1px solid var(--line); border-radius: .45rem;
+                   cursor: pointer; }
+    .live-button:hover { border-color: var(--ember); }
+    .live-button[aria-pressed="true"] { background: var(--sunk); border-color: var(--muted); }
+    .live-segs { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line);
+                 border-radius: .45rem; background: var(--sunk); }
+    .live-seg { padding: .2rem .55rem; font: inherit; font-size: .78rem; color: var(--muted);
+                background: transparent; border: 0; border-radius: .3rem; cursor: pointer; }
+    .live-seg:hover { color: var(--fg); }
+    /* Hold to talk (camera_talk.rs): a round microphone with its words beside it. Pressed, the
+       disc squishes and fills; connecting, an arc turns round it (the same arc a waiting toggle
+       has); talking, it sends out ripples and a ring that swells with the voice (`--level`, set
+       by camera_talk.js); stopped by itself, it shakes once. */
+    .camera-talk { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .75rem;
+      margin: .6rem 0 1rem; }
+    .talk-button { --level: 0; display: inline-flex; align-items: center; gap: .7rem;
+      padding: .3rem 1rem .3rem .3rem; font: inherit; font-size: .88rem; color: var(--fg);
+      background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+      cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      transition: border-color var(--dur-fast), background-color var(--dur-base) var(--ease-out),
+                  scale var(--dur-base) var(--ease-spring); }
+    .talk-button:hover { border-color: var(--ember); }
+    .talk-button:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px; }
+    .talk-button.held { scale: .97; border-color: var(--ember); }
+    .talk-disc { position: relative; display: grid; place-items: center; width: 2.5rem;
+      height: 2.5rem; flex: none; border-radius: 50%; color: var(--ember); background: var(--sunk);
+      border: 1px solid var(--line);
+      transition: background-color var(--dur-base) var(--ease-out), color var(--dur-fast),
+                  border-color var(--dur-fast), scale var(--dur-base) var(--ease-spring); }
+    .talk-disc .icon { position: relative; z-index: 2; width: 1.15rem; height: 1.15rem;
+      transition: scale var(--dur-base) var(--ease-spring); }
+    .talk-button:hover .talk-disc .icon { scale: 1.12; }
+    .talk-button.held .talk-disc { scale: .9; color: var(--paper); background: var(--ember);
+      border-color: var(--ember); }
+    .talk-button.live .talk-disc { scale: 1; }
+    .talk-wave, .talk-level, .talk-arc { position: absolute; inset: -1px; border-radius: 50%;
+      pointer-events: none; }
+    /* Connecting: the arc. */
+    .talk-arc { inset: -5px; border: 2px solid transparent; opacity: 0;
+      transition: opacity var(--dur-fast); }
+    .camera-talk[data-state="connecting"] .talk-arc { opacity: 1; border-top-color: var(--ember);
+      animation: knob-turn .75s linear infinite; }
+    /* Talking: ripples going out, and the voice ring under the disc. */
+    .talk-wave { border: 2px solid var(--ember); opacity: 0; }
+    .camera-talk[data-state="talking"] .talk-wave { animation: talk-ripple 1.6s var(--ease-out) infinite; }
+    .camera-talk[data-state="talking"] .talk-wave-late { animation-delay: .8s; }
+    @keyframes talk-ripple { from { opacity: .55; scale: 1; } to { opacity: 0; scale: 1.9; } }
+    .talk-level { z-index: 1; background: var(--ember); opacity: 0;
+      scale: calc(1 + var(--level) * .55); transition: scale 90ms linear, opacity var(--dur-fast); }
+    .camera-talk[data-state="talking"] .talk-level { opacity: .35; }
+    .talk-label { white-space: nowrap; }
+    .camera-talk[data-state="talking"] .talk-label { color: var(--ember); }
+    .camera-talk[data-state="failed"] .talk-button { animation: talk-shake 380ms var(--ease-out); }
+    @keyframes talk-shake { 20% { translate: -4px 0; } 45% { translate: 4px 0; }
+                            70% { translate: -2px 0; } 100% { translate: 0 0; } }
+    .camera-talk-why { color: var(--muted); animation: drop-in var(--dur-base) var(--ease-out); }
+
+    /* The player's icon buttons: sound, and full screen. One icon gives way to the other in
+       place (the glyph swap the media player's buttons use). */
+    .live-icon { position: relative; display: inline-grid; place-items: center; width: 2rem;
+      height: 2rem; padding: 0; color: var(--fg); background: var(--card);
+      border: 1px solid var(--line); border-radius: .5rem; cursor: pointer;
+      transition: border-color var(--dur-fast), background-color var(--dur-fast); }
+    .live-icon:hover { border-color: var(--ember); }
+    .live-icon .icon { width: 1.05rem; height: 1.05rem; }
+    .live-icon .glyph-first, .live-icon .glyph-second { display: grid; place-items: center; }
+    /* The camera's own infrared lights and siren (camera_extras.rs): filled while on. The
+       siren asks for a second press, pulsing red until it gets one or gives up. */
+    .live-extra.on { color: var(--paper); background: var(--ember); border-color: var(--ember); }
+    .live-siren.on { background: #c62828; border-color: #c62828;
+      animation: siren-on 1s ease-in-out infinite; }
+    .live-siren.armed { color: #c62828; border-color: #c62828;
+      animation: siren-armed .6s ease-in-out infinite alternate; }
+    .live-extra.waiting { opacity: .6; }
+    @keyframes siren-on { 50% { box-shadow: 0 0 0 .35rem rgba(198, 40, 40, .35); } }
+    @keyframes siren-armed { to { box-shadow: 0 0 0 .3rem rgba(198, 40, 40, .3); } }
+    @media (prefers-reduced-motion: reduce) { .live-siren.on, .live-siren.armed { animation: none; } }
+
+    /* Full screen (camera_live.js `full`): the camera block fills the screen, black around the
+       video, and its controls float over it: the bar along the bottom, the talk button in the
+       middle of it, the arrows at the right. They fade when the pointer is still, except while
+       someone is talking. Where the browser has no full screen, the block covers the page. */
+    .camera-stage.is-full { position: fixed; inset: 0; z-index: 1000; margin: 0; padding: 0;
+      background: #000; color: var(--paper); animation: stage-in var(--dur-layout) var(--ease-emphasized); }
+    @keyframes stage-in { from { opacity: 0; scale: .98; } }
+    html.camera-full { overflow: hidden; }
+    .camera-stage.is-full .camera-live { position: absolute; inset: 0; margin: 0; }
+    .camera-stage.is-full .camera-frame { position: absolute; inset: 0; width: auto;
+      max-width: none; max-height: none; aspect-ratio: auto; border: 0; border-radius: 0; }
+    .camera-stage.is-full .camera-live-bar { position: absolute; left: 0; right: 0; bottom: 0;
+      max-width: none; padding: 3.5rem 1.25rem 1.1rem; color: var(--paper);
+      background: linear-gradient(to top, rgba(0, 0, 0, .7), transparent); }
+    .camera-stage.is-full .live-segs { display: none; }
+    .camera-stage.is-full .camera-strip-wrap { display: none; }
+    /* The full-screen slider: a thick track and a big thumb, in a box a finger can find. */
+    .camera-stage.is-full .camera-live.zoomed .camera-pan { display: block; position: absolute;
+      right: calc(50% + 3rem); bottom: 3.2rem; width: clamp(8rem, 28vw, 16rem); height: 2.75rem;
+      margin: 0; padding: 0; z-index: 2; background: transparent; cursor: pointer;
+      touch-action: none; -webkit-appearance: none; appearance: none;
+      filter: drop-shadow(0 1px 3px rgba(0, 0, 0, .8)); }
+    /* `input.camera-pan` under `.camera-live`: more particular than the app's own sliders
+       (`input[type="range"]`, further down), which would otherwise win. */
+    .camera-live input.camera-pan::-webkit-slider-runnable-track { height: .5rem;
+      border-radius: 999px; background: rgba(255, 255, 255, .4); }
+    .camera-live input.camera-pan::-moz-range-track { height: .5rem; border-radius: 999px;
+      background: rgba(255, 255, 255, .4); }
+    .camera-live input.camera-pan::-moz-range-progress { height: .5rem; border-radius: 999px;
+      background: rgba(255, 255, 255, .4); }
+    .camera-live input.camera-pan::-webkit-slider-thumb { width: 1.6rem; height: 1.6rem;
+      margin-top: -.55rem; border-radius: 50%; background: var(--ember);
+      border: 2px solid var(--paper); box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
+    .camera-live input.camera-pan::-moz-range-thumb { width: 1.6rem; height: 1.6rem;
+      border-radius: 50%; background: var(--ember); border: 2px solid var(--paper);
+      box-shadow: 0 1px 4px rgba(0, 0, 0, .5); }
+    .camera-live input.camera-pan:active::-webkit-slider-thumb { transform: scale(1.15); }
+    .camera-live input.camera-pan:active::-moz-range-thumb { transform: scale(1.15); }
+    .camera-pan:focus-visible { outline: 2px solid var(--ember); outline-offset: 2px;
+      border-radius: 999px; }
+    .camera-stage.is-full .live-icon { width: 2.6rem; height: 2.6rem; border-radius: 50%;
+      color: var(--paper); background: rgba(20, 16, 14, .45); border-color: rgba(255, 255, 255, .18);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    .camera-stage.is-full .live-icon .icon { width: 1.2rem; height: 1.2rem; }
+    .camera-stage.is-full .live-extra.on { background: var(--ember); border-color: var(--ember); }
+    .camera-stage.is-full .live-siren.on { background: #c62828; border-color: #c62828; }
+    .camera-stage.is-full .camera-talk { position: absolute; left: 50%; bottom: 1rem;
+      translate: -50% 0; margin: 0; flex-direction: column; z-index: 2; }
+    .camera-stage.is-full .talk-button { flex-direction: column; gap: .35rem; padding: 0;
+      background: none; border: 0; color: var(--paper); }
+    .camera-stage.is-full .talk-disc { width: 4rem; height: 4rem; color: var(--paper);
+      background: rgba(20, 16, 14, .5); border-color: rgba(255, 255, 255, .25);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
+    .camera-stage.is-full .talk-disc .icon { width: 1.6rem; height: 1.6rem; }
+    .camera-stage.is-full .talk-button.held .talk-disc { background: var(--ember);
+      border-color: var(--ember); }
+    .camera-stage.is-full .talk-label { font-size: .78rem; text-shadow: 0 1px 3px #000; }
+    .camera-stage.is-full .camera-talk-why { color: var(--paper); text-shadow: 0 1px 3px #000; }
+    .camera-stage.is-full .camera-turn { position: absolute; right: 1.25rem; bottom: 5.5rem;
+      margin: 0; z-index: 2; }
+    .camera-stage.is-full .turn-button { color: var(--paper); background: rgba(20, 16, 14, .45);
+      border-color: rgba(255, 255, 255, .18); backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px); }
+    .camera-stage.is-full .turn-presets { color: var(--paper); text-shadow: 0 1px 3px #000; }
+    .camera-stage.is-full .history, .camera-stage.is-full > :not(.camera-live, .camera-talk, .camera-turn) {
+      display: none; }
+    .camera-stage.is-full :is(.camera-live-bar, .camera-talk, .camera-turn, .camera-pan) {
+      transition: opacity var(--dur-layout) var(--ease-out); }
+    /* A moved, filtered or contained box (a drawer sliding in) would hold the full-screen stage
+       inside itself instead of the screen; none of those while a camera fills it. */
+    :has(.camera-stage.is-full) {
+      translate: none !important; transform: none !important; filter: none !important;
+      contain: none !important; backdrop-filter: none !important; transition: none !important;
+      opacity: 1 !important; }
+    .camera-stage.is-full[data-idle]:not(:has(.talk-button.held)) { cursor: none; }
+    .camera-stage.is-full[data-idle]:not(:has(.talk-button.held))
+      :is(.camera-live-bar, .camera-talk, .camera-turn, .camera-pan) { opacity: 0; }
+    .camera-turn { display: flex; flex-wrap: wrap; align-items: center; gap: 1rem; margin: .5rem 0 .75rem; }
+    .camera-turn:empty { display: none; }
+    .feed-live-video { padding: 0 1rem 1rem; }
+    .feed-live-video .camera-frame { max-width: none; max-height: 70vh; }
+    .turn-pad { display: grid; grid-template-columns: repeat(3, 2.5rem); grid-auto-rows: 2.5rem; gap: .2rem; }
+    .turn-zoom { display: inline-flex; flex-direction: column; gap: .2rem; }
+    .turn-zoom .turn-button { width: 2.5rem; height: 2.5rem; }
+    .turn-button { font: inherit; font-size: .95rem; color: var(--fg); background: var(--card);
+      border: 1px solid var(--line); border-radius: .5rem; cursor: pointer;
+      touch-action: none; user-select: none; -webkit-user-select: none; }
+    .turn-button:hover { border-color: var(--muted); }
+    .turn-button:active { background: var(--line); }
+    .turn-middle { border-radius: 50%; margin: .9rem; background: var(--line); }
+    .turn-presets select { font: inherit; margin-left: .25rem; }
+    .live-seg[aria-pressed="true"] { color: var(--fg); background: var(--card);
+                                     box-shadow: 0 0 0 1px var(--line); }
     @keyframes frame-in { from { opacity: .7; } }
     /* An update: the bar fills as the install goes. A device that doesn't say how far it has
        got gets a bar that only says it's busy. */

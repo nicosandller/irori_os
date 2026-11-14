@@ -902,6 +902,9 @@ pub async fn remove_helper(table: &str, id: &str) -> Result<(), String> {
 struct SecretGiven<'a> {
     path: &'a [String],
     value: &'a str,
+    /// Only for a login (`SecretRequest::username`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<&'a str>,
 }
 
 /// Hands an extension a secret it asked for. Irori writes it to `secrets.toml`, restarts the
@@ -1156,9 +1159,14 @@ pub async fn give_secret(
     extension: &ExtensionId,
     path: &[String],
     value: &str,
+    username: Option<&str>,
 ) -> Result<(), String> {
     let response = put(&format!("/api/extensions/{extension}/secrets"))
-        .json(&SecretGiven { path, value })
+        .json(&SecretGiven {
+            path,
+            value,
+            username,
+        })
         .map_err(|e| e.to_string())?
         .send()
         .await
@@ -2019,6 +2027,27 @@ pub async fn assistant_check() -> Result<(), String> {
         .await
         .map_err(unreachable)?;
     checked(response).await
+}
+
+/// The models the cloud provider in the card's `fields` offers, to suggest as the model is
+/// typed. Irori asks the provider, so a saved key never comes to the page. Anything that goes
+/// wrong is no suggestions.
+pub async fn assistant_models(fields: &serde_json::Value) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Listed {
+        models: Vec<String>,
+    }
+    let Ok(request) = post("/api/assistant/models").json(fields) else {
+        return Vec::new();
+    };
+    match request.send().await {
+        Ok(response) if response.ok() => response
+            .json::<Listed>()
+            .await
+            .map(|listed| listed.models)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
 }
 
 fn encode_scope(scope: &str) -> String {

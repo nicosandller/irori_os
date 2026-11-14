@@ -36,6 +36,9 @@ pub struct Controls {
     pub busy: RwSignal<BTreeSet<EntityId>>,
     /// Why the last command on an entity was refused, until the next one succeeds.
     pub failures: RwSignal<BTreeMap<EntityId, String>>,
+    /// Which way a switch was last asked to go, while its device hasn't said it's there yet.
+    /// The knob travels at once and waits there; it springs back if the device never follows.
+    pub asked: RwSignal<BTreeMap<EntityId, (bool, u64)>>,
     /// Ask an entity to turn on (`true`) or off (`false`).
     pub set_on: Callback<(EntityId, bool)>,
     /// Ask a light to come on with this brightness, color temperature or color.

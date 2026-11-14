@@ -247,6 +247,12 @@ async fn drive(
                 Some(Incoming::Picture(asked)) => {
                     asked.reply(Err("Matter devices have no cameras here yet".to_owned()));
                 }
+                Some(Incoming::Live(live)) => {
+                    live.feed.end(Some("Matter devices have no cameras here yet".to_owned()));
+                }
+                Some(Incoming::Talk(talk)) => {
+                    talk.line.end(Some("Matter devices have no cameras here yet".to_owned()));
+                }
             },
             Some(finished) = done.recv() => home.finish(finished, ctx).await,
             _ = update_check.tick() => home.check_updates(None, &client, &done_tx),

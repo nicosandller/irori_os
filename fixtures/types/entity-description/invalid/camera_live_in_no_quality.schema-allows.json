@@ -1,0 +1,8 @@
+{
+  "unique_id": "05121508-0115-0400-0613-ec71dbc9da16-camera",
+  "name": "Driveway",
+  "capabilities": {
+    "kind": "camera",
+    "live": true
+  }
+}
