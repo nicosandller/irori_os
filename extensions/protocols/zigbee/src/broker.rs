@@ -7,14 +7,10 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
+use irori_ha_discovery::MAX_MESSAGE_BYTES;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use rumqttd::{Broker as EmbeddedBroker, Config, ConnectionSettings, RouterConfig, ServerSettings};
 use tokio::sync::mpsc;
-
-/// Zigbee2MQTT 2.14 retains `bridge/info` (~48KB, its settings schema included)
-/// and `bridge/definitions` (~228KB, the ZCL cluster list). A 20KB cap closed
-/// the connection while Home Assistant discovery was still starting.
-const MAX_MQTT_PACKET: usize = 1024 * 1024;
 
 /// Starts the embedded broker on its own OS thread (`rumqttd::Broker::start` is a blocking
 /// call, not an async one). No return value to join on: when this whole process exits — the
@@ -51,7 +47,7 @@ pub fn start_embedded(port: u16) -> Result<(), String> {
             next_connection_delay_ms: 1,
             connections: ConnectionSettings {
                 connection_timeout_ms: 60_000,
-                max_payload_size: MAX_MQTT_PACKET,
+                max_payload_size: MAX_MESSAGE_BYTES,
                 max_inflight_count: 100,
                 auth: None,
                 external_auth: None,
@@ -168,7 +164,7 @@ pub fn connect(
     let mut options = MqttOptions::new("irori-zigbee", "127.0.0.1", port);
     options.set_keep_alive(Duration::from_secs(30));
     // `bridge/info` is larger than rumqttc's 10KB default, and this client subscribes to it.
-    options.set_max_packet_size(MAX_MQTT_PACKET, MAX_MQTT_PACKET);
+    options.set_max_packet_size(MAX_MESSAGE_BYTES, MAX_MESSAGE_BYTES);
     let (client, mut event_loop) = AsyncClient::new(options, EVENT_QUEUE);
     let (tx, rx) = mpsc::channel(EVENT_QUEUE);
     let handle = tokio::spawn(async move {

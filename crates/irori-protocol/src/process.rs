@@ -27,8 +27,9 @@ use crate::{
     Rejected, ServiceError, ServiceErrorCode, host,
 };
 
-/// A message from the extension process to the host.
-#[derive(Debug, Serialize, Deserialize)]
+/// A message from the extension process to the host. Its JSON Schema is
+/// `schemas/extension-to-core.schema.json` (`docs/specs/protocols.md` §10).
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum FromExt {
     DescribeDevice {
@@ -171,8 +172,9 @@ pub enum FromExt {
 /// talks to a core that has it.
 pub type WireCommand = String;
 
-/// A message from the host to the extension process.
-#[derive(Debug, Serialize, Deserialize)]
+/// A message from the host to the extension process. Its JSON Schema is
+/// `schemas/core-to-extension.schema.json` (`docs/specs/protocols.md` §10).
+#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToExt {
     Hello {
@@ -252,8 +254,17 @@ pub enum ToExt {
     },
 }
 
+/// The JSON Schemas of the two directions of the wire, for `cargo xtask schemas`: what someone
+/// writing an extension in another language checks their messages against.
+pub fn schemas() -> Vec<irori_types::SchemaDoc> {
+    vec![
+        irori_types::SchemaDoc::for_type::<FromExt>("extension-to-core"),
+        irori_types::SchemaDoc::for_type::<ToExt>("core-to-extension"),
+    ]
+}
+
 /// A picture on the wire: its type, and its bytes as base64.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WirePicture {
     pub content_type: String,
     pub data: String,
@@ -285,7 +296,7 @@ impl TryFrom<WirePicture> for Picture {
 }
 
 /// A failed service call on the wire (`docs/specs/protocols.md` §7.3).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WireServiceError {
     pub code: String,
     pub message: String,
@@ -909,6 +920,53 @@ pub struct ExtProcess {
     pub child: Child,
     pub stdin: ChildStdin,
     pub stdout: BufReader<ChildStdout>,
+    /// The extension and everything it starts (issue #101).
+    pub group: ProcessGroup,
+}
+
+/// The process group an extension runs in, together with every program it starts: Zigbee2MQTT,
+/// the Matter server, a shell's children (issue #101).
+///
+/// Killing only the extension leaves those running, and they keep what they hold, a USB dongle
+/// or a port, so the restarted extension can't open it. Killing the group takes them too. So
+/// does dropping this, whatever path the extension's end takes.
+///
+/// The group keeps its id after the extension itself has exited and been reaped, for as long as
+/// anything is left in it, and an id isn't handed out again while a group still has it. So
+/// killing the group of an extension that crashed reaches what it left behind. Once the group is
+/// empty its id is free for anyone, so the group is killed once only: the first kill forgets it,
+/// and dropping it after that does nothing.
+#[derive(Debug)]
+pub struct ProcessGroup {
+    #[cfg(unix)]
+    id: Option<rustix::process::Pid>,
+}
+
+impl ProcessGroup {
+    /// The group `child` leads: it was started in a group of its own ([`spawn`]).
+    fn led_by(child: &Child) -> Self {
+        Self {
+            #[cfg(unix)]
+            id: child
+                .id()
+                .and_then(|id| i32::try_from(id).ok())
+                .and_then(rustix::process::Pid::from_raw),
+        }
+    }
+
+    /// Kills everything left in the group, the first time only. Nothing left is not an error.
+    pub fn kill(&mut self) {
+        #[cfg(unix)]
+        if let Some(id) = self.id.take() {
+            let _ = rustix::process::kill_process_group(id, rustix::process::Signal::KILL);
+        }
+    }
+}
+
+impl Drop for ProcessGroup {
+    fn drop(&mut self) {
+        self.kill();
+    }
 }
 
 /// Runs `command`, and tries again when the kernel says the program file is still busy.
@@ -981,6 +1039,10 @@ pub fn spawn(
         // to the person looking at the extension's card.
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    // A group of its own, so what it starts can be stopped with it ([`ProcessGroup`]). It also
+    // means Ctrl-C in a terminal reaches Irori alone, which stops its extensions in order.
+    #[cfg(unix)]
+    child_command.process_group(0);
     let mut child = spawn_child(&mut child_command)
         .map_err(|e| format!("couldn't start {}: {e}", command.display()))?;
     let stdin = child
@@ -995,11 +1057,13 @@ pub fn spawn(
         .stderr
         .take()
         .ok_or_else(|| "child stderr missing".to_owned())?;
+    let group = ProcessGroup::led_by(&child);
     Ok((
         ExtProcess {
             child,
             stdin,
             stdout: BufReader::new(stdout),
+            group,
         },
         stderr,
     ))
@@ -1020,10 +1084,17 @@ impl ExtProcess {
         stdin.flush().await.map_err(|e| e.to_string())
     }
 
+    /// Reads the next message. See [`ExtProcess::recv_on`]: not safe inside `select!`.
     pub async fn recv(&mut self) -> Result<FromExt, String> {
         Self::recv_on(&mut self.stdout).await
     }
 
+    /// Reads the next message from `stdout`.
+    ///
+    /// **Not cancel-safe: never use it as a branch of `select!`.** A message longer than one read
+    /// arrives in pieces; if another branch wins after the first piece, that piece is gone and
+    /// the rest of the line won't parse. Read from a task of its own that sends whole messages
+    /// into a channel, and `select!` on the channel instead, as the host's `Reader` does.
     pub async fn recv_on(stdout: &mut BufReader<ChildStdout>) -> Result<FromExt, String> {
         read_json(stdout).await
     }

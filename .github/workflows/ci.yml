@@ -110,8 +110,8 @@ jobs:
           done
           echo "total: $total bytes brotli"
           # The UI must stay under 5 MB compressed. Raised from 500 KB (2026-09-28) to leave room
-          # for motion and charts; the binary doesn't serve these compressed yet, see
-          # crates/irori-ui/README.md.
+          # for motion and charts. The globs above match the originals only, not the `.gz` /
+          # `.br` copies `cargo xtask ui` writes next to them; see crates/irori-ui/README.md.
           [ "$total" -le 5242880 ] || { echo "over the 5 MB budget"; exit 1; }
 
       # The binaries built below embed this, so a release carries the real UI, not the

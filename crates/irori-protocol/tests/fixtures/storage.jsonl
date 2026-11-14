@@ -1,0 +1,8 @@
+{"from": "extension", "message": {"type": "load", "id": 3, "key": "paired"}}
+{"from": "core", "message": {"type": "loaded", "id": 3}}
+{"from": "extension", "message": {"type": "store", "id": 4, "key": "paired", "value": ["lamp"]}}
+{"from": "core", "message": {"type": "reply", "id": 4}}
+{"from": "extension", "message": {"type": "load", "id": 5, "key": "paired"}}
+{"from": "core", "message": {"type": "loaded", "id": 5, "value": ["lamp"]}}
+{"from": "extension", "message": {"type": "store", "id": 6, "key": "paired"}}
+{"from": "core", "message": {"type": "reply", "id": 6}}

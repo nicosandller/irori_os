@@ -1421,6 +1421,31 @@ pub fn Section() -> impl IntoView {
         });
     };
     let ollama_up = move || status().is_some_and(|status| status.ollama == "up");
+    // The models the provider says its key can use, suggested in the model box. Irori asks,
+    // with the key typed or the one it keeps; an answer for fields since changed is dropped.
+    let suggested = RwSignal::new(Vec::<String>::new());
+    let list_models = move || {
+        let asked = (preset.get_untracked(), base_url.get_untracked());
+        let mut fields = serde_json::json!({ "preset": asked.0, "base_url": asked.1 });
+        let typed = api_key.get_untracked();
+        if !typed.trim().is_empty() {
+            fields["api_key"] = serde_json::Value::String(typed);
+        }
+        spawn_local(async move {
+            let models = api::assistant_models(&fields).await;
+            if (preset.get_untracked(), base_url.get_untracked()) == asked {
+                suggested.set(models);
+            }
+        });
+    };
+    // Asked again whenever the provider changes, and once the fields can be typed in.
+    Effect::new(move |_| {
+        preset.track();
+        if loaded.get() && side.get() == Side::Cloud && !settled() {
+            suggested.set(Vec::new());
+            list_models();
+        }
+    });
 
     view! {
         <div class="assistant-card">
@@ -1769,16 +1794,34 @@ pub fn Section() -> impl IntoView {
                                 disabled=move || settled() || checking.get()
                                 prop:value=move || base_url.get()
                                 on:input=move |event| base_url.set(event_target_value(&event))
+                                on:change=move |_| list_models()
                             />
                         </label>
                         <label>
                             <span>"MODEL"</span>
+                            // Suggestions, not a choice: an endpoint that can't list its
+                            // models, or a model its list leaves out, is still typed.
                             <input
                                 type="text"
+                                list="assistant-cloud-models"
+                                autocomplete="off"
                                 disabled=move || settled() || checking.get()
+                                placeholder=move || {
+                                    let offered = suggested.get().len();
+                                    if offered == 0 {
+                                        String::new()
+                                    } else {
+                                        format!("Type, or pick one of the {offered} it offers")
+                                    }
+                                }
                                 prop:value=move || model.get()
                                 on:input=move |event| model.set(event_target_value(&event))
                             />
+                            <datalist id="assistant-cloud-models">
+                                {move || suggested.get().into_iter().map(|name| view! {
+                                    <option value=name></option>
+                                }).collect_view()}
+                            </datalist>
                         </label>
                         <label>
                             <span>"API KEY"</span>
@@ -1797,8 +1840,16 @@ pub fn Section() -> impl IntoView {
                                 }
                                 prop:value=move || api_key.get()
                                 on:input=move |event| api_key.set(event_target_value(&event))
+                                on:change=move |_| list_models()
                             />
                         </label>
+                        {move || key_page(&preset.get()).map(|page| view! {
+                            <p class="muted small">
+                                "Make a key at "
+                                <a href=page target="_blank" rel="noreferrer">{page_host(page)}</a>
+                                "."
+                            </p>
+                        })}
                         <p class="muted small">
                             "A cloud answer leaves the house: what you ask goes to the provider, \
                              with the names and states of your devices, your automations, \
@@ -2070,9 +2121,42 @@ fn preset_url(preset: &str) -> Option<&'static str> {
     }
 }
 
+/// Where a provider's API keys are made, kept beside [`preset_url`] so a provider that moves
+/// is put right in one place. An OpenAI-compatible endpoint is anybody's, with no page to name.
+fn key_page(preset: &str) -> Option<&'static str> {
+    match preset {
+        "openai" => Some("https://platform.openai.com/api-keys"),
+        "anthropic" => Some("https://platform.claude.com/settings/keys"),
+        "grok" => Some("https://console.x.ai/"),
+        _ => None,
+    }
+}
+
+/// `https://platform.openai.com/api-keys` said as `platform.openai.com`.
+fn page_host(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, rest)| rest);
+    rest.split('/').next().unwrap_or(rest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_provider_with_an_endpoint_names_where_its_keys_are_made() {
+        for preset in ["openai", "anthropic", "grok", "compatible"] {
+            assert_eq!(
+                preset_url(preset).is_some(),
+                key_page(preset).is_some(),
+                "{preset}"
+            );
+        }
+        assert_eq!(
+            key_page("openai").map(page_host),
+            Some("platform.openai.com")
+        );
+        assert_eq!(key_page("grok").map(page_host), Some("console.x.ai"));
+    }
 
     #[test]
     fn progress_is_said_in_the_cards_own_words() {

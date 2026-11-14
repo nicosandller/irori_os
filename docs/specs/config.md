@@ -62,6 +62,10 @@ config/
     <id>.toml     an extension's settings that aren't secret
 ```
 
+How the files relate to the core, the UI and the database:
+
+![The files in the config directory and how they connect to the core, the UI, hand edits and the recorder database](img/config-dir.svg)
+
 Every file is optional. A file that is absent means "nothing said".
 
 ### 3.1 `areas.toml`
@@ -624,6 +628,17 @@ context.
 `anthropic` speaks Anthropic's. An empty `base_url` is filled from the preset (`compatible`
 has none). The API key is not in this file. It is `api_key` under `[assistant]` in
 `secrets.toml` (§3.4), written owner-only, and no request reads it back.
+
+Settings suggests a `model` from the provider's own list, and links to the page where the
+provider's keys are made (none for `compatible`). The list is asked for by Irori, not the page,
+with `POST /api/assistant/models` (owner only): the card's `preset`, `base_url` and a typed
+`api_key`, each optional. Irori asks `GET {base_url}/models` with the key as a bearer token, or
+`GET {base_url}/v1/models` with `x-api-key` and `anthropic-version` for `anthropic`, and answers
+`{"models": [...]}` with the ids it got back. The request carries the key and nothing of the
+home, and follows no redirect. The saved key is sent only to the preset and endpoint it was
+saved with; for another, with no key typed, nothing is asked, except a `compatible` endpoint,
+which is asked with no key. A provider that refuses, can't be reached, or answers with
+anything else is an empty list, and the model is typed as before.
 
 ### 3.9 `home.toml`
 

@@ -1,0 +1,84 @@
+<svg width="680" height="640" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 640" role="img"><title>Irori config directory</title><desc>The TOML files in the config directory, grouped by home, devices and system. The core reads them; the UI, CLI and API and hand edits write them. Protocol extensions feed the core live device facts, and the core writes state history to the recorder database.</desc>
+<style>
+text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.t{font-size:14px;fill:#2C2C2A}.ts{font-size:12px;fill:#5F5E5A}.th{font-size:14px;font-weight:500;fill:#2C2C2A}
+.box{fill:#F1EFE8;stroke:#888780}
+.arr{stroke:#5F5E5A;fill:none;stroke-width:1.5}.mk{stroke:#5F5E5A}
+.dash{fill:none;stroke:#888780;stroke-width:.5;stroke-dasharray:4 4}
+.c-purple>rect{fill:#EEEDFE;stroke:#534AB7}.c-purple .th,.c-purple .t{fill:#3C3489}.c-purple .ts{fill:#534AB7}
+.c-teal>rect{fill:#E1F5EE;stroke:#0F6E56}.c-teal .th,.c-teal .t{fill:#085041}.c-teal .ts{fill:#0F6E56}
+@media (prefers-color-scheme:dark){
+.t,.th{fill:#F1EFE8}.ts{fill:#D3D1C7}
+.box{fill:#2C2C2A;stroke:#888780}
+.arr{stroke:#B4B2A9}.mk{stroke:#B4B2A9}.dash{stroke:#888780}
+.c-purple>rect{fill:#3C3489;stroke:#AFA9EC}.c-purple .th,.c-purple .t{fill:#CECBF6}.c-purple .ts{fill:#AFA9EC}
+.c-teal>rect{fill:#085041;stroke:#5DCAA5}.c-teal .th,.c-teal .t{fill:#9FE1CB}.c-teal .ts{fill:#5DCAA5}}
+</style><defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" class="mk" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
+<g>
+<rect class="box" x="240" y="40" width="200" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="340" y="58" text-anchor="middle" dominant-baseline="central">Protocol extensions</text>
+<text class="ts" x="340" y="78" text-anchor="middle" dominant-baseline="central">Live device facts</text>
+</g>
+<g>
+<rect class="box" x="40" y="136" width="150" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="115" y="154" text-anchor="middle" dominant-baseline="central">UI · CLI · API</text>
+<text class="ts" x="115" y="174" text-anchor="middle" dominant-baseline="central">Write the files</text>
+</g>
+<g class="c-purple">
+<rect x="240" y="136" width="200" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="340" y="154" text-anchor="middle" dominant-baseline="central">Irori core</text>
+<text class="ts" x="340" y="174" text-anchor="middle" dominant-baseline="central">Registry and live state</text>
+</g>
+<g>
+<rect class="box" x="490" y="136" width="150" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="565" y="154" text-anchor="middle" dominant-baseline="central">Recorder database</text>
+<text class="ts" x="565" y="174" text-anchor="middle" dominant-baseline="central">Past entity states</text>
+</g>
+<line x1="340" y1="96" x2="340" y2="134" class="arr" marker-end="url(#arrow)"/>
+<line x1="240" y1="164" x2="192" y2="164" class="arr" marker-end="url(#arrow)"/>
+<line x1="440" y1="164" x2="488" y2="164" class="arr" marker-end="url(#arrow)"/>
+<line x1="115" y1="192" x2="115" y2="238" class="arr" marker-end="url(#arrow)"/>
+<line x1="340" y1="240" x2="340" y2="194" class="arr" marker-end="url(#arrow)"/>
+<rect class="dash" x="40" y="240" width="600" height="280" rx="20"/>
+<text class="th" x="60" y="262" dominant-baseline="central">Config dir</text>
+<g class="c-teal">
+<rect x="60" y="280" width="176" height="220" rx="12" stroke-width="0.5"/>
+<text class="th" x="148" y="300" text-anchor="middle" dominant-baseline="central">Home</text>
+<text class="t" x="148" y="330" text-anchor="middle" dominant-baseline="central">areas.toml</text>
+<text class="ts" x="148" y="348" text-anchor="middle" dominant-baseline="central">Floors and rooms</text>
+<text class="t" x="148" y="374" text-anchor="middle" dominant-baseline="central">floorplan.toml</text>
+<text class="ts" x="148" y="392" text-anchor="middle" dominant-baseline="central">Walls, doors, placement</text>
+<text class="t" x="148" y="418" text-anchor="middle" dominant-baseline="central">home.toml</text>
+<text class="ts" x="148" y="436" text-anchor="middle" dominant-baseline="central">Time zone, location</text>
+<text class="t" x="148" y="462" text-anchor="middle" dominant-baseline="central">users.toml</text>
+<text class="ts" x="148" y="480" text-anchor="middle" dominant-baseline="central">People and access</text>
+</g>
+<g class="c-teal">
+<rect x="252" y="280" width="176" height="220" rx="12" stroke-width="0.5"/>
+<text class="th" x="340" y="300" text-anchor="middle" dominant-baseline="central">Devices, extensions</text>
+<text class="t" x="340" y="330" text-anchor="middle" dominant-baseline="central">devices.toml</text>
+<text class="ts" x="340" y="348" text-anchor="middle" dominant-baseline="central">Name, room, description</text>
+<text class="t" x="340" y="374" text-anchor="middle" dominant-baseline="central">entities.toml</text>
+<text class="ts" x="340" y="392" text-anchor="middle" dominant-baseline="central">Entity names</text>
+<text class="t" x="340" y="418" text-anchor="middle" dominant-baseline="central">extensions/&lt;id&gt;.toml</text>
+<text class="ts" x="340" y="436" text-anchor="middle" dominant-baseline="central">Per-extension settings</text>
+</g>
+<g class="c-teal">
+<rect x="444" y="280" width="176" height="220" rx="12" stroke-width="0.5"/>
+<text class="th" x="532" y="300" text-anchor="middle" dominant-baseline="central">System</text>
+<text class="t" x="532" y="330" text-anchor="middle" dominant-baseline="central">irori.toml</text>
+<text class="ts" x="532" y="348" text-anchor="middle" dominant-baseline="central">Core settings</text>
+<text class="t" x="532" y="374" text-anchor="middle" dominant-baseline="central">assistant.toml</text>
+<text class="ts" x="532" y="392" text-anchor="middle" dominant-baseline="central">AI assistant</text>
+<text class="t" x="532" y="418" text-anchor="middle" dominant-baseline="central">backup.toml</text>
+<text class="ts" x="532" y="436" text-anchor="middle" dominant-baseline="central">Backup schedule</text>
+<text class="t" x="532" y="462" text-anchor="middle" dominant-baseline="central">secrets.toml</text>
+<text class="ts" x="532" y="480" text-anchor="middle" dominant-baseline="central">Keys, passwords, tokens</text>
+</g>
+<line x1="115" y1="560" x2="115" y2="522" class="arr" marker-end="url(#arrow)"/>
+<g>
+<rect class="box" x="40" y="560" width="150" height="56" rx="8" stroke-width="0.5"/>
+<text class="th" x="115" y="578" text-anchor="middle" dominant-baseline="central">Text editor</text>
+<text class="ts" x="115" y="598" text-anchor="middle" dominant-baseline="central">Hand edits</text>
+</g>
+</svg>

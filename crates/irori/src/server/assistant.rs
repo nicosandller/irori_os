@@ -66,6 +66,17 @@ pub async fn check(State(state): State<AppState>) -> Response {
     }
 }
 
+/// The models the cloud provider in the card's fields offers, to suggest as the model is
+/// typed. Asked by the core so the key never reaches the page; anything that goes wrong is an
+/// empty list.
+pub async fn models(
+    State(state): State<AppState>,
+    Json(body): Json<serde_json::Value>,
+) -> Json<serde_json::Value> {
+    let models = assistant::models(&state.0.config, &body).await;
+    Json(serde_json::json!({ "models": models }))
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Ask {
     scope: String,

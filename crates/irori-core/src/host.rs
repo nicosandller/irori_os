@@ -11,7 +11,9 @@ use std::time::Duration;
 
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
-use irori_protocol::{ExtProcess, FromExt, IncomingAction, IncomingCall, ToExt, spawn};
+use irori_protocol::{
+    ExtProcess, FromExt, IncomingAction, IncomingCall, ProcessGroup, ToExt, spawn,
+};
 
 use crate::engine::EngineLink;
 use std::collections::BTreeSet;
@@ -19,7 +21,7 @@ use std::collections::BTreeSet;
 use irori_types::{
     EntityKind, ExtensionId, ExtensionManifest, ExtensionSettings, PackagePath, ProtocolId,
 };
-use tokio::io::BufReader;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinError, JoinHandle};
@@ -1551,6 +1553,7 @@ async fn supervise_package(
                     outgoing: Outgoing::Inbound(ready.outgoing),
                     incoming: Incoming::Inbound(ready.incoming),
                     child: None,
+                    group: None,
                     reading: None,
                 },
                 ready.started_with,
@@ -1590,9 +1593,10 @@ async fn supervise_package(
                 mut child,
                 stdin,
                 stdout,
+                mut group,
             } = proc;
             let mut outgoing = Outgoing::Process(stdin);
-            let incoming = Incoming::Process(stdout);
+            let incoming = Incoming::Process(Reader::spawn(stdout));
             if let Err(reason) = outgoing
                 .deliver(ToExt::Hello {
                     settings: started_with.clone(),
@@ -1600,6 +1604,7 @@ async fn supervise_package(
                 .await
             {
                 tracing::error!(%extension, %reason, "can't talk to extension");
+                group.kill();
                 let _ = child.start_kill();
                 finish_reading(reading).await;
                 core.set_status(
@@ -1622,6 +1627,7 @@ async fn supervise_package(
                     outgoing,
                     incoming,
                     child: Some(child),
+                    group: Some(group),
                     reading: Some(reading),
                 },
                 started_with.clone(),
@@ -1697,6 +1703,12 @@ async fn supervise_package(
         // The pump already asked a process to stop, and may have killed it. Say it once more
         // on the way out. A program that dialed in only hears it here: there is nothing to kill.
         let _ = link.outgoing.deliver(ToExt::Stop).await;
+        // The whole group, whether the extension is still running, was killed, or exited by
+        // itself: a crash leaves what it started running, holding a dongle or a port the
+        // restarted extension needs (issue #101).
+        if let Some(group) = link.group.as_mut() {
+            group.kill();
+        }
         if let Some(child) = link.child.as_mut() {
             let _ = child.start_kill();
         }
@@ -1775,15 +1787,75 @@ enum Outgoing {
 
 /// Words the extension sends back.
 enum Incoming {
-    Process(BufReader<ChildStdout>),
+    Process(Reader),
     Inbound(mpsc::Receiver<FromExt>),
 }
 
-/// One running extension: the pipes it speaks on, and, for a process, the child and its stderr.
+/// A process's stdout, read by a task of its own that hands on whole messages (issue #91).
+///
+/// The host takes the next message inside a `select!`, where a call or an action can win at any
+/// moment. Reading a line there isn't safe to interrupt: a message longer than one read (a
+/// camera's picture, a network map) would lose its first half when another branch won, and the
+/// rest wouldn't parse. A channel's `recv` loses nothing when it's interrupted, so the reading
+/// happens here instead, where nothing interrupts it.
+struct Reader {
+    messages: mpsc::Receiver<Result<FromExt, String>>,
+    task: JoinHandle<()>,
+}
+
+impl Reader {
+    fn spawn(mut stdout: BufReader<ChildStdout>) -> Self {
+        // Room for one message while the next is read. Full, the reader waits, the pipe fills,
+        // and the extension waits on its next line, so a fast extension can't pile whole
+        // messages up in the host's memory.
+        let (tx, messages) = mpsc::channel(1);
+        let task = tokio::spawn(async move {
+            loop {
+                let message = read_message(&mut stdout).await;
+                let failed = message.is_err();
+                // Its first failure is its last word: whatever follows can't be trusted.
+                if tx.send(message).await.is_err() || failed {
+                    return;
+                }
+            }
+        });
+        Self { messages, task }
+    }
+
+    async fn take(&mut self) -> Result<FromExt, String> {
+        self.messages
+            .recv()
+            .await
+            .unwrap_or_else(|| Err("the extension stopped talking".to_owned()))
+    }
+}
+
+/// What the reader says when the extension's stdout ends.
+const OUTPUT_CLOSED: &str = "the extension closed its output";
+
+/// Reads one line of an extension's stdout as a message, in the host's words when it fails.
+async fn read_message(stdout: &mut BufReader<ChildStdout>) -> Result<FromExt, String> {
+    let mut line = String::new();
+    match stdout.read_line(&mut line).await {
+        Ok(0) => Err(OUTPUT_CLOSED.to_owned()),
+        Ok(_) => serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}")),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+/// One running extension: the pipes it speaks on, and, for a process, the child, the group it
+/// and what it starts run in, and its stderr.
 struct Link {
     outgoing: Outgoing,
     incoming: Incoming,
     child: Option<Child>,
+    group: Option<ProcessGroup>,
     reading: Option<JoinHandle<()>>,
 }
 
@@ -1802,7 +1874,7 @@ impl Outgoing {
 impl Incoming {
     async fn take(&mut self) -> Result<FromExt, String> {
         match self {
-            Self::Process(stdout) => ExtProcess::recv_on(stdout).await,
+            Self::Process(reader) => reader.take().await,
             Self::Inbound(incoming) => incoming
                 .recv()
                 .await
@@ -1952,7 +2024,13 @@ async fn drive(
                     Some(child) => exit_reason(child.wait().await),
                     None => std::future::pending().await,
                 }
-            } => return Outcome::Ended(reason),
+            } => {
+                last_messages(
+                    &mut link.incoming, core, extension, protocol, kinds, engine,
+                    &mut pending_calls, &mut pending_actions,
+                ).await;
+                return Outcome::Ended(reason);
+            }
             () = settings_changed(settings, extension, started_with) => {
                 break Outcome::Reconfigured;
             }
@@ -2004,7 +2082,7 @@ async fn drive(
                             Err(reason) => return Outcome::Ended(reason),
                         }
                     }
-                    Err(reason) => return Outcome::Ended(reason),
+                    Err(reason) => return Outcome::Ended(exited_instead(child, reason).await),
                 }
             }
         }
@@ -2016,21 +2094,33 @@ async fn drive(
     let _ = link.outgoing.deliver(ToExt::Stop).await;
     let grace = tokio::time::sleep(timing.stop_grace);
     tokio::pin!(grace);
+    // Once the output fails it stays failed: asking again would answer at once, every time.
+    let mut talking = true;
     loop {
         tokio::select! {
             biased;
             status = child.wait() => {
                 let _ = status;
+                last_messages(
+                    &mut link.incoming, core, extension, protocol, kinds, engine,
+                    &mut pending_calls, &mut pending_actions,
+                ).await;
                 return why;
             }
             () = &mut grace => {
                 tracing::warn!(%extension, "extension didn't stop in time; cancelling it");
+                if let Some(group) = link.group.as_mut() {
+                    group.kill();
+                }
                 let _ = child.start_kill();
                 return why;
             }
-            msg = link.incoming.take() => {
-                if let Ok(from) = msg
-                    && let Some(from) = engine.handle(core, extension, from)
+            msg = link.incoming.take(), if talking => {
+                let Ok(from) = msg else {
+                    talking = false;
+                    continue;
+                };
+                if let Some(from) = engine.handle(core, extension, from)
                     && let Ok(Some(reply)) = apply_from_ext(
                         core, extension, protocol, kinds, from, &mut pending_calls,
                         &mut pending_actions,
@@ -2040,6 +2130,54 @@ async fn drive(
                 }
             }
         }
+    }
+}
+
+/// How long an exited extension's last messages get to arrive.
+const LAST_MESSAGES: Duration = Duration::from_secs(1);
+
+/// Applies what an extension said just before it exited: a final report or its health would
+/// otherwise be dropped with the reader. Its replies have no one to go to.
+#[allow(clippy::too_many_arguments)]
+async fn last_messages(
+    incoming: &mut Incoming,
+    core: &Core,
+    extension: &ExtensionId,
+    protocol: &ProtocolId,
+    kinds: &[EntityKind],
+    engine: &mut EngineLink,
+    pending_calls: &mut HashMap<u64, IncomingCall>,
+    pending_actions: &mut HashMap<u64, IncomingAction>,
+) {
+    let until = Instant::now() + LAST_MESSAGES;
+    while let Ok(Ok(from)) = tokio::time::timeout_at(until, incoming.take()).await {
+        if let Some(from) = engine.handle(core, extension, from) {
+            let _ = apply_from_ext(
+                core,
+                extension,
+                protocol,
+                kinds,
+                from,
+                pending_calls,
+                pending_actions,
+            )
+            .await;
+        }
+    }
+}
+
+/// How long to wait, once an extension's output fails, for the process to say why it ended.
+const EXIT_AFTER_OUTPUT: Duration = Duration::from_millis(200);
+
+/// An extension's output usually ends because the process did: its exit says more than the
+/// closed pipe. Any other failure, such as a line that didn't parse, is the reason as it is.
+async fn exited_instead(child: &mut Option<Child>, reason: String) -> String {
+    let Some(child) = child.as_mut().filter(|_| reason == OUTPUT_CLOSED) else {
+        return reason;
+    };
+    match tokio::time::timeout(EXIT_AFTER_OUTPUT, child.wait()).await {
+        Ok(status) => exit_reason(status),
+        Err(_) => reason,
     }
 }
 

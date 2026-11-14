@@ -4,6 +4,8 @@ What's built and what isn't. Rows aren't in order: anything can be picked up onc
 
 **Status:** ✅ done · 🟠 in progress / partial · - not started
 
+**Milestones:** a row that links a [milestone](https://github.com/nicosandller/irori_os/milestones) has open work tracked there: its issues and pull requests, and how many are done.
+
 Vision: [INSPIRATION.md](INSPIRATION.md).
 
 ## Core
@@ -15,7 +17,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C3 | Extension spec | Manifest + protocol contract (`docs/specs/extensions.md`) | ✅ | |
 | C4 | Config dir | `irori.toml`, per-extension config, hot reload (`docs/specs/config.md`) | ✅ | |
 | C5 | Registry, state & event bus | In-memory registry/state, typed events, service calls with contexts | ✅ | C2 |
-| C6 | Extension host | Load, supervise and restart extensions, crash isolation | ✅ | C3, C5 |
+| C6 | Extension host | Load, supervise and restart extensions, crash isolation. Hardening found since: [milestone](https://github.com/nicosandller/irori_os/milestone/2) | ✅ | C3, C5 |
 | C7 | Extension install/uninstall | Official packages from `official.toml`, install by URL, separate release packages, update an installed one in place | ✅ | C6 |
 | C8 | Install & packaging | `install.sh`, release packaging, port fallback | ✅ | C1 |
 | C9 | Rules spec & validation | Rule format, CEL, 3-layer validation as a library | ✅ | C2 |
@@ -32,7 +34,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C23 | Updates | The `update` kind: firmware for Zigbee, ESPHome and MQTT devices, and Irori's own extensions, in one list on the Devices page. Install asks first, a version can be skipped, installs on one protocol go one at a time, and a failed one says why. Irori says when a newer release of itself is out (`[updates] check`), and one installed with `install.sh` replaces itself: checksum checked, the new binary tried first, the old one kept beside it | ✅ | C5, C32 |
 | C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size is enforced today: under 5 MB brotli) | 🟠 | C1 |
 | C25 | JSON Schemas & golden examples | Schemas generated from `irori-types`, checked fresh in CI, valid/invalid example tests (`fixtures/`) | ✅ | C2, C3, C4, C9 |
-| C26 | Extension signing & permissions | Signature verification, approve permissions on install/update. Only the "full access" approval exists; no signing | 🟠 | C7 |
+| C26 | Extension signing & permissions | Signature verification, approve permissions on install/update. Only the "full access" approval exists; no signing. [Milestone](https://github.com/nicosandller/irori_os/milestone/3) | 🟠 | C7 |
 | C28 | Multi-user | Per-area permissions, an audit log, a regular user's own Automations view. Owner and user roles are C14. A person has the rooms the owner gives them and, outside them, nothing in the home exists for them, on every surface (`docs/specs/access.md`); every change and every refusal is written to a log only an owner reads, which a backup holds as its own part; a regular user writes their own flows, checked against their rooms when saved and whenever the home changes. Follow-ups: rooms on tokens, a view-only role, guests who expire | ✅ | C17 |
 | C29 | Backup & restore | One-file backups of the config and the database, taken while running, sealed with a recovery key, on a schedule or before an update, copied to folders (mounted shares, USB), WebDAV and S3. Restore from the page, the terminal, or the first-run welcome, with parts chosen (history can be left as it is); a backup can be checked without restoring it (`docs/specs/backup.md`) | ✅ | C18 |
 | C30 | Engine API for extensions | Engines subscribe to state and registry, read history, call services as `Origin::Automation`; API scopes enforced (`docs/specs/automations.md` §B2) | ✅ | C6 |
@@ -52,8 +54,8 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | X4 | Zigbee | Self-installed Zigbee2MQTT, embedded broker, permit-join | ✅ | C6, X3 |
 | X5 | MQTT | Generic MQTT + HA Discovery against an external broker | ✅ | C6, X3 |
 | X6 | Floorplan | Walls, floors, rooms, drag devices into rooms, device glyphs, doors and windows that follow their contact sensor, snapping to midpoints and guides, angles, room colours, the plan as JSON, and an assistant that answers about a floor and draws on the plan being edited. Built into the UI. Still open: create/delete areas from the plan, a wall's length typed, per-device icon and label (#27) | 🟠 | C11 |
-| X7 | Shadow mode | Run alongside HA on the same devices to validate Irori | - | X5 |
-| X8 | Extension SDKs & templates | `cargo generate` templates, Python package, docs | - | C17 |
+| X7 | Shadow mode | Run alongside HA on the same devices to validate Irori. [Milestone](https://github.com/nicosandller/irori_os/milestone/1) | - | X5 |
+| X8 | Extension SDKs & templates | `cargo generate` templates, Python package, docs. [Milestone](https://github.com/nicosandller/irori_os/milestone/5) | - | C17 |
 | X9 | App contributions | Pages under `/apps/<id>/` beyond the sidebar slot that C31 delivered (config editor, log viewer, terminal) | - | C17, C26, C31 |
 | X10 | AI providers | `irori-assist`: Anthropic, OpenAI-compatible, and a local Ollama that Irori installs and manages. Settings, chats for the home, a device, an automation and Settings, and read-only tools are in, plus `propose_helper` and `propose_flow`, which fill a copy the person has open and do not write until Create or Save. No service calls | 🟠 | |
 | X11 | AI rule authoring | Natural language → validated flow; "why did/didn't this fire?". Explaining a run is in. Authoring is in for the automation open in the editor, saved or new, with a cloud model: the suggestion lands on the canvas, unsaved, and can be backtested | 🟠 | X10, X19 |

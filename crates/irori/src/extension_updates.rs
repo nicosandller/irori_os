@@ -45,7 +45,7 @@ pub fn offered(
                 id: item.id.clone(),
                 name: item.name.to_string(),
                 installed: info.version.to_string(),
-                latest: item.version.clone(),
+                latest: item.version.to_string(),
                 full_access: item.full_access,
             })
         })
@@ -82,14 +82,14 @@ mod tests {
     fn only_installed_extensions_whose_manifest_was_read_are_offered() {
         let catalog = crate::packages::official();
         assert!(offered(&catalog, &BTreeMap::new()).is_empty());
-        // Every catalog entry can be an update: its id and version are what the entity is made of.
+        // Every catalog entry can be an update: its id is what the entity is made of (and its
+        // version is a valid one, or the catalog wouldn't parse).
         for item in &catalog {
             assert!(
                 irori_protocol::types::ObjectId::try_from(format!("irori_{}", item.id)).is_ok(),
                 "{}",
                 item.id
             );
-            assert!(!item.version.is_empty());
         }
     }
 }

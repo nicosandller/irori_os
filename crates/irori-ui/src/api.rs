@@ -2019,6 +2019,27 @@ pub async fn assistant_check() -> Result<(), String> {
     checked(response).await
 }
 
+/// The models the cloud provider in the card's `fields` offers, to suggest as the model is
+/// typed. Irori asks the provider, so a saved key never comes to the page. Anything that goes
+/// wrong is no suggestions.
+pub async fn assistant_models(fields: &serde_json::Value) -> Vec<String> {
+    #[derive(serde::Deserialize)]
+    struct Listed {
+        models: Vec<String>,
+    }
+    let Ok(request) = post("/api/assistant/models").json(fields) else {
+        return Vec::new();
+    };
+    match request.send().await {
+        Ok(response) if response.ok() => response
+            .json::<Listed>()
+            .await
+            .map(|listed| listed.models)
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
 fn encode_scope(scope: &str) -> String {
     scope.replace(':', "%3A")
 }

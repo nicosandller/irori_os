@@ -48,9 +48,9 @@ pub struct Spawned {
 /// Starts `command` with its output piped into Irori's log. `kill_on_drop` means dropping the
 /// returned `Child` — the extension's own process exiting normally, in particular — takes it down
 /// too, the same protection `irori-protocol::process::spawn` already gives every extension's own
-/// process. A parent killed outright (`SIGKILL`, never caught) can still orphan it; a known,
-/// accepted limit of process-based supervision without platform-specific code this project's own
-/// `unsafe_code = "forbid"` rules out.
+/// process. A parent killed outright (`SIGKILL`, never caught) can't drop it, but the child stays
+/// in its parent's process group, and Irori kills an extension's whole group when it kills or
+/// loses the extension (`irori_protocol::ProcessGroup`).
 ///
 /// `GIT_CEILING_DIRECTORIES` is set so git, run by the program from here, never finds a
 /// repository around the extension's directory ([`git_ceiling`]).
