@@ -133,6 +133,7 @@ pub const ACTIONS: &[(&str, &str, Log)] = &[
     ("POST", "/api/assistant/turns", Quiet),
     ("POST", "/api/assistant/turns/{scope}/stop", Quiet),
     ("POST", "/api/assistant/check", Quiet),
+    ("POST", "/api/assistant/models", Quiet),
     ("POST", "/api/assistant/pull", Later("assistant_changed")),
     ("POST", "/api/assistant/forget", Later("assistant_changed")),
     ("POST", "/api/assistant/install", Later("assistant_changed")),

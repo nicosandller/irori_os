@@ -1186,6 +1186,8 @@ mod tests {
             (Method::POST, "/api/setup/backup/upload", Nothing),
             (Method::POST, "/api/setup/backup/restore", Nothing),
             (Method::PUT, "/api/assistant", Run),
+            // It can send the saved key to a provider.
+            (Method::POST, "/api/assistant/models", Run),
             (Method::POST, "/api/apps/automations/rpc", Use),
             (Method::PUT, "/api/extensions/mqtt/secrets", Run),
             (Method::GET, "/api/ws", Use),
