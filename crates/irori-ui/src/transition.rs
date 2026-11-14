@@ -39,16 +39,19 @@ pub fn navigation(from: &str, to: &str, hint: Option<&str>) -> Option<&'static s
     })
 }
 
-/// Where a page sits in the sidebar, top to bottom. A device's page sits with the list.
+/// Where a page sits in the sidebar, top to bottom. A device's page sits with the list. The
+/// assistant is the mark at the very top; an extension's own page is listed under Extensions,
+/// and they all share a place, since which of two is the higher isn't known here.
 fn place(path: &str) -> Option<u8> {
     match path {
         "/" => Some(0),
+        "/assistant" => Some(0),
+        path if path.starts_with("/assistant/") => Some(0),
         "/floorplan" => Some(1),
         "/devices" => Some(2),
         path if is_device(path) => Some(2),
         "/extensions" => Some(3),
-        "/assistant" => Some(4),
-        path if path.starts_with("/assistant/") => Some(4),
+        path if path.starts_with("/apps/") => Some(4),
         "/settings" => Some(5),
         _ => None,
     }
@@ -228,6 +231,14 @@ mod tests {
         assert_eq!(go("/", "/floorplan"), Some("down"));
         assert_eq!(go("/devices/demo_lamp", "/settings"), Some("down"));
         assert_eq!(go("/devices/a", "/devices/b"), Some("fade"));
+        // The assistant is the mark at the top of the sidebar: every page is below it.
+        assert_eq!(go("/floorplan", "/assistant"), Some("up"));
+        assert_eq!(go("/assistant", "/settings"), Some("down"));
+        // An extension's own page is listed between Extensions and Settings.
+        assert_eq!(go("/devices", "/apps/automations/"), Some("down"));
+        assert_eq!(go("/apps/automations/", "/extensions"), Some("up"));
+        assert_eq!(go("/settings", "/apps/automations/flows"), Some("up"));
+        assert_eq!(go("/apps/a/", "/apps/b/"), Some("fade"));
         assert_eq!(go("/nowhere", "/devices"), Some("fade"));
         assert_eq!(go("/devices", "/devices"), None);
         assert_eq!(

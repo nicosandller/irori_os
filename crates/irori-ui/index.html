@@ -86,10 +86,12 @@
     html[data-motion="off"]::view-transition-group(*),
     html[data-motion="off"]::view-transition-old(*),
     html[data-motion="off"]::view-transition-new(*) { animation: none !important; }
-    .shell[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms;
-                                --dur-expressive: 0ms; }
-    .shell[data-motion="off"] *, .shell[data-motion="off"] *::before,
-    .shell[data-motion="off"] *::after { animation: none !important; transition: none !important; }
+    /* On `<html>`, not the shell: the sign-in page and the welcome are drawn beside the shell,
+       and the switch is theirs to obey too. */
+    html[data-motion="off"] { --dur-fast: 0ms; --dur-base: 0ms; --dur-layout: 0ms;
+                              --dur-expressive: 0ms; }
+    html[data-motion="off"] *, html[data-motion="off"] *::before,
+    html[data-motion="off"] *::after { animation: none !important; transition: none !important; }
     body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.5 var(--sans); }
     /* Hidden means hidden, whatever an element's own rule says its display is. */
     [hidden] { display: none !important; }
@@ -177,6 +179,8 @@
                               scale var(--dur-base) var(--ease-spring); }
     .sidebar a.mark:hover .mark-spark { rotate: 90deg; scale: 1.15; }
     .mark-ember { transform-box: fill-box; transform-origin: center; }
+    /* Each letter is a box of its own, for the catching below: never broken across lines. */
+    .mark-letters { white-space: nowrap; }
     .mark-letters span { display: inline-block; }
     /* A model has just become ready: the name catches, letter by letter from the left, like
        fire along a fuse, while the ember in the mark flares. Then it burns back down to the
@@ -265,20 +269,32 @@
     .folded .sidebar .settings-link { justify-content: center; padding: .5rem 0; }
 
     /* A phone has no room beside the page: the sidebar becomes a bar along the top, and folding
-       means nothing there. */
+       means nothing there. Nor is there room for every name in a row: the bar is icons, and
+       only the page being read is spelled out (the rest keep their names for screen readers and
+       in their titles). With more pages than fit, the row of them scrolls sideways. */
     @media (max-width: 720px) {
       .shell, .shell.folded { grid-template-columns: 1fr; }
       .sidebar { position: static; height: auto; flex-direction: row; align-items: center;
                  padding: .5rem .75rem; border-right: none; border-bottom: 1px solid var(--line); }
-      .sidebar-top { margin: 0; }
-      .sidebar nav { flex-direction: row; }
-      .sidebar nav a { padding: .4rem .5rem; border-left: none; }
+      .sidebar-top { margin: 0; flex: none; }
+      .sidebar nav { flex: 1; min-width: 0; flex-direction: row; overflow-x: auto;
+                     scrollbar-width: none; }
+      .sidebar nav::-webkit-scrollbar { display: none; }
+      .sidebar nav a, .sidebar .settings-link { flex: none; gap: .45rem; padding: .4rem .5rem;
+                                                border-left: none; }
       .sidebar > .glide { display: none; }
       .fold { display: none; }
-      .sidebar-bottom { flex-direction: row; align-items: center; margin: 0 0 0 auto; gap: .25rem; }
-      .sidebar .live { padding: 0; }
+      .sidebar-bottom { flex: none; flex-direction: row; align-items: center; margin: 0;
+                        gap: .25rem; }
+      .sidebar .live { padding: 0 .25rem; }
       .folded .sidebar .label { position: static; width: auto; height: auto; clip: auto; }
-      .folded .mark-spark { position: static; width: .8rem; height: .8rem; margin-left: -.3rem; }
+      .sidebar .mark-letters, .sidebar .live .label,
+      .sidebar nav a:not([aria-current="page"]) .label,
+      .sidebar .settings-link:not([aria-current="page"]) .label {
+          position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
+          white-space: nowrap; }
+      .sidebar .mark-spark { position: absolute; top: -.05rem; right: -.05rem; width: .7rem;
+                             height: .7rem; margin: 0; }
       .folded .sidebar-top { flex-direction: row; }
       main { padding: 1.25rem 1rem 3rem; }
     }
@@ -406,6 +422,12 @@
     .entity-line.offline .reading.on { color: var(--muted); }
     .entity-block > .drawer { background: var(--bg); }
     @media (max-width: 720px) {
+      /* A group's name keeps its line, and how it stands goes under it, level with the name:
+         side by side, a long name was squeezed onto three lines. */
+      .grouped .fold-toggle { flex-wrap: wrap; row-gap: 0; }
+      .grouped .fold-title { flex: 1; }
+      .grouped .fold-state { flex-basis: 100%; padding-left: 1.5rem; }
+      .grouped .fold-toggle:has(> .chevron + :not(.fold-title)) .fold-state { padding-left: 3.35rem; }
       .entity-list .line { grid-template-columns: 1fr; row-gap: .3rem; padding-left: 2.6rem; }
       .entity-line .of-device { display: none; }
       .entity-line .control { justify-content: flex-start; }
@@ -507,9 +529,10 @@
     .ext-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr));
                 gap: 1rem; }
     /* Every card the same height, whatever its extension has to say: two lines of what it's
-       for, and the rest behind "Show more". */
+       for, and the rest behind "Show more". A name too long for one line makes its card, and
+       the row it's in, a line taller, rather than pushing the button out through the bottom. */
     .ext-card { position: relative; display: flex; flex-direction: column; gap: .45rem;
-                height: 14.75rem; padding: 1rem 1.1rem; border: 1px solid var(--line);
+                min-height: 14.75rem; padding: 1rem 1.1rem; border: 1px solid var(--line);
                 border-radius: .6rem; background: var(--card);
                 transition: border-color var(--dur-fast), translate var(--dur-base) var(--ease-out); }
     .ext-card:hover { border-color: var(--muted); translate: 0 -2px; }
@@ -522,6 +545,9 @@
                      background: var(--sunk); padding: .15rem .55rem; border-radius: 1rem; }
     .ext-card-head { display: flex; align-items: center; gap: .6rem; padding-right: 4.5rem; }
     .ext-card-title { display: flex; flex-direction: column; gap: .1rem; min-width: 0; }
+    /* Big enough to tell one from another at a glance, before Install as after. */
+    .ext-card-head .protocol-icon { width: 2.25rem; height: 2.25rem; }
+    .ext-card-head .protocol-icon.letter { border-radius: .5rem; font-size: 1rem; }
     .ext-card > * { flex: none; }
     .ext-description { margin: 0; font-size: .85rem; display: -webkit-box; overflow: hidden;
                        -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
@@ -544,9 +570,12 @@
         0% { background-position: -60% 0; }
         100% { background-position: 160% 0; }
     }
+    /* Still, a band stopped part-way along would read as that much done: with motion off the
+       whole bar is tinted instead, here and on every bar that only says "busy". */
     @media (prefers-reduced-motion: reduce) {
         .ext-btn .bar { animation: none; background: rgba(196, 85, 43, .18); }
     }
+    html[data-motion="off"] .ext-btn .bar { background: rgba(196, 85, 43, .18); }
     .dot { width: .5rem; height: .5rem; border-radius: 2px; background: var(--muted); }
     .dot.ok { background: var(--ember); box-shadow: 0 0 .4rem var(--ember);
               animation: breathe 2.4s ease-in-out infinite; }
@@ -1054,6 +1083,8 @@
     @media (prefers-reduced-motion: reduce) {
         .update-bar.unsaid .update-bar-fill { width: 100% !important; opacity: .4; translate: none; }
     }
+    html[data-motion="off"] .update-bar.unsaid .update-bar-fill {
+        width: 100% !important; opacity: .4; translate: none; }
     .update-error { color: var(--error); flex-basis: 100%; }
     .update-versions { font-variant-numeric: tabular-nums; }
     .updates-list { margin-bottom: 1.25rem; }
@@ -1764,7 +1795,7 @@
     .meter { border-bottom: 1px solid var(--line); }
     .meter:last-child { border-bottom: none; }
     .meter-head { display: grid; align-items: center; gap: .75rem; width: 100%;
-                  grid-template-columns: 1.15rem 6rem 2.6rem minmax(4rem, 1fr) minmax(0, max-content) auto;
+                  grid-template-columns: 1.15rem 6rem 2.6rem minmax(4rem, 1fr) 8.75rem auto;
                   padding: .6rem .8rem; font: inherit; color: var(--fg); text-align: left;
                   background: transparent; border: none; cursor: pointer;
                   transition: background-color var(--dur-fast); }
@@ -1782,8 +1813,10 @@
                   transition: scale var(--dur-expressive) var(--ease-emphasized),
                               background-color var(--dur-base); }
     .meter-bar.high .meter-fill { background: var(--error); }
+    /* The same width on every meter, so the bars are one length and can be read against each
+       other: 73% must not come out longer than 77%. */
     .meter-words { color: var(--muted); font: .72rem var(--mono); white-space: nowrap;
-                   overflow: hidden; text-overflow: ellipsis; }
+                   overflow: hidden; text-overflow: ellipsis; text-align: right; }
     .meter.open .unroll-mark { rotate: 225deg; margin-top: .25rem; }
     .meter-more { display: grid; gap: .75rem; padding: .75rem .8rem .9rem 2.7rem; }
     .volumes { display: grid; gap: .45rem; margin: 0; padding: 0; list-style: none; }
@@ -2800,6 +2833,9 @@
     .modal { width: 100%; max-width: 34rem; max-height: 100%; display: flex;
              flex-direction: column; background: var(--card); border: 1px solid var(--line);
              border-radius: .6rem; box-shadow: 0 1.5rem 3rem rgba(28, 23, 20, .25); }
+    /* The window takes the focus as it opens (modal.rs), so Tab starts inside it; it is not
+       itself a thing to act on, and draws no ring. */
+    .modal:focus { outline: none; }
     .modal-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
                   padding: .9rem 1.25rem; border-bottom: 1px solid var(--line); }
     .modal-head h2 { margin: 0; font-size: 1.05rem; }
@@ -2877,7 +2913,6 @@
     h4 .found-count { margin-left: .45rem; vertical-align: .1em; }
     .add .count-badge { margin-left: .45rem; vertical-align: .05em;
                         animation: pop var(--dur-expressive) var(--ease-bounce) backwards; }
-    @keyframes pop { from { scale: 0; } }
 
     /* Step two: one extension. Its heading is the card that was picked, grown. */
     .add-step-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .6rem;
@@ -2973,6 +3008,7 @@
                  border-right-color: transparent; border-radius: 50%;
                  animation: turn .7s linear infinite, join-ring-in var(--dur-layout) var(--ease-spring) both; }
     @media (prefers-reduced-motion: reduce) { .join-wait { animation: none; border-right-color: currentColor; opacity: .6; } }
+    html[data-motion="off"] .join-wait { border-right-color: currentColor; opacity: .6; }
     /* Both wordings share one cell, so the button is as wide as the longer and doesn't jump. */
     .join-words { display: inline-grid; animation: join-words-in var(--dur-layout) var(--ease-emphasized) both; }
     .join-words > span { grid-area: 1 / 1; text-align: left; white-space: nowrap;
@@ -3184,8 +3220,7 @@
                  pointer-events: none; color: var(--ember); font-size: .9rem;
                  background: color-mix(in srgb, var(--card) 88%, transparent);
                  border-radius: inherit;
-                 animation: drop-in var(--dur-base) var(--ease-out) backwards; }
-    @keyframes drop-in { from { opacity: 0; } }
+                 animation: settle var(--dur-base) var(--ease-out) backwards; }
     .chat-drop svg { width: 2rem; height: 2rem;
                      animation: drop-nod .9s var(--ease-out) infinite alternate; }
     @keyframes drop-nod { to { translate: 0 .3rem; } }
@@ -3348,6 +3383,11 @@
     .assistant-progress.unknown .bar span { width: 35% !important;
                                             animation: sweep 1.2s ease-in-out infinite alternate; }
     @keyframes sweep { from { translate: -100% 0; } to { translate: 290% 0; } }
+    @media (prefers-reduced-motion: reduce) {
+        .assistant-progress.unknown .bar span { width: 100% !important; opacity: .4; }
+    }
+    html[data-motion="off"] .assistant-progress.unknown .bar span {
+        width: 100% !important; opacity: .4; }
     .assistant-models { list-style: none; margin: 0; padding: 0; display: grid; gap: .35rem; }
     .assistant-models li { display: flex; align-items: center; gap: .6rem; padding: .4rem .6rem;
                            border: 1px solid var(--line); border-radius: .5rem;
@@ -3412,12 +3452,14 @@
     .model-check.there svg { flex: none; width: 1.25rem; height: 1.25rem; fill: none;
                              stroke: #3f8f6b; stroke-width: 1.8; stroke-linecap: round;
                              stroke-linejoin: round; }
-    .model-check.there svg circle { stroke-dasharray: 1; stroke-dashoffset: 1;
-                                    animation: draw-in var(--dur-expressive) var(--ease-out) forwards; }
-    .model-check.there svg path { stroke-dasharray: 1; stroke-dashoffset: 1;
-                                  animation: draw-in var(--dur-base) var(--ease-out)
-                                             var(--dur-base) forwards; }
-    @keyframes draw-in { to { stroke-dashoffset: 0; } }
+    /* Drawn as it stands, and the drawing-in is the animation (`draw`, the welcome's): with
+       motion off the tick is simply there, where one held back until an animation ends
+       would never show. */
+    .model-check.there svg circle { stroke-dasharray: 1;
+                                    animation: draw var(--dur-expressive) var(--ease-out) backwards; }
+    .model-check.there svg path { stroke-dasharray: 1;
+                                  animation: draw var(--dur-base) var(--ease-out)
+                                             var(--dur-base) backwards; }
     .model-check.not-there { color: var(--error); border-color: color-mix(in srgb, var(--error) 45%, var(--line)); }
     .about-form input:disabled { color: var(--muted); background: var(--sunk); cursor: default; }
     .assistant-off { margin: 1rem 0 0; padding-top: .8rem; border-top: 1px solid var(--line); }
@@ -3608,11 +3650,11 @@
     .token-secret-head svg { flex: none; width: 1.25rem; height: 1.25rem; fill: none;
                              stroke: #3f8f6b; stroke-width: 1.8; stroke-linecap: round;
                              stroke-linejoin: round; }
-    .token-secret-head svg circle { stroke-dasharray: 1; stroke-dashoffset: 1;
-                                    animation: draw-in var(--dur-expressive) var(--ease-out) forwards; }
-    .token-secret-head svg path { stroke-dasharray: 1; stroke-dashoffset: 1;
-                                  animation: draw-in var(--dur-base) var(--ease-out)
-                                             var(--dur-base) forwards; }
+    .token-secret-head svg circle { stroke-dasharray: 1;
+                                    animation: draw var(--dur-expressive) var(--ease-out) backwards; }
+    .token-secret-head svg path { stroke-dasharray: 1;
+                                  animation: draw var(--dur-base) var(--ease-out)
+                                             var(--dur-base) backwards; }
     .token-secret-row { display: flex; align-items: stretch; gap: .4rem; }
     .token-secret-row code { flex: 1; min-width: 0; padding: .5rem .65rem; font: .8rem var(--mono);
                              overflow-wrap: anywhere; user-select: all; background: var(--sunk);

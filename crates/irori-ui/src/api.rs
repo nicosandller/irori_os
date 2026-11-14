@@ -933,6 +933,8 @@ pub struct CatalogEntry {
     /// The version that's running, when it's installed. `version` is the one Install fetches.
     #[serde(default)]
     pub installed_version: Option<String>,
+    /// Whether it has an icon at `/api/extensions/<id>/icon.svg`. Every official extension has,
+    /// installed or not.
     pub icon: bool,
     #[serde(default)]
     pub state: Option<String>,
