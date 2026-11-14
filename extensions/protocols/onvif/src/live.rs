@@ -97,31 +97,15 @@ async fn stream_to(
             password: login.password.clone(),
         }))
         .user_agent("Irori".to_owned());
-    // Never a login the camera would read as it is: the video library answers Basic too.
-    let how = tokio::select! {
-        () = feed.closed() => return Ended::Stopped,
-        how = crate::talk::video_login(&url) => how,
+    // Never a login the camera would read as it is: the video library answers Basic too, so
+    // every stream goes through the relay, which leaves Basic out of what the camera says.
+    let camera = std::net::SocketAddr::new(ip, url.port().unwrap_or(554));
+    let relay = match crate::relay::start(camera).await {
+        Ok(relay) => relay,
+        Err(why) => return Ended::Failed(why),
     };
-    // Ends with the stream: dropping it aborts the relay.
-    let mut _relay = None;
-    match how {
-        Ok(crate::talk::VideoLogin::Direct) => {}
-        Ok(crate::talk::VideoLogin::AroundBasic) => {
-            let camera = std::net::SocketAddr::new(ip, url.port().unwrap_or(554));
-            let (here, task) = match crate::relay::start(camera).await {
-                Ok(started) => started,
-                Err(why) => return Ended::Failed(why),
-            };
-            _relay = Some(AbortOnDrop(task));
-            if url.set_ip_host(here.ip()).is_err() || url.set_port(Some(here.port())).is_err() {
-                return Ended::Failed("the camera's video couldn't be relayed".into());
-            }
-            tracing::debug!(%ip, "a camera's video is opened around its Basic login");
-        }
-        Err(why) => {
-            tracing::info!(%ip, "a camera's video wasn't opened: {why}");
-            return Ended::Failed(why);
-        }
+    if url.set_ip_host(relay.here.ip()).is_err() || url.set_port(Some(relay.here.port())).is_err() {
+        return Ended::Failed("the camera's video couldn't be relayed".into());
     }
     let opened = tokio::select! {
         () = feed.closed() => return Ended::Stopped,
@@ -129,7 +113,7 @@ async fn stream_to(
     };
     let (mut demuxed, streams) = match opened {
         Ok(Ok(opened)) => opened,
-        Ok(Err(ended)) => return ended,
+        Ok(Err(ended)) => return relay.why().map_or(ended, Ended::Failed),
         Err(_) => return Ended::Failed("the camera's video didn't start in time".into()),
     };
 
@@ -143,11 +127,19 @@ async fn stream_to(
             next = tokio::time::timeout(SILENCE, demuxed.next()) => next,
         };
         let item = match next {
-            Err(_) | Ok(None) => return Ended::Failed("the camera stopped sending video".into()),
+            Err(_) | Ok(None) => {
+                let why = relay.why();
+                return Ended::Failed(
+                    why.unwrap_or_else(|| "the camera stopped sending video".into()),
+                );
+            }
             Ok(Some(Err(error))) => {
                 if !damage.bearable(std::time::Instant::now()) {
                     tracing::info!(%ip, "a camera's stream failed: {error}");
-                    return Ended::Failed("the camera's video stream broke off".into());
+                    let why = relay.why();
+                    return Ended::Failed(
+                        why.unwrap_or_else(|| "the camera's video stream broke off".into()),
+                    );
                 }
                 tracing::debug!(%ip, "a damaged packet from a camera, skipped: {error}");
                 to_keyframe.get_or_insert_with(std::time::Instant::now);
@@ -594,15 +586,6 @@ fn cant_play(family: &str) -> String {
                             camera to H.264, or watch the smaller stream"
             .into(),
         _ => "this browser can't play the camera's video".into(),
-    }
-}
-
-/// Aborts its task when dropped.
-struct AbortOnDrop(tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
     }
 }
 

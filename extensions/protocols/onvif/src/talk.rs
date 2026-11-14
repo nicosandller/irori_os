@@ -125,76 +125,6 @@ pub async fn ask(stream: &str, ip: IpAddr, login: &Login) -> Option<TalkTrack> {
     }
 }
 
-/// How live video may log in to a stream.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VideoLogin {
-    /// As the library would on its own.
-    Direct,
-    /// Through [`crate::relay`]: the camera names Basic first, then Digest.
-    AroundBasic,
-}
-
-/// How live video may log in to the stream at `url`. The video library answers whichever login
-/// the camera names first, Basic included, and Basic hands over the password as it is. So the
-/// stream is asked once without a login, the way the library will ask it. Basic named first
-/// with Digest after it goes through the relay; Basic alone, or a login that can't be told, is
-/// refused.
-pub async fn video_login(url: &url::Url) -> Result<VideoLogin, String> {
-    let asked = async {
-        let mut rtsp = Rtsp::open(
-            url,
-            &Login {
-                username: String::new(),
-                password: String::new(),
-            },
-        )
-        .await?;
-        rtsp.require = false;
-        rtsp.send("DESCRIBE", url.as_str(), &[("Accept", "application/sdp")])
-            .await?;
-        let answer = rtsp.answer().await?;
-        Ok::<_, String>(answer)
-    };
-    let answer = match tokio::time::timeout(STEP * 2, asked).await {
-        Ok(Ok(answer)) => answer,
-        Ok(Err(why)) => return Err(why),
-        Err(_) => return Err("the camera's video didn't answer in time".into()),
-    };
-    login_for(&answer)
-}
-
-fn login_for(answer: &Answer) -> Result<VideoLogin, String> {
-    if answer.status != 401 {
-        // No login asked for: none is sent.
-        return Ok(VideoLogin::Direct);
-    }
-    match answer
-        .header("www-authenticate")
-        .map(http_auth::PasswordClient::try_from)
-    {
-        Some(Ok(http_auth::PasswordClient::Basic(_))) => {
-            let digest_too = answer.headers.iter().any(|(name, value)| {
-                name.eq_ignore_ascii_case("www-authenticate")
-                    && matches!(
-                        http_auth::PasswordClient::try_from(value.as_str()),
-                        Ok(http_auth::PasswordClient::Digest(_))
-                    )
-            });
-            if digest_too {
-                Ok(VideoLogin::AroundBasic)
-            } else {
-                Err(
-                    "the camera's video only takes the kind of login that sends the password \
-                     as it is (Basic), so Irori won't send it"
-                        .into(),
-                )
-            }
-        }
-        Some(Ok(_)) => Ok(VideoLogin::Direct),
-        Some(Err(_)) | None => Err("the camera asks for a login Irori doesn't know".into()),
-    }
-}
-
 /// How a talk ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ended {
@@ -447,9 +377,6 @@ struct Rtsp {
     auth: Option<http_auth::PasswordClient>,
     cseq: u32,
     read: Vec<u8>,
-    /// Whether requests ask for the speaker's track (`Require`). Off to ask what any client
-    /// would be asked, since a camera without a speaker refuses a request that requires one.
-    require: bool,
 }
 
 impl Rtsp {
@@ -468,7 +395,6 @@ impl Rtsp {
             auth: None,
             cseq: 0,
             read: Vec::new(),
-            require: true,
         })
     }
 
@@ -509,12 +435,9 @@ impl Rtsp {
     ) -> Result<(), String> {
         self.cseq += 1;
         let mut text = format!(
-            "{method} {uri} RTSP/1.0\r\nCSeq: {}\r\nUser-Agent: Irori\r\n",
+            "{method} {uri} RTSP/1.0\r\nCSeq: {}\r\nUser-Agent: Irori\r\nRequire: {REQUIRE}\r\n",
             self.cseq
         );
-        if self.require {
-            text.push_str(&format!("Require: {REQUIRE}\r\n"));
-        }
         for (key, value) in headers {
             text.push_str(&format!("{key}: {value}\r\n"));
         }
@@ -726,38 +649,6 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use super::*;
-
-    #[test]
-    fn video_never_logs_in_where_basic_is_asked_for_first() {
-        let answer = |status: u16, challenges: &[&str]| Answer {
-            status,
-            headers: challenges
-                .iter()
-                .map(|value| ("WWW-Authenticate".to_owned(), (*value).to_owned()))
-                .collect(),
-            body: String::new(),
-        };
-        let digest = r#"Digest realm="cam", nonce="abc""#;
-        let basic = r#"Basic realm="cam""#;
-        assert_eq!(login_for(&answer(401, &[digest])), Ok(VideoLogin::Direct));
-        assert!(login_for(&answer(401, &[basic])).is_err());
-        assert_eq!(
-            login_for(&answer(401, &[basic, digest])),
-            Ok(VideoLogin::AroundBasic),
-            "the video library answers the first one named, so Basic is taken out on the way"
-        );
-        assert_eq!(
-            login_for(&answer(401, &[digest, basic])),
-            Ok(VideoLogin::Direct)
-        );
-        assert!(login_for(&answer(401, &["Bearer x"])).is_err());
-        assert!(login_for(&answer(401, &[])).is_err());
-        assert_eq!(
-            login_for(&answer(200, &[])),
-            Ok(VideoLogin::Direct),
-            "no login asked for"
-        );
-    }
 
     #[test]
     fn g711_matches_the_reference_at_its_edges() {

@@ -142,6 +142,8 @@ struct Cam {
     doubt: Option<Doubt>,
     /// An address being checked while the camera runs where it is, so it's checked once.
     checking: Option<String>,
+    /// When it last answered discovery.
+    seen: Instant,
 }
 
 /// Something that answered as a camera and couldn't show it's that camera.
@@ -154,6 +156,27 @@ struct Doubt {
 }
 
 impl Cam {
+    /// A camera just found, with nothing known of it yet.
+    fn new(found: Found) -> Self {
+        Self {
+            found,
+            generation: 0,
+            stage: Stage::NeedsLogin,
+            described: false,
+            watched: 0,
+            tasks: Vec::new(),
+            ptz: None,
+            presets: None,
+            sensors: Vec::new(),
+            extras: None,
+            parts: Vec::new(),
+            on_map: None,
+            doubt: None,
+            checking: None,
+            seen: Instant::now(),
+        }
+    }
+
     /// Stops what was running for the last login.
     fn stop_tasks(&mut self) {
         for task in self.tasks.drain(..) {
@@ -300,6 +323,41 @@ fn on_map(cams: &BTreeMap<String, Cam>) -> Vec<network::Member> {
 /// table without end.
 const MAX_CAMERAS: usize = 128;
 
+/// Whether a camera not seen before can be kept track of. One address stands for at most a
+/// few cameras, and when the table is full, the camera that has gone longest without being
+/// seen, of those that never got a login, makes way: so made-up ids can't keep real cameras
+/// out.
+fn room_for(found: &Found, settings: &Settings, cams: &mut BTreeMap<String, Cam>) -> bool {
+    let there = cams.values().filter(|cam| cam.found.ip == found.ip).count();
+    if there >= crate::discover::MAX_PER_ADDRESS {
+        tracing::debug!(ip = %found.ip, "an address answered as more cameras than it can be; left out");
+        return false;
+    }
+    if cams.len() < MAX_CAMERAS {
+        return true;
+    }
+    let stale = cams
+        .iter()
+        .filter(|(id, cam)| {
+            matches!(cam.stage, Stage::NeedsLogin)
+                && !cam.described
+                && !settings.cameras.contains_key(*id)
+        })
+        .min_by_key(|(_, cam)| cam.seen)
+        .map(|(id, _)| id.clone());
+    match stale {
+        Some(id) => {
+            tracing::info!(camera = %id, "a camera that never got a login was forgotten to make room");
+            cams.remove(&id);
+            true
+        }
+        None => {
+            tracing::warn!(ip = %found.ip, "something answered as one camera too many; left out");
+            false
+        }
+    }
+}
+
 /// A camera answered discovery.
 fn arrive(
     found: Found,
@@ -310,29 +368,16 @@ fn arrive(
     generations: &mut u64,
     events: &mpsc::Sender<Event>,
 ) {
+    if !cams.contains_key(&found.id) && !room_for(&found, settings, cams) {
+        return;
+    }
     if !cams.contains_key(&found.id) {
-        if cams.len() >= MAX_CAMERAS {
-            tracing::warn!(ip = %found.ip, "something answered as one camera too many; left out");
-            return;
-        }
         tracing::info!(camera = %found.id, ip = %found.ip, "found a camera");
     }
-    let cam = cams.entry(found.id.clone()).or_insert_with(|| Cam {
-        found: found.clone(),
-        generation: 0,
-        stage: Stage::NeedsLogin,
-        described: false,
-        watched: 0,
-        tasks: Vec::new(),
-        ptz: None,
-        presets: None,
-        sensors: Vec::new(),
-        extras: None,
-        parts: Vec::new(),
-        on_map: None,
-        doubt: None,
-        checking: None,
-    });
+    let cam = cams
+        .entry(found.id.clone())
+        .or_insert_with(|| Cam::new(found.clone()));
+    cam.seen = Instant::now();
     let moved = cam.found.ip != found.ip || cam.found.device_service != found.device_service;
     // A running camera answering from where it is: whatever answered as it from elsewhere
     // before is no longer worth asking the person about.
@@ -795,10 +840,15 @@ fn start_tasks(
         let who = id.to_owned();
         let device = cam.found.device_service.clone();
         cam.tasks.push(tokio::spawn(async move {
-            if let Err(HttpError::Refused) =
+            // Turned down, but the camera still takes the login: following starts again, after
+            // a pause, rather than leaving the sensors quiet.
+            while let Err(HttpError::Refused) =
                 events::follow(&soap, &target, &detects, &changes_tx).await
             {
-                report_refusal(&tx, &soap, &device, who, generation).await;
+                if report_refusal(&tx, &soap, &device, who.clone(), generation).await {
+                    return;
+                }
+                tokio::time::sleep(EVENTS_AGAIN).await;
             }
         }));
         let tx = events_tx.clone();
@@ -1047,17 +1097,23 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
 /// A call made after logging in was turned down. Cameras say the same when the login is wrong
 /// and when it only lacks the right for that one call (a view-only account pressing an arrow),
 /// so it counts as a refused login only when ONVIF turns it down too.
+/// Whether it was refused.
 async fn report_refusal(
     events: &mpsc::Sender<Event>,
     soap: &Soap,
     device: &crate::http::Target,
     id: String,
     generation: u64,
-) {
-    if login_really_refused(soap, Some(device), soap.camera.ip).await {
+) -> bool {
+    let refused = login_really_refused(soap, Some(device), soap.camera.ip).await;
+    if refused {
         let _ = events.send(Event::Refused { id, generation }).await;
     }
+    refused
 }
+
+/// How long events wait to be followed again after a call the login wasn't allowed.
+const EVENTS_AGAIN: Duration = Duration::from_secs(30);
 
 /// Whether a login a call turned down is really refused: asked once more over ONVIF, which is
 /// what counts. RTSP also says no for a stale nonce or too many sessions, any call can be one
@@ -1073,11 +1129,11 @@ async fn login_really_refused(
     match onvif::still_takes_login(soap, device).await {
         Err(HttpError::Refused) => true,
         Ok(()) => {
-            tracing::info!(%ip, "a camera's video or speaker turned its login down, but ONVIF still takes it; not counted");
+            tracing::info!(%ip, "a camera turned its login down for one call, but ONVIF still takes it; not counted");
             false
         }
         Err(error) => {
-            tracing::info!(%ip, "a camera's video or speaker turned its login down, and ONVIF couldn't be asked ({error}); not counted");
+            tracing::info!(%ip, "a camera turned its login down for one call, and ONVIF couldn't be asked ({error}); not counted");
             false
         }
     }

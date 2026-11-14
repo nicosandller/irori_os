@@ -125,21 +125,49 @@ pub struct Camera {
 
 /// Set once a camera turns its login down, and seen by every task using that login, so the
 /// password isn't sent again by the others meanwhile: each failure counts towards a lockout.
+/// Also keeps what the last check of the login found ([`TurnedDown::recheck`]), so the tasks
+/// that were turned down together ask the camera once between them.
 #[derive(Debug, Clone, Default)]
-pub struct TurnedDown(Arc<AtomicBool>);
+pub struct TurnedDown(Arc<Down>);
+
+#[derive(Debug, Default)]
+struct Down {
+    set: AtomicBool,
+    checked: tokio::sync::Mutex<Option<(std::time::Instant, Result<(), HttpError>)>>,
+}
+
+/// How long one check of the login answers for every task that asks.
+const CHECK_HOLDS: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl TurnedDown {
     pub fn is_set(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.0.set.load(Ordering::Relaxed)
     }
 
     fn set(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.0.set.store(true, Ordering::Relaxed);
     }
 
-    /// The camera took the login after all: what turned it down was one call it isn't allowed.
-    pub fn clear(&self) {
-        self.0.store(false, Ordering::Relaxed);
+    /// Whether the camera still takes the login, asked with `ask` at most once per camera at a
+    /// time: a task that comes while another is asking, or just after, gets that answer. When
+    /// the camera takes it, what turned it down was a call the login isn't allowed, and the flag
+    /// is cleared for every task.
+    pub async fn recheck<F>(&self, ask: F) -> Result<(), HttpError>
+    where
+        F: std::future::Future<Output = Result<(), HttpError>>,
+    {
+        let mut checked = self.0.checked.lock().await;
+        if let Some((at, found)) = checked.as_ref()
+            && at.elapsed() < CHECK_HOLDS
+        {
+            return found.clone();
+        }
+        let found = ask.await;
+        if found.is_ok() {
+            self.0.set.store(false, Ordering::Relaxed);
+        }
+        *checked = Some((std::time::Instant::now(), found.clone()));
+        found
     }
 }
 

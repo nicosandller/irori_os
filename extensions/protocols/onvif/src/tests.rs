@@ -892,6 +892,41 @@ async fn a_login_turned_down_once_is_held_back_by_every_task() {
     assert!(!camera.turned_down.is_set());
 }
 
+/// Tasks turned down together check the login once between them: each check with a wrong
+/// password is another failed login towards a lockout.
+#[tokio::test]
+async fn a_turned_down_login_is_checked_once_for_every_task() {
+    let fake = FakeCamera::start("admin", "right", true).await;
+    let camera = crate::http::Camera {
+        ip: "127.0.0.1".parse().expect("ip"),
+        certificate: None,
+        turned_down: crate::http::TurnedDown::default(),
+    };
+    let soap = crate::soap::Soap {
+        camera,
+        login: Some(crate::settings::Login {
+            username: "admin".into(),
+            password: "wrong".into(),
+        }),
+        offset: crate::soap::ClockOffset::default(),
+    };
+    let device = Target {
+        port: fake.port,
+        path: "/onvif/device_service".into(),
+    };
+    let before = fake.seen();
+    let checks = (0..4).map(|_| crate::onvif::still_takes_login(&soap, &device));
+    for found in futures_util::future::join_all(checks).await {
+        assert_eq!(found, Err(crate::http::HttpError::Refused));
+    }
+    let after = fake.seen();
+    assert_eq!(
+        after.refused - before.refused,
+        1,
+        "one check for four tasks: {after:?}"
+    );
+}
+
 /// The video or speaker turning a login down only counts when ONVIF does too.
 #[tokio::test]
 async fn a_video_refusal_counts_only_when_onvif_agrees() {
@@ -919,4 +954,56 @@ async fn a_video_refusal_counts_only_when_onvif_agrees() {
         !crate::login_really_refused(&soap("wrong"), None, ip).await,
         "nothing to ask: not counted"
     );
+}
+
+/// Made-up ids can't crowd real cameras out: one address stands for a few cameras at most, and
+/// a full table makes way by forgetting the camera longest unseen that never got a login.
+#[test]
+fn made_up_cameras_cant_fill_the_table_for_good() {
+    let at = |id: String, ip: [u8; 4]| crate::discover::Found {
+        id,
+        ip: std::net::IpAddr::from(ip),
+        device_service: Target {
+            port: 80,
+            path: "/onvif/device_service".into(),
+        },
+        name: "Cam".into(),
+        hardware: None,
+    };
+    let mut given = settings(None);
+    let mut cams = std::collections::BTreeMap::new();
+    // One address, as many ids as it likes: only the first few are kept.
+    for n in 0..(crate::discover::MAX_PER_ADDRESS + 3) {
+        let found = at(format!("fake-{n}"), [10, 0, 0, 9]);
+        if crate::room_for(&found, &given, &mut cams) {
+            cams.insert(found.id.clone(), crate::Cam::new(found));
+        }
+    }
+    assert_eq!(cams.len(), crate::discover::MAX_PER_ADDRESS);
+
+    // A full table, one of whose cameras has a login: the oldest of the others goes.
+    cams.clear();
+    given.cameras.insert(
+        "kept".into(),
+        crate::settings::GivenLogin(Ok(crate::settings::Login {
+            username: "admin".into(),
+            password: "right".into(),
+        })),
+    );
+    let kept = at("kept".into(), [10, 0, 1, 0]);
+    cams.insert("kept".into(), crate::Cam::new(kept));
+    for n in 1..crate::MAX_CAMERAS {
+        let found = at(
+            format!("made-up-{n}"),
+            [10, 1, (n / 200) as u8, (n % 200) as u8],
+        );
+        assert!(crate::room_for(&found, &given, &mut cams));
+        cams.insert(found.id.clone(), crate::Cam::new(found));
+    }
+    assert_eq!(cams.len(), crate::MAX_CAMERAS);
+    let real = at("real".into(), [10, 2, 0, 1]);
+    assert!(crate::room_for(&real, &given, &mut cams), "room is made");
+    assert_eq!(cams.len(), crate::MAX_CAMERAS - 1);
+    assert!(cams.contains_key("kept"), "a camera with a login stays");
+    assert!(!cams.contains_key("made-up-1"), "the longest unseen goes");
 }

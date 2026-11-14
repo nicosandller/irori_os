@@ -230,9 +230,12 @@ pub async fn run(
                     }
                 }
                 Ok(_) => {}
+                // Reported, and turning carries on: the login may only lack this one call.
+                // A login that's really refused stops this task with the camera's others.
                 Err(HttpError::Refused) => {
-                    let _ = reports.send(Report::Refused).await;
-                    return;
+                    if reports.send(Report::Refused).await.is_err() {
+                        return;
+                    }
                 }
                 Err(error) => tracing::debug!("a camera's presets couldn't be read: {error}"),
             }
@@ -241,8 +244,9 @@ pub async fn run(
             call = calls.recv() => call,
             () = sleep_until(stop_at) => {
                 stop_at = None;
-                if let Err(HttpError::Refused) = ptz.stop().await {
-                    let _ = reports.send(Report::Refused).await;
+                if let Err(HttpError::Refused) = ptz.stop().await
+                    && reports.send(Report::Refused).await.is_err()
+                {
                     return;
                 }
                 continue;
@@ -284,10 +288,11 @@ pub async fn run(
             Ok(()) => call.reply(Ok(())),
             Err(HttpError::Refused) => {
                 call.reply(Err(ServiceError::unavailable(
-                    "the camera refused its login",
+                    "the camera turned this down for its login",
                 )));
-                let _ = reports.send(Report::Refused).await;
-                return;
+                if reports.send(Report::Refused).await.is_err() {
+                    return;
+                }
             }
             Err(error) => call.reply(Err(ServiceError::failed(error.to_string()))),
         }
