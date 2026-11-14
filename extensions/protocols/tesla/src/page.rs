@@ -143,7 +143,7 @@ fn month(month: &Month, prices: Prices, currency: &str, names: &Names) -> Value 
         })
         .filter(|(cost, _)| *cost > 0)
         .collect();
-    targets.sort_by(|a, b| b.0.cmp(&a.0));
+    targets.sort_by_key(|(cost, _)| std::cmp::Reverse(*cost));
     json!({
         "month": month.month,
         "days": days,

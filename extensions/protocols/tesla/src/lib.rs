@@ -379,8 +379,8 @@ impl World {
         }
         let answer = match asked.method.as_str() {
             "usage.summary" => self.summary(owner),
-            "usage.days" => self.usage_with(|usage, names| page::days(usage, names)),
-            "usage.calls" => self.usage_with(|usage, names| page::calls(usage, names)),
+            "usage.days" => self.usage_with(page::days),
+            "usage.calls" => self.usage_with(page::calls),
             "usage.set" => {
                 let change = page::change(&asked.params);
                 match self.set_prefs(change).await {
