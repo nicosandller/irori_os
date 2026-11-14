@@ -55,26 +55,6 @@ const PRUNE_AFTER_ROWS: u64 = 500;
 /// happen again at the next row.
 const KEEP_OF_MAX_PERCENT: u64 = 90;
 
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS audit (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    at_ns INTEGER NOT NULL,
-    actor_kind TEXT NOT NULL,
-    actor_id TEXT,
-    actor_name TEXT,
-    actor_person_id TEXT,
-    actor_person_name TEXT,
-    action TEXT NOT NULL,
-    target TEXT,
-    outcome TEXT NOT NULL,
-    detail TEXT,
-    context_id TEXT,
-    client TEXT
-);
-CREATE INDEX IF NOT EXISTS audit_at ON audit (at_ns, id);
-CREATE INDEX IF NOT EXISTS audit_context ON audit (context_id) WHERE context_id IS NOT NULL;
-";
-
 /// What to write down. The time is taken when it is queued.
 #[derive(Debug, Clone)]
 pub struct Row {
@@ -443,10 +423,7 @@ fn stamp(mut row: Row) -> Stamped {
 }
 
 fn connect(db: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(db)?;
-    crate::db::wait_when_busy(&conn)?;
-    conn.execute_batch(SCHEMA)?;
-    Ok(conn)
+    crate::db::connect(db)
 }
 
 fn nanos(at: Timestamp) -> i64 {

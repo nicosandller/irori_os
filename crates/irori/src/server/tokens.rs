@@ -132,20 +132,7 @@ impl TokenStore {
     }
 
     fn conn(&self) -> rusqlite::Result<Connection> {
-        let conn = Connection::open(&self.db)?;
-        crate::db::wait_when_busy(&conn)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tokens (
-                token_hash TEXT PRIMARY KEY,
-                id TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                user TEXT NOT NULL,
-                scopes TEXT NOT NULL,
-                extension TEXT,
-                created INTEGER NOT NULL
-            )",
-        )?;
-        Ok(conn)
+        crate::db::connect(&self.db)
     }
 
     fn load(&self) -> rusqlite::Result<HashMap<String, AccessToken>> {
