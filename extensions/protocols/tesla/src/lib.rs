@@ -13,6 +13,7 @@ mod entity;
 #[cfg(test)]
 mod fake;
 mod keys;
+mod page;
 mod reading;
 pub mod settings;
 mod setup;
@@ -28,8 +29,8 @@ use std::time::Duration;
 use irori_cloud::Backoff;
 use irori_protocol::IncomingCall;
 use irori_protocol::{
-    Health, Incoming, IncomingAction, Protocol, ProtocolContext, ProtocolError, ServiceError,
-    ServiceErrorCode,
+    Health, Incoming, IncomingAction, IncomingPage, Protocol, ProtocolContext, ProtocolError,
+    ServiceError, ServiceErrorCode,
 };
 use irori_types::{DeviceDescription, Name, Service, State, UniqueId, Waiting};
 use serde::{Deserialize, Serialize};
@@ -284,7 +285,7 @@ impl World {
         match incoming {
             Incoming::Action(action) => self.action(action).await,
             Incoming::Call(call) => self.call(call).await,
-            Incoming::Page(page) => page.answer(Err("the usage page isn't ready yet".into())),
+            Incoming::Page(asked) => self.page(asked).await,
             Incoming::Unpair(unpair) => {
                 unpair.reply(Err("a Tesla car or site is removed in the Tesla app".into()));
             }
@@ -306,13 +307,15 @@ impl World {
                 if device == account::ACCOUNT_DEVICE =>
             {
                 let result = account::mode(&choice.option);
-                self.set_prefs(result.map(|mode| (Some(mode), None)), call)
-                    .await;
+                let result = self.set_prefs(result.map(|mode| (Some(mode), None))).await;
+                call.reply(result.map_err(ServiceError::failed));
             }
             ("allowance", Service::NumberSetValue(set)) if device == account::ACCOUNT_DEVICE => {
                 let result = account::allowance(set.value);
-                self.set_prefs(result.map(|allowance| (None, Some(allowance))), call)
+                let result = self
+                    .set_prefs(result.map(|allowance| (None, Some(allowance))))
                     .await;
+                call.reply(result.map_err(ServiceError::failed));
             }
             ("refresh", Service::ButtonPress) if is_car => self.refresh_car(device, call),
             ("refresh", Service::ButtonPress) if is_site => self.refresh_site(device, call),
@@ -324,20 +327,18 @@ impl World {
         }
     }
 
-    /// Changes the polling mode or the allowance, keeps it, and plans reading again.
+    /// Changes the polling mode or the allowance, keeps it, and plans reading again. The
+    /// account's entities, the page and its warning all see the change at once.
     async fn set_prefs(
         &mut self,
         change: Result<(Option<usage::Mode>, Option<price::Micros>), String>,
-        call: IncomingCall,
-    ) {
-        let (mode, allowance) = match change {
-            Ok(change) => change,
-            Err(why) => {
-                call.reply(Err(ServiceError::failed(why)));
-                return;
-            }
-        };
-        if let Ok(mut usage) = self.meter.lock() {
+    ) -> Result<(), String> {
+        let (mode, allowance) = change?;
+        {
+            let mut usage = self
+                .meter
+                .lock()
+                .map_err(|_| "the meter is unavailable".to_owned())?;
             if let Some(mode) = mode {
                 usage.prefs.mode = mode;
             }
@@ -349,7 +350,103 @@ impl World {
         self.save().await;
         self.replan();
         self.show_account().await;
-        call.reply(Ok(()));
+        Ok(())
+    }
+
+    /// The person read the account's spend off Tesla's dashboard: other apps' share and rate
+    /// change, so reading is planned again.
+    async fn calibrate(&mut self, spent: Result<price::Micros, String>) -> Result<(), String> {
+        let spent = spent?;
+        let now = self.now();
+        self.meter
+            .lock()
+            .map_err(|_| "the meter is unavailable".to_owned())?
+            .calibrate(now, spent)?;
+        self.save().await;
+        self.replan();
+        self.show_account().await;
+        Ok(())
+    }
+
+    /// A question from the usage page. Anyone who can open it can read it; changing the mode,
+    /// the allowance or the dashboard figure is the home owner's.
+    async fn page(&mut self, asked: IncomingPage) {
+        let owner = asked.caller.owner;
+        let writes = matches!(asked.method.as_str(), "usage.set" | "usage.calibrate");
+        if writes && !owner {
+            asked.answer(Err("Only the home's owner can change this.".into()));
+            return;
+        }
+        let answer = match asked.method.as_str() {
+            "usage.summary" => self.summary(owner),
+            "usage.days" => self.usage_with(|usage, names| page::days(usage, names)),
+            "usage.calls" => self.usage_with(|usage, names| page::calls(usage, names)),
+            "usage.set" => {
+                let change = page::change(&asked.params);
+                match self.set_prefs(change).await {
+                    Ok(()) => self.summary(owner),
+                    Err(why) => Err(why),
+                }
+            }
+            "usage.calibrate" => {
+                let spent = page::spent(&asked.params);
+                match self.calibrate(spent).await {
+                    Ok(()) => self.summary(owner),
+                    Err(why) => Err(why),
+                }
+            }
+            other => Err(format!("no page method called {other}")),
+        };
+        asked.answer(answer);
+    }
+
+    fn summary(&self, can_change: bool) -> Result<serde_json::Value, String> {
+        let now = self.now();
+        let (_, plan) = self.plan();
+        let mut usage = self
+            .meter
+            .lock()
+            .map_err(|_| "the meter is unavailable".to_owned())?;
+        usage.roll(now);
+        let outlook = usage.outlook(now);
+        let warning = account::warning(&outlook, &plan, &usage.currency);
+        Ok(page::summary(&usage, &outlook, &plan, warning, can_change))
+    }
+
+    fn usage_with(
+        &self,
+        answer: impl FnOnce(&Usage, &page::Names) -> serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let names = self.names();
+        let mut usage = self
+            .meter
+            .lock()
+            .map_err(|_| "the meter is unavailable".to_owned())?;
+        usage.roll(self.now());
+        Ok(answer(&usage, &names))
+    }
+
+    /// What the ledger's targets are called: every car and site the account has listed.
+    fn names(&self) -> page::Names {
+        let cars = self.known.cars.iter().map(|car| {
+            (
+                car.vin.clone(),
+                page::Target {
+                    name: car.name.clone(),
+                    kind: "car",
+                },
+            )
+        });
+        let sites = self.known.sites.iter().map(|site| {
+            (
+                site.id.clone(),
+                page::Target {
+                    name: site.name.clone(),
+                    kind: "site",
+                },
+            )
+        });
+        cars.chain(sites).collect()
     }
 
     /// Describes the account device and reports whichever of its states changed.
@@ -417,20 +514,11 @@ impl World {
                 }
             }
             "update_spend" => {
-                let result = action
+                let spent = action
                     .field("spent")
                     .ok_or_else(|| "say what Tesla's dashboard shows".to_owned())
-                    .and_then(price::parse_money)
-                    .and_then(|spent| {
-                        let now = self.now();
-                        self.meter
-                            .lock()
-                            .map_err(|_| "the meter is unavailable".to_owned())?
-                            .calibrate(now, spent)
-                    });
-                if result.is_ok() {
-                    self.save().await;
-                }
+                    .and_then(price::parse_money);
+                let result = self.calibrate(spent).await;
                 action.reply(result);
             }
             other => action.reply(Err(format!("no action called {other}"))),

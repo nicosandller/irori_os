@@ -542,6 +542,22 @@ mod protocol {
                 .expect("answered")
         }
 
+        /// A question from the usage page, asked as the home's owner or as another person.
+        pub async fn page(
+            &self,
+            method: &str,
+            params: serde_json::Value,
+            owner: bool,
+        ) -> Result<serde_json::Value, String> {
+            let caller = irori_protocol::engine::Caller { user: None, owner };
+            let (incoming, answer) = host::incoming_page(method.to_owned(), params, caller);
+            self.actions.send(incoming).await.expect("running");
+            tokio::time::timeout(Duration::from_secs(5), answer)
+                .await
+                .expect("an answer in time")
+                .expect("answered")
+        }
+
         pub fn step(&self, starting: &str) -> Option<Waiting> {
             self.log
                 .lock()
@@ -1291,5 +1307,88 @@ mod controls {
             1,
             "nothing read on its own"
         );
+    }
+
+    #[tokio::test]
+    async fn the_usage_page_reads_the_month_and_changes_it_for_the_owner_only() {
+        let fake = Fake::start().await;
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data"),
+            vec![Answer::with(200, answer("vehicle_data"))],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "online")], vec![]).await;
+        home.until("the first read", |log| log.state(&format!("{VIN}:battery")))
+            .await;
+
+        let summary = home
+            .page("usage.summary", json!({}), false)
+            .await
+            .expect("a summary");
+        assert_eq!(summary["mode"], "Balanced");
+        assert_eq!(summary["can_change"], false);
+        assert!(summary["irori"]["micros"].as_u64() > Some(0), "{summary}");
+        assert!(summary["others"].is_null());
+
+        let days = home
+            .page("usage.days", json!({}), false)
+            .await
+            .expect("days");
+        let targets = days["this"]["targets"].as_array().expect("targets");
+        assert!(
+            targets
+                .iter()
+                .any(|t| t["name"] == "Red car" && t["kind"] == "car"),
+            "{days}"
+        );
+        let calls = home
+            .page("usage.calls", json!({}), false)
+            .await
+            .expect("calls");
+        assert!(
+            calls
+                .as_array()
+                .expect("calls")
+                .iter()
+                .any(|call| call["target"] == "Red car" && call["what"] == "Reading the car"),
+            "{calls}"
+        );
+
+        let refused = home
+            .page("usage.set", json!({ "mode": "Saving" }), false)
+            .await
+            .expect_err("not the owner");
+        assert!(refused.contains("owner"), "{refused}");
+
+        let changed = home
+            .page(
+                "usage.set",
+                json!({ "mode": "Saving", "allowance": "12" }),
+                true,
+            )
+            .await
+            .expect("changed");
+        assert_eq!(changed["mode"], "Saving");
+        assert_eq!(changed["allowance"]["micros"], 12_000_000);
+        home.until("the select shows it", |log| {
+            (log.state("tesla_account:polling")?["option"] == "Saving").then_some(())
+        })
+        .await;
+
+        let calibrated = home
+            .page("usage.calibrate", json!({ "spent": "3.10" }), true)
+            .await
+            .expect("a figure");
+        assert!(calibrated["others"]["micros"].as_u64() > Some(3_000_000));
+        assert!(calibrated["checked_at"].is_u64());
+        home.until("the account's spend shown", |log| {
+            log.state("tesla_account:spent_account")
+        })
+        .await;
+
+        let unknown = home
+            .page("usage.nothing", json!({}), true)
+            .await
+            .expect_err("no such method");
+        assert!(unknown.contains("usage.nothing"));
     }
 }

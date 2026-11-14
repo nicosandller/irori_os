@@ -70,7 +70,7 @@ impl Counts {
     }
 }
 
-/// A month's calls: by day of the month, then by what they were for (a car's VIN, `site:<id>`,
+/// A month's calls: by day of the month, then by what they were for (a car's VIN, a site's id,
 /// or `account`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Month {
@@ -414,6 +414,16 @@ pub fn month_bounds(now: u64) -> (u64, u64) {
     (at(first), at(next))
 }
 
+/// How many days a month (`2026-11`) has.
+pub fn days_in(month: &str) -> u8 {
+    let (year, number) = month.split_once('-').unwrap_or(("1970", "01"));
+    jiff::civil::Date::new(year.parse().unwrap_or(1970), number.parse().unwrap_or(1), 1)
+        .map(|first| first.days_in_month())
+        .ok()
+        .and_then(|days| u8::try_from(days).ok())
+        .unwrap_or(30)
+}
+
 /// The month before the one `now` is in, as `2026-10`.
 pub fn previous_month_of(now: u64) -> String {
     previous_month(&month_of(now))
@@ -470,6 +480,8 @@ pub(crate) mod tests {
         assert_eq!((end - start) / DAY, 30);
         assert_eq!(previous_month("2026-01"), "2025-12");
         assert_eq!(previous_month("2026-11"), "2026-10");
+        assert_eq!(days_in("2026-11"), 30);
+        assert_eq!(days_in("2028-02"), 29);
     }
 
     #[test]
