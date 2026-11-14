@@ -15,16 +15,16 @@ use irori_types::{
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entity {
     pub key: &'static str,
-    pub name: &'static str,
+    pub name: String,
     pub capabilities: Capabilities,
     pub category: Option<EntityCategory>,
 }
 
 impl Entity {
-    pub fn new(key: &'static str, name: &'static str, capabilities: Capabilities) -> Self {
+    pub fn new(key: &'static str, name: impl Into<String>, capabilities: Capabilities) -> Self {
         Self {
             key,
-            name,
+            name: name.into(),
             capabilities,
             category: None,
         }
@@ -104,7 +104,7 @@ pub fn switch(key: &'static str, name: &'static str) -> Entity {
     )
 }
 
-pub fn button(key: &'static str, name: &'static str) -> Entity {
+pub fn button(key: &'static str, name: impl Into<String>) -> Entity {
     Entity::new(
         key,
         name,

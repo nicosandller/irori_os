@@ -760,7 +760,7 @@ mod tests {
             assert!(keys.insert(entity.key), "{} twice", entity.key);
             let description = irori_types::EntityDescription {
                 unique_id: entity::id("5YJ3E1EA7KF000001", entity.key).expect("an id"),
-                name: irori_types::Name::try_from(entity.name).ok(),
+                name: irori_types::Name::try_from(entity.name.as_str()).ok(),
                 device_unique_id: None,
                 suggested_object_id: None,
                 capabilities: entity.capabilities.clone(),

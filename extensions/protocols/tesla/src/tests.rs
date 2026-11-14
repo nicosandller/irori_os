@@ -388,7 +388,7 @@ mod protocol {
         pub log: Arc<Mutex<Log>>,
         actions: mpsc::Sender<irori_protocol::IncomingAction>,
         /// Kept open: the protocol stops when the core's end of its calls closes.
-        _calls: mpsc::Sender<irori_protocol::IncomingCall>,
+        calls: mpsc::Sender<irori_protocol::IncomingCall>,
         _stop: watch::Sender<bool>,
         _drive: tokio::task::JoinHandle<Result<(), ProtocolError>>,
     }
@@ -475,7 +475,7 @@ mod protocol {
             fake,
             log,
             actions: host.actions,
-            _calls: host.calls,
+            calls: host.calls,
             _stop: host.stop,
             _drive: drive,
         }
@@ -510,6 +510,31 @@ mod protocol {
             };
             let (incoming, answer) = host::incoming_action_with(action.to_owned(), filled);
             self.actions.send(incoming).await.expect("running");
+            tokio::time::timeout(Duration::from_secs(5), answer)
+                .await
+                .expect("an answer in time")
+                .expect("answered")
+        }
+
+        /// A service call from a person, and its answer.
+        pub async fn call(
+            &self,
+            entity: &str,
+            service: irori_types::Service,
+        ) -> Result<(), irori_protocol::ServiceError> {
+            use irori_types::{Context, ContextId, Origin, ServiceCall, UniqueId, UserId};
+            let (incoming, answer) = host::incoming_call(ServiceCall {
+                unique_id: UniqueId::try_from(entity).expect("an entity id"),
+                service,
+                context: Context {
+                    id: ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9").expect("valid"),
+                    parent_id: None,
+                    origin: Origin::User {
+                        user_id: UserId::try_from("nico").expect("valid"),
+                    },
+                },
+            });
+            self.calls.send(incoming).await.expect("running");
             tokio::time::timeout(Duration::from_secs(5), answer)
                 .await
                 .expect("an answer in time")
@@ -759,7 +784,7 @@ mod reading {
     const OTHER: &str = "5YJ3E1EA7KF000002";
     const SITE: &str = "2252000000000001";
 
-    fn answer(file: &str) -> Value {
+    pub fn answer(file: &str) -> Value {
         let text = match file {
             "vehicle_data" => include_str!("../testdata/vehicle_data.json"),
             "live_status" => include_str!("../testdata/live_status.json"),
@@ -769,7 +794,7 @@ mod reading {
         serde_json::from_str(text).expect("json")
     }
 
-    fn car(vin: &str, name: &str, state: &str) -> Value {
+    pub fn car(vin: &str, name: &str, state: &str) -> Value {
         json!({ "vin": vin, "display_name": name, "state": state })
     }
 
@@ -778,7 +803,7 @@ mod reading {
     }
 
     /// A home signed in to a fake with these products, the key already registered.
-    async fn signed_in(fake: Fake, products: Vec<Value>, stored: Vec<(&str, Value)>) -> Home {
+    pub async fn signed_in(fake: Fake, products: Vec<Value>, stored: Vec<(&str, Value)>) -> Home {
         let key = Key::generate().expect("a key");
         let hex = key.public_hex();
         fake.with(|state| {
@@ -1015,6 +1040,233 @@ mod reading {
                 Some(Health::Running) | None
             ),
             "asleep isn't trouble"
+        );
+    }
+}
+
+/// The account device, its controls, and Refresh and Wake.
+mod controls {
+    use std::time::Duration;
+
+    use irori_protocol::Health;
+    use irori_types::{NumberSetValue, SelectOption, Service};
+    use serde_json::{Value, json};
+
+    use super::VIN;
+    use super::reading::{answer, car, signed_in};
+    use crate::fake::{Answer, Fake};
+
+    fn calls_for(home: &super::protocol::Home, endpoint: &str) -> Vec<Value> {
+        home.log
+            .lock()
+            .expect("log")
+            .stored
+            .get("usage/calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|call| call["endpoint"] == endpoint)
+            .cloned()
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn the_account_shows_the_month_and_the_cars_hang_off_it() {
+        let fake = Fake::start().await;
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data"),
+            vec![Answer::with(200, answer("vehicle_data"))],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "online")], vec![]).await;
+        let spent = home
+            .until("Irori's spend after the read", |log| {
+                log.state("tesla_account:spent_irori")
+                    .filter(|spent| spent["value"].as_f64() > Some(0.0))
+            })
+            .await;
+        assert!(spent["value"].as_f64() < Some(0.1), "{spent}");
+        let polling = home
+            .until("the polling mode", |log| log.state("tesla_account:polling"))
+            .await;
+        assert_eq!(polling["option"], "Balanced");
+        let log = home.log.lock().expect("log");
+        assert_eq!(
+            log.devices[VIN]
+                .via_device_unique_id
+                .as_ref()
+                .map(|id| id.as_str()),
+            Some("tesla_account")
+        );
+        let refresh = &log.entities[&format!("{VIN}:refresh")];
+        assert_eq!(
+            refresh.name.as_ref().map(|name| name.as_str()),
+            Some("Refresh (≈$0.002)")
+        );
+        assert!(
+            !log.states.contains_key("tesla_account:spent_account"),
+            "unknown until a dashboard figure"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_reads_an_awake_car_and_never_wakes_a_sleeping_one() {
+        let fake = Fake::start().await;
+        let path = format!("GET /na/api/1/vehicles/{VIN}/vehicle_data");
+        fake.answer(&path, vec![Answer::with(200, answer("vehicle_data"))]);
+        let mut cached = answer("vehicle_data");
+        cached["response"]["charge_state"]["battery_level"] = json!(61);
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data_cached"),
+            vec![Answer::with(200, cached)],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "online")], vec![]).await;
+        home.until("the first read", |log| log.state(&format!("{VIN}:battery")))
+            .await;
+        home.call(&format!("{VIN}:refresh"), Service::ButtonPress)
+            .await
+            .expect("refreshed");
+        assert_eq!(home.fake.sent("/vehicle_data").len(), 2);
+        let refreshes = home
+            .until("the refresh on the meter", |log| {
+                let calls = log.stored.get("usage/calls")?.as_array()?.clone();
+                calls
+                    .into_iter()
+                    .find(|call| call["why"]["kind"] == "refresh")
+            })
+            .await;
+        assert_eq!(refreshes["endpoint"], "vehicle_data");
+
+        // It falls asleep: Refresh shows what Tesla last heard, and wakes nothing.
+        home.fake
+            .answer(&path, vec![Answer::with(408, json!({ "error": "asleep" }))]);
+        home.call(&format!("{VIN}:refresh"), Service::ButtonPress)
+            .await
+            .expect("refreshed from the cache");
+        let battery = home
+            .until("the cached battery", |log| {
+                log.state(&format!("{VIN}:battery"))
+                    .filter(|battery| battery["value"] == 61.0)
+            })
+            .await;
+        assert_eq!(battery["value"], 61.0);
+        assert!(home.fake.sent("/wake_up").is_empty());
+        home.call(&format!("{VIN}:refresh"), Service::ButtonPress)
+            .await
+            .expect("asleep: cached straight away");
+        assert_eq!(
+            home.fake.sent("/vehicle_data").len(),
+            3,
+            "not asked live again"
+        );
+        assert_eq!(home.fake.sent("/vehicle_data_cached").len(), 2);
+    }
+
+    #[tokio::test]
+    async fn wake_is_billed_as_a_wake_you_asked_for() {
+        let fake = Fake::start().await;
+        fake.answer(
+            &format!("POST /na/api/1/vehicles/{VIN}/wake_up"),
+            vec![Answer::ok(json!({ "vin": VIN, "state": "asleep" }))],
+        );
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data_cached"),
+            vec![Answer::status(404)],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "asleep")], vec![]).await;
+        home.until("the car", |log| log.devices.get(VIN).cloned())
+            .await;
+        home.call(&format!("{VIN}:wake"), Service::ButtonPress)
+            .await
+            .expect("woken");
+        let wakes = home
+            .until("the wake on the meter", |log| {
+                let calls = log.stored.get("usage/calls")?.as_array()?.clone();
+                calls.into_iter().find(|call| call["endpoint"] == "wake_up")
+            })
+            .await;
+        assert_eq!(
+            wakes["why"],
+            json!({ "kind": "command", "what": "Wake", "by": "you" })
+        );
+        assert_eq!(wakes["cost"], 20_000);
+        assert_eq!(calls_for(&home, "wake_up").len(), 1);
+    }
+
+    #[tokio::test]
+    async fn polling_off_and_the_allowance_are_kept_and_change_the_plan() {
+        let fake = Fake::start().await;
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data"),
+            vec![Answer::with(200, answer("vehicle_data"))],
+        );
+        let home = signed_in(fake, vec![car(VIN, "Red car", "online")], vec![]).await;
+        home.until("the first read", |log| log.state(&format!("{VIN}:battery")))
+            .await;
+        home.call(
+            "tesla_account:polling",
+            Service::SelectSelectOption(SelectOption {
+                option: "Off".into(),
+            }),
+        )
+        .await
+        .expect("off");
+        assert!(
+            home.call(
+                "tesla_account:polling",
+                Service::SelectSelectOption(SelectOption {
+                    option: "Sometimes".into()
+                }),
+            )
+            .await
+            .is_err()
+        );
+        home.until("off, kept", |log| {
+            (log.stored.get("prefs")?["mode"] == "off").then_some(())
+        })
+        .await;
+        home.until("off, shown", |log| {
+            (log.state("tesla_account:polling")?["option"] == "Off").then_some(())
+        })
+        .await;
+
+        // Nothing left to read with: the account says so, and why.
+        home.call(
+            "tesla_account:allowance",
+            Service::NumberSetValue(NumberSetValue { value: 0.0 }),
+        )
+        .await
+        .expect("set");
+        home.until("the allowance kept", |log| {
+            (log.stored.get("prefs")?["allowance"] == 0).then_some(())
+        })
+        .await;
+        home.until("the allowance shown", |log| {
+            (log.state("tesla_account:allowance")?["value"] == 0.0).then_some(())
+        })
+        .await;
+        home.call(
+            "tesla_account:polling",
+            Service::SelectSelectOption(SelectOption {
+                option: "Balanced".into(),
+            }),
+        )
+        .await
+        .expect("balanced");
+        let why = home
+            .until("the warning", |log| match log.health.last() {
+                Some(Health::Degraded(why)) => Some(why.clone()),
+                _ => None,
+            })
+            .await;
+        assert!(
+            why.starts_with("Nothing is left of the $0.00 allowance"),
+            "{why}"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(
+            home.fake.sent("/vehicle_data").len(),
+            1,
+            "nothing read on its own"
         );
     }
 }

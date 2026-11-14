@@ -17,17 +17,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
-use irori_types::{
-    Capabilities, DeviceDescription, EntityDescription, Name, StateReport, UniqueId,
-};
+use irori_protocol::{IncomingCall, ServiceError};
+use irori_types::{DeviceDescription, EntityDescription, Name, StateReport, UniqueId};
 use serde_json::Value;
 use tokio::time::Instant;
 
+use crate::account::ACCOUNT_DEVICE;
 use crate::api::{ApiError, Car, Site};
 use crate::energy::{self, SiteReading};
 use crate::entity::{self, Entity};
 use crate::usage::Why;
 use crate::usage::pace::{self, HISTORY_EVERY, LONGEST_GAP, Mode, Plan};
+use crate::usage::price::{self, Endpoint};
 use crate::vehicle::{self, CarReading};
 use crate::{Done, World, load};
 
@@ -37,11 +38,14 @@ const HISTORY_FLOOR: Duration = Duration::from_secs(30 * 60);
 /// How long a car or site Tesla refused waits before it's tried again.
 const REFUSED_WAIT: Duration = Duration::from_secs(6 * 3600);
 
+/// How long after Wake the car is read, to show it awake: most cars answer within half a minute.
+const WOKEN_READ: Duration = Duration::from_secs(30);
+
 /// A car Irori reads.
 pub(crate) struct CarSlot {
     pub car: Car,
     pub reading: CarReading,
-    described: BTreeMap<&'static str, Capabilities>,
+    described: BTreeMap<&'static str, Entity>,
     device: Option<DeviceDescription>,
     pub reading_now: bool,
     pub next_read: Option<Instant>,
@@ -49,6 +53,8 @@ pub(crate) struct CarSlot {
     cached_asked: bool,
     /// What's wrong with this car alone, until a read works.
     pub trouble: Option<String>,
+    /// Refresh presses waiting for the read under way.
+    refreshes: Vec<IncomingCall>,
 }
 
 impl CarSlot {
@@ -62,6 +68,7 @@ impl CarSlot {
             next_read: None,
             cached_asked: false,
             trouble: None,
+            refreshes: Vec::new(),
         }
     }
 }
@@ -80,12 +87,14 @@ pub(crate) enum Part {
 pub(crate) struct SiteSlot {
     pub site: Site,
     pub reading: SiteReading,
-    described: BTreeMap<&'static str, Capabilities>,
+    described: BTreeMap<&'static str, Entity>,
     device: Option<DeviceDescription>,
     reading_now: BTreeSet<Part>,
     next_live: Option<Instant>,
     next_history: Option<Instant>,
     pub trouble: Option<String>,
+    /// Refresh presses waiting for the power flows being read.
+    refreshes: Vec<IncomingCall>,
 }
 
 impl SiteSlot {
@@ -99,6 +108,7 @@ impl SiteSlot {
             next_live: None,
             next_history: None,
             trouble: None,
+            refreshes: Vec::new(),
         }
     }
 }
@@ -366,15 +376,17 @@ impl World {
         });
     }
 
-    fn read_car(&mut self, vin: &str, cached: bool, why: Why) {
+    /// Starts reading a car, unless it can't be or is being read already. Says whether it
+    /// started.
+    fn read_car(&mut self, vin: &str, cached: bool, why: Why) -> bool {
         if !self.signed_in {
-            return;
+            return false;
         }
         let Some(slot) = self.cars.get_mut(vin) else {
-            return;
+            return false;
         };
         if slot.reading_now {
-            return;
+            return false;
         }
         slot.reading_now = true;
         let api = self.api.clone();
@@ -394,6 +406,7 @@ impl World {
                 })
                 .await;
         });
+        true
     }
 
     fn read_site(&mut self, id: &str, part: Part, why: Why) {
@@ -485,11 +498,22 @@ impl World {
             return;
         };
         slot.reading_now = false;
+        let answer: Result<(), String> = match &result {
+            Ok(_) => Ok(()),
+            Err(error) => Err(error.describe()),
+        };
+        let fell_asleep = matches!(result, Err(ApiError::Asleep)) && !cached;
         match result {
             Ok(data) => {
                 slot.trouble = None;
                 if let Some(data) = data {
+                    // The cached data says what state the car was in when it last reported, not
+                    // now: a sleeping car stays asleep.
+                    let state = slot.reading.state.clone();
                     slot.reading.merge(&data);
+                    if cached && state.is_some() {
+                        slot.reading.state = state;
+                    }
                 }
                 if !cached {
                     slot.reading.read_at = Some(unix_now);
@@ -527,6 +551,22 @@ impl World {
         }
         self.show_car(&vin, false).await;
         self.keep_car(&vin).await;
+        let Some(slot) = self.cars.get_mut(&vin) else {
+            return;
+        };
+        if slot.refreshes.is_empty() {
+            return;
+        }
+        // Refresh never wakes a car: one that fell asleep shows what Tesla last heard from it.
+        if fell_asleep && self.read_car(&vin, true, Why::Refresh) {
+            return;
+        }
+        let Some(slot) = self.cars.get_mut(&vin) else {
+            return;
+        };
+        for call in std::mem::take(&mut slot.refreshes) {
+            call.reply(answer.clone().map_err(ServiceError::failed));
+        }
     }
 
     pub(crate) async fn site_read(
@@ -541,6 +581,15 @@ impl World {
             return;
         };
         slot.reading_now.remove(&part);
+        if part == Part::Live {
+            let answer = match &result {
+                Ok(_) => Ok(()),
+                Err(error) => Err(ServiceError::failed(error.describe())),
+            };
+            for call in std::mem::take(&mut slot.refreshes) {
+                call.reply(answer.clone());
+            }
+        }
         let next = |gap: Option<Duration>| gap.map(|gap| now + gap);
         let history_gap = plan
             .site
@@ -606,6 +655,7 @@ impl World {
 
     /// Describes the car and its entities as they are now, and reports every state.
     async fn show_car(&mut self, vin: &str, replayed: bool) {
+        let (prices, currency) = self.prices();
         let Some(slot) = self.cars.get_mut(vin) else {
             return;
         };
@@ -623,9 +673,23 @@ impl World {
             hw_version: None,
             serial_number: Some(vin.to_owned()),
             suggested_area: None,
-            via_device_unique_id: None,
+            via_device_unique_id: UniqueId::try_from(ACCOUNT_DEVICE).ok(),
         };
-        let entities = vehicle::entities(&slot.reading);
+        let mut entities = vehicle::entities(&slot.reading);
+        entities.push(entity::button(
+            "refresh",
+            format!(
+                "Refresh (≈{})",
+                price::money(prices.call(Endpoint::VehicleData), &currency)
+            ),
+        ));
+        entities.push(entity::button(
+            "wake",
+            format!(
+                "Wake (≈{})",
+                price::money(prices.call(Endpoint::WakeUp), &currency)
+            ),
+        ));
         if !describe(
             &self.ctx,
             device,
@@ -645,6 +709,7 @@ impl World {
     }
 
     async fn show_site(&mut self, id: &str, replayed: bool) {
+        let (prices, currency) = self.prices();
         let Some(slot) = self.sites.get_mut(id) else {
             return;
         };
@@ -669,9 +734,14 @@ impl World {
             hw_version: None,
             serial_number: None,
             suggested_area: None,
-            via_device_unique_id: None,
+            via_device_unique_id: UniqueId::try_from(ACCOUNT_DEVICE).ok(),
         };
-        let entities = energy::entities(&slot.site, &slot.reading);
+        let mut entities = energy::entities(&slot.site, &slot.reading);
+        let refresh = prices.call(Endpoint::LiveStatus) + prices.call(Endpoint::EnergyHistory);
+        entities.push(entity::button(
+            "refresh",
+            format!("Refresh (≈{})", price::money(refresh, &currency)),
+        ));
         if !describe(
             &self.ctx,
             device,
@@ -687,6 +757,136 @@ impl World {
             if let Some(state) = energy::state(key, &slot.reading) {
                 report(&self.ctx, id, key, state, replayed);
             }
+        }
+    }
+
+    /// What each call costs, and in what currency.
+    fn prices(&self) -> (price::Prices, String) {
+        self.meter
+            .lock()
+            .map(|usage| (usage.prices, usage.currency.clone()))
+            .unwrap_or_else(|_| {
+                (
+                    price::Prices::from_settings(&self.settings),
+                    self.settings.currency.clone(),
+                )
+            })
+    }
+
+    /// Refresh on a car: read it now if it's awake, else show what Tesla last heard from it.
+    /// Never wakes it. Answered once the read is done.
+    pub(crate) fn refresh_car(&mut self, vin: &str, call: IncomingCall) {
+        if !self.signed_in {
+            call.reply(Err(ServiceError::unavailable("sign in to Tesla first")));
+            return;
+        }
+        let Some(slot) = self.cars.get_mut(vin) else {
+            call.reply(Err(ServiceError::failed("no such car")));
+            return;
+        };
+        slot.refreshes.push(call);
+        if slot.reading_now {
+            return;
+        }
+        let awake = slot.reading.awake();
+        self.read_car(vin, !awake, Why::Refresh);
+    }
+
+    pub(crate) fn refresh_site(&mut self, id: &str, call: IncomingCall) {
+        if !self.signed_in {
+            call.reply(Err(ServiceError::unavailable("sign in to Tesla first")));
+            return;
+        }
+        let Some(slot) = self.sites.get_mut(id) else {
+            call.reply(Err(ServiceError::failed("no such site")));
+            return;
+        };
+        slot.refreshes.push(call);
+        self.read_site(id, Part::Live, Why::Refresh);
+        self.read_site(id, Part::History, Why::Refresh);
+    }
+
+    /// Wake: asks the car to wake, then reads it once it's had time to.
+    pub(crate) fn wake_car(&mut self, vin: &str, call: IncomingCall) {
+        if !self.signed_in {
+            call.reply(Err(ServiceError::unavailable("sign in to Tesla first")));
+            return;
+        }
+        if !self.cars.contains_key(vin) {
+            call.reply(Err(ServiceError::failed("no such car")));
+            return;
+        }
+        let why = Why::Command {
+            what: "Wake".into(),
+            by: crate::account::asked_by(&call.call.context.origin),
+        };
+        let api = self.api.clone();
+        let done = self.done.clone();
+        let vin = vin.to_owned();
+        tokio::spawn(async move {
+            let result = api.wake_up(&vin, why).await;
+            let _ = done.send(Done::Woken { vin, result, call }).await;
+        });
+    }
+
+    pub(crate) async fn woken(
+        &mut self,
+        vin: String,
+        result: Result<String, ApiError>,
+        call: IncomingCall,
+    ) {
+        match result {
+            Ok(_) => {
+                self.account_worked();
+                if let Some(slot) = self.cars.get_mut(&vin)
+                    && !slot.reading_now
+                {
+                    slot.next_read = Some(Instant::now() + WOKEN_READ);
+                }
+                call.reply(Ok(()));
+            }
+            Err(error) => {
+                call.reply(Err(ServiceError::failed(error.describe())));
+                if account_wide(&error) {
+                    self.trouble_from(error);
+                }
+            }
+        }
+    }
+
+    /// The polling mode or the allowance changed: everything is scheduled again by the new plan.
+    pub(crate) fn replan(&mut self) {
+        let (mode, plan) = self.plan();
+        let now = Instant::now();
+        let soonest = |at: Option<Instant>, gap: Option<Duration>| match (at, gap) {
+            (_, None) => None,
+            (Some(at), Some(gap)) => Some(at.min(now + gap)),
+            (None, Some(_)) => Some(now),
+        };
+        self.next_states = match plan.state {
+            Some(gap) if !self.cars.is_empty() => {
+                Some(self.next_states.map_or(now + gap, |at| at.min(now + gap)))
+            }
+            _ => None,
+        };
+        let idle = self.timing.idle;
+        for slot in self.cars.values_mut() {
+            if mode == Mode::Off || !slot.reading.awake() {
+                slot.next_read = None;
+            } else if !slot.reading_now {
+                let gap = after_read(
+                    slot.reading.busy(mode == Mode::Saving),
+                    mode,
+                    plan.car,
+                    idle,
+                );
+                slot.next_read = soonest(slot.next_read, gap);
+            }
+        }
+        for slot in self.sites.values_mut() {
+            slot.next_live = soonest(slot.next_live, plan.site);
+            slot.next_history =
+                soonest(slot.next_history, plan.site.map(|gap| gap * HISTORY_EVERY));
         }
     }
 
@@ -706,11 +906,11 @@ impl World {
 
 /// Describes a device and whichever of its entities are new or changed, and removes the ones it
 /// no longer has. False when the core wouldn't take the device.
-async fn describe(
+pub(crate) async fn describe(
     ctx: &irori_protocol::ProtocolContext,
     device: DeviceDescription,
     described_device: &mut Option<DeviceDescription>,
-    described: &mut BTreeMap<&'static str, Capabilities>,
+    described: &mut BTreeMap<&'static str, Entity>,
     entities: Vec<Entity>,
 ) -> bool {
     let device_id = device.unique_id.clone();
@@ -723,7 +923,7 @@ async fn describe(
     }
     let keys: BTreeSet<&'static str> = entities.iter().map(|entity| entity.key).collect();
     for entity in entities {
-        if described.get(entity.key) == Some(&entity.capabilities) {
+        if described.get(entity.key) == Some(&entity) {
             continue;
         }
         let Some(unique_id) = entity::id(device_id.as_str(), entity.key) else {
@@ -731,14 +931,14 @@ async fn describe(
         };
         let description = EntityDescription {
             unique_id,
-            name: Name::try_from(entity.name).ok(),
+            name: Name::try_from(entity.name.as_str()).ok(),
             device_unique_id: Some(device_id.clone()),
             suggested_object_id: None,
             capabilities: entity.capabilities.clone(),
             entity_category: entity.category,
         };
         if ctx.describe_entity(description).await.is_ok() {
-            described.insert(entity.key, entity.capabilities);
+            described.insert(entity.key, entity);
         } else {
             tracing::warn!(key = entity.key, "a Tesla entity couldn't be added");
         }
@@ -757,7 +957,7 @@ async fn describe(
     true
 }
 
-fn report(
+pub(crate) fn report(
     ctx: &irori_protocol::ProtocolContext,
     device: &str,
     key: &str,

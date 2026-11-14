@@ -5,6 +5,7 @@
 //! what came of it back to the loop, so the loop is always free: to save new tokens the moment a
 //! refresh asks (the refresh waits for that), to answer the page, to take the next command.
 
+mod account;
 mod api;
 mod auth;
 mod energy;
@@ -25,11 +26,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use irori_cloud::Backoff;
+use irori_protocol::IncomingCall;
 use irori_protocol::{
     Health, Incoming, IncomingAction, Protocol, ProtocolContext, ProtocolError, ServiceError,
     ServiceErrorCode,
 };
-use irori_types::Waiting;
+use irori_types::{DeviceDescription, Name, Service, State, UniqueId, Waiting};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -110,6 +112,12 @@ enum Done {
         part: Part,
         result: Result<serde_json::Value, ApiError>,
     },
+    /// Tesla's answer to Wake, and the press it answers.
+    Woken {
+        vin: String,
+        result: Result<String, ApiError>,
+        call: IncomingCall,
+    },
 }
 
 /// The cars and sites as the last listing found them, kept for the next start.
@@ -156,8 +164,17 @@ struct World {
     next_states: Option<Instant>,
     /// For reads that failed for the whole account.
     read_backoff: Backoff,
+    account: AccountShown,
     done: mpsc::Sender<Done>,
     reported: Reported,
+}
+
+/// The account device as last described and reported.
+#[derive(Default)]
+struct AccountShown {
+    device: Option<DeviceDescription>,
+    described: BTreeMap<&'static str, entity::Entity>,
+    states: BTreeMap<&'static str, State>,
 }
 
 #[derive(Default)]
@@ -223,10 +240,12 @@ pub(crate) async fn drive(
         checking_states: false,
         next_states: None,
         read_backoff: Backoff::new(),
+        account: AccountShown::default(),
         done,
         reported: Reported::default(),
         timing,
     };
+    world.show_account().await;
     world.restore().await;
     world.register(None);
     world.report().await;
@@ -261,15 +280,126 @@ impl World {
     async fn incoming(&mut self, incoming: Incoming) {
         match incoming {
             Incoming::Action(action) => self.action(action).await,
-            Incoming::Call(call) => call.reply(Err(ServiceError {
-                code: ServiceErrorCode::Failed,
-                message: "Irori can't command Tesla cars yet".into(),
-            })),
+            Incoming::Call(call) => self.call(call).await,
             Incoming::Page(page) => page.answer(Err("the usage page isn't ready yet".into())),
             Incoming::Unpair(unpair) => {
                 unpair.reply(Err("a Tesla car or site is removed in the Tesla app".into()));
             }
             Incoming::Picture(picture) => picture.reply(Err("Tesla has no cameras here".into())),
+        }
+    }
+
+    /// A service call: a control on the account device, Refresh or Wake. Commands come later.
+    async fn call(&mut self, call: IncomingCall) {
+        let id = call.call.unique_id.as_str().to_owned();
+        let Some((device, key)) = id.split_once(':') else {
+            call.reply(Err(ServiceError::failed("no such entity")));
+            return;
+        };
+        let is_car = self.cars.contains_key(device);
+        let is_site = self.sites.contains_key(device);
+        match (key, &call.call.service) {
+            ("polling", Service::SelectSelectOption(choice))
+                if device == account::ACCOUNT_DEVICE =>
+            {
+                let result = account::mode(&choice.option);
+                self.set_prefs(result.map(|mode| (Some(mode), None)), call)
+                    .await;
+            }
+            ("allowance", Service::NumberSetValue(set)) if device == account::ACCOUNT_DEVICE => {
+                let result = account::allowance(set.value);
+                self.set_prefs(result.map(|allowance| (None, Some(allowance))), call)
+                    .await;
+            }
+            ("refresh", Service::ButtonPress) if is_car => self.refresh_car(device, call),
+            ("refresh", Service::ButtonPress) if is_site => self.refresh_site(device, call),
+            ("wake", Service::ButtonPress) if is_car => self.wake_car(device, call),
+            _ => call.reply(Err(ServiceError {
+                code: ServiceErrorCode::Failed,
+                message: "Irori can't command Tesla cars yet".into(),
+            })),
+        }
+    }
+
+    /// Changes the polling mode or the allowance, keeps it, and plans reading again.
+    async fn set_prefs(
+        &mut self,
+        change: Result<(Option<usage::Mode>, Option<price::Micros>), String>,
+        call: IncomingCall,
+    ) {
+        let (mode, allowance) = match change {
+            Ok(change) => change,
+            Err(why) => {
+                call.reply(Err(ServiceError::failed(why)));
+                return;
+            }
+        };
+        if let Ok(mut usage) = self.meter.lock() {
+            if let Some(mode) = mode {
+                usage.prefs.mode = mode;
+            }
+            if let Some(allowance) = allowance {
+                usage.prefs.allowance = allowance;
+            }
+            usage.dirty = true;
+        }
+        self.save().await;
+        self.replan();
+        self.show_account().await;
+        call.reply(Ok(()));
+    }
+
+    /// Describes the account device and reports whichever of its states changed.
+    async fn show_account(&mut self) {
+        let now = self.now();
+        let (currency, states) = {
+            let Ok(mut usage) = self.meter.lock() else {
+                return;
+            };
+            usage.roll(now);
+            let outlook = usage.outlook(now);
+            let states: Vec<(&'static str, State)> = account::entities(&usage.currency)
+                .iter()
+                .filter_map(|entity| {
+                    Some((entity.key, account::state(entity.key, &usage, &outlook)?))
+                })
+                .collect();
+            (usage.currency.clone(), states)
+        };
+        let device = DeviceDescription {
+            unique_id: UniqueId::try_from(account::ACCOUNT_DEVICE).expect("a valid id"),
+            name: Name::try_from("Tesla account").expect("a valid name"),
+            manufacturer: Some("Tesla".into()),
+            model: Some("Fleet API".into()),
+            sw_version: None,
+            hw_version: None,
+            serial_number: None,
+            suggested_area: None,
+            via_device_unique_id: None,
+        };
+        if !reading::describe(
+            &self.ctx,
+            device,
+            &mut self.account.device,
+            &mut self.account.described,
+            account::entities(&currency),
+        )
+        .await
+        {
+            return;
+        }
+        for (key, state) in states {
+            if self.account.states.get(key) == Some(&state) {
+                continue;
+            }
+            reading::report(
+                &self.ctx,
+                account::ACCOUNT_DEVICE,
+                key,
+                state.clone(),
+                false,
+            );
+            self.account.states.insert(key, state);
         }
     }
 
@@ -444,6 +574,7 @@ impl World {
                 result,
             } => self.car_read(vin, cached, result).await,
             Done::SiteRead { id, part, result } => self.site_read(id, part, result).await,
+            Done::Woken { vin, result, call } => self.woken(vin, result, call).await,
         }
     }
 
@@ -544,11 +675,23 @@ impl World {
                 error @ (ApiError::Server(_) | ApiError::Unreachable(_) | ApiError::RateLimited(_)),
             ) => Health::Degraded(format!("{}; trying again.", capitalise(&error.describe()))),
             _ => {
+                let mut notes = Vec::new();
+                let (_, plan) = self.plan();
+                if let Ok(usage) = self.meter.lock() {
+                    let outlook = usage.outlook(self.now());
+                    notes.extend(account::warning(&outlook, &plan, &usage.currency));
+                }
                 let refused = self.refused();
-                if refused.is_empty() {
+                if !refused.is_empty() {
+                    notes.push(format!(
+                        "Tesla won't let Irori read {}.",
+                        refused.join("; ")
+                    ));
+                }
+                if notes.is_empty() {
                     Health::Running
                 } else {
-                    Health::Degraded(format!("Tesla won't let Irori read {}", refused.join("; ")))
+                    Health::Degraded(notes.join(" "))
                 }
             }
         }
@@ -566,8 +709,9 @@ impl World {
         actions
     }
 
-    /// Tells the core what changed: setup steps, actions, health.
+    /// Tells the core what changed: setup steps, actions, health, the month's figures.
     async fn report(&mut self) {
+        self.show_account().await;
         let waiting = self.waiting().await;
         if self.reported.waiting.as_ref() != Some(&waiting) {
             self.ctx.set_waiting(waiting.clone()).await;
