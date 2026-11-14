@@ -277,6 +277,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/assistant/turns/{scope}", get(assistant::follow))
         .route("/api/assistant/turns/{scope}/stop", post(assistant::stop))
         .route("/api/assistant/check", post(assistant::check))
+        .route("/api/assistant/models", post(assistant::models))
         .route("/api/assistant/pull", post(assistant::pull))
         .route("/api/assistant/forget", post(assistant::forget))
         .route("/api/assistant/install", post(assistant::install))
@@ -8469,6 +8470,161 @@ mod tests {
             Ok(())
         }
 
+        /// A provider that answers `/models`: what it was asked with is written down, so a
+        /// test can say where a key went. Bearer `sk-test-key-should-not-leak` is OpenAI's
+        /// shape, `x-api-key: sk-ant-test` Anthropic's, and anything else is refused with the
+        /// key said back, the way some providers do.
+        async fn lister() -> (String, Arc<std::sync::Mutex<Vec<(String, Option<String>)>>>) {
+            let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let heard = asked.clone();
+            let app = Router::new().fallback(move |request: Request<Body>| {
+                let heard = heard.clone();
+                async move {
+                    let header = |name: &str| {
+                        request
+                            .headers()
+                            .get(name)
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_owned)
+                    };
+                    let bearer = header("authorization");
+                    let key = header("x-api-key");
+                    heard.lock().expect("not poisoned").push((
+                        request.uri().path().to_owned(),
+                        bearer.clone().or(key.clone()),
+                    ));
+                    match request.uri().path() {
+                        "/broken/models" => {
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "down").into_response();
+                        }
+                        "/v1/models" => {}
+                        _ => return StatusCode::NOT_FOUND.into_response(),
+                    }
+                    if key.as_deref() == Some("sk-ant-test")
+                        && header("anthropic-version").is_some()
+                        && bearer.is_none()
+                        && request.uri().query() == Some("limit=1000")
+                    {
+                        return Json(serde_json::json!({
+                            "data": [
+                                {"type": "model", "id": "claude-new"},
+                                {"type": "model", "id": "claude-old"},
+                            ],
+                            "has_more": false,
+                        }))
+                        .into_response();
+                    }
+                    match bearer.as_deref() {
+                        Some("Bearer sk-test-key-should-not-leak") => Json(serde_json::json!({
+                            "object": "list",
+                            "data": [{"id": "test-model"}, {"id": "b-model"}],
+                        }))
+                        .into_response(),
+                        Some("Bearer garbage") => "not json".into_response(),
+                        _ => (
+                            StatusCode::UNAUTHORIZED,
+                            format!("bad key {}", bearer.or(key).unwrap_or_default()),
+                        )
+                            .into_response(),
+                    }
+                }
+            });
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a local port");
+            let address = listener.local_addr().expect("the port it bound");
+            tokio::spawn(async move {
+                axum::serve(listener, app).await.ok();
+            });
+            (format!("http://{address}"), asked)
+        }
+
+        /// The model box suggests what the provider offers. The core asks, so the key stays
+        /// off the page; the saved key goes only where it was saved for; and a provider that
+        /// can't list is no suggestions, not an error.
+        #[tokio::test]
+        async fn a_cloud_provider_is_asked_which_models_it_has() -> anyhow::Result<()> {
+            let (host, asked) = lister().await;
+            let base = format!("{host}/v1");
+            let server = Server::new(core())?;
+            let models = |body: serde_json::Value| {
+                let server = &server;
+                async move {
+                    let (status, reply) = server
+                        .json("POST", "/api/assistant/models", body)
+                        .await
+                        .expect("an answer");
+                    assert_eq!(status, StatusCode::OK, "{reply}");
+                    assert!(
+                        !reply.to_string().contains("should-not-leak"),
+                        "the key came back: {reply}"
+                    );
+                    reply["models"].clone()
+                }
+            };
+            let count = || asked.lock().expect("not poisoned").len();
+
+            // Nothing saved and no key typed: no provider is asked.
+            assert_eq!(models(serde_json::json!({})).await, serde_json::json!([]));
+            assert_eq!(count(), 0);
+
+            // The saved key, for the endpoint it was saved for. Sorted.
+            server
+                .json("PUT", "/api/assistant", configure(&base, "test-model"))
+                .await?;
+            let listed = serde_json::json!(["b-model", "test-model"]);
+            assert_eq!(models(serde_json::json!({})).await, listed);
+            assert_eq!(
+                models(serde_json::json!({"preset": "compatible", "base_url": format!("{base}/")}))
+                    .await,
+                listed
+            );
+
+            // A typed key, for Anthropic: its own path and headers, its own order.
+            assert_eq!(
+                models(serde_json::json!({
+                    "preset": "anthropic",
+                    "base_url": host,
+                    "api_key": " sk-ant-test ",
+                }))
+                .await,
+                serde_json::json!(["claude-new", "claude-old"])
+            );
+
+            // Another provider with no key typed is asked nothing: the saved key isn't its.
+            let before = count();
+            assert_eq!(
+                models(serde_json::json!({"preset": "anthropic", "base_url": host})).await,
+                serde_json::json!([])
+            );
+            assert_eq!(count(), before);
+
+            // Another compatible endpoint is asked with no key at all.
+            let elsewhere = format!("{host}/elsewhere");
+            assert_eq!(
+                models(serde_json::json!({"preset": "compatible", "base_url": elsewhere})).await,
+                serde_json::json!([])
+            );
+            assert_eq!(
+                asked.lock().expect("not poisoned").last(),
+                Some(&("/elsewhere/models".to_owned(), None))
+            );
+
+            // A refusal that says the key back, garbage, a failing endpoint, no endpoint at
+            // all and not a web address: each is just no suggestions.
+            for body in [
+                serde_json::json!({"preset": "openai", "base_url": base, "api_key": "sk-test-key-should-not-leak-typo"}),
+                serde_json::json!({"preset": "compatible", "base_url": base, "api_key": "garbage"}),
+                serde_json::json!({"preset": "compatible", "base_url": format!("{host}/broken"), "api_key": "k"}),
+                serde_json::json!({"preset": "compatible", "base_url": ""}),
+                serde_json::json!({"preset": "compatible", "base_url": "file:///etc", "api_key": "k"}),
+                serde_json::json!({"preset": "nonsense"}),
+            ] {
+                assert_eq!(models(body.clone()).await, serde_json::json!([]), "{body}");
+            }
+            Ok(())
+        }
+
         /// A picture of a floorplan goes to the model with the question it was asked with —
         /// one far bigger than any other request may be — and is not what is remembered.
         #[tokio::test]
@@ -11176,6 +11332,7 @@ mod tests {
         ("GET", "/api/assistant/turns/{scope}", Filtered),
         ("POST", "/api/assistant/turns/{scope}/stop", Asks),
         ("POST", "/api/assistant/check", Run),
+        ("POST", "/api/assistant/models", Run),
         ("POST", "/api/assistant/pull", Run),
         ("POST", "/api/assistant/forget", Run),
         ("POST", "/api/assistant/install", Run),

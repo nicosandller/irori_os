@@ -31,7 +31,7 @@ mod process;
 pub mod talk;
 pub use bytes::Bytes;
 pub use live::{IncomingLive, LiveChunk, LiveClosed, LiveFeed, Sent};
-pub use process::{ExtProcess, FromExt, ToExt, WireCommand, schemas, serve, spawn};
+pub use process::{ExtProcess, FromExt, ProcessGroup, ToExt, WireCommand, schemas, serve, spawn};
 pub use talk::{IncomingTalk, TalkLine, TalkWord};
 
 /// A built-in protocol.
