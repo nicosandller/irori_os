@@ -18,8 +18,10 @@ use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
 
 /// What Tab stops at inside a window: not what is switched off, nor what a folded drawer holds.
-const STOPS: &str = ":is(a[href], button, input, select, textarea, [tabindex])\
-                     :not([disabled], [tabindex=\"-1\"], [type=\"hidden\"], [inert] *)";
+const STOPS: &str = ":is(a[href], button, input, select, textarea, summary, iframe, \
+                     audio[controls], video[controls], [contenteditable], [tabindex])\
+                     :not([disabled], [tabindex=\"-1\"], [type=\"hidden\"], \
+                     [contenteditable=\"false\"], [inert] *)";
 
 /// `on_close` fires for every way out. The caller decides what closing means — this component
 /// draws nothing once its caller stops rendering it.
@@ -66,12 +68,16 @@ pub fn Modal(
     });
     on_cleanup(move || {
         keys.remove();
-        let opener = opener.try_get_value().flatten();
-        if let Some(opener) =
-            opener.and_then(|opener| opener.dyn_into::<web_sys::HtmlElement>().ok())
-            && opener.is_connected()
-        {
-            let _ = opener.focus();
+        let opener = opener
+            .try_get_value()
+            .flatten()
+            .and_then(|opener| opener.dyn_into::<web_sys::HtmlElement>().ok())
+            .filter(|opener| opener.is_connected());
+        match opener {
+            Some(opener) => {
+                let _ = opener.focus();
+            }
+            None => focus_page(),
         }
     });
 
@@ -104,6 +110,25 @@ pub fn Modal(
                 <div class="modal-body">{children()}</div>
             </div>
         </div>
+    }
+}
+
+/// Where the focus goes when what opened a window is gone by the time it closes (a row that
+/// was removed, a list drawn again): the page's heading, so the keyboard carries on from the
+/// top of what is being read and not from the start of the document.
+fn focus_page() {
+    let found = document()
+        .query_selector("main h1")
+        .ok()
+        .flatten()
+        .or_else(|| document().query_selector("main").ok().flatten())
+        .and_then(|found| found.dyn_into::<web_sys::HtmlElement>().ok());
+    if let Some(found) = found {
+        // Focusable by the page, not a stop of its own.
+        if !found.has_attribute("tabindex") {
+            let _ = found.set_attribute("tabindex", "-1");
+        }
+        let _ = found.focus();
     }
 }
 

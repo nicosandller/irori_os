@@ -20,6 +20,15 @@
   <link data-trunk rel="copy-file" href="src/camera_talk_worklet.js">
   <script src="/camera_talk.js" defer></script>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <!-- Motion off, said before anything is drawn: the page sets this itself once it runs
+       (src/main.rs, `MOTION_KEY`), but the sign-in card is on screen by then. -->
+  <script>
+    try {
+      if (localStorage.getItem("irori.motion") === "off") {
+        document.documentElement.setAttribute("data-motion", "off");
+      }
+    } catch (e) {}
+  </script>
   <style>
     /* Brand tokens (assets/README.md). Fonts are never downloaded: the UI works offline. */
     :root {
@@ -280,15 +289,22 @@
       .sidebar nav { flex: 1; min-width: 0; flex-direction: row; overflow-x: auto;
                      scrollbar-width: none; }
       .sidebar nav::-webkit-scrollbar { display: none; }
-      .sidebar nav a, .sidebar .settings-link { flex: none; gap: .45rem; padding: .4rem .5rem;
-                                                border-left: none; }
+      /* The folded rules are named here too: folding is remembered by the browser, so a
+         sidebar folded on a wide screen is still `.folded` when the window narrows, and its
+         rules would otherwise outrank these. */
+      .sidebar nav a, .sidebar .settings-link,
+      .folded .sidebar nav a, .folded .sidebar .settings-link {
+          flex: none; gap: .45rem; padding: .4rem .5rem; border-left: none;
+          justify-content: flex-start; }
+      /* The row of pages clips what pokes out of it, a focus ring included: drawn inside. */
+      .sidebar nav a:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
       .sidebar > .glide { display: none; }
       .fold { display: none; }
       .sidebar-bottom { flex: none; flex-direction: row; align-items: center; margin: 0;
                         gap: .25rem; }
       .sidebar .live { padding: 0 .25rem; }
       .folded .sidebar .label { position: static; width: auto; height: auto; clip: auto; }
-      .sidebar .mark-letters, .sidebar .live .label,
+      .sidebar .mark-letters, .folded .sidebar .mark-letters, .sidebar .live .label,
       .sidebar nav a:not([aria-current="page"]) .label,
       .sidebar .settings-link:not([aria-current="page"]) .label {
           position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0);
@@ -302,6 +318,9 @@
                        clip: rect(0 0 0 0); white-space: nowrap; }
 
     h1 { margin: 0 0 .25rem; font-size: 1.5rem; font-weight: 500; letter-spacing: -0.02em; }
+    /* Given the focus when a window closes and what opened it is gone (src/modal.rs): a place
+       to carry on from, not something to press, so it gets no ring. */
+    h1[tabindex="-1"]:focus { outline: none; }
     h2 { margin: 0 0 .6rem; font-size: 1rem; font-weight: 500; }
     .lede { margin: 0 0 1.5rem; color: var(--muted); }
     .small { font-size: .8rem; }

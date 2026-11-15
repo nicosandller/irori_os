@@ -94,13 +94,20 @@ struct Sizes {
     observer: web_sys::ResizeObserver,
     /// The list being watched: a list drawn again is a new node, and is watched afresh.
     list: web_sys::Element,
+    /// How many children it had when they were put under watch: with one more or fewer, they
+    /// are watched afresh too.
+    children: u32,
     _changed: Closure<dyn Fn()>,
 }
 
-/// Has `changed` called whenever `list`, or anything directly in it, changes size. Does
-/// nothing if this list is already the one watched.
+/// Has `changed` called whenever `list`, or anything directly in it but the highlight, changes
+/// size. Does nothing if this list, with these many children, is already the one watched.
 fn watch_sizes(sizes: &mut Option<Sizes>, list: &web_sys::Element, changed: impl Fn() + 'static) {
-    if sizes.as_ref().is_some_and(|sizes| &sizes.list == list) {
+    let children = list.children();
+    if sizes
+        .as_ref()
+        .is_some_and(|sizes| &sizes.list == list && sizes.children == children.length())
+    {
         return;
     }
     if let Some(old) = sizes.take() {
@@ -112,17 +119,23 @@ fn watch_sizes(sizes: &mut Option<Sizes>, list: &web_sys::Element, changed: impl
         return;
     };
     observer.observe(list);
-    let children = list.children();
     for i in 0..children.length() {
-        if let Some(child) = children.item(i) {
+        // Not the highlight itself: its size is what `changed` sets, and it glides to it, so
+        // watching it would have it placed again on every frame of its own movement.
+        if let Some(child) = children.item(i).filter(|child| !is_highlight(child)) {
             observer.observe(&child);
         }
     }
     *sizes = Some(Sizes {
         observer,
         list: list.clone(),
+        children: children.length(),
         _changed: changed,
     });
+}
+
+fn is_highlight(child: &web_sys::Element) -> bool {
+    child.class_list().contains("glide")
 }
 
 fn place(container: &web_sys::Element, selector: &str, way: Way) {
