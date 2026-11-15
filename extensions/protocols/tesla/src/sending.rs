@@ -276,15 +276,21 @@ impl World {
                 return;
             }
         };
-        if self.known.unpaired.contains(vin) {
-            call.reply(Err(ServiceError::failed(self.not_paired(vin))));
-            return;
-        }
-        if self.known.unsigned.contains(vin) {
-            call.reply(Err(ServiceError::failed(
-                "this car takes Tesla's older, unsigned commands, which Irori doesn't send",
-            )));
-            return;
+        // A car Tesla listed without Irori's key, or as taking older commands, is still tried:
+        // the key may have been added since, and the handshake that would show it costs a
+        // tenth of a cent.
+        if let Some(slot) = self.cars.get(vin) {
+            match command.check(&slot.reading) {
+                Ok(true) => {}
+                Ok(false) => {
+                    call.reply(Ok(()));
+                    return;
+                }
+                Err(why) => {
+                    call.reply(Err(ServiceError::failed(why)));
+                    return;
+                }
+            }
         }
         let link = match self.links.get(vin) {
             Some(link) => Arc::clone(link),
@@ -361,7 +367,14 @@ impl World {
                 self.account_worked();
                 let caused_by = call.call.context.id.clone();
                 match command {
-                    Command::Car(command) => self.car_commanded(&device, &command, caused_by).await,
+                    Command::Car(command) => {
+                        // It took a signed command, so Irori's key is on it.
+                        if self.known.unpaired.remove(&device) | self.known.unsigned.remove(&device)
+                        {
+                            self.keep_known().await;
+                        }
+                        self.car_commanded(&device, &command, caused_by).await;
+                    }
                     Command::Site(command) => {
                         self.site_commanded(&device, &command, caused_by).await;
                     }
@@ -377,6 +390,12 @@ impl World {
             Err(Failure::Account(error)) => {
                 call.reply(Err(ServiceError::failed(error.describe())));
                 self.trouble_from(error);
+            }
+            Err(Failure::Failed(why)) if self.known.unsigned.contains(&device) => {
+                call.reply(Err(ServiceError::failed(format!(
+                    "{why}. Tesla lists this car as one that takes its older, unsigned \
+                     commands, which Irori doesn't send"
+                ))));
             }
             Err(Failure::Failed(why)) => call.reply(Err(ServiceError::failed(why))),
         }

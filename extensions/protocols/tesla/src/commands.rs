@@ -194,6 +194,27 @@ impl CarCommand {
         }
     }
 
+    /// Whether to send it, given what's known of the car: `Ok(false)` when it's already as asked
+    /// and sending it would undo that (the trunk opens with a toggle).
+    pub fn check(&self, reading: &crate::vehicle::CarReading) -> Result<bool, String> {
+        if !matches!(self, CarCommand::Trunk { open: true }) {
+            return Ok(true);
+        }
+        match reading
+            .fields
+            .get("vehicle_state.rt")
+            .and_then(Value::as_f64)
+        {
+            Some(open) if open != 0.0 => Ok(false),
+            Some(_) => Ok(true),
+            None => Err(
+                "Irori doesn't know yet whether the trunk is open, and opening it would shut it \
+                 if it is: refresh the car first"
+                    .into(),
+            ),
+        }
+    }
+
     /// Whether sending it twice does no harm. One that isn't is sent again only when the car
     /// surely never got it (asleep, or turned away unread).
     pub fn repeatable(&self) -> bool {
@@ -238,8 +259,10 @@ impl CarCommand {
             } else {
                 unsigned_message::UNLOCK
             })),
+            // Tesla's own library opens the trunk with MOVE, a toggle ([`CarCommand::check`]
+            // keeps it from shutting an open one), and closes it with CLOSE.
             Trunk { open } => closure(ClosureMoveRequest {
-                rear_trunk: open_close(*open),
+                rear_trunk: if *open { closure::MOVE } else { closure::CLOSE },
                 ..ClosureMoveRequest::default()
             }),
             Frunk => closure(ClosureMoveRequest {
@@ -450,7 +473,7 @@ mod tests {
         assert_eq!(bytes(Climate(false)), (Infotainment, "12025200".into()));
         assert_eq!(
             bytes(Trunk { open: true }),
-            (VehicleSecurity, "22022803".into())
+            (VehicleSecurity, "22022801".into())
         );
         assert_eq!(bytes(Frunk), (VehicleSecurity, "22023001".into()));
         assert_eq!(
@@ -468,6 +491,23 @@ mod tests {
             bytes(SeatHeater { seat: 1, level: 3 }),
             (Infotainment, "1209a202060a042a004200".into())
         );
+    }
+
+    #[test]
+    fn the_trunk_toggle_is_never_sent_to_an_open_trunk() {
+        let open = CarCommand::Trunk { open: true };
+        let mut reading = crate::vehicle::CarReading::default();
+        assert!(open.check(&reading).is_err(), "unknown: refresh first");
+        reading.fields.insert("vehicle_state.rt".into(), json!(0));
+        assert_eq!(open.check(&reading), Ok(true));
+        reading.fields.insert("vehicle_state.rt".into(), json!(1));
+        assert_eq!(
+            open.check(&reading),
+            Ok(false),
+            "already open: nothing sent"
+        );
+        // Closing is CLOSE, not a toggle: always safe.
+        assert_eq!(CarCommand::Trunk { open: false }.check(&reading), Ok(true));
     }
 
     #[test]

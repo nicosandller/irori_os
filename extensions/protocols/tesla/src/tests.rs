@@ -1596,7 +1596,7 @@ mod commands {
     }
 
     #[tokio::test]
-    async fn a_car_without_irori_s_key_is_told_how_to_add_it_and_not_asked_again() {
+    async fn a_car_without_irori_s_key_is_told_how_to_add_it_and_works_once_it_has_it() {
         let home = with_a_car("online", |car| car.paired = false).await;
         let lock = format!("{VIN}:lock");
         let refused = home
@@ -1613,24 +1613,28 @@ mod commands {
             1,
             "the handshake only"
         );
-        home.until("the step to add the key", |log| {
+        let has_step = |log: &super::protocol::Log| {
             log.waiting
                 .iter()
-                .find(|step| step.unique_id.as_str() == VIN)
-                .cloned()
-        })
-        .await;
+                .any(|step| step.unique_id.as_str() == VIN)
+        };
+        home.until("the step to add the key", |log| has_step(log).then_some(()))
+            .await;
 
-        // Known now: refused without asking the car, so without paying for it.
+        // The person adds the key: the next command goes through, and the step goes.
+        home.fake.with(|state| {
+            state.cars.get_mut(VIN).expect("the car").paired = true;
+        });
         home.call(&lock, Service::LockUnlock(LockCode::default()))
             .await
-            .expect_err("still no key");
-        assert_eq!(home.fake.sent("/signed_command").len(), 1);
-        assert!(the_car(&home).done.is_empty());
+            .expect("unlocked");
+        assert_eq!(the_car(&home).done.len(), 1);
+        home.until("the step gone", |log| (!has_step(log)).then_some(()))
+            .await;
     }
 
     #[tokio::test]
-    async fn honk_is_never_sent_twice_and_the_car_s_refusal_is_passed_on() {
+    async fn a_busy_car_gets_a_command_again_but_never_a_honk_and_refusals_are_passed_on() {
         use prost::Message as _;
         let refusal = crate::signed::proto::Response {
             action_status: Some(crate::signed::proto::ActionStatus {
@@ -1663,10 +1667,29 @@ mod commands {
             .state(&format!("{VIN}:charge_limit"));
         assert_eq!(limit.expect("a limit")["value"], 80.0, "nothing changed");
 
+        // Busy: the lock goes again and lands; a honk isn't sent twice.
+        home.fake
+            .with(|state| state.cars.get_mut(VIN).expect("the car").busy = 1);
+        home.call(
+            &format!("{VIN}:lock"),
+            Service::LockLock(LockCode::default()),
+        )
+        .await
+        .expect("locked on the second try");
+        // The refused charge limit reached the car too.
+        assert_eq!(the_car(&home).done.len(), 2);
+        home.fake
+            .with(|state| state.cars.get_mut(VIN).expect("the car").busy = 1);
+        let busy = home
+            .call(&format!("{VIN}:honk"), Service::ButtonPress)
+            .await
+            .expect_err("not honked twice");
+        assert!(busy.message.contains("busy"), "{}", busy.message);
+        assert_eq!(the_car(&home).done.len(), 2, "the busy car didn't honk");
         home.call(&format!("{VIN}:honk"), Service::ButtonPress)
             .await
             .expect("honked");
-        assert_eq!(the_car(&home).done.len(), 2);
+        assert_eq!(the_car(&home).done.len(), 3);
     }
 
     #[tokio::test]

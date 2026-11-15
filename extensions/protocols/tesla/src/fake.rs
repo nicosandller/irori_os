@@ -401,6 +401,8 @@ pub struct Car {
     pub done: Vec<(i32, Vec<u8>)>,
     /// Answers to commands instead of OK, one a command, while there are any.
     pub answers: Vec<Vec<u8>>,
+    /// How many more commands it answers "busy, wait" (and doesn't act on).
+    pub busy: u32,
 }
 
 impl Car {
@@ -420,6 +422,7 @@ impl Car {
             wakes: 0,
             done: Vec::new(),
             answers: Vec::new(),
+            busy: 0,
         }
     }
 
@@ -557,6 +560,13 @@ impl Car {
                 } else if signature.expires_at < self.clock {
                     fault(&mut reply, 17);
                     info(&mut reply, 0);
+                } else if self.busy > 0 {
+                    self.busy -= 1;
+                    self.counters.insert(domain, signature.counter);
+                    reply.signed_message_status = Some(MessageStatus {
+                        operation_status: 1,
+                        signed_message_fault: 0,
+                    });
                 } else {
                     self.counters.insert(domain, signature.counter);
                     self.done.push((domain, command.clone()));
