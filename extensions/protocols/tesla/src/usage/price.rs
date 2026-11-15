@@ -41,7 +41,6 @@ pub enum Endpoint {
     VehicleData,
     VehicleDataCached,
     WakeUp,
-    Command,
     SignedCommand,
     SiteInfo,
     LiveStatus,
@@ -50,7 +49,8 @@ pub enum Endpoint {
 }
 
 impl Endpoint {
-    pub const ALL: [Endpoint; 15] = [
+    #[cfg(test)]
+    pub const ALL: [Endpoint; 14] = [
         Endpoint::Token,
         Endpoint::RegisterPartner,
         Endpoint::PartnerPublicKey,
@@ -60,7 +60,6 @@ impl Endpoint {
         Endpoint::VehicleData,
         Endpoint::VehicleDataCached,
         Endpoint::WakeUp,
-        Endpoint::Command,
         Endpoint::SignedCommand,
         Endpoint::SiteInfo,
         Endpoint::LiveStatus,
@@ -75,7 +74,7 @@ impl Endpoint {
             Endpoint::Token => (Free, true),
             Endpoint::VehicleData => (Data, true),
             Endpoint::WakeUp => (Wake, true),
-            Endpoint::Command | Endpoint::SignedCommand => (Command, true),
+            Endpoint::SignedCommand => (Command, true),
             Endpoint::EnergyCommand => (Command, false),
             // Not read from Tesla's docs yet: counted as a data request until they are.
             Endpoint::RegisterPartner
@@ -102,7 +101,7 @@ impl Endpoint {
             Endpoint::VehicleData => "Reading the car",
             Endpoint::VehicleDataCached => "Reading the car's last report",
             Endpoint::WakeUp => "Waking the car",
-            Endpoint::Command | Endpoint::SignedCommand => "Command",
+            Endpoint::SignedCommand => "Command",
             Endpoint::SiteInfo => "Reading the site's settings",
             Endpoint::LiveStatus => "Reading the site",
             Endpoint::EnergyHistory => "Reading the site's day",

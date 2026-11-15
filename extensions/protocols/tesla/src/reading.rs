@@ -57,7 +57,7 @@ fn history_gap(site: Option<Duration>) -> Option<Duration> {
 pub(crate) struct CarSlot {
     pub car: Car,
     pub reading: CarReading,
-    described: BTreeMap<&'static str, Entity>,
+    pub described: BTreeMap<&'static str, Entity>,
     device: Option<DeviceDescription>,
     pub reading_now: bool,
     pub next_read: Option<Instant>,
@@ -102,7 +102,7 @@ pub(crate) enum Part {
 pub(crate) struct SiteSlot {
     pub site: Site,
     pub reading: SiteReading,
-    described: BTreeMap<&'static str, Entity>,
+    pub described: BTreeMap<&'static str, Entity>,
     device: Option<DeviceDescription>,
     reading_now: BTreeSet<Part>,
     next_live: Option<Instant>,
@@ -461,7 +461,7 @@ impl World {
     }
 
     /// A call to Tesla worked: whatever was wrong with the account isn't any more.
-    fn account_worked(&mut self) {
+    pub(crate) fn account_worked(&mut self) {
         self.read_backoff.succeeded();
         self.trouble = None;
     }
@@ -667,7 +667,7 @@ impl World {
         self.keep_site(&id).await;
     }
 
-    async fn keep_car(&mut self, vin: &str) {
+    pub(crate) async fn keep_car(&mut self, vin: &str) {
         if let Some(slot) = self.cars.get(vin)
             && let Ok(value) = serde_json::to_value(&slot.reading)
         {
@@ -675,7 +675,7 @@ impl World {
         }
     }
 
-    async fn keep_site(&mut self, id: &str) {
+    pub(crate) async fn keep_site(&mut self, id: &str) {
         if let Some(slot) = self.sites.get(id)
             && let Ok(value) = serde_json::to_value(&slot.reading)
         {
@@ -1004,6 +1004,28 @@ pub(crate) fn report(
     state: irori_types::State,
     replayed: bool,
 ) {
+    send_report(ctx, device, key, state, None, replayed);
+}
+
+/// Reports a state a service call brought about.
+pub(crate) fn report_caused(
+    ctx: &irori_protocol::ProtocolContext,
+    device: &str,
+    key: &str,
+    state: irori_types::State,
+    caused_by: Option<irori_types::ContextId>,
+) {
+    send_report(ctx, device, key, state, caused_by, false);
+}
+
+fn send_report(
+    ctx: &irori_protocol::ProtocolContext,
+    device: &str,
+    key: &str,
+    state: irori_types::State,
+    caused_by: Option<irori_types::ContextId>,
+    replayed: bool,
+) {
     let Some(unique_id) = entity::id(device, key) else {
         return;
     };
@@ -1011,7 +1033,7 @@ pub(crate) fn report(
         unique_id,
         state: Some(state),
         attributes: BTreeMap::new(),
-        caused_by: None,
+        caused_by,
         replayed,
     });
 }

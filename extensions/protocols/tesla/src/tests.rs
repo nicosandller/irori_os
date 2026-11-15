@@ -374,6 +374,8 @@ mod protocol {
         pub entities: BTreeMap<String, irori_types::EntityDescription>,
         /// The last state reported for each entity, as JSON, and whether it was replayed.
         pub states: BTreeMap<String, (Value, bool)>,
+        /// The call the last report for each entity credited, if any.
+        pub caused: BTreeMap<String, Option<String>>,
         pub removed: Vec<String>,
     }
 
@@ -458,6 +460,10 @@ mod protocol {
                 let mut log = reported.lock().expect("log");
                 for report in reports.drain() {
                     let state = serde_json::to_value(&report.state).expect("a state");
+                    log.caused.insert(
+                        report.unique_id.to_string(),
+                        report.caused_by.as_ref().map(ToString::to_string),
+                    );
                     log.states
                         .insert(report.unique_id.to_string(), (state, report.replayed));
                 }
@@ -470,6 +476,11 @@ mod protocol {
             save: Duration::from_millis(50),
             idle: Duration::from_secs(3600),
             woken: Duration::from_millis(50),
+            patience: crate::sending::Patience {
+                deadline: Duration::from_secs(3),
+                retry: Duration::from_millis(30),
+                busy: Duration::from_millis(10),
+            },
         };
         let drive = tokio::spawn(drive(settings, ctx, timing));
         Home {
@@ -799,7 +810,7 @@ mod reading {
     use crate::keys::Key;
 
     const OTHER: &str = "5YJ3E1EA7KF000002";
-    const SITE: &str = "2252000000000001";
+    pub const SITE: &str = "2252000000000001";
 
     pub fn answer(file: &str) -> Value {
         let text = match file {
@@ -815,7 +826,7 @@ mod reading {
         json!({ "vin": vin, "display_name": name, "state": state })
     }
 
-    fn site() -> Value {
+    pub fn site() -> Value {
         json!({ "energy_site_id": 2_252_000_000_000_001_u64, "site_name": "Home", "components": { "battery": true, "solar": true } })
     }
 
@@ -1390,5 +1401,335 @@ mod controls {
             .await
             .expect_err("no such method");
         assert!(unknown.contains("usage.nothing"));
+    }
+}
+
+/// Commands: signed for a car, plain for a site; each on the meter, its result shown at once and
+/// credited to the call.
+mod commands {
+    use irori_types::{ClimateHvacMode, HvacMode, LockCode, NumberSetValue, SelectOption, Service};
+    use serde_json::{Value, json};
+
+    use super::VIN;
+    use super::protocol::Home;
+    use super::reading::{SITE, answer, car, signed_in, site};
+    use crate::fake::{self, Answer, Fake};
+
+    /// The context id `Home::call` sends.
+    const CALL: &str = "01K5B2Q9A1B2C3D4E5F6G7H8J9";
+
+    fn billed(home: &Home, endpoint: &str) -> Vec<Value> {
+        home.log
+            .lock()
+            .expect("log")
+            .stored
+            .get("usage/calls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|call| call["endpoint"] == endpoint)
+            .cloned()
+            .collect()
+    }
+
+    async fn on_the_meter(home: &Home, endpoint: &str, count: usize) -> Vec<Value> {
+        home.until(&format!("{count} {endpoint} on the meter"), |log| {
+            let calls: Vec<Value> = log
+                .stored
+                .get("usage/calls")?
+                .as_array()?
+                .iter()
+                .filter(|call| call["endpoint"] == endpoint)
+                .cloned()
+                .collect();
+            (calls.len() == count).then_some(calls)
+        })
+        .await
+    }
+
+    fn the_car(home: &Home) -> fake::Car {
+        home.fake
+            .state
+            .lock()
+            .expect("fake")
+            .cars
+            .get(VIN)
+            .cloned()
+            .expect("the car")
+    }
+
+    /// A home with one car, read once, that takes signed commands.
+    async fn with_a_car(state: &str, change: impl FnOnce(&mut fake::Car)) -> Home {
+        let fake = Fake::start().await;
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data"),
+            vec![Answer::with(200, answer("vehicle_data"))],
+        );
+        fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data_cached"),
+            vec![Answer::with(200, answer("vehicle_data"))],
+        );
+        let mut car_there = fake::Car::new();
+        change(&mut car_there);
+        fake.with(|state| {
+            state.cars.insert(VIN.into(), car_there);
+        });
+        let home = signed_in(fake, vec![car(VIN, "Red car", state)], vec![]).await;
+        home.until("the lock", |log| log.state(&format!("{VIN}:lock")))
+            .await;
+        home
+    }
+
+    #[tokio::test]
+    async fn unlock_is_signed_lands_and_shows_at_once_credited_to_the_call() {
+        let home = with_a_car("online", |_| {}).await;
+        let lock = format!("{VIN}:lock");
+        assert_eq!(
+            home.log.lock().expect("log").state(&lock).expect("a lock")["state"],
+            "locked"
+        );
+
+        home.call(&lock, Service::LockUnlock(LockCode::default()))
+            .await
+            .expect("unlocked");
+        // A handshake with the car's security computer, then the command, which it checked.
+        assert_eq!(the_car(&home).done, vec![(2, vec![0x10, 0x00])]);
+        let log = home.log.lock().expect("log").state(&lock).expect("a lock");
+        assert_eq!(log["state"], "unlocked");
+        assert_eq!(
+            home.log.lock().expect("log").caused[&lock].as_deref(),
+            Some(CALL)
+        );
+        let calls = on_the_meter(&home, "signed_command", 2).await;
+        assert!(calls.iter().all(|call| call["why"]
+            == json!({ "kind": "command", "what": "Unlock", "by": "you" })
+            && call["cost"] == 1_000));
+
+        // The climate is the other computer: a session of its own.
+        home.call(
+            &format!("{VIN}:climate"),
+            Service::ClimateSetHvacMode(ClimateHvacMode {
+                hvac_mode: HvacMode::HeatCool,
+            }),
+        )
+        .await
+        .expect("climate on");
+        assert_eq!(
+            the_car(&home).done[1],
+            (3, vec![0x12, 0x04, 0x52, 0x02, 0x08, 0x01])
+        );
+        // Locking again uses the session it has: one call, not two.
+        home.call(&lock, Service::LockLock(LockCode::default()))
+            .await
+            .expect("locked");
+        on_the_meter(&home, "signed_command", 5).await;
+        assert_eq!(the_car(&home).counters[&2], 2);
+        assert!(
+            home.fake.sent("/wake_up").is_empty(),
+            "an awake car isn't woken"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sleeping_car_is_woken_once_for_two_commands() {
+        let home = with_a_car("asleep", |car| car.asleep = true).await;
+        let (climate_id, lock_id) = (format!("{VIN}:climate"), format!("{VIN}:lock"));
+        let (climate, unlock) = tokio::join!(
+            home.call(&climate_id, Service::ClimateTurnOn),
+            home.call(&lock_id, Service::LockUnlock(LockCode::default())),
+        );
+        climate.expect("climate on");
+        unlock.expect("unlocked");
+        let car = the_car(&home);
+        assert_eq!(car.wakes, 1, "one wake for both");
+        assert_eq!(car.done.len(), 2);
+        let wakes = on_the_meter(&home, "wake_up", 1).await;
+        assert_eq!(wakes[0]["why"]["kind"], "wake_for_command");
+        assert_eq!(wakes[0]["cost"], 20_000);
+        // The tries while it woke were billed, and on the commands that made them.
+        let asleep: Vec<Value> = billed(&home, "signed_command")
+            .into_iter()
+            .filter(|call| call["status"] == 408)
+            .collect();
+        assert!(!asleep.is_empty());
+        assert!(asleep.iter().all(|call| call["why"]["kind"] == "command"));
+        home.until("the car shown awake", |log| {
+            (log.state(&format!("{VIN}:state"))?["value"] == "online").then_some(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn commands_home_assistant_sent_with_the_same_key_are_caught_up_with() {
+        let home = with_a_car("online", |_| {}).await;
+        let lock = format!("{VIN}:lock");
+        home.call(&lock, Service::LockUnlock(LockCode::default()))
+            .await
+            .expect("unlocked");
+
+        // Home Assistant sent nine commands with the same key: the car's counter is ahead.
+        home.fake.with(|state| {
+            state
+                .cars
+                .get_mut(VIN)
+                .expect("the car")
+                .counters
+                .insert(2, 10);
+        });
+        home.call(&lock, Service::LockLock(LockCode::default()))
+            .await
+            .expect("locked after catching up");
+        assert_eq!(the_car(&home).counters[&2], 11);
+
+        // The car restarted: a new session, which it hands over with its refusal.
+        home.fake.with(|state| {
+            let car = state.cars.get_mut(VIN).expect("the car");
+            car.epoch = vec![0x99; 16];
+            car.counters.insert(2, 0);
+        });
+        home.call(&lock, Service::LockUnlock(LockCode::default()))
+            .await
+            .expect("unlocked in the new session");
+        assert_eq!(the_car(&home).done.len(), 3);
+        // Handshake and unlock, refused lock and lock, refused unlock and unlock.
+        on_the_meter(&home, "signed_command", 6).await;
+    }
+
+    #[tokio::test]
+    async fn a_car_without_irori_s_key_is_told_how_to_add_it_and_not_asked_again() {
+        let home = with_a_car("online", |car| car.paired = false).await;
+        let lock = format!("{VIN}:lock");
+        let refused = home
+            .call(&lock, Service::LockUnlock(LockCode::default()))
+            .await
+            .expect_err("no key on the car");
+        assert!(
+            refused.message.contains("tesla.com/_ak/"),
+            "{}",
+            refused.message
+        );
+        assert_eq!(
+            home.fake.sent("/signed_command").len(),
+            1,
+            "the handshake only"
+        );
+        home.until("the step to add the key", |log| {
+            log.waiting
+                .iter()
+                .find(|step| step.unique_id.as_str() == VIN)
+                .cloned()
+        })
+        .await;
+
+        // Known now: refused without asking the car, so without paying for it.
+        home.call(&lock, Service::LockUnlock(LockCode::default()))
+            .await
+            .expect_err("still no key");
+        assert_eq!(home.fake.sent("/signed_command").len(), 1);
+        assert!(the_car(&home).done.is_empty());
+    }
+
+    #[tokio::test]
+    async fn honk_is_never_sent_twice_and_the_car_s_refusal_is_passed_on() {
+        use prost::Message as _;
+        let refusal = crate::signed::proto::Response {
+            action_status: Some(crate::signed::proto::ActionStatus {
+                result: 1,
+                result_reason: Some(crate::signed::proto::ResultReason {
+                    kind: Some(crate::signed::proto::result_reason::Kind::PlainText(
+                        "user_present".into(),
+                    )),
+                }),
+            }),
+        }
+        .encode_to_vec();
+        let home = with_a_car("online", |car| car.answers = vec![refusal]).await;
+        let refused = home
+            .call(
+                &format!("{VIN}:charge_limit"),
+                Service::NumberSetValue(NumberSetValue { value: 90.0 }),
+            )
+            .await
+            .expect_err("refused by the car");
+        assert!(
+            refused.message.contains("user present"),
+            "{}",
+            refused.message
+        );
+        let limit = home
+            .log
+            .lock()
+            .expect("log")
+            .state(&format!("{VIN}:charge_limit"));
+        assert_eq!(limit.expect("a limit")["value"], 80.0, "nothing changed");
+
+        home.call(&format!("{VIN}:honk"), Service::ButtonPress)
+            .await
+            .expect("honked");
+        assert_eq!(the_car(&home).done.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_site_s_settings_change_over_plain_rest() {
+        let fake = Fake::start().await;
+        let sites = format!("/na/api/1/energy_sites/{SITE}");
+        fake.answer(
+            &format!("GET {sites}/live_status"),
+            vec![Answer::with(200, answer("live_status"))],
+        );
+        fake.answer(
+            &format!("GET {sites}/site_info"),
+            vec![Answer::with(200, answer("site_info"))],
+        );
+        fake.answer(
+            &format!("GET {sites}/calendar_history"),
+            vec![Answer::with(200, answer("history"))],
+        );
+        fake.answer(
+            &format!("POST {sites}/backup"),
+            vec![Answer::ok(json!({ "code": 201, "message": "Updated" }))],
+        );
+        fake.answer(
+            &format!("POST {sites}/operation"),
+            vec![Answer::with(
+                403,
+                json!({ "error": "not allowed for this site" }),
+            )],
+        );
+        let home = signed_in(fake, vec![site()], vec![]).await;
+        let reserve = format!("{SITE}:backup_reserve");
+        home.until("the reserve", |log| log.state(&reserve)).await;
+
+        home.call(
+            &reserve,
+            Service::NumberSetValue(NumberSetValue { value: 20.0 }),
+        )
+        .await
+        .expect("set");
+        let sent = home.fake.sent("/backup");
+        assert_eq!(sent[0].body, json!({ "backup_reserve_percent": 20 }));
+        {
+            let log = home.log.lock().expect("log");
+            assert_eq!(log.state(&reserve).expect("the reserve")["value"], 20.0);
+            assert_eq!(log.caused[&reserve].as_deref(), Some(CALL));
+        }
+        let calls = on_the_meter(&home, "energy_command", 1).await;
+        assert_eq!(calls[0]["why"]["what"], "Set the backup reserve to 20%");
+
+        let refused = home
+            .call(
+                &format!("{SITE}:operation_mode"),
+                Service::SelectSelectOption(SelectOption {
+                    option: "backup".into(),
+                }),
+            )
+            .await
+            .expect_err("refused");
+        assert!(
+            refused.message.contains("not allowed"),
+            "{}",
+            refused.message
+        );
+        on_the_meter(&home, "energy_command", 2).await;
     }
 }

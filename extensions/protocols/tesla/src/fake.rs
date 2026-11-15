@@ -58,11 +58,6 @@ impl Answer {
         self
     }
 
-    pub fn after(mut self, delay: Duration) -> Self {
-        self.delay = delay;
-        self
-    }
-
     /// No answer at all.
     pub fn hang_up() -> Self {
         Self::status(0)
@@ -98,6 +93,8 @@ pub struct State {
     pub routes: BTreeMap<String, Vec<Answer>>,
     /// The key Tesla has on file for the domain, per region host (`na`, `eu`).
     pub registered: BTreeMap<String, String>,
+    /// Cars that take signed commands, by VIN.
+    pub cars: BTreeMap<String, Car>,
     pub requests: Vec<Request>,
 }
 
@@ -111,6 +108,7 @@ impl Default for State {
             token: None,
             routes: BTreeMap::new(),
             registered: BTreeMap::new(),
+            cars: BTreeMap::new(),
             requests: Vec::new(),
         }
     }
@@ -282,6 +280,20 @@ fn answer(state: &mut State, request: &Request) -> Answer {
                 .or_insert_with(|| "registered".into());
             Answer::ok(json!({ "domain": request.body.get("domain") }))
         }
+        ("POST", [_, "api", "1", "vehicles", vin, "signed_command"])
+            if state.cars.contains_key(*vin) =>
+        {
+            let car = state.cars.get_mut(*vin).expect("the car");
+            car.signed(vin, &request.body)
+        }
+        ("POST", [_, "api", "1", "vehicles", vin, "wake_up"]) if state.cars.contains_key(*vin) => {
+            let car = state.cars.get_mut(*vin).expect("the car");
+            car.wakes += 1;
+            if car.asleep && car.waking.is_none() {
+                car.waking = Some(car.wake_takes);
+            }
+            Answer::ok(json!({ "vin": vin, "state": if car.asleep { "asleep" } else { "online" } }))
+        }
         ("GET", [region, "api", "1", "partner_accounts", "public_key"]) => {
             match state.registered.get(*region) {
                 Some(key) => Answer::ok(json!({ "public_key": key })),
@@ -364,4 +376,236 @@ fn form(raw: &[u8]) -> Value {
             .map(|(key, value)| (key, Value::String(value)))
             .collect(),
     )
+}
+
+/// A car that takes signed commands the way a real one does: its own key, a session per
+/// computer, a counter that only goes forward, and every tag checked. The checks are written out
+/// here on their own, after `protocol.md`, not borrowed from `crate::signed`, so a mistake there
+/// can't hide by being made twice.
+#[derive(Debug, Clone)]
+pub struct Car {
+    pub key: p256::SecretKey,
+    pub epoch: Vec<u8>,
+    /// The last counter taken, per computer (2 security, 3 infotainment).
+    pub counters: BTreeMap<i32, u32>,
+    /// Its clock, in seconds.
+    pub clock: u32,
+    /// Whether Irori's key is on it.
+    pub paired: bool,
+    pub asleep: bool,
+    /// How many more messages it answers "asleep" after a wake.
+    pub wake_takes: u32,
+    pub waking: Option<u32>,
+    pub wakes: u32,
+    /// What it acted on: the computer and the command.
+    pub done: Vec<(i32, Vec<u8>)>,
+    /// Answers to commands instead of OK, one a command, while there are any.
+    pub answers: Vec<Vec<u8>>,
+}
+
+impl Car {
+    pub fn new() -> Self {
+        Self {
+            key: crate::keys::Key::generate()
+                .expect("a key")
+                .secret()
+                .clone(),
+            epoch: vec![0x4c; 16],
+            counters: BTreeMap::new(),
+            clock: 1_000,
+            paired: true,
+            asleep: false,
+            wake_takes: 2,
+            waking: None,
+            wakes: 0,
+            done: Vec::new(),
+            answers: Vec::new(),
+        }
+    }
+
+    fn signed(&mut self, vin: &str, body: &Value) -> Answer {
+        use prost::Message as _;
+
+        use crate::signed::proto::{
+            Destination, MessageStatus, RoutableMessage, SessionInfo, SignatureData, destination,
+            key_identity, routable, signature_data,
+        };
+
+        if self.asleep {
+            match self.waking {
+                Some(0) => {
+                    self.asleep = false;
+                    self.waking = None;
+                }
+                Some(left) => {
+                    self.waking = Some(left - 1);
+                    return Answer::with(408, json!({ "error": "vehicle unavailable: asleep" }));
+                }
+                None => {
+                    return Answer::with(408, json!({ "error": "vehicle unavailable: asleep" }));
+                }
+            }
+        }
+        let bytes = body
+            .get("routable_message")
+            .and_then(Value::as_str)
+            .and_then(|text| base64::engine::general_purpose::STANDARD.decode(text).ok())
+            .expect("a routable message");
+        let message = RoutableMessage::decode(bytes.as_slice()).expect("a routable message");
+        let domain = match message.to_destination.as_ref().and_then(|d| d.sub.clone()) {
+            Some(destination::Sub::Domain(domain)) => domain,
+            _ => panic!("no domain"),
+        };
+        let mut reply = RoutableMessage {
+            to_destination: message.from_destination.clone(),
+            from_destination: Some(Destination {
+                sub: Some(destination::Sub::Domain(domain)),
+            }),
+            request_uuid: message.uuid.clone(),
+            ..RoutableMessage::default()
+        };
+        let counter = self.counters.get(&domain).copied().unwrap_or(0);
+        let client = match &message.payload {
+            Some(routable::Payload::SessionInfoRequest(request)) => request.public_key.clone(),
+            _ => match &message.signature {
+                Some(routable::Signature::Data(SignatureData {
+                    signer_identity: Some(identity),
+                    ..
+                })) => match &identity.kind {
+                    Some(key_identity::Kind::PublicKey(key)) => key.clone(),
+                    None => Vec::new(),
+                },
+                _ => Vec::new(),
+            },
+        };
+        let keys = car_keys(&self.key, &client);
+        // The session info, tagged for this message.
+        let info = |reply: &mut RoutableMessage, status: i32| {
+            let info = SessionInfo {
+                counter,
+                public_key: if status == 0 {
+                    crate::signed::public_bytes(&self.key)
+                } else {
+                    Vec::new()
+                },
+                epoch: self.epoch.clone(),
+                clock_time: self.clock,
+                status,
+                ..SessionInfo::default()
+            }
+            .encode_to_vec();
+            if status == 0
+                && let Some((_, session_info_key)) = &keys
+            {
+                let mut metadata = vec![0, 1, 6, 2, vin.len() as u8];
+                metadata.extend_from_slice(vin.as_bytes());
+                metadata.extend_from_slice(&[6, message.uuid.len() as u8]);
+                metadata.extend_from_slice(&message.uuid);
+                metadata.push(0xff);
+                let tag = mac(session_info_key, &[&metadata, &info]);
+                reply.signature = Some(routable::Signature::Data(SignatureData {
+                    signer_identity: None,
+                    kind: Some(signature_data::Kind::SessionInfoTag(
+                        crate::signed::proto::HmacSignatureData { tag },
+                    )),
+                }));
+            }
+            reply.payload = Some(routable::Payload::SessionInfo(info));
+        };
+        let fault = |reply: &mut RoutableMessage, fault: i32| {
+            reply.signed_message_status = Some(MessageStatus {
+                operation_status: 2,
+                signed_message_fault: fault,
+            });
+        };
+        match &message.payload {
+            Some(routable::Payload::SessionInfoRequest(_)) => {
+                info(&mut reply, if self.paired { 0 } else { 1 });
+            }
+            Some(routable::Payload::Command(command)) => {
+                let signature = match &message.signature {
+                    Some(routable::Signature::Data(SignatureData {
+                        kind: Some(signature_data::Kind::HmacPersonalized(data)),
+                        ..
+                    })) => data.clone(),
+                    _ => panic!("an unsigned command"),
+                };
+                let paired = self.paired;
+                let Some((command_key, _)) = keys.clone().filter(|_| paired) else {
+                    fault(&mut reply, 3);
+                    return reply_with(&reply);
+                };
+                let mut metadata = vec![0, 1, 8, 1, 1, domain as u8, 2, vin.len() as u8];
+                metadata.extend_from_slice(vin.as_bytes());
+                metadata.extend_from_slice(&[3, signature.epoch.len() as u8]);
+                metadata.extend_from_slice(&signature.epoch);
+                metadata.extend_from_slice(&[4, 4]);
+                metadata.extend_from_slice(&signature.expires_at.to_be_bytes());
+                metadata.extend_from_slice(&[5, 4]);
+                metadata.extend_from_slice(&signature.counter.to_be_bytes());
+                metadata.push(0xff);
+                let tag_ok = mac(&command_key, &[&metadata, command]) == signature.tag;
+                if signature.epoch != self.epoch {
+                    fault(&mut reply, 15);
+                    info(&mut reply, 0);
+                } else if signature.counter <= counter {
+                    fault(&mut reply, 6);
+                    info(&mut reply, 0);
+                } else if !tag_ok {
+                    fault(&mut reply, 5);
+                    info(&mut reply, 0);
+                } else if signature.expires_at < self.clock {
+                    fault(&mut reply, 17);
+                    info(&mut reply, 0);
+                } else {
+                    self.counters.insert(domain, signature.counter);
+                    self.done.push((domain, command.clone()));
+                    let answer = if self.answers.is_empty() {
+                        Vec::new()
+                    } else {
+                        self.answers.remove(0)
+                    };
+                    reply.payload = Some(routable::Payload::Command(answer));
+                }
+            }
+            _ => panic!("neither a handshake nor a command"),
+        }
+        reply_with(&reply)
+    }
+}
+
+impl Default for Car {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn reply_with(reply: &crate::signed::proto::RoutableMessage) -> Answer {
+    use prost::Message as _;
+    Answer::ok(json!(
+        base64::engine::general_purpose::STANDARD.encode(reply.encode_to_vec())
+    ))
+}
+
+fn mac(key: &[u8], parts: &[&[u8]]) -> Vec<u8> {
+    use hmac::{KeyInit, Mac};
+    let mut mac =
+        <hmac::Hmac<sha2::Sha256> as KeyInit>::new_from_slice(key).expect("any key length");
+    for part in parts {
+        mac.update(part);
+    }
+    mac.finalize().into_bytes().to_vec()
+}
+
+/// The command key and the session info key the car shares with `client`.
+fn car_keys(car: &p256::SecretKey, client: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    use sha1::Digest as _;
+    let client = p256::PublicKey::from_sec1_bytes(client).ok()?;
+    let point = p256::ecdh::diffie_hellman(car.to_nonzero_scalar(), client.as_affine());
+    let shared = sha1::Sha1::digest(point.raw_secret_bytes());
+    let shared = &shared[..16];
+    Some((
+        mac(shared, &[b"authenticated command"]),
+        mac(shared, &[b"session info"]),
+    ))
 }

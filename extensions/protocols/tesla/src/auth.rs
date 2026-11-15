@@ -153,6 +153,7 @@ impl Session {
         self.inner.tokens.lock().await.is_some()
     }
 
+    #[cfg(test)]
     pub async fn region(&self) -> Option<Region> {
         self.inner.tokens.lock().await.as_ref().map(|t| t.region)
     }
@@ -208,10 +209,6 @@ impl Session {
             let kept = Kept::from(&*current);
             self.keep(kept).await;
         }
-    }
-
-    pub async fn sign_out(&self) {
-        *self.inner.tokens.lock().await = None;
     }
 
     async fn settle(

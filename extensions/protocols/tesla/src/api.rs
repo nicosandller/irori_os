@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::time::Instant;
 
+use prost::Message as _;
+
 use crate::auth::Session;
+use crate::signed::proto::RoutableMessage;
 use crate::usage::price::{Category, Endpoint};
 use crate::usage::{Usage, Why};
 
@@ -356,8 +359,10 @@ pub struct Products {
 pub struct KeyStatus {
     pub paired: Vec<String>,
     pub unpaired: Vec<String>,
-    /// Cars that need commands signed (every car since 2021 does), by VIN.
-    pub signing_required: Vec<String>,
+    /// Cars that take only Tesla's older, unsigned commands (Model S and X from before 2021),
+    /// by VIN. A car Tesla says nothing about is taken to need signed ones, as every newer car
+    /// does.
+    pub unsigned: Vec<String>,
 }
 
 /// The parts of `vehicle_data` Irori reads. Location is asked for separately: it lights the
@@ -565,7 +570,7 @@ impl Api {
                 .filter_map(|vin| vin.as_str().map(str::to_owned))
                 .collect()
         };
-        let signing_required = status
+        let unsigned = status
             .get("vehicle_info")
             .and_then(Value::as_object)
             .into_iter()
@@ -573,14 +578,14 @@ impl Api {
             .filter(|(_, info)| {
                 info.get("vehicle_command_protocol_required")
                     .and_then(Value::as_bool)
-                    == Some(true)
+                    == Some(false)
             })
             .map(|(vin, _)| vin.clone())
             .collect();
         Ok(KeyStatus {
             paired: list("key_paired_vins"),
             unpaired: list("unpaired_vins"),
-            signing_required,
+            unsigned,
         })
     }
 
@@ -646,6 +651,64 @@ impl Api {
             .await?;
         let car = classify(answer)?;
         Ok(text(&car, "state").unwrap_or_else(|| "offline".into()))
+    }
+
+    /// A signed message for a car (`crate::signed`), and the car's answer. Answers
+    /// [`ApiError::Asleep`] (billed) when the car is asleep, and it never got the message.
+    pub async fn signed_command(
+        &self,
+        vin: &str,
+        message: &RoutableMessage,
+        why: Why,
+    ) -> Result<RoutableMessage, ApiError> {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::STANDARD;
+        let ask = Ask::new(vin, Endpoint::SignedCommand, why);
+        let answer = self
+            .call(
+                Method::POST,
+                &format!("/api/1/vehicles/{vin}/signed_command"),
+                &[],
+                Some(json!({ "routable_message": STANDARD.encode(message.encode_to_vec()) })),
+                &ask,
+            )
+            .await?;
+        let status = answer.status;
+        let garbled = || ApiError::Refused {
+            status,
+            message: "Tesla's answer couldn't be read".into(),
+        };
+        let response = classify(answer)?;
+        let bytes = response
+            .as_str()
+            .and_then(|text| STANDARD.decode(text).ok())
+            .ok_or_else(garbled)?;
+        RoutableMessage::decode(bytes.as_slice()).map_err(|_| ApiError::Refused {
+            status,
+            message: "the car's answer couldn't be read".into(),
+        })
+    }
+
+    /// A change to an energy site's settings: `endpoint` is what follows
+    /// `/api/1/energy_sites/{site}/`.
+    pub async fn energy_command(
+        &self,
+        site: &str,
+        endpoint: &str,
+        body: Value,
+        why: Why,
+    ) -> Result<(), ApiError> {
+        let ask = Ask::new(site, Endpoint::EnergyCommand, why);
+        let answer = self
+            .call(
+                Method::POST,
+                &format!("/api/1/energy_sites/{site}/{endpoint}"),
+                &[],
+                Some(body),
+                &ask,
+            )
+            .await?;
+        classify(answer).map(|_| ())
     }
 
     pub async fn site_info(&self, site: &str, why: Why) -> Result<Value, ApiError> {

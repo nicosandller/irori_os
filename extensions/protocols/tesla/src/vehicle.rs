@@ -221,10 +221,10 @@ fn round(value: f64, places: i32) -> f64 {
     (value * scale).round() / scale
 }
 
-const SEAT_LEVELS: [&str; 4] = ["off", "low", "medium", "high"];
-const PRESETS: [&str; 4] = ["normal", "keep", "dog", "camp"];
+pub(crate) const SEAT_LEVELS: [&str; 4] = ["off", "low", "medium", "high"];
+pub(crate) const PRESETS: [&str; 4] = ["normal", "keep", "dog", "camp"];
 
-const SEATS: [(&str, &str, &str); 5] = [
+pub(crate) const SEATS: [(&str, &str, &str); 5] = [
     (
         "seat_heater_front_left",
         "Front left seat heater",
@@ -626,7 +626,12 @@ fn climate_state(reading: &CarReading) -> Option<State> {
         swing_mode: None,
         preset_mode: reading
             .word("climate_state.climate_keeper_mode")
-            .map(|mode| if mode == "off" { "normal" } else { mode })
+            // Tesla calls "keep climate on" plain "on".
+            .map(|mode| match mode {
+                "off" => "normal",
+                "on" => "keep",
+                mode => mode,
+            })
             .filter(|mode| PRESETS.contains(mode))
             .map(str::to_owned),
     }))

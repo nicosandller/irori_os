@@ -8,6 +8,7 @@
 mod account;
 mod api;
 mod auth;
+mod commands;
 mod energy;
 mod entity;
 #[cfg(test)]
@@ -15,8 +16,10 @@ mod fake;
 mod keys;
 mod page;
 mod reading;
+mod sending;
 pub mod settings;
 mod setup;
+mod signed;
 #[cfg(test)]
 mod tests;
 mod usage;
@@ -30,7 +33,7 @@ use irori_cloud::Backoff;
 use irori_protocol::IncomingCall;
 use irori_protocol::{
     Health, Incoming, IncomingAction, IncomingPage, Protocol, ProtocolContext, ProtocolError,
-    ServiceError, ServiceErrorCode,
+    ServiceError,
 };
 use irori_types::{DeviceDescription, Name, Service, State, UniqueId, Waiting};
 use serde::{Deserialize, Serialize};
@@ -39,6 +42,7 @@ use tokio::time::Instant;
 
 use crate::api::{Api, ApiError, Clock, Hosts, KeyStatus, Meter, Products};
 use crate::auth::{Keep, Session};
+use crate::commands::{CarCommand, SiteCommand};
 use crate::keys::Key;
 use crate::reading::{CarSlot, Part, SiteSlot};
 use crate::settings::Settings;
@@ -73,6 +77,8 @@ pub(crate) struct Timing {
     pub idle: Duration,
     /// How long after Wake the car is read to see it awake, and between tries.
     pub woken: Duration,
+    /// How long a command may take, and how often it's tried while the car wakes.
+    pub patience: sending::Patience,
 }
 
 impl Timing {
@@ -84,6 +90,7 @@ impl Timing {
             save: Duration::from_secs(60),
             idle: usage::pace::LONGEST_GAP,
             woken: Duration::from_secs(25),
+            patience: sending::Patience::real(),
         }
     }
 }
@@ -122,6 +129,13 @@ enum Done {
         result: Result<String, ApiError>,
         call: IncomingCall,
     },
+    /// What came of a command to a car or a site.
+    Commanded {
+        device: String,
+        command: sending::Command,
+        result: Result<(), sending::Failure>,
+        call: IncomingCall,
+    },
 }
 
 /// The cars and sites as the last listing found them, kept for the next start.
@@ -132,6 +146,9 @@ struct Known {
     /// Cars without Irori's key on them.
     #[serde(default)]
     unpaired: BTreeSet<String>,
+    /// Cars that take only unsigned commands, which Irori doesn't send.
+    #[serde(default)]
+    unsigned: BTreeSet<String>,
 }
 
 /// Where registering the app with Tesla stands.
@@ -164,6 +181,8 @@ struct World {
     list_backoff: Backoff,
     cars: BTreeMap<String, CarSlot>,
     sites: BTreeMap<String, SiteSlot>,
+    /// Each car's sessions, for commands.
+    links: BTreeMap<String, Arc<sending::Link>>,
     checking_states: bool,
     next_states: Option<Instant>,
     /// For reads that failed for the whole account.
@@ -241,6 +260,7 @@ pub(crate) async fn drive(
         list_backoff: Backoff::new(),
         cars: BTreeMap::new(),
         sites: BTreeMap::new(),
+        links: BTreeMap::new(),
         checking_states: false,
         next_states: None,
         read_backoff: Backoff::new(),
@@ -293,7 +313,8 @@ impl World {
         }
     }
 
-    /// A service call: a control on the account device, Refresh or Wake. Commands come later.
+    /// A service call: a control on the account device, Refresh or Wake, or a command to a car
+    /// or a site.
     async fn call(&mut self, call: IncomingCall) {
         let id = call.call.unique_id.as_str().to_owned();
         let Some((device, key)) = id.split_once(':') else {
@@ -320,10 +341,17 @@ impl World {
             ("refresh", Service::ButtonPress) if is_car => self.refresh_car(device, call),
             ("refresh", Service::ButtonPress) if is_site => self.refresh_site(device, call),
             ("wake", Service::ButtonPress) if is_car => self.wake_car(device, call),
-            _ => call.reply(Err(ServiceError {
-                code: ServiceErrorCode::Failed,
-                message: "Irori can't command Tesla cars yet".into(),
-            })),
+            (key, service) if is_car => match CarCommand::from_call(key, service) {
+                Some(Ok(command)) => self.command_car(device, command, call),
+                Some(Err(why)) => call.reply(Err(ServiceError::failed(why))),
+                None => call.reply(Err(ServiceError::failed("a Tesla can't do that"))),
+            },
+            (key, service) if is_site => match SiteCommand::from_call(key, service) {
+                Some(Ok(command)) => self.command_site(device, command, call),
+                Some(Err(why)) => call.reply(Err(ServiceError::failed(why))),
+                None => call.reply(Err(ServiceError::failed("an energy site can't do that"))),
+            },
+            _ => call.reply(Err(ServiceError::failed("no such entity"))),
         }
     }
 
@@ -635,10 +663,9 @@ impl World {
                         self.known.sites = products.sites;
                         if let Some(keys) = keys {
                             self.known.unpaired = keys.unpaired.into_iter().collect();
+                            self.known.unsigned = keys.unsigned.into_iter().collect();
                         }
-                        if let Ok(value) = serde_json::to_value(&self.known) {
-                            let _ = self.ctx.store(stored::PRODUCTS, value).await;
-                        }
+                        self.keep_known().await;
                         self.adopt().await;
                         self.next_list = Some(Instant::now() + self.timing.relist);
                         if self.registration == Registration::Later {
@@ -666,6 +693,19 @@ impl World {
             } => self.car_read(vin, cached, result).await,
             Done::SiteRead { id, part, result } => self.site_read(id, part, result).await,
             Done::Woken { vin, result, call } => self.woken(vin, result, call).await,
+            Done::Commanded {
+                device,
+                command,
+                result,
+                call,
+            } => self.commanded(device, command, result, call).await,
+        }
+    }
+
+    /// Keeps the cars and sites as last listed, and which have Irori's key, for the next start.
+    async fn keep_known(&mut self) {
+        if let Ok(value) = serde_json::to_value(&self.known) {
+            let _ = self.ctx.store(stored::PRODUCTS, value).await;
         }
     }
 

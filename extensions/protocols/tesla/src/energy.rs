@@ -45,7 +45,7 @@ const TODAY: &[&str] = &[
     "total_grid_energy_exported",
 ];
 
-const MODES: [&str; 3] = ["self_consumption", "autonomous", "backup"];
+pub(crate) const MODES: [&str; 3] = ["self_consumption", "autonomous", "backup"];
 
 /// Everything known about a site. Kept in the store under `site/{id}`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
