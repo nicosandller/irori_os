@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 base64.workspace = true
+bytes.workspace = true
 irori-types.workspace = true
 rustix.workspace = true
 schemars.workspace = true

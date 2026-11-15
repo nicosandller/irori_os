@@ -1,0 +1,836 @@
+{
+ "Ability": {
+  "3g": {
+   "permit": 0,
+   "ver": 0
+  },
+  "abilityChn": [
+   {
+    "aiTrack": {
+     "permit": 0,
+     "ver": 0
+    },
+    "aiTrackDogCat": {
+     "permit": 0,
+     "ver": 0
+    },
+    "alarmAudio": {
+     "permit": 6,
+     "ver": 1
+    },
+    "alarmIoIn": {
+     "permit": 0,
+     "ver": 0
+    },
+    "alarmIoOut": {
+     "permit": 0,
+     "ver": 0
+    },
+    "alarmMd": {
+     "permit": 6,
+     "ver": 1
+    },
+    "alarmRf": {
+     "permit": 0,
+     "ver": 0
+    },
+    "batAnalysis": {
+     "permit": 0,
+     "ver": 0
+    },
+    "battery": {
+     "permit": 0,
+     "ver": 0
+    },
+    "cameraMode": {
+     "permit": 6,
+     "ver": 0
+    },
+    "disableAutoFocus": {
+     "permit": 0,
+     "ver": 0
+    },
+    "enc": {
+     "permit": 6,
+     "ver": 1
+    },
+    "floodLight": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ftp": {
+     "permit": 6,
+     "ver": 6
+    },
+    "image": {
+     "permit": 6,
+     "ver": 1
+    },
+    "indicatorLight": {
+     "permit": 0,
+     "ver": 0
+    },
+    "isp": {
+     "permit": 6,
+     "ver": 1
+    },
+    "isp3Dnr": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ispAntiFlick": {
+     "permit": 6,
+     "ver": 1
+    },
+    "ispBackLight": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ispBright": {
+     "permit": 6,
+     "ver": 1
+    },
+    "ispContrast": {
+     "permit": 6,
+     "ver": 1
+    },
+    "ispDayNight": {
+     "permit": 6,
+     "ver": 1
+    },
+    "ispExposureMode": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ispFlip": {
+     "permit": 6,
+     "ver": 0
+    },
+    "ispHue": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ispMirror": {
+     "permit": 6,
+     "ver": 0
+    },
+    "ispSatruation": {
+     "permit": 6,
+     "ver": 1
+    },
+    "ispSharpen": {
+     "permit": 6,
+     "ver": 1
+    },
+    "ispWhiteBalance": {
+     "permit": 6,
+     "ver": 0
+    },
+    "ledControl": {
+     "permit": 6,
+     "ver": 1
+    },
+    "live": {
+     "permit": 4,
+     "ver": 2
+    },
+    "mainEncType": {
+     "permit": 6,
+     "ver": 1
+    },
+    "mask": {
+     "permit": 6,
+     "ver": 1
+    },
+    "mdTriggerAudio": {
+     "permit": 0,
+     "ver": 0
+    },
+    "mdTriggerRecord": {
+     "permit": 0,
+     "ver": 0
+    },
+    "mdWithPir": {
+     "permit": 0,
+     "ver": 0
+    },
+    "osd": {
+     "permit": 6,
+     "ver": 1
+    },
+    "powerLed": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ptzCtrl": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ptzDirection": {
+     "permit": 1,
+     "ver": 0
+    },
+    "ptzPatrol": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ptzPreset": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ptzTattern": {
+     "permit": 0,
+     "ver": 0
+    },
+    "ptzType": {
+     "permit": 0,
+     "ver": 0
+    },
+    "recCfg": {
+     "permit": 6,
+     "ver": 1
+    },
+    "recDownload": {
+     "permit": 6,
+     "ver": 1
+    },
+    "recReplay": {
+     "permit": 6,
+     "ver": 1
+    },
+    "recSchedule": {
+     "permit": 6,
+     "ver": 2
+    },
+    "shelterCfg": {
+     "permit": 6,
+     "ver": 1
+    },
+    "snap": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAIDenoise": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAITrackLimit": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportAITrackSchedule": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportAfAlgorithmSwitch": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportAi": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiAnimal": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiDetectConfig": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiDogCat": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiFace": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportAiPeople": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiSensitivity": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiSnaptlps": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportAiStayTime": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiTargetSize": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAiTrackClassify": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportAiVehicle": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportAllColors": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportAoAdjust": {
+     "permit": 0,
+     "ver": 1
+    },
+    "supportAutoPt": {
+     "permit": 1,
+     "ver": 1
+    },
+    "supportAutoTrackStream": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportBinoStitch": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportDigitalZoom": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportEncoderSelect": {
+     "permit": 6,
+     "ver": 0
+    },
+    "supportFLBrightness": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportFLIntelligent": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportFLKeepOn": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportFLSchedule": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportFLswitch": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportFishEyeCfg": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportFocus": {
+     "permit": 6,
+     "ver": 0
+    },
+    "supportGop": {
+     "permit": 0,
+     "ver": 1
+    },
+    "supportGuardPointImage": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportIfttt": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportImportExportImage": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportIspBinningModeCfg": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportIspCorridorMode": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportIspHdr": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportIspHdrAutoMode": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportLightAutoBrightness": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportMd": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportPt": {
+     "permit": 6,
+     "ver": 0
+    },
+    "supportPtz3DLocation": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportPtzCalibration": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportPtzCheck": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportPtzPresetImage": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportPtzSpeed": {
+     "permit": 0,
+     "ver": 1
+    },
+    "supportSmartRec": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportThresholdAdjust": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportWLLightAlarm": {
+     "permit": 0,
+     "ver": 0
+    },
+    "supportWebhook": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportWhiteDark": {
+     "permit": 6,
+     "ver": 1
+    },
+    "supportZoom": {
+     "permit": 6,
+     "ver": 0
+    },
+    "supportZoomAndFocusSliderCfg": {
+     "permit": 6,
+     "ver": 0
+    },
+    "videoClip": {
+     "permit": 0,
+     "ver": 0
+    },
+    "waterMark": {
+     "permit": 6,
+     "ver": 1
+    },
+    "white_balance": {
+     "permit": 6,
+     "ver": 0
+    }
+   }
+  ],
+  "alarmAudio": {
+   "permit": 6,
+   "ver": 1
+  },
+  "alarmDisconnet": {
+   "permit": 6,
+   "ver": 1
+  },
+  "alarmHddErr": {
+   "permit": 6,
+   "ver": 1
+  },
+  "alarmHddFull": {
+   "permit": 6,
+   "ver": 1
+  },
+  "alarmIpConflict": {
+   "permit": 6,
+   "ver": 1
+  },
+  "auth": {
+   "permit": 6,
+   "ver": 1
+  },
+  "autoMaint": {
+   "permit": 6,
+   "ver": 1
+  },
+  "cloudStorage": {
+   "permit": 6,
+   "ver": 35
+  },
+  "customAudio": {
+   "permit": 1,
+   "ver": 1
+  },
+  "dateFormat": {
+   "permit": 6,
+   "ver": 1
+  },
+  "ddns": {
+   "permit": 6,
+   "ver": 9
+  },
+  "ddnsCfg": {
+   "permit": 6,
+   "ver": 1
+  },
+  "devInfo": {
+   "permit": 4,
+   "ver": 1
+  },
+  "devName": {
+   "permit": 6,
+   "ver": 2
+  },
+  "disableAutoFocus": {
+   "permit": 0,
+   "ver": 0
+  },
+  "disk": {
+   "permit": 0,
+   "ver": 0
+  },
+  "display": {
+   "permit": 6,
+   "ver": 1
+  },
+  "email": {
+   "permit": 6,
+   "ver": 3
+  },
+  "emailInterval": {
+   "permit": 6,
+   "ver": 1
+  },
+  "emailSchedule": {
+   "permit": 6,
+   "ver": 1
+  },
+  "exportCfg": {
+   "permit": 4,
+   "ver": 0
+  },
+  "ftpAutoDir": {
+   "permit": 6,
+   "ver": 1
+  },
+  "ftpExtStream": {
+   "permit": 0,
+   "ver": 0
+  },
+  "ftpPic": {
+   "permit": 0,
+   "ver": 0
+  },
+  "ftpSubStream": {
+   "permit": 6,
+   "ver": 1
+  },
+  "ftpTest": {
+   "permit": 6,
+   "ver": 0
+  },
+  "hourFmt": {
+   "permit": 6,
+   "ver": 2
+  },
+  "http": {
+   "permit": 6,
+   "ver": 3
+  },
+  "httpFlv": {
+   "permit": 6,
+   "ver": 1
+  },
+  "https": {
+   "permit": 6,
+   "ver": 3
+  },
+  "importCfg": {
+   "permit": 1,
+   "ver": 0
+  },
+  "ipcManager": {
+   "permit": 6,
+   "ver": 1
+  },
+  "ledControl": {
+   "permit": 7,
+   "ver": 1
+  },
+  "localLink": {
+   "permit": 6,
+   "ver": 1
+  },
+  "log": {
+   "permit": 6,
+   "ver": 1
+  },
+  "mediaPort": {
+   "permit": 6,
+   "ver": 1
+  },
+  "ntp": {
+   "permit": 6,
+   "ver": 1
+  },
+  "online": {
+   "permit": 6,
+   "ver": 1
+  },
+  "onvif": {
+   "permit": 6,
+   "ver": 3
+  },
+  "p2p": {
+   "permit": 6,
+   "ver": 1
+  },
+  "performance": {
+   "permit": 4,
+   "ver": 1
+  },
+  "pppoe": {
+   "permit": 6,
+   "ver": 0
+  },
+  "push": {
+   "permit": 6,
+   "ver": 2
+  },
+  "pushSchedule": {
+   "permit": 6,
+   "ver": 1
+  },
+  "reboot": {
+   "permit": 1,
+   "ver": 1
+  },
+  "recExtensionTimeList": {
+   "permit": 6,
+   "ver": 1
+  },
+  "recOverWrite": {
+   "permit": 6,
+   "ver": 1
+  },
+  "recPackDuration": {
+   "permit": 6,
+   "ver": 0
+  },
+  "recPreRecord": {
+   "permit": 6,
+   "ver": 1
+  },
+  "restore": {
+   "permit": 1,
+   "ver": 1
+  },
+  "rtmp": {
+   "permit": 6,
+   "ver": 3
+  },
+  "rtsp": {
+   "permit": 6,
+   "ver": 3
+  },
+  "scheduleVersion": {
+   "permit": 6,
+   "ver": 1
+  },
+  "sdCard": {
+   "permit": 6,
+   "ver": 1
+  },
+  "showQrCode": {
+   "permit": 6,
+   "ver": 0
+  },
+  "simMoudule": {
+   "permit": 6,
+   "ver": 0
+  },
+  "supportAudioAlarm": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportAudioAlarmEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportAudioAlarmSchedule": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportAudioAlarmTaskEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportBuzzer": {
+   "permit": 0,
+   "ver": 0
+  },
+  "supportBuzzerEnable": {
+   "permit": 0,
+   "ver": 0
+  },
+  "supportBuzzerTask": {
+   "permit": 0,
+   "ver": 0
+  },
+  "supportBuzzerTaskEnable": {
+   "permit": 0,
+   "ver": 0
+  },
+  "supportEmailEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportEmailTaskEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFileStreaming": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpCoverPicture": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpCoverVideo": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpDirYM": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpPicCaptureMode": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpPicResoCustom": {
+   "permit": 6,
+   "ver": 0
+  },
+  "supportFtpPictureSwap": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpTask": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpTaskEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpVideoSwap": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportFtpsEncrypt": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportHttpEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportHttpsEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportOnvifEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportPushInterval": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportRecScheduleEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportRecordEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportRecordEncrypt": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportRtmpEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportRtspEnable": {
+   "permit": 6,
+   "ver": 1
+  },
+  "supportWiFiFreqPolicy": {
+   "permit": 0,
+   "ver": 0
+  },
+  "supportWifiEnable5G": {
+   "permit": 0,
+   "ver": 0
+  },
+  "supportWifiEnableDfs": {
+   "permit": 0,
+   "ver": 0
+  },
+  "talk": {
+   "permit": 4,
+   "ver": 1
+  },
+  "time": {
+   "permit": 6,
+   "ver": 2
+  },
+  "tvSystem": {
+   "permit": 6,
+   "ver": 0
+  },
+  "upgrade": {
+   "permit": 1,
+   "ver": 2
+  },
+  "upnp": {
+   "permit": 6,
+   "ver": 1
+  },
+  "user": {
+   "permit": 6,
+   "ver": 1
+  },
+  "videoClip": {
+   "permit": 0,
+   "ver": 0
+  },
+  "wifi": {
+   "permit": 0,
+   "ver": 0
+  },
+  "wifiTest": {
+   "permit": 6,
+   "ver": 0
+  }
+ }
+}

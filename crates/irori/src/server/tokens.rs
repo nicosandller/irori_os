@@ -132,20 +132,7 @@ impl TokenStore {
     }
 
     fn conn(&self) -> rusqlite::Result<Connection> {
-        let conn = Connection::open(&self.db)?;
-        crate::db::wait_when_busy(&conn)?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tokens (
-                token_hash TEXT PRIMARY KEY,
-                id TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                user TEXT NOT NULL,
-                scopes TEXT NOT NULL,
-                extension TEXT,
-                created INTEGER NOT NULL
-            )",
-        )?;
-        Ok(conn)
+        crate::db::connect(&self.db)
     }
 
     fn load(&self) -> rusqlite::Result<HashMap<String, AccessToken>> {
@@ -640,6 +627,15 @@ mod tests {
         assert_eq!(
             scopes(&Method::POST, "/api/command"),
             &[ApiScope::ServicesCall]
+        );
+        assert_eq!(
+            scopes(&Method::GET, "/api/entities/camera.porch/talk"),
+            &[ApiScope::ServicesCall],
+            "talking through a camera runs it"
+        );
+        assert_eq!(
+            scopes(&Method::GET, "/api/entities/camera.porch/live"),
+            &[ApiScope::StatesRead]
         );
         assert_eq!(scopes(&Method::GET, "/api/ws").len(), 3);
         assert_eq!(

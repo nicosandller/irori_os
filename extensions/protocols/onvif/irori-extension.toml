@@ -1,0 +1,21 @@
+[extension]
+id = "onvif"
+name = "ONVIF Cameras"
+version = "0.1.0"
+# 1.6.0 is the first core that plays live video and asks for a username with a password.
+irori = ">=1.6.0"
+description = "IP cameras on your network, over ONVIF and RTSP, with extras for Reolink."
+config_schema = "config.schema.json"
+icon = "icon.svg"
+
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = ["camera", "binary_sensor", "light", "siren", "switch"]
+run = { command = "bin/irori-ext-onvif" }
+
+# Finding cameras (WS-Discovery, UDP 3702), asking them things (ONVIF over HTTP), their pictures
+# and their video (RTSP) all stay on the local network. There is no vendor account and no cloud
+# call. Each camera's own login is asked for on the Add device screen and kept in secrets.toml.
+# A Reolink's own API (spotlight, siren, lights) is the same login, over the camera's HTTPS.
+[permissions]
+lan = true

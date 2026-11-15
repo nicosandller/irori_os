@@ -178,7 +178,14 @@ fn page(
 ) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let areas = shape.areas.clone();
-    let entities = shape.entities.clone();
+    // A camera's picture gets a card of its own, open, between what the device is and the rest
+    // of what it has.
+    let (cameras, entities): (Vec<Entity>, Vec<Entity>) = shape
+        .entities
+        .iter()
+        .cloned()
+        .partition(|entity| matches!(entity.capabilities, Capabilities::Camera(_)));
+    let has_camera = !cameras.is_empty();
     let also_has = also_has(&shape.unmodeled);
     let subtitle = [device.manufacturer.clone(), device.model.clone()]
         .into_iter()
@@ -502,6 +509,18 @@ fn page(
             {suggestion.map(|note| view! { <p class="muted small">{note}</p> })}
         </section>
 
+        {cameras.into_iter().map(|camera| view! {
+            <section class="card camera-card">
+                <EntityRow
+                    entity=camera
+                    controls=controls
+                    trouble=trouble
+                    editing=editing
+                    fixed=true
+                />
+            </section>
+        }).collect_view()}
+
         <section class="card">
             <h2>
                 {format!(
@@ -511,11 +530,11 @@ fn page(
                 )}
             </h2>
             {if entities.is_empty() {
-                view! {
+                (!has_camera).then(|| view! {
                     <p class="muted">
                         "Nothing Irori can model yet."
                     </p>
-                }
+                })
                 .into_any()
             } else {
                 // What the device is for, then its settings and diagnostics under their own
@@ -607,6 +626,9 @@ fn EntityRow(
     controls: Controls,
     trouble: RwSignal<Option<String>>,
     editing: Editing,
+    /// A camera's own card: its picture always shown under it, with no history to roll down.
+    #[prop(optional)]
+    fixed: bool,
 ) -> impl IntoView {
     let live = expect_context::<crate::Live>();
     let id = entity.id.clone();
@@ -671,7 +693,7 @@ fn EntityRow(
     // The rolled-up "last 24 hours", opened from the row's own reading. A button has nothing
     // to remember from one day to the next.
     let histories = crate::history::Histories::new();
-    let unroll = Some(histories.unroll(&id));
+    let unroll = (!fixed).then(|| histories.unroll(&id));
     let history = histories.day(&id);
     // A player, a lock or a cover is drawn once and follows its state; everything else is
     // drawn again from each reading.
@@ -712,6 +734,11 @@ fn EntityRow(
                 {control}
                 {move || failure().map(|why| view! { <p class="why">{why}</p> })}
             </div>
+            {fixed.then(|| view! {
+                <div class="camera-card-view">
+                    {devices::camera_picture(&entity, Signal::stored(true))}
+                </div>
+            })}
             // Always there, rolled up or down, so it can roll both ways; `inert` while rolled
             // up, so nobody tabs into what they can't see.
             {unroll.map(|unroll| {

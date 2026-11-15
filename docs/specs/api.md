@@ -115,6 +115,37 @@ protocol has confirmed, or an error.
 anything that isn't a camera, `504` when the camera didn't answer within 5 seconds, `502` with
 the protocol's reason when it had no picture to give.
 
+`GET /api/entities/<entity_id>/live?quality=low|high` is a camera's live video
+([protocols.md](protocols.md) §5.3), as a WebSocket. It opens on the same terms as `/api/ws`
+(a browser only from Irori's own page, closed when the sign-in that opened it ends) and for the
+same people as the camera's picture. `404` for anything that isn't a camera they have, `409` for
+one that can't be watched live in that quality, `400` for a quality that isn't one. Once open:
+
+1. The page sends `{ "accepts": ["avc1", "mp4a"] }`: the codecs it can play.
+2. The server sends `{ "playing": { "mime": "video/mp4; codecs=\"…\"" } }`, then the init
+   segment and the video as binary frames, fragmented MP4 ready for Media Source Extensions.
+3. When the stream stops it sends `{ "ended": { "reason": "…" } }` and closes. A page that falls
+   behind skips ahead to a keyframe on its own; it never holds up anyone else.
+
+A token needs `states:read`, as for a picture.
+
+`GET /api/entities/<entity_id>/talk` talks through a camera's speaker
+([protocols.md](protocols.md) §5.4), as a WebSocket, on the same terms as its live video. Talking
+is a command, so it is for the people who may send the camera one, and it is written in the
+activity log (`camera_talked`). `404` for anything that isn't a camera they have, `409` for one
+without a speaker. Once open:
+
+1. The server sends `"listening"` when the camera's speaker is open.
+2. The page sends sound as binary frames: 16-bit little-endian PCM at 8 kHz, one channel, 20 ms
+   (320 bytes) each. Frames sent before `listening` are dropped; a frame that is empty, over 4 KB
+   or half a sample ends the talk.
+3. When the talk ends (the page closes, 3 seconds of nothing, 10 minutes, the camera hung up) the
+   server sends `{ "ended": { "reason": "…" } }` and closes. A talk that can't start, because
+   someone else is talking through the camera or its extension isn't running, opens only to say
+   that in `ended`: a browser isn't told why a socket was refused.
+
+A token needs `services:call`, as for a command.
+
 `GET /api/history/<entity_id>` is `{ "entity", "states", "by"? }`. `by` maps the context of a
 command (the `parent_id` of a state change that answered it) to who sent it, when the activity
 log has the command: the owner and a person with the whole home are told the name, a person with

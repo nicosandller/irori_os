@@ -69,6 +69,7 @@ impl Camera {
                 (true, false) => CameraStatus::Idle,
             },
             motion_detection: Some(self.detecting),
+            presets: None,
         }
     }
 }
@@ -105,6 +106,7 @@ impl Gadget for Camera {
                 Capabilities::Camera(CameraCapabilities {
                     on_off: true,
                     motion_detection: true,
+                    ..CameraCapabilities::default()
                 }),
             ),
             Entity::flag(self.motion, "Motion", BinarySensorClass::Motion),

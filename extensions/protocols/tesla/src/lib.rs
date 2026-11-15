@@ -312,6 +312,8 @@ impl World {
                 unpair.reply(Err("a Tesla car or site is removed in the Tesla app".into()));
             }
             Incoming::Picture(picture) => picture.reply(Err("Tesla has no cameras here".into())),
+            Incoming::Live(live) => live.feed.end(Some("Tesla has no cameras here".into())),
+            Incoming::Talk(talk) => talk.line.end(Some("Tesla has no cameras here".into())),
         }
     }
 

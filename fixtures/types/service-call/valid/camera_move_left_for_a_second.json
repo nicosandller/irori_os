@@ -1,0 +1,15 @@
+{
+  "service": "camera.move",
+  "unique_id": "05121508-0115-0400-0613-ec71dbc9da16-camera",
+  "data": {
+    "pan": -0.5,
+    "seconds": 1.0
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

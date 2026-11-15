@@ -283,9 +283,10 @@ pub(crate) fn fill(value: impl Into<f64>, min: impl Into<f64>, max: impl Into<f6
     ((value.clamp(min, max) - min) * 100.0 / (max - min)).floor() as u16
 }
 
-/// A switch showing what the entity is doing, not what was last clicked: it moves when the
-/// device reports back. A light that has never reported sits in between, and clicking turns it
-/// on.
+/// A switch showing what the entity is doing, not what was last clicked. Clicked, the knob
+/// travels at once to where it was sent and waits there, its track shimmering, until the device
+/// says it's there; one that never does springs back. Only then is the track solid. A light that
+/// has never reported sits in between, and clicking turns it on.
 pub(crate) fn knob(
     entity: &Entity,
     on: Option<bool>,
@@ -297,16 +298,58 @@ pub(crate) fn knob(
         let entity_id = entity_id.clone();
         move || controls.busy.get().contains(&entity_id)
     };
-    let pending = busy.clone();
+    // Where it was sent, while the device hasn't said it's there.
+    let heading = {
+        let entity_id = entity_id.clone();
+        move || {
+            controls
+                .asked
+                .with(|asked| asked.get(&entity_id).map(|(to, _)| *to))
+                .filter(|to| Some(*to) != on)
+        }
+    };
+    let pending = {
+        let busy = busy.clone();
+        let heading = heading.clone();
+        move || busy() || heading().is_some()
+    };
+    let heading_on = {
+        let heading = heading.clone();
+        move || heading() == Some(true)
+    };
+    let heading_off = {
+        let heading = heading.clone();
+        move || heading() == Some(false)
+    };
+    // Once the device says it's where it was sent, that ask is done: if something else switches
+    // it back a moment later, the knob shows that, not the old ask.
+    if let Some(on) = on {
+        let entity_id = entity_id.clone();
+        Effect::new(move || {
+            let reached = controls
+                .asked
+                .with_untracked(|asked| asked.get(&entity_id).is_some_and(|(to, _)| *to == on));
+            if reached {
+                controls.asked.update(|asked| {
+                    asked.remove(&entity_id);
+                });
+            }
+        });
+    }
     // What the click means is "I want it off", not "flip whatever it is now": the page sends the
-    // state the person asked for, so a second click on a stale row can't undo the first.
-    let wanted = !on.unwrap_or(false);
+    // state the person asked for, so a second click on a stale row can't undo the first. While
+    // the knob is still on its way, the click is about where it's going, not where it was.
+    let wanted = {
+        let heading = heading.clone();
+        move || !heading().or(on).unwrap_or(false)
+    };
     let click = {
         let entity_id = entity_id.clone();
+        let wanted = wanted.clone();
         move |event: ev::MouseEvent| {
             // A swipe already said what it wanted when it let go.
             if !crate::gesture::swallow_click(&event) {
-                controls.set_on.run((entity_id.clone(), wanted));
+                controls.set_on.run((entity_id.clone(), wanted()));
             }
         }
     };
@@ -321,7 +364,10 @@ pub(crate) fn knob(
             }
         }
     };
-    let label = format!("Turn {} {}", entity.name, if wanted { "on" } else { "off" });
+    let label = {
+        let name = entity.name.clone();
+        move || format!("Turn {} {}", name, if wanted() { "on" } else { "off" })
+    };
     // A screen reader is told what the knob shows. `mixed` is how ARIA says "neither", which is
     // what an entity that has never reported is: saying `false` would claim it's off.
     let pressed = match on {
@@ -337,6 +383,8 @@ pub(crate) fn knob(
             // Waiting on the device, as opposed to unable to reach it: both disable the switch,
             // but only this one is going to change.
             class:pending=pending
+            class:heading-on=heading_on
+            class:heading-off=heading_off
             aria-label=label
             aria-pressed=pressed
             disabled=move || offline || busy()

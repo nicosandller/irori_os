@@ -2,7 +2,7 @@
 //! picture is in its drawer ([`camera_picture`]), asked for again every few seconds only while
 //! the drawer is open and the page is in view: five cameras on a Raspberry Pi add up.
 
-use irori_types::{CameraCapabilities, CameraStatus, Entity, EntityId, State};
+use irori_types::{CameraCapabilities, CameraStatus, Capabilities, Entity, EntityId, State};
 use leptos::prelude::*;
 
 use super::knob;
@@ -54,7 +54,54 @@ pub(crate) fn camera_control(
 
 /// The picture a camera sees, for its drawer: asked for when the drawer opens, and again every
 /// few seconds while it stays open and the page is in view.
+///
+/// A camera that can be watched live shows its video instead, and one with a speaker gets a
+/// "Hold to talk" button.
 pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
+    let turn = match &entity.capabilities {
+        Capabilities::Camera(capabilities)
+            if capabilities.pan_tilt || capabilities.zoom || capabilities.presets =>
+        {
+            Some(view! {
+                <crate::camera_turn::CameraTurn
+                    id=entity.id.clone()
+                    capabilities=capabilities.clone()
+                />
+            })
+        }
+        _ => None,
+    };
+    // While its button is held, the live sound is muted.
+    let talking = RwSignal::new(false);
+    let talk = match &entity.capabilities {
+        Capabilities::Camera(capabilities) if capabilities.talk => Some(view! {
+            <crate::camera_talk::CameraTalk
+                id=entity.id.clone()
+                name=entity.name.to_string()
+                talking=talking
+            />
+        }),
+        _ => None,
+    };
+    if let Capabilities::Camera(capabilities) = &entity.capabilities
+        && capabilities.live
+    {
+        // One block, so full screen takes the talk button and the arrows with the video.
+        return view! {
+            <div class="camera-stage">
+                <crate::camera_live::CameraLive
+                    id=entity.id.clone()
+                    name=entity.name.to_string()
+                    capabilities=capabilities.clone()
+                    open=open
+                    talking=talking
+                />
+                {talk}
+                {turn}
+            </div>
+        }
+        .into_any();
+    }
     let id = entity.id.clone();
     let name = entity.name.to_string();
     let frame = RwSignal::new(0u64);
@@ -97,6 +144,8 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
                 }}
             </figcaption>
         </figure>
+        {talk}
+        {turn}
     }
     .into_any()
 }

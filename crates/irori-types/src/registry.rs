@@ -287,6 +287,7 @@ impl Capabilities {
             Self::Climate(climate) => climate.validate(),
             Self::WaterHeater(heater) => heater.validate(),
             Self::Humidifier(humidifier) => humidifier.validate(),
+            Self::Camera(camera) => camera.validate(),
             _ => Ok(()),
         }
     }

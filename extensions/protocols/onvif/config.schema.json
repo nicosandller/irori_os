@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "hosts": {
+      "description": "Cameras to ask directly, as well as any that answer on the network. For a network where\ndiscovery doesn't reach, such as a container's. Each one is a private, loopback or\nlink-local address, or a name under `.local`, `.home.arpa`, `.internal`, `.lan` or\n`.home`. A port, a public address or an internet hostname is refused.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

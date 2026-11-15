@@ -33,6 +33,8 @@ pub struct History {
 impl History {
     /// Opens the diary in `path` (the home's `irori.db`) and keeps `retention` of it.
     pub fn open(path: &Path, retention: irori_recorder::Retention) -> anyhow::Result<Self> {
+        // The history tables are made by the file's migrations, like every other table.
+        drop(crate::db::connect(path)?);
         Ok(Self {
             recorder: irori_recorder::Recorder::open_keeping(path, retention)?,
             #[cfg(test)]
@@ -45,6 +47,7 @@ impl History {
     pub(crate) fn temporary() -> Self {
         let dir = tempfile::tempdir().expect("a temporary directory for history");
         let path = dir.path().join("irori.db");
+        drop(crate::db::connect(&path).expect("a temporary database"));
         Self {
             recorder: irori_recorder::Recorder::open_keeping(
                 &path,

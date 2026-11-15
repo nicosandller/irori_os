@@ -966,6 +966,7 @@ mod tests {
             Capabilities::Camera(irori_types::CameraCapabilities {
                 on_off: true,
                 motion_detection: true,
+                ..irori_types::CameraCapabilities::default()
             }),
         )
     }
@@ -976,6 +977,7 @@ mod tests {
             State::Camera(irori_types::CameraState {
                 state,
                 motion_detection: Some(true),
+                presets: None,
             }),
         )
     }

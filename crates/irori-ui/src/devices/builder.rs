@@ -1918,6 +1918,7 @@ fn quiet_controls() -> Controls {
     Controls {
         busy: RwSignal::new(BTreeSet::new()),
         failures: RwSignal::new(BTreeMap::new()),
+        asked: RwSignal::new(BTreeMap::new()),
         set_on: Callback::new(|_| {}),
         set_light: Callback::new(|_| {}),
         act: Callback::new(|_| {}),
@@ -1939,6 +1940,7 @@ fn try_here(entity: irori_types::Entity, start: Option<EntityState>) -> AnyView 
     let controls = Controls {
         busy: RwSignal::new(BTreeSet::new()),
         failures: RwSignal::new(BTreeMap::new()),
+        asked: RwSignal::new(BTreeMap::new()),
         set_on: Callback::new(move |(_, on): (irori_types::EntityId, bool)| {
             set(State::Switch(irori_types::SwitchState { on }));
         }),

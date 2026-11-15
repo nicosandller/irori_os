@@ -250,6 +250,12 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     Some(irori_protocol::Incoming::Page(page)) => {
                         page.answer(Err("Zigbee has no page of its own".into()));
                     }
+                    Some(irori_protocol::Incoming::Live(live)) => {
+                        live.feed.end(Some("Zigbee devices have no cameras".into()));
+                    }
+                    Some(irori_protocol::Incoming::Talk(talk)) => {
+                        talk.line.end(Some("Zigbee devices have no cameras".into()));
+                    }
                     None => break Ok(()),
                 }
             }

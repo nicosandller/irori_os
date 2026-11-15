@@ -544,6 +544,15 @@ fn checked(manifest: &Manifest, root: &Path) -> anyhow::Result<Verified> {
             verdict == "ok",
             "the backup's database is damaged: {verdict}"
         );
+        // Also for a development build, which the release number above lets through.
+        let version = crate::db::migrations::version(&conn)?;
+        ensure!(
+            version <= crate::db::migrations::LATEST,
+            "this backup's database is at version {version}, newer than this Irori ({}) knows \
+             ({}); update Irori first",
+            crate::build_info::VERSION,
+            crate::db::migrations::LATEST
+        );
     }
     // A config that doesn't load is what the home was. Say so; don't refuse to give it back.
     let mut store = irori_config::Store::new(root.join("config"));
@@ -764,9 +773,23 @@ pub fn apply_pending(config: &Path, data: &Path) -> Option<Restored> {
         extensions_handled: false,
         audited: false,
     };
+    let parts = plan.parts;
+    let mixes_database = (parts.state || parts.history || parts.activity)
+        && !(parts.state && parts.history && parts.activity);
+    // Looked at before the swap, which replaces the file; said only if the swap happened.
+    let taken_whole = mixes_database && home_is_newer(data);
     match swap_in(&pending.join("tree"), config, data, plan.parts) {
         Ok(safety) => {
             done.ok = true;
+            if taken_whole {
+                done.warnings.push(format!(
+                    "this home's database was written by a newer Irori, so the backup's database \
+                     was put back whole, history and activity log included, whatever parts were \
+                     chosen. What the newer Irori recorded since is only in the pre-restore \
+                     backup ({}), and only the last three of those are kept",
+                    safety.as_deref().unwrap_or("none was made")
+                ));
+            }
             done.safety_copy = safety;
         }
         Err(error) => done.error = Some(format!("{error:#}")),
@@ -776,6 +799,13 @@ pub fn apply_pending(config: &Path, data: &Path) -> Option<Restored> {
         let _ = fs::write(data.join(RESULT), bytes);
     }
     Some(done)
+}
+
+/// Whether the home's `irori.db` is at a version newer than this build (it went back to an older
+/// release), in which case nothing can be mixed into it (`compose_database`).
+fn home_is_newer(data: &Path) -> bool {
+    let db = data.join("irori.db");
+    db.exists() && crate::db::version_of(&db).is_ok_and(|v| v > crate::db::migrations::LATEST)
 }
 
 fn swap_in(
@@ -874,7 +904,14 @@ fn put_back(tree: &Path, config: &Path, data: &Path, parts: Parts) -> anyhow::Re
 /// Builds `irori.db` from the backup's and the current one: each of the three kinds of thing in
 /// it (state, history, the activity log) from whichever the parts say. Nothing is replaced until
 /// the new file is whole.
+///
+/// Tables are only mixed between files at the same version, so the backup's copy is brought to
+/// this build's version first, and so is a copy of the current file when it is older; the current
+/// file itself is not touched. A current file
+/// newer than this build (Irori was taken back to an older release) can't be mixed with: the
+/// backup is then taken whole, and the safety copy made just before holds the home as it was.
 fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Result<()> {
+    use crate::db::migrations::LATEST;
     if !(parts.state || parts.history || parts.activity) || !staged.exists() {
         return Ok(());
     }
@@ -885,37 +922,68 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
             .context("the path isn't UTF-8")?
             .replace('\'', "''"))
     };
-    if (parts.state && parts.history && parts.activity) || !current.exists() {
+    // A table the backup didn't have is one its home never had, even once bringing it up to
+    // date has made it: it must not take the place of the home's own.
+    let had = table_names(staged)?;
+    // Only a safety copy of a home a newer Irori wrote is newer than us (a backup like that is
+    // refused before it is staged), and that is only ever put back whole.
+    let staged_newer = crate::db::version_of(staged)? > LATEST;
+    if !staged_newer {
+        crate::db::connect(staged).context("couldn't bring the backup's database up to date")?;
+    }
+    let current_version = if current.exists() {
+        Some(crate::db::version_of(current)?)
+    } else {
+        None
+    };
+    let mix_with_current = current_version.is_some_and(|v| v <= LATEST);
+    // An older current file is read from a copy brought up to date, kept beside it until done.
+    let scratch = tempfile::Builder::new()
+        .prefix(".restore-")
+        .tempdir_in(current.parent().context("the database has no directory")?)?;
+    let source = if current_version.is_some_and(|v| v < LATEST) {
+        let copy = scratch.path().join("irori.db");
+        let conn =
+            Connection::open_with_flags(current, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        crate::db::wait_when_busy(&conn)?;
+        conn.execute_batch(&format!("VACUUM INTO '{}'", sql_path(&copy)?))?;
+        drop(conn);
+        crate::db::connect(&copy).context("couldn't bring the database up to date")?;
+        copy
+    } else {
+        current.to_path_buf()
+    };
+    let current_in = source.as_path();
+    if (parts.state && parts.history && parts.activity) || !mix_with_current {
         // The backup's database is a finished file of its own (it was written by VACUUM INTO).
         fs::copy(staged, &out)?;
         // A backup from before the activity log existed has no table for it, and must not take
         // the home's own rows with it.
-        if current.exists() {
+        if mix_with_current && !staged_newer {
             let conn = Connection::open(&out)?;
             conn.execute_batch(&format!(
                 "ATTACH DATABASE '{}' AS other",
-                sql_path(current)?
+                sql_path(current_in)?
             ))?;
             for table in crate::audit::TABLES {
-                let in_backup: i64 = conn.query_row(
-                    "SELECT count(*) FROM main.sqlite_master WHERE type = 'table' AND name = ?1",
-                    [table],
-                    |row| row.get(0),
-                )?;
-                if in_backup == 0 {
+                if !had.iter().any(|name| name == table) {
                     copy_table(&conn, table)?;
                 }
             }
             conn.execute_batch("DETACH DATABASE other")?;
         }
     } else {
+        ensure!(
+            !staged_newer,
+            "this database is newer than this Irori, and can only be put back whole"
+        );
         // The base is the file that has the rest (everything but the two kinds below), which is
         // the backup's when the state is asked for. The tables of a kind the base is not the
         // source of are then copied across from the other file.
         let (base, other) = if parts.state {
-            (staged, current)
+            (staged, current_in)
         } else {
-            (current, staged)
+            (current_in, staged)
         };
         let base_is_staged = parts.state;
         let conn = Connection::open_with_flags(base, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -931,6 +999,10 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
                 continue;
             }
             for table in tables {
+                // From the backup, but it never had one: what the home has stays.
+                if wanted_from_staged && !had.iter().any(|name| name == table) {
+                    continue;
+                }
                 copy_table(&conn, table)?;
             }
         }
@@ -941,6 +1013,16 @@ fn compose_database(current: &Path, staged: &Path, parts: Parts) -> anyhow::Resu
     }
     fs::rename(&out, current)?;
     Ok(())
+}
+
+/// The tables in the database at `path`.
+fn table_names(path: &Path) -> anyhow::Result<Vec<String>> {
+    let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    let mut rows = conn.prepare("SELECT name FROM sqlite_master WHERE type = 'table'")?;
+    let names = rows
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    Ok(names)
 }
 
 /// Replaces `table` in `main` with the one in `other`, making it first if `main` has none (a

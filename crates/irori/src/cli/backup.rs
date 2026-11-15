@@ -145,7 +145,8 @@ pub fn run(args: BackupArgs) -> Result<(), String> {
                         kept.join(copy).display()
                     );
                 }
-                for warning in &verified.warnings {
+                // The check's notes, and what applying it found (a home a newer Irori wrote).
+                for warning in &done.warnings {
                     println!("  note: {warning}");
                 }
                 let missing = backup::missing_extensions(&data, &verified.manifest);

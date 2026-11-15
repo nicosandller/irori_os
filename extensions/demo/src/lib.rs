@@ -143,6 +143,13 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                     Some(Incoming::Page(page)) => {
                         page.answer(Err("the demo has no page of its own".into()));
                     }
+                    // Its cameras draw pictures; none says it can be watched live.
+                    Some(Incoming::Live(live)) => {
+                        live.feed.end(Some("the demo's cameras have no live video".into()));
+                    }
+                    Some(Incoming::Talk(talk)) => {
+                        talk.line.end(Some("the demo's cameras have no speaker".into()));
+                    }
                     Some(Incoming::Action(action)) if action.action_id == SCAN_NETWORK => {
                         if action.stop {
                             action.reply(Err("a scan can't be stopped once it's under way".into()));
