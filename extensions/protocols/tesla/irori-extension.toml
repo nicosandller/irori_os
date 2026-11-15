@@ -2,8 +2,8 @@
 id = "tesla"
 name = "Tesla"
 version = "0.1.0"
-irori = ">=1.6.0"
-# 1.6.0 is the first core that waits longer than 10 seconds for a protocol that asks (a car has
+irori = ">=1.7.0"
+# 1.7.0 is the first core that waits longer than 10 seconds for a protocol that asks (a car has
 # to wake before it hears a command), lets a protocol answer its own page, works out whether a
 # GPS tracker is home, and shows a waiting step's link and text to copy.
 description = "Tesla cars and Powerwall sites, through Tesla's Fleet API, with what the API costs this month in view."
