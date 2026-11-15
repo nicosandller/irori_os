@@ -14,6 +14,7 @@ mod entity;
 #[cfg(test)]
 mod fake;
 mod keys;
+mod network;
 mod page;
 mod reading;
 mod sending;
@@ -205,6 +206,7 @@ struct Reported {
     waiting: Option<Vec<Waiting>>,
     actions: Option<Vec<String>>,
     health: Option<Health>,
+    map: Option<irori_types::Network>,
 }
 
 pub(crate) async fn drive(
@@ -858,6 +860,48 @@ impl World {
             self.ctx.set_health(health.clone()).await;
             self.reported.health = Some(health);
         }
+        let map = self.map();
+        if self.reported.map.as_ref() != Some(&map) {
+            self.ctx.set_networks(vec![map.clone()]).await;
+            self.reported.map = Some(map);
+        }
+    }
+
+    /// The map: the cars and sites, through Tesla's cloud.
+    fn map(&self) -> irori_types::Network {
+        let cars: Vec<(String, String, String)> = self
+            .cars
+            .iter()
+            .map(|(vin, slot)| {
+                let state = slot.reading.state.as_deref().unwrap_or("offline");
+                let detail = match slot.reading.model() {
+                    Some(model) => format!("{model}, {state}"),
+                    None => state.to_owned(),
+                };
+                (vin.clone(), slot.car.name.clone(), detail)
+            })
+            .collect();
+        let sites: Vec<(String, String, String)> = self
+            .sites
+            .iter()
+            .map(|(id, slot)| {
+                let model = if slot.site.battery {
+                    "Powerwall"
+                } else {
+                    "Solar"
+                };
+                (id.clone(), slot.site.name.clone(), model.to_owned())
+            })
+            .collect();
+        let drawn = cars
+            .iter()
+            .chain(&sites)
+            .map(|(id, name, detail)| network::Drawn {
+                id,
+                name,
+                detail: Some(detail),
+            });
+        network::draw(drawn, self.signed_in)
     }
 
     /// Stores the meter, if it changed.

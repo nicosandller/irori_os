@@ -376,6 +376,8 @@ mod protocol {
         pub states: BTreeMap<String, (Value, bool)>,
         /// The call the last report for each entity credited, if any.
         pub caused: BTreeMap<String, Option<String>>,
+        /// The map as last drawn.
+        pub networks: Vec<irori_types::Network>,
         pub removed: Vec<String>,
     }
 
@@ -436,9 +438,8 @@ mod protocol {
                     host::Op::SetHealth(health) => log.health.push(health),
                     host::Op::SetWaiting(waiting) => log.waiting = waiting,
                     host::Op::SetAvailableActions(actions) => log.actions = actions,
-                    host::Op::SetUnmodeled(_)
-                    | host::Op::SetNetworks(_)
-                    | host::Op::SetActionOpen(_, _) => {}
+                    host::Op::SetNetworks(networks) => log.networks = networks,
+                    host::Op::SetUnmodeled(_) | host::Op::SetActionOpen(_, _) => {}
                     host::Op::Load(key, reply) => {
                         let _ = reply.send(Ok(log.stored.get(&key).cloned()));
                     }
@@ -1117,6 +1118,14 @@ mod controls {
             .until("the polling mode", |log| log.state("tesla_account:polling"))
             .await;
         assert_eq!(polling["option"], "Balanced");
+        // On the map, the car hangs off Tesla's cloud.
+        let car = home
+            .until("the car on the map", |log| {
+                let map = log.networks.first()?;
+                map.links.iter().find(|link| link.from == VIN).cloned()
+            })
+            .await;
+        assert_eq!(car.to, "cloud");
         let log = home.log.lock().expect("log");
         assert_eq!(
             log.devices[VIN]
