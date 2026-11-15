@@ -134,7 +134,7 @@ enum Done {
     Commanded {
         device: String,
         command: sending::Command,
-        result: Result<(), sending::Failure>,
+        result: Result<Option<serde_json::Value>, sending::Failure>,
         call: IncomingCall,
     },
 }

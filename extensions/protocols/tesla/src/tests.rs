@@ -1489,6 +1489,61 @@ mod commands {
         home
     }
 
+    /// The trunk opens with a toggle. A car Irori has only the cached, possibly old, reading of
+    /// is read live before the toggle goes: shut, it opens; opened since (by Home Assistant, the
+    /// app, a hand), nothing is sent, which would shut it.
+    #[tokio::test]
+    async fn the_trunk_toggle_looks_first_when_the_reading_is_old() {
+        for opened_since in [false, true] {
+            let home = with_a_car("asleep", |_| {}).await;
+            let mut now = answer("vehicle_data");
+            now["response"]["vehicle_state"]["rt"] = json!(u8::from(opened_since));
+            home.fake.answer(
+                &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data"),
+                vec![Answer::with(200, now)],
+            );
+            let live_before = home.fake.sent(&format!("{VIN}/vehicle_data")).len();
+            let trunk = format!("{VIN}:trunk");
+
+            home.call(&trunk, Service::CoverOpen).await.expect("opened");
+            assert_eq!(
+                home.fake.sent(&format!("{VIN}/vehicle_data")).len(),
+                live_before + 1,
+                "read live once, first"
+            );
+            let toggles = |home: &Home| {
+                the_car(home)
+                    .done
+                    .iter()
+                    .filter(|(domain, bytes)| *domain == 2 && bytes.starts_with(&[0x22]))
+                    .count()
+            };
+            assert_eq!(
+                toggles(&home),
+                usize::from(!opened_since),
+                "the toggle goes only to a shut trunk"
+            );
+            assert_eq!(
+                home.log
+                    .lock()
+                    .expect("log")
+                    .state(&trunk)
+                    .expect("a trunk")["state"],
+                "open"
+            );
+
+            // Now freshly known to be open: a second Open sends nothing and reads nothing.
+            home.call(&trunk, Service::CoverOpen)
+                .await
+                .expect("still open");
+            assert_eq!(
+                home.fake.sent(&format!("{VIN}/vehicle_data")).len(),
+                live_before + 1
+            );
+            assert_eq!(toggles(&home), usize::from(!opened_since));
+        }
+    }
+
     #[tokio::test]
     async fn unlock_is_signed_lands_and_shows_at_once_credited_to_the_call() {
         let home = with_a_car("online", |_| {}).await;

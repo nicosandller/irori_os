@@ -194,25 +194,28 @@ impl CarCommand {
         }
     }
 
-    /// Whether to send it, given what's known of the car: `Ok(false)` when it's already as asked
-    /// and sending it would undo that (the trunk opens with a toggle).
-    pub fn check(&self, reading: &crate::vehicle::CarReading) -> Result<bool, String> {
+    /// What to do before sending it, given what's known of the car. The trunk opens with a
+    /// toggle, so sending it to an open trunk shuts it: it goes only to a trunk known to be shut
+    /// by a reading from the last [`FRESH`] seconds, and otherwise the car is read first. Home
+    /// Assistant, the Tesla app or a hand may have opened it since an older reading.
+    pub fn check(&self, reading: &crate::vehicle::CarReading, now: u64) -> Check {
         if !matches!(self, CarCommand::Trunk { open: true }) {
-            return Ok(true);
+            return Check::Send;
         }
-        match reading
-            .fields
-            .get("vehicle_state.rt")
-            .and_then(Value::as_f64)
-        {
-            Some(open) if open != 0.0 => Ok(false),
-            Some(_) => Ok(true),
-            None => Err(
-                "Irori doesn't know yet whether the trunk is open, and opening it would shut it \
-                 if it is: refresh the car first"
-                    .into(),
-            ),
+        let fresh = reading
+            .read_at
+            .is_some_and(|at| now.saturating_sub(at) <= FRESH);
+        match reading.fields.get(TRUNK_FIELD).and_then(Value::as_f64) {
+            Some(open) if fresh && open != 0.0 => Check::AlreadyDone,
+            Some(_) if fresh => Check::Send,
+            _ => Check::LookFirst,
         }
+    }
+
+    /// Whether Irori should forget what it knew of the car when it can't tell whether this
+    /// command happened, so the next one looks before it acts.
+    pub fn unsure_forgets(&self) -> Option<&'static str> {
+        matches!(self, CarCommand::Trunk { .. }).then_some(TRUNK_FIELD)
     }
 
     /// Whether sending it twice does no harm. One that isn't is sent again only when the car
@@ -382,6 +385,24 @@ impl CarCommand {
     }
 }
 
+/// What to do with a command before it goes, from [`CarCommand::check`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    /// Send it.
+    Send,
+    /// The car is already as asked: send nothing.
+    AlreadyDone,
+    /// Read the car first (once it's awake for the command), then decide.
+    LookFirst,
+}
+
+/// How recent, in seconds, a reading must be for the trunk toggle to go without reading the
+/// car again.
+pub const FRESH: u64 = 120;
+
+/// Where a reading says whether the trunk is open.
+const TRUNK_FIELD: &str = "vehicle_state.rt";
+
 /// A command to an energy site: plain REST, no signing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SiteCommand {
@@ -494,20 +515,40 @@ mod tests {
     }
 
     #[test]
-    fn the_trunk_toggle_is_never_sent_to_an_open_trunk() {
+    fn the_trunk_toggle_goes_only_to_a_trunk_lately_seen_shut() {
         let open = CarCommand::Trunk { open: true };
+        let now = 1_000_000;
         let mut reading = crate::vehicle::CarReading::default();
-        assert!(open.check(&reading).is_err(), "unknown: refresh first");
+        assert_eq!(
+            open.check(&reading, now),
+            Check::LookFirst,
+            "unknown: look first"
+        );
         reading.fields.insert("vehicle_state.rt".into(), json!(0));
-        assert_eq!(open.check(&reading), Ok(true));
+        assert_eq!(
+            open.check(&reading, now),
+            Check::LookFirst,
+            "never read live: look first"
+        );
+        reading.read_at = Some(now - FRESH);
+        assert_eq!(open.check(&reading, now), Check::Send);
         reading.fields.insert("vehicle_state.rt".into(), json!(1));
         assert_eq!(
-            open.check(&reading),
-            Ok(false),
+            open.check(&reading, now),
+            Check::AlreadyDone,
             "already open: nothing sent"
         );
+        // Shut a while ago: someone may have opened it since.
+        reading.fields.insert("vehicle_state.rt".into(), json!(0));
+        reading.read_at = Some(now - FRESH - 1);
+        assert_eq!(open.check(&reading, now), Check::LookFirst);
         // Closing is CLOSE, not a toggle: always safe.
-        assert_eq!(CarCommand::Trunk { open: false }.check(&reading), Ok(true));
+        assert_eq!(
+            CarCommand::Trunk { open: false }.check(&reading, now),
+            Check::Send
+        );
+        assert_eq!(open.unsure_forgets(), Some("vehicle_state.rt"));
+        assert_eq!(CarCommand::Lock(true).unsure_forgets(), None);
     }
 
     #[test]

@@ -82,14 +82,17 @@ defrost, sentry mode, steering wheel and seat heaters, honk and flash.
 
 - **A sleeping car is woken once** ($0.02), and the command tried again every few seconds until
   it lands, which costs a command's price a try. Every command waiting for the same car shares
-  the wake. A command may take up to 80 seconds this way, inside the 90 the core waits.
+  the wake, and a car slow to wake isn't woken again while the command is still trying. A command may take up to 80 seconds this way, inside the 90 the core waits.
 - **A command is sent again only when the car surely didn't act on it**: it was asleep, or turned
   the message away unread. Honk and flash are never sent twice. When Tesla doesn't answer, the
   error says the command may or may not have reached the car.
 - **No read follows a command.** The entity shows the new state at once, credited to the call
   that asked, and the next read puts it right if the car disagrees.
 - **The trunk opens with a toggle** (as in Tesla's own library), so it's sent only to a trunk
-  known to be shut; one Irori hasn't read yet asks for a refresh first.
+  known to be shut by a reading from the last two minutes. Otherwise the car is read first
+  (≈$0.002, once it's awake for the command anyway): Home Assistant, the Tesla app or a hand may
+  have opened the trunk since. When Tesla doesn't answer a trunk command, Irori forgets whether
+  the trunk is open, so the next one looks first.
 
 Commands are signed (HMAC, not encrypted: Tesla's servers read them to check them against the
 sign-in). Irori keeps a session with each of the car's two computers. The car's key is trusted
@@ -108,12 +111,14 @@ to slow down.
 
 The **Tesla account** device shows the month: Irori's spend, the whole account's (once the
 dashboard figure is in), the projected end of month, and what's left of the allowance. Its
-controls are the polling mode and the **monthly allowance**.
+controls are the polling mode and the **monthly allowance**. Like any device's controls, anyone
+who may control the device can change them: an owner, and a regular user who has its room, or the
+whole home if it's in none. Put the device in a room only the owners have to keep them to owners.
 
 **Tesla usage**, the extension's page, shows the month against the allowance and when it runs out
 at this rate, each day's calls by kind for this month and last, which car or site spent what,
 the recent billed calls with why each was made (an asleep or rate-limited answer is flagged as
-billed), and the controls. Only the home's owner can change them.
+billed), and the controls. On the page only an owner can change them.
 
 Prices default to Tesla's in US dollars; the settings' **Billing** group takes another currency
 and Tesla's rates for it. Which endpoints are billed as what follows Tesla's docs where they

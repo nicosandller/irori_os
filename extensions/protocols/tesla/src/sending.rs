@@ -20,18 +20,17 @@ use std::time::Duration;
 use irori_protocol::{IncomingCall, ServiceError};
 use irori_types::{ContextId, State};
 use p256::SecretKey;
+use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
 
 use crate::api::{Api, ApiError};
-use crate::commands::{CarCommand, SiteCommand};
+use crate::commands::{CarCommand, Check, SiteCommand};
 use crate::reading::report_caused;
 use crate::signed::{self, Channel, Domain, Outcome, Reply};
 use crate::usage::Why;
+use crate::vehicle::CarReading;
 use crate::{Done, World, energy, setup, vehicle};
-
-/// How long one wake covers: a command within it doesn't wake the car again.
-const WAKE_COVERS: Duration = Duration::from_secs(60);
 
 /// How many times a session out of step is put right for one command.
 const RESYNCS: u8 = 3;
@@ -100,12 +99,14 @@ pub(crate) enum Failure {
     Account(ApiError),
     /// Tesla or the car said no, or it couldn't be done.
     Failed(String),
+    /// Tesla didn't answer: the command may or may not have reached the car.
+    Unsure(String),
 }
 
 fn failure(error: ApiError) -> Failure {
     match error {
         ApiError::SignedOut(_) | ApiError::Billing(_) => Failure::Account(error),
-        ApiError::Unreachable(_) | ApiError::Server(_) => Failure::Failed(format!(
+        ApiError::Unreachable(_) | ApiError::Server(_) => Failure::Unsure(format!(
             "{}, so the command may or may not have reached the car",
             error.describe()
         )),
@@ -113,7 +114,10 @@ fn failure(error: ApiError) -> Failure {
     }
 }
 
-/// Sends a command to a car and waits for the car to act on it, waking it if it must.
+/// Sends a command to a car and waits for the car to act on it, waking it if it must. With
+/// `look_first`, the car is read before the command goes and the command is checked again
+/// against what it says ([`CarCommand::check`]). Answers what that read found, to keep.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn car(
     api: &Api,
     link: &Link,
@@ -122,15 +126,71 @@ pub(crate) async fn car(
     command: &CarCommand,
     why: Why,
     patience: Patience,
-) -> Result<(), Failure> {
+    look_first: bool,
+) -> Result<Option<Value>, Failure> {
     let deadline = Instant::now() + patience.deadline;
-    let sending = send(api, link, vin, key, command, why, patience, deadline);
+    let sending = async {
+        let looked = if look_first {
+            let data = look(api, link, vin, command, why.clone(), patience, deadline).await?;
+            let mut reading = CarReading::default();
+            reading.merge(&data);
+            reading.read_at = Some(0);
+            match command.check(&reading, 0) {
+                Check::Send => {}
+                Check::AlreadyDone => return Ok(Some(data)),
+                Check::LookFirst => {
+                    return Err(Failure::Failed(
+                        "the car didn't say whether the trunk is open, so Irori didn't send the \
+                         command"
+                            .into(),
+                    ));
+                }
+            }
+            Some(data)
+        } else {
+            None
+        };
+        send(api, link, vin, key, command, why, patience, deadline).await?;
+        Ok(looked)
+    };
     match tokio::time::timeout_at(deadline, sending).await {
         Ok(result) => result,
-        Err(_) => Err(Failure::Failed(
+        Err(_) => Err(Failure::Unsure(
             "Tesla didn't answer in time, so the command may or may not have reached the car"
                 .into(),
         )),
+    }
+}
+
+/// Reads the car live before a command that depends on how it is now, waking it if it sleeps
+/// (the wake the command needs anyway).
+async fn look(
+    api: &Api,
+    link: &Link,
+    vin: &str,
+    command: &CarCommand,
+    why: Why,
+    patience: Patience,
+    deadline: Instant,
+) -> Result<Value, Failure> {
+    loop {
+        match api.vehicle_data(vin, false, why.clone()).await {
+            Ok(data) => return Ok(data),
+            Err(ApiError::Asleep) => {
+                if Instant::now() + patience.retry >= deadline {
+                    return Err(Failure::Failed("the car didn't wake up in time".into()));
+                }
+                wake(api, link, vin, &command.what(), patience).await?;
+                tokio::time::sleep(patience.retry).await;
+            }
+            // Nothing was sent to the car yet, so nothing can have happened.
+            Err(error) => {
+                return Err(Failure::Failed(format!(
+                    "Irori couldn't read the car before sending the command: {}",
+                    error.describe()
+                )));
+            }
+        }
     }
 }
 
@@ -172,7 +232,7 @@ async fn send(
                 if Instant::now() + patience.retry >= deadline {
                     return Err(Failure::Failed("the car didn't wake up in time".into()));
                 }
-                wake(api, link, vin, &command.what()).await?;
+                wake(api, link, vin, &command.what(), patience).await?;
                 tokio::time::sleep(patience.retry).await;
                 continue;
             }
@@ -216,10 +276,17 @@ async fn send(
     }
 }
 
-/// Wakes the car for a command, unless a command woke it within the last minute.
-async fn wake(api: &Api, link: &Link, vin: &str, what: &str) -> Result<(), Failure> {
+/// Wakes the car for a command, unless a command woke it within the time one command may take:
+/// a car slow to wake is tried until the command gives up, never woken (and billed) twice.
+async fn wake(
+    api: &Api,
+    link: &Link,
+    vin: &str,
+    what: &str,
+    patience: Patience,
+) -> Result<(), Failure> {
     let mut woken_at = link.woken_at.lock().await;
-    if woken_at.is_some_and(|at| at.elapsed() < WAKE_COVERS) {
+    if woken_at.is_some_and(|at| at.elapsed() < patience.deadline) {
         return Ok(());
     }
     api.wake_up(
@@ -246,7 +313,7 @@ pub(crate) async fn site(
     let sending = api.energy_command(id, endpoint, body, why);
     match tokio::time::timeout(patience.deadline, sending).await {
         Ok(result) => result.map_err(failure),
-        Err(_) => Err(Failure::Failed(
+        Err(_) => Err(Failure::Unsure(
             "Tesla didn't answer in time, so the change may or may not have been made".into(),
         )),
     }
@@ -279,19 +346,18 @@ impl World {
         // A car Tesla listed without Irori's key, or as taking older commands, is still tried:
         // the key may have been added since, and the handshake that would show it costs a
         // tenth of a cent.
-        if let Some(slot) = self.cars.get(vin) {
-            match command.check(&slot.reading) {
-                Ok(true) => {}
-                Ok(false) => {
-                    call.reply(Ok(()));
-                    return;
-                }
-                Err(why) => {
-                    call.reply(Err(ServiceError::failed(why)));
-                    return;
-                }
+        let check = match self.cars.get(vin) {
+            Some(slot) => command.check(&slot.reading, self.now()),
+            None => command.check(&CarReading::default(), self.now()),
+        };
+        let look_first = match check {
+            Check::Send => false,
+            Check::AlreadyDone => {
+                call.reply(Ok(()));
+                return;
             }
-        }
+            Check::LookFirst => true,
+        };
         let link = match self.links.get(vin) {
             Some(link) => Arc::clone(link),
             None => match Link::new() {
@@ -315,7 +381,10 @@ impl World {
         let patience = self.timing.patience;
         let device = vin.to_owned();
         tokio::spawn(async move {
-            let result = car(&api, &link, &device, &key, &command, why, patience).await;
+            let result = car(
+                &api, &link, &device, &key, &command, why, patience, look_first,
+            )
+            .await;
             let _ = done
                 .send(Done::Commanded {
                     device,
@@ -341,7 +410,9 @@ impl World {
         let patience = self.timing.patience;
         let device = id.to_owned();
         tokio::spawn(async move {
-            let result = site(&api, &device, &command, why, patience).await;
+            let result = site(&api, &device, &command, why, patience)
+                .await
+                .map(|()| None);
             let _ = done
                 .send(Done::Commanded {
                     device,
@@ -359,11 +430,11 @@ impl World {
         &mut self,
         device: String,
         command: Command,
-        result: Result<(), Failure>,
+        result: Result<Option<Value>, Failure>,
         call: IncomingCall,
     ) {
         match result {
-            Ok(()) => {
+            Ok(looked) => {
                 self.account_worked();
                 let caused_by = call.call.context.id.clone();
                 match command {
@@ -373,7 +444,8 @@ impl World {
                         {
                             self.keep_known().await;
                         }
-                        self.car_commanded(&device, &command, caused_by).await;
+                        self.car_commanded(&device, &command, looked, caused_by)
+                            .await;
                     }
                     Command::Site(command) => {
                         self.site_commanded(&device, &command, caused_by).await;
@@ -391,6 +463,16 @@ impl World {
                 call.reply(Err(ServiceError::failed(error.describe())));
                 self.trouble_from(error);
             }
+            Err(Failure::Unsure(why)) => {
+                // It may have happened: what Irori knew of what it changes can't be trusted, so
+                // the next command that depends on it looks first.
+                if let (Command::Car(command), Some(slot)) = (&command, self.cars.get_mut(&device))
+                    && let Some(field) = command.unsure_forgets()
+                {
+                    slot.reading.fields.remove(field);
+                }
+                call.reply(Err(ServiceError::failed(why)));
+            }
             Err(Failure::Failed(why)) if self.known.unsigned.contains(&device) => {
                 call.reply(Err(ServiceError::failed(format!(
                     "{why}. Tesla lists this car as one that takes its older, unsigned \
@@ -401,11 +483,23 @@ impl World {
         }
     }
 
-    async fn car_commanded(&mut self, vin: &str, command: &CarCommand, caused_by: ContextId) {
+    async fn car_commanded(
+        &mut self,
+        vin: &str,
+        command: &CarCommand,
+        looked: Option<Value>,
+        caused_by: ContextId,
+    ) {
+        let now = self.now();
         let Some(slot) = self.cars.get_mut(vin) else {
             return;
         };
         let before = car_states(slot);
+        // What the car said just before the command, read to decide whether to send it.
+        if let Some(data) = looked {
+            slot.reading.merge(&data);
+            slot.reading.read_at = Some(now);
+        }
         for (field, value) in command.effects() {
             slot.reading.fields.insert(field.to_owned(), value);
         }
@@ -480,7 +574,7 @@ mod tests {
     fn only_a_command_that_surely_failed_is_sent_again() {
         assert!(matches!(
             failure(ApiError::Unreachable("no connection".into())),
-            Failure::Failed(why) if why.contains("may or may not")
+            Failure::Unsure(why) if why.contains("may or may not")
         ));
         assert!(matches!(
             failure(ApiError::Billing("over".into())),

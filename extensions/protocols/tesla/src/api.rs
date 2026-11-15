@@ -439,10 +439,11 @@ impl Api {
         body: Option<Value>,
         ask: &Ask,
     ) -> Result<Answer, ApiError> {
-        self.wait_for_room(ask).await;
         let mut refreshed = false;
         let mut moved = false;
         loop {
+            // Every try is billed, the one after a refresh or a move too, so each waits for room.
+            self.wait_for_room(ask).await;
             let (token, region) = self.inner.session.access(&self.inner.meter).await?;
             let url = format!("{}{path}", self.inner.hosts.of(region));
             let mut request = self
