@@ -256,7 +256,12 @@ Ordinary non-matching changes (`on → off` for a `to: true` trigger) aren't nea
 the "why didn't it fire?" timeline, which the page builds from the watched entities' history.
 
 The extension keeps the last **200 runs** and **100 near-misses** per flow, as JSON Lines in its
-private state directory, plus the runs in progress in memory.
+private state directory, plus the runs in progress in memory. A run still going when the extension
+stops is recorded as `aborted` with reason `shutdown`. The runs in progress are also kept in
+`running.json` there, rewritten whenever one starts or ends, so a stop that gives no warning (a
+crash, a kill, the power going) doesn't lose them: at the next start each is recorded as `aborted`
+with reason `interrupted`, as far as it had got when last kept. Neither kind is resumed; a run's
+waits and delays end with it.
 
 ---
 

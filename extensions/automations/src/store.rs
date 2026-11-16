@@ -249,6 +249,44 @@ impl Store {
         self.data_dir.join(kind).join(format!("{id}.jsonl"))
     }
 
+    fn running_file(&self) -> PathBuf {
+        self.data_dir.join("running.json")
+    }
+
+    /// Keeps the runs in progress, as far as each has got, so a stop that gives no warning (a
+    /// crash, a kill, the power going) doesn't leave them without a record (issue #93). Written
+    /// whole each time, so a stop part-way through leaves the last good copy.
+    pub fn keep_running(&self, runs: &[RunRecord]) {
+        let path = self.running_file();
+        if runs.is_empty() {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    tracing::warn!(path = %path.display(), %error, "couldn't clear the runs in progress");
+                }
+            }
+            return;
+        }
+        let Ok(text) = serde_json::to_string(runs) else {
+            return;
+        };
+        let _ = std::fs::create_dir_all(&self.data_dir);
+        let part = path.with_extension("json.part");
+        let written = std::fs::write(&part, text).and_then(|()| std::fs::rename(&part, &path));
+        if let Err(error) = written {
+            tracing::warn!(path = %path.display(), %error, "couldn't keep the runs in progress");
+        }
+    }
+
+    /// The runs a stop with no warning left in progress, taken: each is answered once.
+    pub fn take_running(&self) -> Vec<RunRecord> {
+        let path = self.running_file();
+        let runs = read_json(&path).unwrap_or_default();
+        let _ = std::fs::remove_file(&path);
+        runs
+    }
+
     pub fn add_run(&self, run: &RunRecord) {
         append(&self.log("runs", &run.flow_id), run, RUNS_KEPT);
     }

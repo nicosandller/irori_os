@@ -501,6 +501,11 @@ impl Engine {
         found
     }
 
+    /// The records of the runs in progress, as far as each has got.
+    pub fn in_progress(&self) -> Vec<RunRecord> {
+        self.runs.values().map(|run| run.record.clone()).collect()
+    }
+
     /// Stops everything: the engine is going away.
     pub fn shutdown(&mut self, now: Timestamp) {
         let runs: Vec<ContextId> = self.runs.keys().cloned().collect();
