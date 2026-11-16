@@ -91,7 +91,7 @@ impl EngineLink {
                         // What it knows is out of date: the nudge makes it ask again for the
                         // registry and the states (`docs/specs/automations.md` §B2).
                         if self.states || self.registry {
-                            return Some(ToExt::RegistryChanged {});
+                            return Some(ToExt::RegistryChanged { missed: Some(missed) });
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
@@ -125,7 +125,7 @@ impl EngineLink {
             | Event::SettingsChanged
                 if self.registry =>
             {
-                Some(ToExt::RegistryChanged {})
+                Some(ToExt::RegistryChanged { missed: None })
             }
             _ => None,
         }
@@ -367,5 +367,42 @@ pub(crate) fn process_env(core: &Core, manifest: &ExtensionManifest) -> Vec<(Str
             vec![("IRORI_CONFIG_DIR".to_owned(), dir)]
         }
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn engine() -> EngineLink {
+        let manifest = irori_protocol::parse_manifest(
+            r#"
+            [extension]
+            id = "rules"
+            name = "Rules"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+            "#,
+        )
+        .expect("a manifest");
+        EngineLink::new(&manifest)
+    }
+
+    /// An engine that fell behind the home's events is told to read the home again, and how
+    /// many events it wasn't sent, so it can say what it may have missed (issue #97).
+    #[tokio::test]
+    async fn an_engine_that_falls_behind_is_told_how_much_it_missed() {
+        let core = Core::new(std::sync::Arc::new(crate::SystemClock));
+        let (tx, rx) = broadcast::channel(2);
+        let mut link = engine();
+        link.events = Some(rx);
+        link.states = true;
+        for _ in 0..5 {
+            tx.send(Event::SettingsChanged).expect("someone listens");
+        }
+        assert!(matches!(
+            link.next_outgoing(&core).await,
+            Some(ToExt::RegistryChanged { missed: Some(3) })
+        ));
     }
 }
