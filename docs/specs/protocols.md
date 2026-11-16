@@ -55,7 +55,9 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
 4. **Crash.** A panic, an error returned from `run`, or an exiting process marks it `failed`.
    All its entities become `unavailable` and keep their last value. The core starts it again
    after 1 s, then 2 s, 4 s, … up to 5 minutes between attempts; the delay resets after
-   10 minutes of running.
+   10 minutes of running. A process that answers pings and says nothing at all, pongs
+   included, for **90 seconds** counts as crashed too: it's killed, its entities become
+   `unavailable`, and it's restarted the same way. It's pinged once it has said nothing for 30 seconds.
 5. **Restart.** A restarted protocol describes its devices and entities again. The registry
    keeps them in between, matched by `unique_id`, so ids, areas, and names the user set survive.
    Nothing is removed unless the protocol removes it (§5).
@@ -673,7 +675,9 @@ answered with the same `id`. Sample conversations are in
 
 | Direction | `type` | Fields | Meaning |
 |---|---|---|---|
-| core → | `hello` | `settings` | The first message, always from the core: the extension's settings ([extensions.md](extensions.md) §5). |
+| core → | `hello` | `settings`, `pings`? | The first message, always from the core: the extension's settings ([extensions.md](extensions.md) §5). `pings: true` offers pings to an extension that answers them. |
+| → core | `pong` | — | Sent once after a `hello` with `pings: true`, to say this extension answers pings, then in answer to each `ping`. Answer from the code that does the work, not from a thread that only reads the pipe: the answer is what tells the core the extension isn't hung. The Rust library does this for you. |
+| core → | `ping` | — | Are you still there? Sent only to an extension that said it answers, when it has been quiet. One that sends nothing for 90 s is taken for hung and restarted (§3). One that never answers is never pinged. |
 | core → | `stop` | — | Finish up and exit. Killed if it hasn't within the grace period (default 5 s). |
 | → core | `set_health` | `health`: `"running"` or `{"degraded": reason}` | What the extension says about itself (§6.5). |
 

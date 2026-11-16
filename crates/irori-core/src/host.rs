@@ -40,6 +40,11 @@ pub struct Timing {
     pub healthy_after: Duration,
     /// How long a protocol gets to finish after being told to stop.
     pub stop_grace: Duration,
+    /// How often a process that answers pings is pinged.
+    pub ping_every: Duration,
+    /// How long a process that answers pings may say nothing, pongs included, before it's taken
+    /// for hung, its entities are marked unavailable and it's restarted.
+    pub quiet_for: Duration,
 }
 
 impl Timing {
@@ -53,12 +58,17 @@ impl Timing {
             ("max_retry", self.max_retry),
             ("healthy_after", self.healthy_after),
             ("stop_grace", self.stop_grace),
+            ("ping_every", self.ping_every),
+            ("quiet_for", self.quiet_for),
         ];
         if let Some((name, _)) = named.iter().find(|(_, d)| *d > Self::MAX) {
             return Err(format!("timing: {name} must be at most 24 hours"));
         }
         if self.first_retry.is_zero() || self.first_retry > self.max_retry {
             return Err("timing: first_retry must be above zero and at most max_retry".into());
+        }
+        if self.ping_every.is_zero() || self.ping_every >= self.quiet_for {
+            return Err("timing: ping_every must be above zero and below quiet_for".into());
         }
         Ok(())
     }
@@ -71,6 +81,8 @@ impl Default for Timing {
             max_retry: Duration::from_secs(5 * 60),
             healthy_after: Duration::from_secs(10 * 60),
             stop_grace: Duration::from_secs(5),
+            ping_every: Duration::from_secs(30),
+            quiet_for: Duration::from_secs(90),
         }
     }
 }
@@ -1536,6 +1548,8 @@ async fn supervise_package(
                 .outgoing
                 .send(ToExt::Hello {
                     settings: ready.started_with.clone(),
+                    // The websocket has pings of its own.
+                    pings: false,
                 })
                 .await
                 .is_err()
@@ -1596,6 +1610,7 @@ async fn supervise_package(
             if let Err(reason) = outgoing
                 .deliver(ToExt::Hello {
                     settings: started_with.clone(),
+                    pings: true,
                 })
                 .await
             {
@@ -2062,6 +2077,15 @@ async fn drive(
     let mut next_call: u64 = 0;
     let mut next_action: u64 = 0;
     let child = &mut link.child;
+    // A process that answers pings is pinged, and taken for hung once it has said nothing,
+    // pongs included, for `quiet_for` (issue #98). One that never said it answers is left
+    // alone: an extension built before pings, or written in another language without them.
+    // A program that dialed in has the websocket's pings instead (`timing` is `None`).
+    let mut answers_pings = false;
+    let mut heard_at = Instant::now();
+    let ping_every = timing.map_or(Timing::MAX, |timing| timing.ping_every);
+    let mut ping = tokio::time::interval_at(Instant::now() + ping_every, ping_every);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let why = loop {
         tokio::select! {
@@ -2152,9 +2176,48 @@ async fn drive(
                     return Outcome::Ended(reason);
                 }
             }
+            _ = ping.tick(), if answers_pings => {
+                let Some(timing) = timing else { continue };
+                let quiet = heard_at.elapsed();
+                // One that has spoken lately has shown it's there; only a quiet one is asked.
+                if quiet < timing.ping_every {
+                    continue;
+                }
+                // A hung process stops reading too, and once its pipe is full this write would
+                // wait for good, with nothing left to notice.
+                let sent = match timing.quiet_for.checked_sub(quiet) {
+                    Some(left) if !left.is_zero() => {
+                        tokio::time::timeout(left, link.outgoing.deliver(ToExt::Ping {})).await
+                    }
+                    _ => Ok(Ok(())),
+                };
+                match sent {
+                    Ok(Ok(())) if quiet < timing.quiet_for => {}
+                    Ok(Err(reason)) => return Outcome::Ended(reason),
+                    Ok(Ok(())) | Err(_) => {
+                        // Asking it to stop would go down the same stuck pipe: end it now. Its
+                        // entities go unavailable and it restarts, as after a crash.
+                        if let Some(group) = link.group.as_mut() {
+                            group.kill();
+                        }
+                        if let Some(child) = child.as_mut() {
+                            let _ = child.start_kill();
+                        }
+                        return Outcome::Ended(format!(
+                            "the extension stopped answering: nothing from it for {} s",
+                            timing.quiet_for.as_secs()
+                        ));
+                    }
+                }
+            }
             msg = link.incoming.take() => {
                 match msg {
+                    Ok(FromExt::Pong {}) => {
+                        heard_at = Instant::now();
+                        answers_pings = true;
+                    }
                     Ok(from) => {
+                        heard_at = Instant::now();
                         let from = match engine.handle(core, extension, from) {
                             Some(from) => from,
                             None => continue,
@@ -2481,6 +2544,8 @@ async fn apply_from_ext(
         | FromExt::Subscribe { .. }
         | FromExt::CallService { .. }
         | FromExt::AppAnswer { .. } => Ok(None),
+        // Counted by `drive` before it gets here; one that arrives late has nothing to answer.
+        FromExt::Pong {} => Ok(None),
     }
 }
 
