@@ -1995,7 +1995,7 @@ async fn run_tool(
             };
             // A thing outside their rooms has no changes to tell, like one that isn't there.
             let states = if env.reach.sees_entity(&id) {
-                env.history.for_entity(&id)
+                env.history.last_day(&id).states
             } else {
                 Vec::new()
             };

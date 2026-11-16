@@ -116,10 +116,11 @@ impl History {
 
     /// Changes from the last day, oldest first. Empty when the entity has not changed in that
     /// day, including when the database has older rows the page does not ask for.
-    pub fn for_entity(&self, entity_id: &EntityId) -> Vec<EntityState> {
+    /// `truncated` says the oldest of the day were left out, past [`irori_recorder::MAX_RETURNED`].
+    pub fn last_day(&self, entity_id: &EntityId) -> irori_recorder::Changes {
         let recorder = self.recorder.clone();
         let entity_id = entity_id.clone();
-        off_the_runtime(move || recorder.since(&entity_id, day_ago()))
+        off_the_runtime(move || recorder.changes_since(&entity_id, day_ago()))
     }
 
     /// Whether the database can be read and the last write succeeded.
@@ -324,7 +325,7 @@ mod tests {
         let first = now();
         history.record(plug(), state("switch.plug", true, first));
         history.record(plug(), state("switch.plug", false, later(first, 1)));
-        let seen = history.for_entity(&plug());
+        let seen = history.last_day(&plug()).states;
         assert_eq!(seen.len(), 2);
         assert_eq!(seen[0].state, Some(State::Switch(SwitchState { on: true })));
         assert_eq!(
@@ -342,7 +343,7 @@ mod tests {
             "switch.other".parse().expect("a valid entity id"),
             state("switch.other", false, later(when, 1)),
         );
-        assert_eq!(history.for_entity(&plug()).len(), 1);
+        assert_eq!(history.last_day(&plug()).states.len(), 1);
     }
 
     #[test]
@@ -351,7 +352,8 @@ mod tests {
         history.record(plug(), state("switch.plug", true, now()));
         assert!(
             history
-                .for_entity(&"switch.somewhere_else".parse().expect("a valid entity id"))
+                .last_day(&"switch.somewhere_else".parse().expect("a valid entity id"))
+                .states
                 .is_empty()
         );
     }
@@ -367,7 +369,7 @@ mod tests {
         history.record(plug(), state("switch.plug", true, three_days_ago));
         history.record(plug(), state("switch.plug", false, now()));
         assert_eq!(
-            history.for_entity(&plug()).len(),
+            history.last_day(&plug()).states.len(),
             1,
             "the page is the last day"
         );
@@ -387,11 +389,11 @@ mod tests {
             let history = History::open(&path, irori_recorder::Retention::default())
                 .expect("the diary opens");
             history.record(plug(), state("switch.plug", true, when));
-            assert_eq!(history.for_entity(&plug()).len(), 1);
+            assert_eq!(history.last_day(&plug()).states.len(), 1);
         }
         let history =
             History::open(&path, irori_recorder::Retention::default()).expect("the diary reopens");
-        let seen = history.for_entity(&plug());
+        let seen = history.last_day(&plug()).states;
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].last_updated, when);
         assert!(history.check());

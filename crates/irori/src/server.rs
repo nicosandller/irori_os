@@ -476,6 +476,10 @@ struct HistoryView {
     /// own name, and "someone" for the rest.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     by: BTreeMap<ContextId, String>,
+    /// The day had more changes than one answer holds, and the oldest were left out: `states`
+    /// doesn't start at the start of the day. Absent when nothing was left out.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
 }
 
 /// How many calls one answer looks up the sender of.
@@ -494,7 +498,7 @@ async fn entity_history(
             format!("there's no entity `{entity_id}`"),
         );
     }
-    let states = state.0.history.for_entity(&entity_id);
+    let irori_recorder::Changes { states, truncated } = state.0.history.last_day(&entity_id);
     // The calls the changes answered, found in the activity log. At most as many as there are
     // changes in a day worth drawing.
     let calls: Vec<ContextId> = states
@@ -526,6 +530,7 @@ async fn entity_history(
         entity: entity_id.clone(),
         states,
         by,
+        truncated,
     })
     .into_response()
 }
