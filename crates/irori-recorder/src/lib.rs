@@ -510,6 +510,12 @@ impl Recorder {
         self.shared.mailbox.wake.notify_one();
     }
 
+    /// How many state changes were dropped, since this start, because the writer was behind.
+    /// Those changes are missing from history for good (issue #97).
+    pub fn dropped(&self) -> u64 {
+        self.shared.dropped.load(Ordering::Relaxed)
+    }
+
     /// Changes for `entity_id` with `last_updated >= since`, oldest first. At most
     /// [`MAX_RETURNED`], keeping the newest when there are more.
     pub fn since(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState> {
@@ -1304,6 +1310,23 @@ mod tests {
         let recorder = Recorder::open(&path, DEFAULT_RETAIN_DAYS).expect("reopen");
         assert!(recorder.since(&plug, at("1970-01-01T00:00:00Z")).is_empty());
         assert_eq!(recorder.since(&other, at("1970-01-01T00:00:00Z")).len(), 1);
+    }
+
+    /// A change that doesn't fit the queue is counted where someone can see it, not only in a
+    /// log line.
+    #[test]
+    fn a_dropped_change_is_counted() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        assert_eq!(recorder.dropped(), 0);
+        // The queue looks full: the writer isn't woken, so it stays that way for the append.
+        lock(&recorder.shared.mailbox.queue).appends = QUEUE;
+        recorder.append(sample("switch.plug", true, now()));
+        assert_eq!(recorder.dropped(), 1);
+        lock(&recorder.shared.mailbox.queue).appends = 0;
+        recorder.append(sample("switch.plug", false, now()));
+        assert!(recorder.check());
+        assert_eq!(recorder.dropped(), 1, "one that fits isn't counted");
     }
 
     #[test]

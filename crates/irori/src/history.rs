@@ -122,6 +122,11 @@ impl History {
         off_the_runtime(move || recorder.since(&entity_id, day_ago()))
     }
 
+    /// How many state changes were dropped since this start because the recorder was behind.
+    pub fn dropped(&self) -> u64 {
+        self.recorder.dropped()
+    }
+
     /// Whether the database can be read and the last write succeeded.
     pub fn check(&self) -> bool {
         let recorder = self.recorder.clone();
