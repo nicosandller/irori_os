@@ -6,6 +6,8 @@ What's built and what isn't. Rows aren't in order: anything can be picked up onc
 
 **Milestones:** a row that links a [milestone](https://github.com/nicosandller/irori_os/milestones) has open work tracked there: its issues and pull requests, and how many are done.
 
+**Migration phases:** moving a real home from Home Assistant to Irori is tracked as milestones Migration 0 to Migration 5, done in that order ([phases in order](https://github.com/nicosandller/irori_os/milestones?direction=asc&sort=title&state=open); tracker [#160](https://github.com/nicosandller/irori_os/issues/160)).
+
 Vision: [INSPIRATION.md](INSPIRATION.md).
 
 ## Core
@@ -34,7 +36,7 @@ Vision: [INSPIRATION.md](INSPIRATION.md).
 | C23 | Updates | The `update` kind: firmware for Zigbee, ESPHome and MQTT devices, and Irori's own extensions, in one list on the Devices page. Install asks first, a version can be skipped, installs on one protocol go one at a time, and a failed one says why. Irori says when a newer release of itself is out (`[updates] check`), and one installed with `install.sh` replaces itself: checksum checked, the new binary tried first, the old one kept beside it | ✅ | C5, C32 |
 | C24 | Performance budgets in CI | Binary size, RSS, latency, throughput checks (only UI bundle size is enforced today: under 5 MB brotli) | 🟠 | C1 |
 | C25 | JSON Schemas & golden examples | Schemas generated from `irori-types`, checked fresh in CI, valid/invalid example tests (`fixtures/`) | ✅ | C2, C3, C4, C9 |
-| C26 | Extension signing & permissions | Signature verification, approve permissions on install/update. Only the "full access" approval exists; no signing. [Milestone](https://github.com/nicosandller/irori_os/milestone/3) | 🟠 | C7 |
+| C26 | Extension signing & permissions | Signature verification, approve permissions on install/update. Only the "full access" approval exists; no signing. [Milestone](https://github.com/nicosandller/irori_os/milestone/5) | 🟠 | C7 |
 | C28 | Multi-user | Per-area permissions, an audit log, a regular user's own Automations view. Owner and user roles are C14. A person has the rooms the owner gives them and, outside them, nothing in the home exists for them, on every surface (`docs/specs/access.md`); every change and every refusal is written to a log only an owner reads, which a backup holds as its own part; a regular user writes their own flows, checked against their rooms when saved and whenever the home changes. Follow-ups: rooms on tokens, a view-only role, guests who expire | ✅ | C17 |
 | C29 | Backup & restore | One-file backups of the config and the database, taken while running, sealed with a recovery key, on a schedule or before an update, copied to folders (mounted shares, USB), WebDAV and S3. Restore from the page, the terminal, or the first-run welcome, with parts chosen (history can be left as it is); a backup can be checked without restoring it (`docs/specs/backup.md`) | ✅ | C18 |
 | C30 | Engine API for extensions | Engines subscribe to state and registry, read history, call services as `Origin::Automation`; API scopes enforced (`docs/specs/automations.md` §B2) | ✅ | C6 |
