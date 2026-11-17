@@ -188,6 +188,8 @@ struct World {
     next_states: Option<Instant>,
     /// For reads that failed for the whole account.
     read_backoff: Backoff,
+    /// How the cars spend their time, for pacing.
+    activity: usage::pace::Activity,
     account: AccountShown,
     done: mpsc::Sender<Done>,
     reported: Reported,
@@ -266,6 +268,7 @@ pub(crate) async fn drive(
         checking_states: false,
         next_states: None,
         read_backoff: Backoff::new(),
+        activity: usage::pace::Activity::default(),
         account: AccountShown::default(),
         done,
         reported: Reported::default(),

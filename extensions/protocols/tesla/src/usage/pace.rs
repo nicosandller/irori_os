@@ -93,7 +93,7 @@ pub const LONGEST_GAP: Duration = Duration::from_secs(6 * 3600);
 pub const HISTORY_EVERY: u32 = 6;
 
 /// The share of the month a car is assumed to be doing something (charging, driving, being
-/// warmed) until the month says otherwise.
+/// warmed) until Irori has watched the cars long enough to say ([`Activity`]).
 const ASSUMED_ACTIVE: f64 = 0.15;
 
 /// The month, as of `now`.
@@ -238,13 +238,59 @@ pub struct Plan {
     pub starved: bool,
 }
 
-/// What's being read: how many cars and sites, and how much of the time a car is busy (the
-/// month's own figure once there is one).
+/// What's being read: how many cars and sites, and how the cars spend their time, from
+/// [`Activity`] once it has seen enough.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Reading {
     pub cars: usize,
     pub sites: usize,
-    pub active_share: Option<f64>,
+    pub shares: Option<Shares>,
+}
+
+/// How much of the time the cars are busy (read as often as the plan allows) and awake but idle
+/// (read about hourly), as fractions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shares {
+    pub busy: f64,
+    pub idle: f64,
+}
+
+/// What a car was doing when Irori last looked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Doing {
+    Busy,
+    Idle,
+    Asleep,
+}
+
+/// How the cars have spent their time since Irori started, summed over the cars: each stretch
+/// between two looks at a car counts as what it was doing at the first.
+#[derive(Debug, Clone, Default)]
+pub struct Activity {
+    seconds: [f64; 3],
+    last: std::collections::BTreeMap<String, (u64, Doing)>,
+}
+
+/// How much has to be seen before [`Activity`] is trusted over the assumed figures.
+const SEEN_ENOUGH: f64 = 6.0 * 3_600.0;
+
+/// An awake car that isn't doing anything, as a share of the time, until there's a figure.
+const ASSUMED_IDLE: f64 = 0.10;
+
+impl Activity {
+    pub fn saw(&mut self, car: &str, doing: Doing, now: u64) {
+        if let Some((at, was)) = self.last.insert(car.to_owned(), (now, doing)) {
+            self.seconds[was as usize] += now.saturating_sub(at) as f64;
+        }
+    }
+
+    pub fn shares(&self) -> Option<Shares> {
+        let total: f64 = self.seconds.iter().sum();
+        (total >= SEEN_ENOUGH).then(|| Shares {
+            busy: self.seconds[Doing::Busy as usize] / total,
+            idle: self.seconds[Doing::Idle as usize] / total,
+        })
+    }
 }
 
 pub fn plan(outlook: &Outlook, mode: Mode, prices: Prices, reading: Reading) -> Plan {
@@ -259,7 +305,8 @@ pub fn plan(outlook: &Outlook, mode: Mode, prices: Prices, reading: Reading) -> 
     let rest = outlook.month_end.saturating_sub(outlook.now).max(60) as f64;
     let budget = outlook.for_reading() as f64;
     let state_price = prices.call(Endpoint::Vehicles);
-    let car_price = prices.of(Category::Data);
+    // One round reads every car.
+    let car_price = prices.of(Category::Data) * reading.cars as Micros;
     let site_price = (prices.call(Endpoint::LiveStatus)
         + prices.call(Endpoint::EnergyHistory) / Micros::from(HISTORY_EVERY))
         * reading.sites as Micros;
@@ -296,10 +343,16 @@ pub fn plan(outlook: &Outlook, mode: Mode, prices: Prices, reading: Reading) -> 
     };
 
     let starved = budget <= 0.0;
-    let active = reading
-        .active_share
-        .unwrap_or(ASSUMED_ACTIVE)
-        .clamp(0.02, 1.0);
+    let shares = reading.shares.unwrap_or(Shares {
+        busy: ASSUMED_ACTIVE,
+        idle: ASSUMED_IDLE,
+    });
+    let active = shares.busy.clamp(0.02, 1.0);
+    // An awake, idle car is read about hourly whatever the plan: that comes off the cars' share
+    // first, at the most it could be (once an hour).
+    let idle_reads =
+        prices.of(Category::Data) as f64 * reading.cars as f64 * shares.idle.clamp(0.0, 1.0) * rest
+            / 3_600.0;
     let state_floor = if state_price > 0 {
         floors.state_billed
     } else {
@@ -316,7 +369,14 @@ pub fn plan(outlook: &Outlook, mode: Mode, prices: Prices, reading: Reading) -> 
             .flatten()
             .or((reading.cars > 0 && starved).then_some(LONGEST_GAP)),
         car: (reading.cars > 0)
-            .then(|| gap(share(car_weight), car_price, active, car_floor))
+            .then(|| {
+                gap(
+                    (share(car_weight) - idle_reads).max(0.0),
+                    car_price,
+                    active,
+                    car_floor,
+                )
+            })
             .flatten(),
         site: (reading.sites > 0)
             .then(|| gap(share(site_weight), site_price, 1.0, floors.site))
@@ -338,7 +398,7 @@ mod tests {
         Reading {
             cars,
             sites,
-            active_share: None,
+            shares: None,
         }
     }
 
@@ -424,40 +484,117 @@ mod tests {
 
     #[test]
     fn the_month_ends_inside_the_allowance_when_the_plan_is_followed() {
-        // Others spend $0.20 a day; Irori follows the plan for the rest of the month, with the
-        // car busy 15% of the time, and checks state and the site on their gaps.
-        let mut usage = usage();
-        let (start, end) = month_bounds(NOV_10);
-        usage.calibrate(start + DAY, 200_000).expect("a figure");
-        usage.calibrate(NOV_10, 1_900_000).expect("a figure");
-        let mut now = NOV_10;
-        let mut account_others = 1_900_000u64;
-        while now < end {
-            let outlook = usage.outlook(now);
-            let plan = plan(&outlook, Mode::Responsive, usage.prices, reading(1, 1));
-            let hour = 3_600;
-            let per_hour = |gap: Option<Duration>| {
-                gap.map_or(0, |gap| (hour as f64 / gap.as_secs_f64()).round() as u64)
-            };
-            // An hour of following the plan: the car is busy in 15% of hours.
-            let busy = (now / hour) % 20 < 3;
-            for _ in 0..per_hour(plan.state) {
-                usage.record(now, "account", Endpoint::Vehicles, 200, Why::Schedule);
-            }
-            if busy {
-                for _ in 0..per_hour(plan.car) {
-                    usage.record(now, "VIN1", Endpoint::VehicleData, 200, Why::Schedule);
+        // Others spend $0.20 a day; Irori follows the plan for the rest of the month for one,
+        // two and three cars, each busy 15% of the time and awake but idle another 10% (read
+        // hourly then), and checks state and the site on their gaps.
+        for cars in 1..=3u64 {
+            let mut usage = usage();
+            let (start, end) = month_bounds(NOV_10);
+            usage.calibrate(start + DAY, 200_000).expect("a figure");
+            usage.calibrate(NOV_10, 1_900_000).expect("a figure");
+            let mut now = NOV_10;
+            let mut account_others = 1_900_000u64;
+            while now < end {
+                let outlook = usage.outlook(now);
+                let plan = plan(
+                    &outlook,
+                    Mode::Responsive,
+                    usage.prices,
+                    reading(cars as usize, 1),
+                );
+                let hour = 3_600;
+                let per_hour = |gap: Option<Duration>| {
+                    gap.map_or(0, |gap| (hour as f64 / gap.as_secs_f64()).round() as u64)
+                };
+                for state in 0..per_hour(plan.state) {
+                    let _ = state;
+                    usage.record(now, "account", Endpoint::Vehicles, 200, Why::Schedule);
                 }
+                for car in 0..cars {
+                    let vin = format!("VIN{car}");
+                    // Busy in 3 hours out of 20, idle and awake in 2.
+                    match (now / hour + car * 7) % 20 {
+                        0..3 => {
+                            for _ in 0..per_hour(plan.car) {
+                                usage.record(now, &vin, Endpoint::VehicleData, 200, Why::Schedule);
+                            }
+                        }
+                        3..5 if plan.car.is_some() => {
+                            usage.record(now, &vin, Endpoint::VehicleData, 200, Why::Schedule);
+                        }
+                        _ => {}
+                    }
+                }
+                for _ in 0..per_hour(plan.site) {
+                    usage.record(now, "site:1", Endpoint::LiveStatus, 200, Why::Schedule);
+                }
+                now += hour;
+                account_others += 200_000 / 24;
             }
-            for _ in 0..per_hour(plan.site) {
-                usage.record(now, "site:1", Endpoint::LiveStatus, 200, Why::Schedule);
-            }
-            now += hour;
-            account_others += 200_000 / 24;
+            let total = usage.spent() + account_others;
+            assert!(
+                total <= 10 * MICROS,
+                "{cars} cars: the month ended at {total}"
+            );
+            assert!(
+                total >= 6 * MICROS,
+                "{cars} cars: and used most of it: {total}"
+            );
         }
-        let total = usage.spent() + account_others;
-        assert!(total <= 10 * MICROS, "the month ended at {total}");
-        assert!(total >= 6 * MICROS, "and used most of it: {total}");
+    }
+
+    #[test]
+    fn two_cars_are_read_half_as_often_as_one() {
+        // A tight month, so neither hits the mode's shortest gap: $7 of $10 spent already.
+        let mut usage = usage();
+        for _ in 0..3_500 {
+            usage.record(NOV_10, "VIN1", Endpoint::VehicleData, 200, Why::Schedule);
+        }
+        let outlook = usage.outlook(NOV_10);
+        let gap = |cars| {
+            plan(&outlook, Mode::Balanced, usage.prices, reading(cars, 0))
+                .car
+                .expect("read")
+                .as_secs_f64()
+        };
+        let (one, two) = (gap(1), gap(2));
+        assert!(two > one * 1.8, "one car every {one} s, two every {two} s");
+    }
+
+    #[test]
+    fn the_cars_own_time_replaces_the_assumed_shares_once_there_is_enough() {
+        let mut activity = Activity::default();
+        activity.saw("A", Doing::Busy, 0);
+        activity.saw("A", Doing::Asleep, 3_600);
+        assert_eq!(activity.shares(), None, "an hour isn't enough");
+        activity.saw("A", Doing::Idle, 3_600 * 8);
+        activity.saw("A", Doing::Asleep, 3_600 * 10);
+        let shares = activity.shares().expect("ten hours seen");
+        assert!((shares.busy - 0.1).abs() < 1e-9, "{shares:?}");
+        assert!((shares.idle - 0.2).abs() < 1e-9, "{shares:?}");
+
+        // A car busier than assumed is read less often, so the month still lasts.
+        let usage = usage();
+        let outlook = usage.outlook(NOV_10);
+        let gap = |shares| {
+            plan(
+                &outlook,
+                Mode::Balanced,
+                usage.prices,
+                Reading {
+                    cars: 1,
+                    sites: 0,
+                    shares,
+                },
+            )
+            .car
+            .expect("read")
+        };
+        let busy = Some(Shares {
+            busy: 0.6,
+            idle: 0.1,
+        });
+        assert!(gap(busy) > gap(None));
     }
 
     #[test]

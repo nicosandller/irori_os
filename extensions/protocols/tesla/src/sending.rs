@@ -82,6 +82,19 @@ impl Link {
         })
     }
 
+    /// Whether a wake within `within` still covers the car: the Wake button and commands share
+    /// it, so the car isn't woken (and billed) twice.
+    pub fn woken_within(&self, within: Duration) -> bool {
+        self.woken_at
+            .try_lock()
+            .is_ok_and(|at| at.is_some_and(|at| at.elapsed() < within))
+    }
+
+    /// The car was just woken.
+    pub async fn mark_woken(&self) {
+        *self.woken_at.lock().await = Some(Instant::now());
+    }
+
     fn channel(&self, domain: Domain) -> &Mutex<Channel> {
         match domain {
             Domain::VehicleSecurity => &self.security,
@@ -163,7 +176,9 @@ pub(crate) async fn car(
 }
 
 /// Reads the car live before a command that depends on how it is now, waking it if it sleeps
-/// (the wake the command needs anyway).
+/// (the wake the command needs anyway). While it wakes, Irori looks only at whether it's up,
+/// with the one call that covers every car, every other retry: a full read every few seconds
+/// would cost more than the wake.
 async fn look(
     api: &Api,
     link: &Link,
@@ -173,15 +188,25 @@ async fn look(
     patience: Patience,
     deadline: Instant,
 ) -> Result<Value, Failure> {
+    let too_late = || Failure::Failed("the car didn't wake up in time".into());
     loop {
         match api.vehicle_data(vin, false, why.clone()).await {
             Ok(data) => return Ok(data),
             Err(ApiError::Asleep) => {
-                if Instant::now() + patience.retry >= deadline {
-                    return Err(Failure::Failed("the car didn't wake up in time".into()));
-                }
                 wake(api, link, vin, &command.what(), patience).await?;
-                tokio::time::sleep(patience.retry).await;
+                loop {
+                    if Instant::now() + patience.retry * 2 >= deadline {
+                        return Err(too_late());
+                    }
+                    tokio::time::sleep(patience.retry * 2).await;
+                    let up = api.vehicles(why.clone()).await.is_ok_and(|cars| {
+                        cars.iter()
+                            .any(|car| car.vin == vin && car.state == "online")
+                    });
+                    if up {
+                        break;
+                    }
+                }
             }
             // Nothing was sent to the car yet, so nothing can have happened.
             Err(error) => {
@@ -257,6 +282,10 @@ async fn send(
                 continue;
             }
             Reply::Busy => Outcome::Busy,
+            // A command that does no harm twice is tried again as if the car were busy; one
+            // that does is left, and the person told it may or may not have happened.
+            Reply::Unsure(_) if handshake || command.repeatable() => Outcome::Busy,
+            Reply::Unsure(why) => return Err(Failure::Unsure(why)),
             Reply::NotPaired => Outcome::NotPaired,
             Reply::Refused(why) => Outcome::Refused(why),
         };
@@ -329,6 +358,16 @@ pub(crate) enum Command {
 impl World {
     /// Sends a command to a car, unless it surely can't work: those are answered at once, and
     /// cost nothing.
+    /// The car's link, made the first time it's needed.
+    pub(crate) fn link(&mut self, vin: &str) -> Result<Arc<Link>, String> {
+        if let Some(link) = self.links.get(vin) {
+            return Ok(Arc::clone(link));
+        }
+        let link = Arc::new(Link::new()?);
+        self.links.insert(vin.to_owned(), Arc::clone(&link));
+        Ok(link)
+    }
+
     pub(crate) fn command_car(&mut self, vin: &str, command: CarCommand, call: IncomingCall) {
         if !self.signed_in {
             call.reply(Err(ServiceError::unavailable("sign in to Tesla first")));
@@ -358,19 +397,12 @@ impl World {
             }
             Check::LookFirst => true,
         };
-        let link = match self.links.get(vin) {
-            Some(link) => Arc::clone(link),
-            None => match Link::new() {
-                Ok(link) => {
-                    let link = Arc::new(link);
-                    self.links.insert(vin.to_owned(), Arc::clone(&link));
-                    link
-                }
-                Err(why) => {
-                    call.reply(Err(ServiceError::failed(why)));
-                    return;
-                }
-            },
+        let link = match self.link(vin) {
+            Ok(link) => link,
+            Err(why) => {
+                call.reply(Err(ServiceError::failed(why)));
+                return;
+            }
         };
         let why = Why::Command {
             what: command.what(),
@@ -433,6 +465,14 @@ impl World {
         result: Result<Option<Value>, Failure>,
         call: IncomingCall,
     ) {
+        // A command that failed may still have moved the car: what it would have changed isn't
+        // trusted, so the next command that depends on it looks first.
+        if result.is_err()
+            && let (Command::Car(command), Some(slot)) = (&command, self.cars.get_mut(&device))
+            && let Some(field) = command.failure_forgets()
+        {
+            slot.reading.fields.remove(field);
+        }
         match result {
             Ok(looked) => {
                 self.account_worked();
@@ -463,16 +503,7 @@ impl World {
                 call.reply(Err(ServiceError::failed(error.describe())));
                 self.trouble_from(error);
             }
-            Err(Failure::Unsure(why)) => {
-                // It may have happened: what Irori knew of what it changes can't be trusted, so
-                // the next command that depends on it looks first.
-                if let (Command::Car(command), Some(slot)) = (&command, self.cars.get_mut(&device))
-                    && let Some(field) = command.unsure_forgets()
-                {
-                    slot.reading.fields.remove(field);
-                }
-                call.reply(Err(ServiceError::failed(why)));
-            }
+            Err(Failure::Unsure(why)) => call.reply(Err(ServiceError::failed(why))),
             Err(Failure::Failed(why)) if self.known.unsigned.contains(&device) => {
                 call.reply(Err(ServiceError::failed(format!(
                     "{why}. Tesla lists this car as one that takes its older, unsigned \

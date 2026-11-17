@@ -180,6 +180,7 @@ pub fn why(why: &Why) -> String {
 fn flag(status: u16) -> Option<String> {
     match status {
         200..=299 => None,
+        crate::usage::price::NO_ANSWER => Some("no answer: counted, may be billed".to_owned()),
         408 => Some("billed, car asleep".to_owned()),
         429 => Some("billed, rate limited".to_owned()),
         other => Some(format!("billed, refused ({other})")),

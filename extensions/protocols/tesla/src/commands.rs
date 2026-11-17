@@ -212,16 +212,23 @@ impl CarCommand {
         }
     }
 
-    /// Whether Irori should forget what it knew of the car when it can't tell whether this
-    /// command happened, so the next one looks before it acts.
-    pub fn unsure_forgets(&self) -> Option<&'static str> {
+    /// What Irori should forget about the car when this command fails, so the next one looks
+    /// before it acts: a failed command may still have moved it.
+    pub fn failure_forgets(&self) -> Option<&'static str> {
         matches!(self, CarCommand::Trunk { .. }).then_some(TRUNK_FIELD)
     }
 
     /// Whether sending it twice does no harm. One that isn't is sent again only when the car
     /// surely never got it (asleep, or turned away unread).
     pub fn repeatable(&self) -> bool {
-        !matches!(self, CarCommand::Honk | CarCommand::Flash)
+        // Opening the trunk and the frunk are toggles: a second one undoes the first.
+        !matches!(
+            self,
+            CarCommand::Honk
+                | CarCommand::Flash
+                | CarCommand::Trunk { open: true }
+                | CarCommand::Frunk
+        )
     }
 
     /// The car's reasons for not acting that mean it's already as asked.
@@ -547,8 +554,16 @@ mod tests {
             CarCommand::Trunk { open: false }.check(&reading, now),
             Check::Send
         );
-        assert_eq!(open.unsure_forgets(), Some("vehicle_state.rt"));
-        assert_eq!(CarCommand::Lock(true).unsure_forgets(), None);
+        assert_eq!(open.failure_forgets(), Some("vehicle_state.rt"));
+        assert_eq!(CarCommand::Lock(true).failure_forgets(), None);
+        assert!(
+            !open.repeatable() && !CarCommand::Frunk.repeatable(),
+            "toggles go once"
+        );
+        assert!(
+            CarCommand::Trunk { open: false }.repeatable(),
+            "closing is CLOSE"
+        );
     }
 
     #[test]

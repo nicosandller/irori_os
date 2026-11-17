@@ -72,7 +72,7 @@ pub(super) async fn list(
                 has_icon: info.icon.is_some(),
                 label: app.label,
                 api: app.api,
-                has_engine: info.engine || info.iot_class.is_some(),
+                has_engine: info.answers_page,
                 entity_format: app.entity_format,
                 built,
                 extension: id,

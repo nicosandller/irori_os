@@ -1228,6 +1228,15 @@ mod controls {
         );
         assert_eq!(wakes["cost"], 20_000);
         assert_eq!(calls_for(&home, "wake_up").len(), 1);
+        // Pressed again while it's coming up: the wake under way covers it, nothing is billed.
+        home.call(&format!("{VIN}:wake"), Service::ButtonPress)
+            .await
+            .expect("still waking");
+        assert_eq!(
+            home.fake.sent("/wake_up").len(),
+            1,
+            "one wake for two presses"
+        );
         home.until("the car shown awake", |log| {
             (log.state(&format!("{VIN}:state"))?["value"] == "online").then_some(())
         })
@@ -1542,6 +1551,55 @@ mod commands {
             );
             assert_eq!(toggles(&home), usize::from(!opened_since));
         }
+    }
+
+    /// Opening the trunk of a sleeping car: one wake, then only the cheap "which cars are
+    /// awake" check until it's up, then one full read, then the toggle.
+    #[tokio::test]
+    async fn a_sleeping_car_s_trunk_waits_cheaply_for_the_car_to_wake() {
+        use super::reading::car as listed;
+        let home = with_a_car("asleep", |_| {}).await;
+        let mut shut = answer("vehicle_data");
+        shut["response"]["vehicle_state"]["rt"] = json!(0);
+        home.fake.answer(
+            &format!("GET /na/api/1/vehicles/{VIN}/vehicle_data"),
+            vec![
+                Answer::with(408, json!({ "error": "vehicle unavailable: asleep" })),
+                Answer::with(200, shut),
+            ],
+        );
+        home.fake.answer(
+            "GET /na/api/1/vehicles",
+            vec![
+                Answer::ok(json!([listed(VIN, "Red car", "asleep")])),
+                Answer::ok(json!([listed(VIN, "Red car", "asleep")])),
+                Answer::ok(json!([listed(VIN, "Red car", "online")])),
+            ],
+        );
+        let reads_before = home.fake.sent(&format!("{VIN}/vehicle_data")).len();
+        let lists_before = home.fake.sent("/api/1/vehicles").len();
+
+        home.call(&format!("{VIN}:trunk"), Service::CoverOpen)
+            .await
+            .expect("opened");
+        assert_eq!(home.fake.sent("/wake_up").len(), 1, "woken once");
+        assert_eq!(
+            home.fake.sent(&format!("{VIN}/vehicle_data")).len(),
+            reads_before + 2,
+            "asleep once, then one read once it's up"
+        );
+        assert_eq!(
+            home.fake.sent("/api/1/vehicles").len(),
+            lists_before + 3,
+            "the cheap check until it's up"
+        );
+        assert!(
+            the_car(&home)
+                .done
+                .iter()
+                .any(|(domain, bytes)| *domain == 2 && bytes.starts_with(&[0x22])),
+            "then the toggle"
+        );
     }
 
     #[tokio::test]

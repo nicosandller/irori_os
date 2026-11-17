@@ -194,6 +194,9 @@ pub struct ExtensionInfo {
     /// Whether it's an automation engine.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub engine: bool,
+    /// Whether its process answers its page ([`irori_types::ExtensionManifest::answers_its_page`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub answers_page: bool,
     /// How long its protocol's service calls may take, from the manifest; `None` for the usual
     /// [`SERVICE_CALL_TIMEOUT`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -690,7 +693,14 @@ impl Core {
             }
             *place = home.clone();
         }
-        self.publish(vec![Event::PlaceChanged { home }]);
+        let mut events = Vec::new();
+        if let Some(location) = &home.location {
+            let stamp = self.stamp();
+            events =
+                write(&self.0.home).place_trackers((location.latitude, location.longitude), &stamp);
+        }
+        events.insert(0, Event::PlaceChanged { home });
+        self.publish(events);
     }
 
     /// Where the home is and its time zone, as last said.

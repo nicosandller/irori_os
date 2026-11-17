@@ -27,7 +27,7 @@ use crate::api::{ApiError, Car, Site};
 use crate::energy::{self, SiteReading};
 use crate::entity::{self, Entity};
 use crate::usage::Why;
-use crate::usage::pace::{self, HISTORY_EVERY, LONGEST_GAP, Mode, Plan};
+use crate::usage::pace::{self, Doing, HISTORY_EVERY, LONGEST_GAP, Mode, Plan};
 use crate::usage::price::{self, Endpoint};
 use crate::vehicle::{self, CarReading};
 use crate::{Done, World, load};
@@ -37,6 +37,9 @@ const HISTORY_FLOOR: Duration = Duration::from_secs(30 * 60);
 
 /// How long a car or site Tesla refused waits before it's tried again.
 const REFUSED_WAIT: Duration = Duration::from_secs(6 * 3600);
+
+/// How long (seconds) a car read live counts as awake for Wake, which then sends nothing.
+const AWAKE_FOR: u64 = 120;
 
 /// How many reads after Wake look for the car awake, each [`crate::Timing::woken`] apart.
 const WAKE_TRIES: u8 = 3;
@@ -204,7 +207,7 @@ impl World {
             pace::Reading {
                 cars: self.cars.len(),
                 sites: self.sites.len(),
-                active_share: None,
+                shares: self.activity.shares(),
             },
         );
         (mode, plan)
@@ -479,6 +482,7 @@ impl World {
             }
         };
         self.account_worked();
+        let unix = self.now();
         let mut changed = Vec::new();
         for car in cars {
             let Some(slot) = self.cars.get_mut(&car.vin) else {
@@ -491,6 +495,14 @@ impl World {
                 slot.reading.state = Some(car.state.clone());
                 changed.push(car.vin.clone());
             }
+            let doing = if !slot.reading.awake() {
+                Doing::Asleep
+            } else if slot.reading.busy(mode == Mode::Saving) {
+                Doing::Busy
+            } else {
+                Doing::Idle
+            };
+            self.activity.saw(&car.vin, doing, unix);
             match on_state(was_awake, slot.reading.awake(), mode) {
                 Next::Now if !slot.reading_now => slot.next_read = Some(now),
                 Next::Now | Next::Keep => {}
@@ -542,6 +554,8 @@ impl World {
                     slot.woken = None;
                     let saving = mode == Mode::Saving;
                     let busy = slot.reading.busy(saving);
+                    let doing = if busy { Doing::Busy } else { Doing::Idle };
+                    self.activity.saw(&vin, doing, unix_now);
                     slot.next_read =
                         after_read(busy, mode, plan.car, self.timing.idle).map(|gap| now + gap);
                 }
@@ -843,8 +857,29 @@ impl World {
             call.reply(Err(ServiceError::unavailable("sign in to Tesla first")));
             return;
         }
-        if !self.cars.contains_key(vin) {
+        let now = self.now();
+        let Some(slot) = self.cars.get(vin) else {
             call.reply(Err(ServiceError::failed("no such car")));
+            return;
+        };
+        // Awake by a read moments ago, or already being woken (by Wake or a command): a wake
+        // costs $0.02 a press, so nothing is sent.
+        let awake = slot.reading.state.as_deref() == Some("online")
+            && slot
+                .reading
+                .read_at
+                .is_some_and(|at| now.saturating_sub(at) <= AWAKE_FOR);
+        let looking = slot.woken.is_some();
+        let link = match self.link(vin) {
+            Ok(link) => link,
+            Err(why) => {
+                call.reply(Err(ServiceError::failed(why)));
+                return;
+            }
+        };
+        let waking = looking || link.woken_within(self.timing.patience.deadline);
+        if awake || waking {
+            call.reply(Ok(()));
             return;
         }
         let why = Why::Command {
@@ -856,6 +891,9 @@ impl World {
         let vin = vin.to_owned();
         tokio::spawn(async move {
             let result = api.wake_up(&vin, why).await;
+            if result.is_ok() {
+                link.mark_woken().await;
+            }
             let _ = done.send(Done::Woken { vin, result, call }).await;
         });
     }

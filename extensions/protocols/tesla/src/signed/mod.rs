@@ -165,6 +165,8 @@ pub enum Reply {
     Resync,
     /// It's busy: send it again shortly.
     Busy,
+    /// It timed out or failed inside: it may or may not have acted.
+    Unsure(String),
     /// Irori's key isn't on the car.
     NotPaired,
     /// It refused, in words.
@@ -298,8 +300,15 @@ impl Channel {
             }
             // Unknown or disabled key.
             3 | 4 => return Reply::NotPaired,
-            // Busy, timed out, still starting up.
-            1 | 2 | 11 => return Reply::Busy,
+            // Busy: it didn't take the message.
+            1 => return Reply::Busy,
+            // Timed out, or failed inside: it may have acted before it said so.
+            2 | 11 => {
+                return Reply::Unsure(
+                    "the car timed out answering, so the command may or may not have happened"
+                        .into(),
+                );
+            }
             fault => return Reply::Refused(fault_words(fault)),
         }
         if status.operation_status == 1 {
@@ -824,6 +833,17 @@ Jp1GbgWzSZgf2p2FzCPG+0RKpztikQXcbg==
             channel.read(VIN, &sent, &fault(0, 1), &client, now),
             Reply::Busy
         );
+        assert_eq!(
+            channel.read(VIN, &sent, &fault(1, 2), &client, now),
+            Reply::Busy
+        );
+        // Timed out, or failed inside: it may have acted, so it's not "busy".
+        for fault_code in [2, 11] {
+            assert!(matches!(
+                channel.read(VIN, &sent, &fault(fault_code, 2), &client, now),
+                Reply::Unsure(_)
+            ));
+        }
         assert!(matches!(
             channel.read(VIN, &sent, &fault(21, 2), &client, now),
             Reply::Refused(why) if why.contains("Mobile Access")

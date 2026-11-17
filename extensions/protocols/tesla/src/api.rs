@@ -22,7 +22,7 @@ use prost::Message as _;
 
 use crate::auth::Session;
 use crate::signed::proto::RoutableMessage;
-use crate::usage::price::{Category, Endpoint};
+use crate::usage::price::{self, Category, Endpoint};
 use crate::usage::{Usage, Why};
 
 /// The usage ledger, shared by every call in flight and the loop that reports it.
@@ -242,18 +242,32 @@ pub async fn send(
     meter: &Meter,
     now: Clock,
 ) -> Result<Answer, ApiError> {
-    let response = request.send().await.map_err(|error| {
-        ApiError::Unreachable(if error.is_timeout() {
-            "it didn't answer in time".into()
-        } else {
-            "no connection".into()
-        })
-    })?;
-    let status = response.status().as_u16();
+    // On the meter whatever happens next: a call that times out, or that Irori stops waiting
+    // for (a command's deadline), may have reached Tesla and been billed.
+    let mut metered = Metered {
+        meter,
+        ask,
+        now,
+        status: price::NO_ANSWER,
+        // Until it's known otherwise, it may have reached Tesla.
+        sent: true,
+    };
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            // A connection that never opened reached nobody; a timeout may have been answered.
+            metered.sent = error.is_timeout();
+            return Err(ApiError::Unreachable(if error.is_timeout() {
+                "it didn't answer in time".into()
+            } else {
+                "no connection".into()
+            }));
+        }
+    };
+    metered.status = response.status().as_u16();
+    let status = metered.status;
     // Billed or not, it's on the meter before anything can go wrong reading it.
-    if let Ok(mut usage) = meter.lock() {
-        usage.record(now(), &ask.target, ask.endpoint, status, ask.why.clone());
-    }
+    drop(metered);
     let retry_after = irori_cloud::retry_after(response.headers());
     let text = response.text().await.unwrap_or_default();
     let body = serde_json::from_str(&text).unwrap_or(Value::Null);
@@ -262,6 +276,34 @@ pub async fn send(
         body,
         retry_after,
     })
+}
+
+/// A call on its way to the meter: recorded when dropped, with the status it got, or
+/// [`price::NO_ANSWER`] when none came, which includes a call dropped while waiting.
+struct Metered<'a> {
+    meter: &'a Meter,
+    ask: &'a Ask,
+    now: Clock,
+    status: u16,
+    /// Whether it may have reached Tesla. A connection that never opened isn't billed.
+    sent: bool,
+}
+
+impl Drop for Metered<'_> {
+    fn drop(&mut self) {
+        if !self.sent {
+            return;
+        }
+        if let Ok(mut usage) = self.meter.lock() {
+            usage.record(
+                (self.now)(),
+                &self.ask.target,
+                self.ask.endpoint,
+                self.status,
+                self.ask.why.clone(),
+            );
+        }
+    }
 }
 
 /// Tesla's words for a refusal, shortened: `error_description`, else `error`.
@@ -820,6 +862,35 @@ pub fn text(entry: &Value, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A call Irori stopped waiting for (a command's deadline cut it off) may have reached Tesla
+    /// and been billed: it's on the meter, flagged as having had no answer.
+    #[tokio::test]
+    async fn a_call_cut_off_while_waiting_is_still_metered() {
+        use crate::usage::tests::{NOV_10, usage};
+        let meter: Meter = Arc::new(Mutex::new(usage()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a port");
+        let address = listener.local_addr().expect("an address");
+        // Takes the connection and never answers.
+        let _server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.expect("a connection");
+            std::future::pending::<()>().await;
+        });
+        let ask = Ask::new("5YJ3E1EA7KF000001", Endpoint::SignedCommand, Why::Schedule);
+        let request = reqwest::Client::new().post(format!("http://{address}/command"));
+        let waited = tokio::time::timeout(
+            Duration::from_millis(200),
+            send(request, &ask, &meter, || NOV_10),
+        )
+        .await;
+        assert!(waited.is_err(), "cut off");
+        let usage = meter.lock().expect("meter");
+        let call = usage.calls.back().expect("on the meter");
+        assert_eq!(call.status, price::NO_ANSWER);
+        assert_eq!(call.endpoint, Endpoint::SignedCommand);
+    }
 
     #[test]
     fn the_region_comes_from_the_code_or_the_token() {

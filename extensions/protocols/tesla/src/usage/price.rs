@@ -2,8 +2,9 @@
 //! categories cost in the account's currency.
 //!
 //! Tesla lists each endpoint's category in its docs, behind a "+" on the endpoint. What could be
-//! read is marked `confirmed`; the rest is counted as a data request until someone checks, so
-//! the meter errs on the side of spending less. Checking one is a one-line change here.
+//! read is marked `confirmed`; the rest is counted as a data request, the dearest of what it could
+//! be short of a wake, until someone checks. So the meter errs high, and pacing reads less, never
+//! more, than the money allows. Checking one is a one-line change here.
 
 use serde::{Deserialize, Serialize};
 
@@ -75,9 +76,9 @@ impl Endpoint {
             Endpoint::VehicleData => (Data, true),
             Endpoint::WakeUp => (Wake, true),
             Endpoint::SignedCommand => (Command, true),
-            Endpoint::EnergyCommand => (Command, false),
             // Not read from Tesla's docs yet: counted as a data request until they are.
-            Endpoint::RegisterPartner
+            Endpoint::EnergyCommand
+            | Endpoint::RegisterPartner
             | Endpoint::PartnerPublicKey
             | Endpoint::Products
             | Endpoint::Vehicles
@@ -147,6 +148,10 @@ impl Prices {
 pub fn billed(status: u16) -> bool {
     status < 500
 }
+
+/// The status a call is metered under when no answer came: it timed out, or Irori stopped
+/// waiting. Tesla may have answered, and billed it, so it's counted.
+pub const NO_ANSWER: u16 = 0;
 
 /// An amount as a person reads it: two decimals, three below a cent.
 pub fn money(micros: Micros, currency: &str) -> String {

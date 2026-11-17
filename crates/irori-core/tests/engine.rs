@@ -631,7 +631,8 @@ done
             id = "meter"
             name = "Meter"
             version = "0.1.0"
-            irori = ">=0.0.0"
+            # The first release whose toolkit hands a protocol its page's questions.
+            irori = ">=1.7.0"
 
             [[contributes.protocol]]
             iot_class = "cloud_polling"

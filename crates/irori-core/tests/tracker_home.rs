@@ -122,6 +122,39 @@ async fn a_car_parked_by_the_home_is_home() {
     host.shutdown().await;
 }
 
+/// The home's location set (or moved) after the car last reported: the car is placed again at
+/// once, not left as the protocol said until its next report.
+#[tokio::test]
+async fn setting_the_home_s_location_places_a_car_already_parked_there() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = ExtensionHost::start(
+        &core,
+        vec![builtin::<Car>().expect("valid")],
+        Timing::default(),
+    )
+    .expect("unique ids");
+    let (id, before) = tracker(&core).await;
+    assert!(!before.home, "no location yet: {before:?}");
+    let at = |latitude: f64| HomeSettings {
+        location: Some(
+            serde_json::from_value::<Location>(
+                serde_json::json!({ "latitude": latitude, "longitude": 4.0 }),
+            )
+            .expect("valid"),
+        ),
+        ..HomeSettings::default()
+    };
+    let home = |core: &Core| match core.state(&id).and_then(|state| state.state) {
+        Some(State::DeviceTracker(state)) => state.home,
+        other => panic!("not a tracker: {other:?}"),
+    };
+    core.apply_home(at(51.0));
+    assert!(home(&core), "the home is where the car is parked");
+    core.apply_home(at(AWAY.0 + 0.05));
+    assert!(!home(&core), "the home moved away from the car");
+    host.shutdown().await;
+}
+
 #[tokio::test]
 async fn with_no_home_location_the_protocols_answer_stands() {
     let core = Core::new(Arc::new(SystemClock));

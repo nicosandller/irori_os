@@ -852,6 +852,7 @@ async fn supervise(
             unpairs: contribution.unpairs,
             app: None,
             engine: false,
+            answers_page: false,
             answer_within_seconds: contribution.answer_within_seconds,
         },
     );
@@ -1382,6 +1383,7 @@ async fn supervise_package(
                 unpairs: false,
                 app,
                 engine: false,
+                answers_page: false,
                 answer_within_seconds: None,
             },
         );
@@ -1459,6 +1461,7 @@ async fn supervise_package(
             unpairs: contribution.is_some_and(|contribution| contribution.unpairs),
             app: app.clone(),
             engine: manifest.is_engine(),
+            answers_page: manifest.answers_its_page(),
             answer_within_seconds: contribution
                 .and_then(|contribution| contribution.answer_within_seconds),
         },
@@ -1642,8 +1645,10 @@ async fn supervise_package(
         }
         let mut engine = EngineLink::new(&manifest);
         // An engine and a protocol both answer their own page: the questions travel the same
-        // link either way (`EngineLink`), and the process says what each method does.
-        if app.is_some() {
+        // link either way (`EngineLink`), and the process says what each method does. A
+        // protocol built for an older Irori doesn't, so its page isn't linked: it hears at once
+        // that there's nobody to ask.
+        if manifest.answers_its_page() {
             core.link_app(&extension, engine.app_sender());
         }
         core.set_status(&extension, crate::ExtensionStatus::Running);

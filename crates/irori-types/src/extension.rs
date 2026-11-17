@@ -107,6 +107,15 @@ impl ExtensionManifest {
         !self.contributes.automation.is_empty()
     }
 
+    /// Whether its process answers its page's questions. An engine always has; a protocol only
+    /// when it's built for Irori 1.7.0 or later, the first whose toolkit hands a protocol its
+    /// page's questions. An older protocol never answers, so its page is told at once that
+    /// there's nobody to ask, rather than waiting out every question.
+    pub fn answers_its_page(&self) -> bool {
+        self.app().is_some()
+            && (self.is_engine() || self.extension.irori.requires_at_least((1, 7, 0)))
+    }
+
     /// Its page in the sidebar, if it has one.
     pub fn app(&self) -> Option<&AppContribution> {
         self.contributes.app.first()
@@ -847,6 +856,11 @@ impl CoreRequirement {
         parse_requirement(&self.0).expect("CoreRequirement is validated on construction")
     }
 
+    /// Whether no Irori before `release` satisfies this requirement.
+    pub fn requires_at_least(&self, release: Release) -> bool {
+        self.bounds().0 >= release
+    }
+
     /// Whether Irori `core` satisfies this requirement. A pre-release of Irori counts as its
     /// release, so `0.2.0-dev` satisfies `>=0.2.0`.
     pub fn matches(&self, core: &Version) -> bool {
@@ -1321,6 +1335,30 @@ mod tests {
         assert!(manifest("permit_join").is_ok());
         let rejected = manifest("foo/bar").expect_err("a slash is not one path segment");
         assert!(rejected.to_string().contains("action id"), "{rejected}");
+    }
+
+    /// A protocol's page is answered only when the protocol is built for 1.7.0 or later: an
+    /// older toolkit ignores its page's questions. Without a page there's nothing to answer.
+    #[test]
+    fn only_a_protocol_built_for_1_7_answers_its_page() {
+        let protocol = |irori: &str, page: bool| {
+            let mut manifest = serde_json::json!({
+                "extension": { "id": "car", "name": "Car", "version": "0.1.0", "irori": irori },
+                "contributes": {
+                    "protocol": [{ "iot_class": "cloud_polling", "entity_kinds": ["switch"] }]
+                }
+            });
+            if page {
+                manifest["contributes"]["app"] =
+                    serde_json::json!([{ "label": "Car usage", "entry": "app/index.html" }]);
+            }
+            serde_json::from_value::<ExtensionManifest>(manifest).expect("valid")
+        };
+        assert!(!protocol(">=1.6.0", true).answers_its_page());
+        assert!(!protocol(">=1.6.9, <2.0.0", true).answers_its_page());
+        assert!(protocol(">=1.7.0", true).answers_its_page());
+        assert!(protocol(">=1.8.0, <2.0.0", true).answers_its_page());
+        assert!(!protocol(">=1.7.0", false).answers_its_page());
     }
 
     /// An action that asks for a line of text (Matter's pairing code) and takes a while to

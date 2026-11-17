@@ -204,7 +204,7 @@ For each running extension with an `app` contribution, the core:
   extension's process as `app_request` (an engine's, or a protocol's: both answer their own
   page), and returns `{ "value": … }` or an error status with `{ "error": "…" }`.
   30 s timeout (a backtest can take a moment). `503` if the process isn't running. `has_engine`
-  in the list says there is a process to ask; it keeps its name from when only engines could. A regular user
+  in the list says there is a process that answers: an engine, or a protocol built for Irori 1.7.0 or later (`irori = ">=1.7.0"`), the first whose toolkit hands a protocol its page's questions. An older protocol's page is answered `503` at once rather than waiting out the timeout. The field keeps its name from when only engines could. A regular user
   may ask only an extension with `users = true` that the home trusts with it; to any other it
   answers `404`, as if it had no page. A flow saved, turned on or off, deleted or brought back, or
   tested for real, by anyone, is written to the activity log;

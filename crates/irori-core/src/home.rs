@@ -1031,6 +1031,43 @@ impl Home {
         })
     }
 
+    /// Works out again whether each tracker that says where it is is home, now that the home is
+    /// at `point`: a car parked in the drive is home the moment the home's location is set or
+    /// moved, not only when it next reports. Changed ones are re-reported as from their protocol.
+    pub fn place_trackers(&mut self, point: (f64, f64), stamp: &Stamp) -> Vec<Event> {
+        let moved: Vec<(ProtocolId, StateReport)> = self
+            .entity_keys
+            .iter()
+            .filter_map(|((protocol, unique_id), id)| {
+                let current = self.states.get(id)?;
+                let Some(State::DeviceTracker(tracker)) = &current.state else {
+                    return None;
+                };
+                let home = tracker.is_at(point)?;
+                (home != tracker.home).then(|| {
+                    let mut tracker = tracker.clone();
+                    tracker.home = home;
+                    let report = StateReport {
+                        unique_id: unique_id.clone(),
+                        state: Some(State::DeviceTracker(tracker)),
+                        attributes: current.attributes.clone(),
+                        caused_by: None,
+                        replayed: false,
+                    };
+                    (protocol.clone(), report)
+                })
+            })
+            .collect();
+        let mut events = Vec::new();
+        for (protocol, report) in moved {
+            match self.report_state(&protocol, report, stamp) {
+                Ok(changed) => events.extend(changed),
+                Err(rejected) => tracing::warn!(%rejected, "couldn't re-place a tracker"),
+            }
+        }
+        events
+    }
+
     pub fn set_availability(
         &mut self,
         protocol: &ProtocolId,
