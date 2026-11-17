@@ -5,6 +5,11 @@
 //! highlight there. The first placement lands without travelling, so a page never opens with
 //! the highlight sliding in from the top.
 //!
+//! Not every move of the chosen item is a new choice: the sidebar folds and its entries shift
+//! down, an extension's page joins the list, the count in a tab grows a digit. All of those
+//! change the size of the list or of something directly in it, so those sizes are watched, and
+//! the highlight is measured again when one changes.
+//!
 //! A column of items as wide as the list ([`glide`]) is measured top to bottom only. Where one
 //! lays out in a row instead (the sidebar and the Floorplan tools on a phone), CSS hides the
 //! highlight and the chosen item draws its own. A row of choices that is always a row — a
@@ -14,9 +19,11 @@ use leptos::ev;
 use leptos::html::ElementType;
 use leptos::prelude::*;
 use web_sys::wasm_bindgen::JsCast;
+use web_sys::wasm_bindgen::closure::Closure;
 
 /// Keeps `container`'s `.glide` over its descendant matching `selector`, measured again after
-/// every change `track` reads and whenever the window changes size.
+/// every change `track` reads, whenever the window changes size, and whenever the list or
+/// anything directly in it does.
 pub fn glide<E>(container: NodeRef<E>, selector: &'static str, track: impl Fn() + 'static)
 where
     E: ElementType,
@@ -47,6 +54,7 @@ where
     E: ElementType,
     E::Output: JsCast + Clone + 'static,
 {
+    let sizes = StoredValue::new_local(None::<Sizes>);
     let measure = move || {
         // After the DOM has caught up with whatever `track` just read: the chosen item's class
         // or `aria-current` is set by the same change, and may not be there yet.
@@ -54,7 +62,15 @@ where
             // The list may have been drawn again since this was asked for — the Floorplan's
             // floor picker is, with every edit — and its old node gone with it.
             if let Some(element) = container.try_get_untracked().flatten() {
-                place(element.unchecked_ref(), selector, way);
+                let element: &web_sys::Element = element.unchecked_ref();
+                place(element, selector, way);
+                let _ = sizes.try_update_value(|sizes| {
+                    watch_sizes(sizes, element, move || {
+                        if let Some(element) = container.try_get_untracked().flatten() {
+                            place(element.unchecked_ref(), selector, way);
+                        }
+                    });
+                });
             }
         })
     };
@@ -63,7 +79,63 @@ where
         measure();
     });
     let resize = window_event_listener(ev::resize, move |_| measure());
-    on_cleanup(move || resize.remove());
+    on_cleanup(move || {
+        resize.remove();
+        let _ = sizes.try_update_value(|sizes| {
+            if let Some(sizes) = sizes.take() {
+                sizes.observer.disconnect();
+            }
+        });
+    });
+}
+
+/// The browser's watch on a list's size and its children's, and what it calls.
+struct Sizes {
+    observer: web_sys::ResizeObserver,
+    /// The list being watched: a list drawn again is a new node, and is watched afresh.
+    list: web_sys::Element,
+    /// How many children it had when they were put under watch: with one more or fewer, they
+    /// are watched afresh too.
+    children: u32,
+    _changed: Closure<dyn Fn()>,
+}
+
+/// Has `changed` called whenever `list`, or anything directly in it but the highlight, changes
+/// size. Does nothing if this list, with these many children, is already the one watched.
+fn watch_sizes(sizes: &mut Option<Sizes>, list: &web_sys::Element, changed: impl Fn() + 'static) {
+    let children = list.children();
+    if sizes
+        .as_ref()
+        .is_some_and(|sizes| &sizes.list == list && sizes.children == children.length())
+    {
+        return;
+    }
+    if let Some(old) = sizes.take() {
+        old.observer.disconnect();
+    }
+    let changed = Closure::<dyn Fn()>::new(changed);
+    // A browser without it keeps what it had: measured on a choice and on a window resize.
+    let Ok(observer) = web_sys::ResizeObserver::new(changed.as_ref().unchecked_ref()) else {
+        return;
+    };
+    observer.observe(list);
+    for i in 0..children.length() {
+        // Not the highlight itself: its size is what `changed` sets, and it glides to it, so
+        // watching it would have it placed again on every frame of its own movement.
+        if let Some(child) = children.item(i).filter(|child| !is_highlight(child)) {
+            observer.observe(&child);
+        }
+    }
+    *sizes = Some(Sizes {
+        observer,
+        list: list.clone(),
+        children: children.length(),
+        _changed: changed,
+    });
+}
+
+fn is_highlight(child: &web_sys::Element) -> bool {
+    child.class_list().contains("glide")
 }
 
 fn place(container: &web_sys::Element, selector: &str, way: Way) {
