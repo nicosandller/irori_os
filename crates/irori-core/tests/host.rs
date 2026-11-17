@@ -2141,30 +2141,37 @@ async fn a_process_that_answers_pings_stays_up() {
     let packages_dir = tempfile::tempdir().expect("temp dir");
     let dir = packages_dir.path();
     let pings = dir.join("pings");
+    let starts = dir.join("starts");
     script_package(
         dir,
         "answers",
         &format!(
             "#!/bin/sh
+echo $$ >> '{}'
 read hello
 echo '{{\"type\":\"pong\"}}'
 \
              while read line; do case \"$line\" in *'\"ping\"'*) \
              echo ping >> '{}'; echo '{{\"type\":\"pong\"}}';; esac; done
 ",
+            starts.display(),
             pings.display()
         ),
     );
-    let host = ExtensionHost::start_with_packages(&core, vec![], quick_pings(), dir.to_path_buf())
+    let timing = quick_pings();
+    let host = ExtensionHost::start_with_packages(&core, vec![], timing, dir.to_path_buf())
         .expect("starts");
 
     eventually("it's running", || {
         status(&core, "answers") == Some(ExtensionStatus::Running)
     })
     .await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    // Wait for pings, not a fixed time: enough of them to span more than one quiet window,
+    // so a host that ended a process that answers would have done it by now.
+    let enough = (timing.quiet_for.as_millis() / timing.ping_every.as_millis()) as usize + 2;
+    eventually("pinged while quiet", || pids_in(&pings).len() >= enough).await;
     assert_eq!(status(&core, "answers"), Some(ExtensionStatus::Running));
-    assert!(pids_in(&pings).len() >= 3, "pinged while quiet");
+    assert_eq!(pids_in(&starts).len(), 1, "started once, never restarted");
 
     host.shutdown().await;
 }
