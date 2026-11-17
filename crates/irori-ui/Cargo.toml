@@ -47,6 +47,9 @@ web-sys = { version = "0.3", features = [
     # system wants less motion.
     "NodeList",
     "MediaQueryList",
+    # A gliding highlight (glide.rs) keeping up when its list changes shape under it.
+    "ResizeObserver",
+    "HtmlCollection",
     # Extensions' pages (app_frame.rs): the frame, its messages, the address bar, and the
     # shell's tokens as they compute.
     "HtmlIFrameElement",
