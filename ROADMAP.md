@@ -6,7 +6,7 @@ What's built and what isn't. Rows aren't in order: anything can be picked up onc
 
 **Milestones:** a row that links a [milestone](https://github.com/nicosandller/irori_os/milestones) has open work tracked there: its issues and pull requests, and how many are done.
 
-**Migration phases:** moving a real home from Home Assistant to Irori is tracked as milestones Migration 0 to Migration 5, done in that order ([phases in order](https://github.com/nicosandller/irori_os/milestones?direction=asc&sort=title&state=open); tracker [#160](https://github.com/nicosandller/irori_os/issues/160)).
+**Milestone order:** milestones are numbered in reading order: trying Irori beside Home Assistant (1), the migration phases Migration 0 to Migration 5 (2 to 7), then extensions from other authors (8). GitHub lists them by last update, so use the [milestones in order](https://github.com/nicosandller/irori_os/milestones?direction=asc&sort=title&state=open). The migration tracker is [#160](https://github.com/nicosandller/irori_os/issues/160).
 
 Vision: [INSPIRATION.md](INSPIRATION.md).
 
