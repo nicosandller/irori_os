@@ -15,7 +15,37 @@ use irori_types::{
 use crate::Event;
 use crate::services::{CallError, Command};
 
+mod identity;
 pub(crate) mod updates;
+
+/// Adds `more` to `events`, folding a device's later update into the event already about it, and
+/// saying the found list changed once.
+fn merge_events(events: &mut Vec<Event>, more: Vec<Event>) {
+    for event in more {
+        if let Event::DeviceUpdated { device } = &event
+            && let Some(earlier) = events.iter_mut().find_map(|earlier| match earlier {
+                Event::DeviceAdded { device: earlier }
+                | Event::DeviceUpdated { device: earlier }
+                    if earlier.id == device.id =>
+                {
+                    Some(earlier)
+                }
+                _ => None,
+            })
+        {
+            *earlier = device.clone();
+            continue;
+        }
+        if matches!(event, Event::FoundChanged)
+            && events
+                .iter()
+                .any(|earlier| matches!(earlier, Event::FoundChanged))
+        {
+            continue;
+        }
+        events.push(event);
+    }
+}
 
 /// When an operation happens, and the id for the context it creates if it changes something.
 #[derive(Debug, Clone)]
@@ -71,6 +101,10 @@ pub(crate) struct Home {
     /// Whether `skipped` has changed since it was last stored.
     skips_changed: bool,
     recent_calls: HashMap<ProtocolId, VecDeque<(ContextId, Timestamp)>>,
+    /// What hardware each device is, to recognise one that two extensions both reach. Built
+    /// only once a device arrives that names its connections: until then, `None`, and nothing
+    /// is compared (`identity`).
+    identities: Option<identity::Identities>,
 }
 
 /// A device a protocol has found that isn't in the home (`docs/specs/config.md` §3.2): nobody has
@@ -176,9 +210,16 @@ impl Home {
     }
 
     /// Every device found but not in the home, in id order.
+    /// A copy of a device another extension already reaches isn't offered.
     pub fn held_devices(&self) -> Vec<HeldDevice> {
         self.found
             .iter()
+            .filter(|(id, _)| {
+                !self
+                    .identities
+                    .as_ref()
+                    .is_some_and(|identities| identities.is_duplicate(id))
+            })
             .map(|(id, found)| {
                 let mut provides = BTreeMap::new();
                 for (_, description) in found.entities.values() {
@@ -241,8 +282,10 @@ impl Home {
         }
         // Removed first, then recorded as found: the other way round, removal would take the
         // entities for already-found ones and leave them in the registry without their device.
+        // Still the same device, only out of the home: what it is stays known, so its copies
+        // stay recognised as copies.
         let events = self
-            .remove_device(&device.protocol, &device.unique_id)
+            .forget_registered(&device.protocol, &device.unique_id)
             .unwrap_or_default();
         for entity in &owned {
             self.found_entities.insert(
@@ -434,6 +477,84 @@ impl Home {
         protocol: &ProtocolId,
         description: DeviceDescription,
     ) -> Result<Vec<Event>, Rejected> {
+        // Only a home where some device named its connections compares anything.
+        let compared = (self.identities.is_some() || !description.connections.is_empty())
+            .then(|| identity::Entry::of(protocol, &description));
+        let id = device_id_for(protocol, &description.unique_id);
+        let mut events = self.describe_device_as_said(protocol, description)?;
+        if let Some(entry) = compared {
+            let more = self.identify(&id, Some(entry));
+            merge_events(&mut events, more);
+        }
+        Ok(events)
+    }
+
+    /// Brings what the index knows about one device up to date (`None`: it's gone), and the
+    /// standing of every device that changes with it: which are copies, and which are reached
+    /// through more than one extension.
+    fn identify(&mut self, id: &DeviceId, entry: Option<identity::Entry>) -> Vec<Event> {
+        if self.identities.is_none() {
+            if entry.is_none() {
+                return vec![];
+            }
+            // The first device that names its connections: everything else already known is
+            // indexed once, and from now on one device at a time. This one is left to `set`
+            // below, which works out what it changes.
+            let mut identities = identity::Identities::default();
+            for (known, description) in &self.device_descriptions {
+                if known == id {
+                    continue;
+                }
+                if let Some(device) = self.devices.get(known) {
+                    identities.set(
+                        known,
+                        Some(identity::Entry::of(&device.protocol, description)),
+                    );
+                }
+            }
+            for (known, found) in self.found.iter().filter(|(known, _)| *known != id) {
+                identities.set(
+                    known,
+                    Some(identity::Entry::of(&found.protocol, &found.description)),
+                );
+            }
+            self.identities = Some(identities);
+        }
+        let identities = self.identities.as_mut().expect("just made");
+        let touched = identities
+            .set(id, entry)
+            .unwrap_or_else(|| std::iter::once(id.clone()).collect());
+        let mut events = Vec::new();
+        let mut found_changed = false;
+        for other in touched {
+            let duplicate_of = identities.duplicate_of(&other);
+            let also_through = identities.also_through(&other);
+            if identities.note_duplicate(&other, duplicate_of.clone())
+                && self.found.contains_key(&other)
+            {
+                found_changed = true;
+            }
+            if let Some(device) = self.devices.get_mut(&other)
+                && (device.duplicate_of != duplicate_of || device.also_through != also_through)
+            {
+                device.duplicate_of = duplicate_of;
+                device.also_through = also_through;
+                events.push(Event::DeviceUpdated {
+                    device: device.clone(),
+                });
+            }
+        }
+        if found_changed {
+            events.push(Event::FoundChanged);
+        }
+        events
+    }
+
+    fn describe_device_as_said(
+        &mut self,
+        protocol: &ProtocolId,
+        description: DeviceDescription,
+    ) -> Result<Vec<Event>, Rejected> {
         description
             .validate()
             .map_err(|e| Rejected(e.to_string()))?;
@@ -581,6 +702,8 @@ impl Home {
             area_id,
             suggested_area: description.suggested_area,
             via_device_id: via,
+            duplicate_of: None,
+            also_through: Vec::new(),
         };
         self.reported_device_names
             .insert(id.clone(), description.name);
@@ -817,6 +940,21 @@ impl Home {
     }
 
     pub fn remove_device(
+        &mut self,
+        protocol: &ProtocolId,
+        unique_id: &UniqueId,
+    ) -> Result<Vec<Event>, Rejected> {
+        let mut events = self.forget_registered(protocol, unique_id)?;
+        if self.identities.is_some() {
+            let more = self.identify(&device_id_for(protocol, unique_id), None);
+            merge_events(&mut events, more);
+        }
+        Ok(events)
+    }
+
+    /// Takes a device out of the registry, or out of what was found, without forgetting what
+    /// hardware it is: `hold` moves a device rather than losing it.
+    fn forget_registered(
         &mut self,
         protocol: &ProtocolId,
         unique_id: &UniqueId,
@@ -1473,6 +1611,7 @@ mod tests {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         }
     }
 
@@ -3494,5 +3633,337 @@ mod tests {
             refusal(Command::with("turn_off", &too_warm)).to_string(),
             "`light.turn_off` takes no data"
         );
+    }
+
+    // --- One device, two extensions ---------------------------------------------------------
+
+    fn ext(id: &str) -> ProtocolId {
+        ProtocolId::try_from(id).expect("valid")
+    }
+
+    fn id_of(protocol: &str, unique: &str) -> DeviceId {
+        device_id_for(&ext(protocol), &uid(unique))
+    }
+
+    /// A device as a bridge to another hub describes it: its own handle, and what it is.
+    fn bridged(
+        unique: &str,
+        connections: &[(irori_types::ConnectionKind, &str)],
+    ) -> DeviceDescription {
+        let mut description = device(unique, "Bridged");
+        description.connections = connections
+            .iter()
+            .map(|(kind, value)| irori_types::Connection::new(*kind, value).expect("valid"))
+            .collect();
+        description
+    }
+
+    fn held_ids(home: &Home) -> Vec<String> {
+        home.held_devices()
+            .into_iter()
+            .map(|held| held.id.to_string())
+            .collect()
+    }
+
+    /// The same plug, found natively and through a bridge, by each kind of identifier: the
+    /// bridged copy isn't offered, so there's one thing to add, not two.
+    #[test]
+    fn a_bridged_copy_of_a_native_device_is_not_offered() {
+        use irori_types::ConnectionKind::{Ieee, Mac, Serial};
+        for (native, unique, serial, connection) in [
+            (
+                "zigbee",
+                "zigbee2mqtt_0x00124b0022aabbcc",
+                None,
+                (Ieee, "00:12:4b:00:22:aa:bb:cc"),
+            ),
+            (
+                "zigbee",
+                "0x00124B0022AABBCC",
+                None,
+                (Ieee, "0x00124b0022aabbcc"),
+            ),
+            (
+                "esphome",
+                "AA:BB:CC:DD:EE:FF",
+                None,
+                (Mac, "aa-bb-cc-dd-ee-ff"),
+            ),
+            (
+                "switchbot",
+                "AABBCCDDEEFF",
+                None,
+                (Mac, "AA:BB:CC:DD:EE:FF"),
+            ),
+            (
+                "matter",
+                "0000000000000001-0000000000000002",
+                Some("SN-42"),
+                (Serial, " SN-42 "),
+            ),
+        ] {
+            let mut home = Home::default();
+            home.settle(asking(&[]));
+            let mut found = device(unique, "Native");
+            found.serial_number = serial.map(str::to_owned);
+            home.describe_device(&ext(native), found).expect("native");
+            let events = home
+                .describe_device(&ext("homeassistant"), bridged("ha1", &[connection]))
+                .expect("bridged");
+            assert!(
+                events.is_empty() || events == vec![Event::FoundChanged],
+                "{events:?}"
+            );
+            assert_eq!(
+                held_ids(&home),
+                [id_of(native, unique).to_string()],
+                "{native} {unique}"
+            );
+        }
+    }
+
+    /// The other order: the bridge first, then the device turns up natively. The copy leaves the
+    /// found list as its twin appears, and the page hears about it.
+    #[test]
+    fn a_bridged_device_leaves_the_found_list_when_its_native_twin_appears() {
+        let mut home = Home::default();
+        home.settle(asking(&[]));
+        home.describe_device(
+            &ext("homeassistant"),
+            bridged(
+                "ha1",
+                &[(irori_types::ConnectionKind::Mac, "AA:BB:CC:DD:EE:FF")],
+            ),
+        )
+        .expect("bridged");
+        assert_eq!(held_ids(&home), ["homeassistant_ha1"]);
+        let events = home
+            .describe_device(&ext("tplink"), device("AA:BB:CC:DD:EE:FF", "Plug"))
+            .expect("native");
+        assert_eq!(events, vec![Event::FoundChanged]);
+        assert_eq!(
+            held_ids(&home),
+            [id_of("tplink", "AA:BB:CC:DD:EE:FF").to_string()]
+        );
+    }
+
+    /// A bridged device that matches nothing is held like any other, and one extension's own
+    /// devices are never copies of each other.
+    #[test]
+    fn a_bridged_device_that_matches_nothing_waits_as_usual() {
+        let mut home = Home::default();
+        home.settle(asking(&[]));
+        home.describe_device(&ext("esphome"), device("AA:BB:CC:DD:EE:FF", "Plug"))
+            .expect("native");
+        home.describe_device(
+            &ext("homeassistant"),
+            bridged(
+                "ha1",
+                &[(irori_types::ConnectionKind::Mac, "11:22:33:44:55:66")],
+            ),
+        )
+        .expect("bridged");
+        home.describe_device(
+            &ext("homeassistant"),
+            bridged(
+                "ha2",
+                &[(irori_types::ConnectionKind::Mac, "11:22:33:44:55:66")],
+            ),
+        )
+        .expect("bridged");
+        // A serial number is never read as an address.
+        home.describe_device(
+            &ext("homeassistant"),
+            bridged(
+                "ha3",
+                &[(irori_types::ConnectionKind::Serial, "AABBCCDDEEFF")],
+            ),
+        )
+        .expect("bridged");
+        assert_eq!(
+            held_ids(&home),
+            [
+                id_of("esphome", "AA:BB:CC:DD:EE:FF").to_string(),
+                "homeassistant_ha1".to_owned(),
+                "homeassistant_ha2".to_owned(),
+                "homeassistant_ha3".to_owned(),
+            ]
+        );
+    }
+
+    /// Added before its twin was found, the bridged device stays, and so does the native one
+    /// once it's added: both say they're the same device. Handing one over to the other is a
+    /// later step (#168).
+    #[test]
+    fn a_bridged_device_already_in_the_home_stays_and_both_are_flagged() {
+        let mut home = Home::default();
+        let bridge = ext("homeassistant");
+        let bridged_plug = bridged(
+            "ha1",
+            &[(irori_types::ConnectionKind::Ieee, "0x00124b0022aabbcc")],
+        );
+        // `asking` keys devices under `demo`; this one is the bridge's.
+        let ha = id_of("homeassistant", "ha1");
+        let native = id_of("zigbee", "zigbee2mqtt_0x00124b0022aabbcc");
+        let mut settings = asking(&[]);
+        settings.devices.insert(
+            ha.clone(),
+            irori_types::DeviceSettings {
+                added: true,
+                ..Default::default()
+            },
+        );
+        home.settle(settings.clone());
+        home.describe_device(&bridge, bridged_plug)
+            .expect("bridged");
+        assert!(home.devices.contains_key(&ha));
+        assert_eq!(home.devices[&ha].duplicate_of, None);
+
+        let events = home
+            .describe_device(
+                &ext("zigbee"),
+                device("zigbee2mqtt_0x00124b0022aabbcc", "Plug"),
+            )
+            .expect("native");
+        assert_eq!(home.devices[&ha].duplicate_of.as_ref(), Some(&native));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, Event::DeviceUpdated { device } if device.id == ha)),
+            "{events:?}"
+        );
+        // The native one is still offered: it's the one to keep.
+        assert_eq!(held_ids(&home), [native.to_string()]);
+
+        settings.devices.insert(
+            native.clone(),
+            irori_types::DeviceSettings {
+                added: true,
+                ..Default::default()
+            },
+        );
+        home.settle(settings);
+        assert_eq!(
+            home.devices[&native].also_through,
+            std::slice::from_ref(&bridge)
+        );
+        assert_eq!(home.devices[&ha].duplicate_of.as_ref(), Some(&native));
+        assert!(home.held_devices().is_empty());
+    }
+
+    /// Once the native device is gone the bridged one is the only way to it, and is offered
+    /// again. Taking the native one out of the home isn't that: it's still found.
+    #[test]
+    fn removing_the_native_device_lets_the_bridged_one_be_offered_again() {
+        let native = id_of("esphome", "AA:BB:CC:DD:EE:FF");
+        let mut settings = asking(&[]);
+        settings.devices.insert(
+            native.clone(),
+            irori_types::DeviceSettings {
+                added: true,
+                ..Default::default()
+            },
+        );
+        let mut home = Home::default();
+        home.settle(settings);
+        home.describe_device(&ext("esphome"), device("AA:BB:CC:DD:EE:FF", "Plug"))
+            .expect("native");
+        let events = home
+            .describe_device(
+                &ext("homeassistant"),
+                bridged("ha1", &[(irori_types::ConnectionKind::Mac, "aabbccddeeff")]),
+            )
+            .expect("bridged");
+        assert_eq!(home.devices[&native].also_through, [ext("homeassistant")]);
+        assert!(
+            events.iter().any(
+                |event| matches!(event, Event::DeviceUpdated { device } if device.id == native)
+            ),
+            "the native page hears about it: {events:?}"
+        );
+        assert!(held_ids(&home).is_empty());
+
+        // Taken out of the home by its owner: found again, still the one offered.
+        home.forget_device(&native).expect("forgotten");
+        assert_eq!(held_ids(&home), [native.to_string()]);
+
+        // Gone from its extension: the bridged one is the way to it now.
+        let events = home
+            .remove_device(&ext("esphome"), &uid("AA:BB:CC:DD:EE:FF"))
+            .expect("removed");
+        assert_eq!(events, vec![Event::FoundChanged]);
+        assert_eq!(held_ids(&home), ["homeassistant_ha1"]);
+    }
+
+    /// The native device loses its "also through" when the bridged copy goes, and a native
+    /// home builds nothing at all.
+    #[test]
+    fn nothing_is_compared_until_a_device_names_its_connections() {
+        let mut home = home_with_lamp();
+        home.describe_device(&ext("esphome"), device("AA:BB:CC:DD:EE:FF", "Plug"))
+            .expect("native");
+        home.remove_device(&ext("esphome"), &uid("AA:BB:CC:DD:EE:FF"))
+            .expect("removed");
+        assert!(home.identities.is_none());
+
+        home.describe_device(&ext("esphome"), device("AA:BB:CC:DD:EE:FF", "Plug"))
+            .expect("native");
+        home.describe_device(
+            &ext("homeassistant"),
+            bridged("ha1", &[(irori_types::ConnectionKind::Mac, "aabbccddeeff")]),
+        )
+        .expect("bridged");
+        let native = id_of("esphome", "AA:BB:CC:DD:EE:FF");
+        assert_eq!(home.devices[&native].also_through, [ext("homeassistant")]);
+        let events = home.remove_protocol(&ext("homeassistant"));
+        assert!(home.devices[&native].also_through.is_empty());
+        assert!(
+            events.iter().any(
+                |event| matches!(event, Event::DeviceUpdated { device } if device.id == native)
+            ),
+            "{events:?}"
+        );
+    }
+
+    /// A serial number one extension gives to two of its devices, like a maker's placeholder,
+    /// tells nothing apart: a bridged device with it is offered as usual, and stops matching the
+    /// moment the second device turns up.
+    #[test]
+    fn a_serial_two_devices_of_one_extension_share_matches_nothing() {
+        let mut home = Home::default();
+        home.settle(asking(&[]));
+        let mut first = device("0000000000000001-0000000000000002", "Bulb");
+        first.serial_number = Some("TEST_SN".to_owned());
+        home.describe_device(&ext("matter"), first).expect("native");
+        home.describe_device(
+            &ext("homeassistant"),
+            bridged("ha1", &[(irori_types::ConnectionKind::Serial, "TEST_SN")]),
+        )
+        .expect("bridged");
+        assert!(!held_ids(&home).contains(&"homeassistant_ha1".to_owned()));
+
+        let mut second = device("0000000000000001-0000000000000003", "Bulb");
+        second.serial_number = Some("TEST_SN".to_owned());
+        let events = home
+            .describe_device(&ext("matter"), second)
+            .expect("native");
+        assert!(events.contains(&Event::FoundChanged), "{events:?}");
+        assert!(held_ids(&home).contains(&"homeassistant_ha1".to_owned()));
+    }
+
+    /// Two copies that both name their connections never point at each other: the first in id
+    /// order is kept.
+    #[test]
+    fn two_bridged_copies_never_hide_each_other() {
+        let mut home = Home::default();
+        home.settle(asking(&[]));
+        for bridge in ["hubone", "hubtwo"] {
+            home.describe_device(
+                &ext(bridge),
+                bridged("x1", &[(irori_types::ConnectionKind::Serial, "SN1")]),
+            )
+            .expect("bridged");
+        }
+        assert_eq!(held_ids(&home), ["hubone_x1"]);
     }
 }

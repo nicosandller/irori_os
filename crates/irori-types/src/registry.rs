@@ -102,6 +102,15 @@ pub struct Device {
     /// The device this one is reached through, e.g. a Zigbee coordinator or a bridge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via_device_id: Option<DeviceId>,
+    /// The device this one is a second way to: the same hardware, found by another extension
+    /// that names its connections, such as a bridge to another hub. Set by the core
+    /// (`docs/specs/protocols.md` §6.1), and only on a device that was added before its twin
+    /// was found; a duplicate that isn't in the home yet isn't offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<DeviceId>,
+    /// The other extensions that reach this same device, whose copies are its duplicates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_through: Vec<ProtocolId>,
 }
 
 /// The registry entry for an entity: its identity and what it can do. Its current value lives

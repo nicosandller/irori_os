@@ -108,6 +108,12 @@ extensions are left as they are. An extension that holds nothing answers `{ "add
 writes nothing; one that isn't installed is `404`. It is written in the activity log as
 `devices_added`, with the extension as its target and the count as its detail.
 
+A device that another extension already reaches ([protocols.md](protocols.md) §6.1) is not in
+`held` and is never added this way. In `devices`, the device it copies carries `also_through`,
+the extensions that reach it too, and a copy that was added before its twin was found carries
+`duplicate_of`. Both are left out when they don't apply, so a home where no extension names
+connections is served exactly as before.
+
 An extension that proposes floors and rooms ([protocols.md](protocols.md) §6.9) carries them in
 `GET /api/home` as `suggested_layout`: `{ "floors"?: [{ "name", "level"? }], "areas"?: [{ "name",
 "floor"? }] }`, holding only the ones the home doesn't have by those names (trimmed, ignoring

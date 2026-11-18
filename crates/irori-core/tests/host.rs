@@ -39,6 +39,7 @@ async fn describe_lamp(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
         serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
+        connections: Vec::new(),
     })
     .await?;
     ctx.describe_entity(EntityDescription {
@@ -1640,6 +1641,7 @@ async fn an_inbound_program_connects_and_describes_its_device() {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             },
         })
         .await
@@ -1951,6 +1953,7 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         },
     }) + &line(&FromExt::DescribeEntity {
         id: 2,
