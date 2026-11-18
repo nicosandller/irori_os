@@ -54,8 +54,6 @@ pub const CALL_TIMEOUT: Duration = Duration::from_secs(8);
 /// Quiet this long, and the connection is asked for a WebSocket pong (not Home Assistant's own
 /// `ping` message, which isn't in [`ALLOWED`]). Quiet twice as long, and it's taken as gone.
 const QUIET: Duration = Duration::from_secs(30);
-/// Events waiting for the extension before the socket waits too.
-const EVENTS_CAPACITY: usize = 4096;
 /// The largest message taken: `get_states` of a home of a few thousand entities, with room.
 const MAX_MESSAGE: usize = 64 << 20;
 
@@ -142,12 +140,31 @@ pub struct HaError {
     pub message: String,
 }
 
+/// [`HaError::code`] while Home Assistant isn't running yet, or any more.
+const STARTING: &str = "irori_starting";
+
 impl HaError {
+    /// Home Assistant said it's in `state`, not `RUNNING`.
+    pub fn starting(state: &str) -> Self {
+        Self {
+            code: Some(STARTING.to_owned()),
+            message: format!(
+                "Home Assistant is {}",
+                state.to_ascii_lowercase().replace('_', " ")
+            ),
+        }
+    }
+
     fn local(message: impl Into<String>) -> Self {
         Self {
             code: None,
             message: message.into(),
         }
+    }
+
+    /// Home Assistant is starting or stopping: its states aren't all there.
+    pub fn is_starting(&self) -> bool {
+        self.code.as_deref() == Some(STARTING)
     }
 
     /// The token's user isn't an administrator: the registries are theirs only.
@@ -211,7 +228,9 @@ struct Inner {
 pub struct Connection {
     pub client: Client,
     pub version: Option<String>,
-    pub events: mpsc::Receiver<Event>,
+    /// Unbounded: the reader also delivers answers, so it must never wait on the events. Were it
+    /// to, a request awaited while events pile up would never hear its answer.
+    pub events: mpsc::UnboundedReceiver<Event>,
     pub reader: JoinHandle<()>,
 }
 
@@ -278,7 +297,7 @@ async fn connect_now(url: &str, token: &str) -> Result<Connection, ConnectError>
         sink: tokio::sync::Mutex::new((sink, 0)),
         waiting: Mutex::new(Some(HashMap::new())),
     });
-    let (events_tx, events) = mpsc::channel(EVENTS_CAPACITY);
+    let (events_tx, events) = mpsc::unbounded_channel();
     let reader = tokio::spawn(read(stream, Arc::clone(&inner), events_tx));
     Ok(Connection {
         client: Client { inner },
@@ -297,7 +316,11 @@ fn json_of(message: &Message) -> Option<Value> {
 }
 
 /// Reads until the connection closes: answers go to whoever asked, events to the channel.
-async fn read(mut stream: SplitStream<Socket>, inner: Arc<Inner>, events: mpsc::Sender<Event>) {
+async fn read(
+    mut stream: SplitStream<Socket>,
+    inner: Arc<Inner>,
+    events: mpsc::UnboundedSender<Event>,
+) {
     let mut pinged = false;
     loop {
         let message = match tokio::time::timeout(QUIET, stream.next()).await {
@@ -348,7 +371,7 @@ async fn read(mut stream: SplitStream<Socket>, inner: Arc<Inner>, events: mpsc::
                         subscription: id,
                         event: value.get("event").cloned().unwrap_or(Value::Null),
                     };
-                    if events.send(event).await.is_err() {
+                    if events.send(event).is_err() {
                         return;
                     }
                 }
@@ -466,6 +489,16 @@ impl Client {
         {
             waiting.remove(&id);
         }
+    }
+
+    /// Fails every request still waiting, at once, and any made after: the connection is being
+    /// given up.
+    pub fn give_up(&self) {
+        self.inner
+            .waiting
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
     }
 
     /// Closes the connection. The reader then ends, and the events with it.

@@ -26,6 +26,7 @@ const FAST: Timing = Timing {
     most_retry: Duration::from_millis(200),
     refused_retry: Duration::from_secs(3600),
     settle: Duration::from_millis(50),
+    starting_retry: Duration::from_millis(50),
     steady: Duration::from_secs(3600),
     tick: Duration::from_millis(10),
 };
@@ -545,6 +546,31 @@ async fn a_token_that_cannot_read_the_registries_waits_for_an_administrators() {
         world.log.lock().expect("log").health.last(),
         Some(Health::Degraded(_))
     ));
+    world.stop().await;
+}
+
+#[tokio::test]
+async fn a_home_assistant_still_starting_is_waited_for_before_anything_comes_over() {
+    let mut home = home();
+    home.running = Some("STARTING".into());
+    let fake = FakeHa::start(home).await.expect("a fake");
+    let world = world(&fake).await;
+    world
+        .until("health saying so", |log| match log.health.last() {
+            Some(Health::Degraded(why)) if why.contains("starting") => Some(()),
+            _ => None,
+        })
+        .await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    {
+        let log = world.log.lock().expect("log");
+        assert!(log.entities.is_empty() && log.removed.is_empty(), "{log:?}");
+    }
+    fake.with_world(|w| w.running = None);
+    world.running().await;
+    world
+        .until("entities", |log| (log.entities.len() == 2).then_some(()))
+        .await;
     world.stop().await;
 }
 

@@ -21,6 +21,8 @@ pub struct World {
     pub token: String,
     /// Whether the token's user is an administrator: only they can read the registries.
     pub admin: bool,
+    /// What `get_config` says Home Assistant is doing: `RUNNING` when `None`.
+    pub running: Option<String>,
     pub floors: Vec<Value>,
     pub areas: Vec<Value>,
     pub devices: Vec<Value>,
@@ -427,7 +429,11 @@ fn answer_to(shared: &Shared, connection: u64, asked: &Value) -> Vec<Value> {
     match kind {
         "get_config" => vec![result(
             id,
-            json!({ "location_name": "Fake home", "version": "2026.11.0", "unit_system": { "temperature": "°C" } }),
+            json!({
+                "location_name": "Fake home", "version": "2026.11.0",
+                "unit_system": { "temperature": "°C" },
+                "state": world.running.as_deref().unwrap_or("RUNNING"),
+            }),
         )],
         "config/floor_registry/list" => vec![registry(&world.floors)],
         "config/area_registry/list" => vec![registry(&world.areas)],
