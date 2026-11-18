@@ -1,0 +1,35 @@
+[package]
+name = "irori-protocol-tesla"
+description = "Tesla cars and Powerwall energy sites, through Tesla's Fleet API, with the API's cost kept in view."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-protocol.workspace = true
+irori-cloud.workspace = true
+
+base64.workspace = true
+getrandom.workspace = true
+hmac.workspace = true
+jiff.workspace = true
+p256.workspace = true
+prost.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "irori-ext-tesla"
+path = "src/main.rs"
+
+[lints]
+workspace = true

@@ -184,6 +184,7 @@ pub fn also_called(glyph: irori_types::Glyph) -> &'static str {
         Glyph::Mower => "lawn garden robot",
         Glyph::Battery => "power",
         Glyph::Solar => "panel pv energy",
+        Glyph::Car => "vehicle ev tesla drive",
         Glyph::Charger => "ev car electric",
         Glyph::Energy => "power meter electricity bolt",
         Glyph::Sun => "light level lux illuminance",
@@ -298,6 +299,7 @@ fn glyph_drawing(glyph: irori_types::Glyph) -> &'static str {
             r#"<rect x="4" y="3" width="10" height="18" rx="1.5"/><path d="M9.5 7 7.5 11h3l-2 4"/>"#,
             r#"<path d="M14 9h2.5a1.5 1.5 0 0 1 1.5 1.5V17a1.5 1.5 0 0 0 3 0V8l-2-2"/>"#,
         ),
+        Glyph::Car => kit::CAR,
         Glyph::Energy => kit::BOLT,
         Glyph::Sun => kit::SUN,
         Glyph::Bed => concat!(

@@ -5186,6 +5186,8 @@ mod tests {
                         hint: None,
                         username: None,
                     }),
+                    link: None,
+                    copy: None,
                 }])
                 .await;
             }
@@ -5340,6 +5342,9 @@ mod tests {
                     irori_protocol::Incoming::Call(call) => call.reply(Ok(())),
                     irori_protocol::Incoming::Picture(asked) => {
                         asked.reply(Err("no cameras on this mesh".into()));
+                    }
+                    irori_protocol::Incoming::Page(page) => {
+                        page.answer(Err("no page on this mesh".into()));
                     }
                     irori_protocol::Incoming::Live(live) => {
                         live.feed.end(Some("no cameras on this mesh".into()));
@@ -5811,6 +5816,8 @@ mod tests {
                             placeholder: Some("admin".into()),
                         }),
                     }),
+                    link: None,
+                    copy: None,
                 }]
             };
             ctx.set_waiting(waiting).await;

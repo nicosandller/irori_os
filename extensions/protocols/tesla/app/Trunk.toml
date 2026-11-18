@@ -1,0 +1,15 @@
+[build]
+target = "index.html"
+release = true
+# Served from the extension's package under /pages/tesla/, so every link is relative.
+public_url = "./"
+# Stable names: boot.js imports them, because the page's policy allows no inline script.
+filehash = false
+inject_scripts = false
+dist = "dist"
+
+[tools]
+wasm_opt = "version_123"
+
+[watch]
+watch = ["index.html", "boot.js", "src", "../../../../crates/irori-ui-kit/src"]

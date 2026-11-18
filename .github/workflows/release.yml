@@ -103,6 +103,7 @@ jobs:
             .
             crates/irori-ui
             extensions/automations/app
+            extensions/protocols/tesla/app
       - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
         with:
           tool: trunk
@@ -118,6 +119,11 @@ jobs:
         with:
           name: page-automations
           path: extensions/automations/app/dist
+          retention-days: 1
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: page-tesla
+          path: extensions/protocols/tesla/app/dist
           retention-days: 1
 
   build:
@@ -179,6 +185,10 @@ jobs:
         with:
           name: page-automations
           path: extensions/automations/app/dist
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: page-tesla
+          path: extensions/protocols/tesla/app/dist
 
       - name: Build the program
         run: |

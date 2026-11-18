@@ -3,7 +3,8 @@
 //!
 //! Generic on purpose. An extension says what it's waiting for and where a secret goes; this
 //! page doesn't know what ESPHome is, and a future extension that needs a pairing code gets the
-//! same form.
+//! same form. A step done somewhere else (signing in to a vendor, a key for a website) comes as a
+//! link to open and text to copy, the same way for every vendor.
 
 use std::collections::BTreeMap;
 
@@ -12,6 +13,9 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::api;
+
+/// How long the copy button says it copied.
+const COPIED_FOR: std::time::Duration = std::time::Duration::from_millis(1600);
 
 /// Everything waiting, by extension. A memo over the extensions alone, not the readings: the key
 /// field below has to survive a sensor reporting every second (ROADMAP D33).
@@ -112,6 +116,7 @@ fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView
     let username = RwSignal::new(String::new());
     let sending = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
+    let copied = RwSignal::new(None::<bool>);
     let secret = item.secret.clone();
 
     let send = {
@@ -161,6 +166,40 @@ fn Item(extension: ExtensionId, through: String, item: Waiting) -> impl IntoView
                 <span class="muted small id">{item.unique_id.to_string()}</span>
             </div>
             <p class="why-waiting">{item.reason.clone()}</p>
+            {item.copy.clone().map(|copy| {
+                let text = copy.text.clone();
+                let label = copy.label.clone();
+                let press = move |_| {
+                    let text = text.clone();
+                    spawn_local(async move {
+                        copied.set(Some(crate::log_window::write_to_clipboard(&text).await));
+                        set_timeout(move || copied.set(None), COPIED_FOR);
+                    });
+                };
+                view! {
+                    <p class="muted small">{copy.label.clone()}</p>
+                    <div class="token-secret-row waiting-copy">
+                        <code>{copy.text.clone()}</code>
+                        <button type="button" class="log-copy"
+                            class:done=move || copied.get() == Some(true)
+                            aria-label=format!("Copy the {}", label.to_lowercase())
+                            on:click=press>
+                            {crate::log_window::copy_icon()}
+                        </button>
+                    </div>
+                    {move || (copied.get() == Some(false)).then(|| view! {
+                        <p class="why">"The browser didn't let Irori copy it. Select it and copy it yourself."</p>
+                    })}
+                }
+            })}
+            {item.link.clone().map(|link| view! {
+                <p class="waiting-link">
+                    <a class="press" href=link.url.clone() target="_blank" rel="noopener noreferrer">
+                        {link.label.clone()}
+                    </a>
+                    <span class="muted small">" Opens in a new tab."</span>
+                </p>
+            })}
             {secret.map(|secret| {
                 let send = send.clone();
                 let asks_username = secret.username.is_some();

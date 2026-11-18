@@ -140,6 +140,9 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                         let picture = house.picture(asked.unique_id.as_str());
                         asked.reply(picture);
                     }
+                    Some(Incoming::Page(page)) => {
+                        page.answer(Err("the demo has no page of its own".into()));
+                    }
                     // Its cameras draw pictures; none says it can be watched live.
                     Some(Incoming::Live(live)) => {
                         live.feed.end(Some("the demo's cameras have no live video".into()));

@@ -420,6 +420,13 @@ fn default_value(field_schema: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Whether a required field would be saved empty. A secret always opens blank, and blank keeps
+/// the one already saved, so a saved secret counts as filled: re-saving a vendor's other settings
+/// never asks for its client secret again.
+fn left_unfilled(field: &Field, text: &str, saved: bool) -> bool {
+    field.required && text.trim().is_empty() && !(field.kind == FieldKind::Secret && saved)
+}
+
 /// One saved setting as the form's own text, or `None` when it isn't set.
 ///
 /// A secret is never here — the server doesn't send them back — so a password field stays blank
@@ -551,8 +558,14 @@ pub fn SettingsForm(
             // Checked before anything is sent, and regardless of `touched`: a required field
             // left blank must refuse the save, not silently omit the key and report success —
             // the extension would stay unconfigured with no sign anything went wrong.
-            for Row { field, value, .. } in &rows {
-                if field.required && value.get_untracked().trim().is_empty() {
+            for Row {
+                field,
+                value,
+                saved,
+                ..
+            } in &rows
+            {
+                if left_unfilled(field, &value.get_untracked(), saved.get_untracked()) {
                     trouble.set(Some(format!("\"{}\" is required", field.label)));
                     return;
                 }
@@ -1060,6 +1073,40 @@ mod tests {
     fn a_blank_or_non_numeric_field_is_a_named_error() {
         assert!(parse_field(&FieldKind::Integer, "abc").is_err());
         assert!(parse_field(&FieldKind::Number, "abc").is_err());
+    }
+
+    #[test]
+    fn a_saved_secret_counts_as_filled_when_required() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["client_id", "client_secret"],
+            "properties": {
+                "client_id": { "type": "string" },
+                "client_secret": { "$ref": "#/$defs/Secret" }
+            },
+            "$defs": { "Secret": { "type": "string", "writeOnly": true } }
+        });
+        let fields = fields_from_schema(&schema);
+        let field = |key: &str| {
+            fields
+                .iter()
+                .find(|field| field.key == key)
+                .expect("a field")
+        };
+        let secret = field("client_secret");
+        assert_eq!(secret.kind, FieldKind::Secret);
+        assert!(secret.required);
+        assert!(left_unfilled(secret, "", false), "nothing saved yet");
+        assert!(
+            !left_unfilled(secret, "", true),
+            "blank keeps the saved one"
+        );
+        assert!(!left_unfilled(secret, "new", false));
+        let id = field("client_id");
+        assert!(
+            left_unfilled(id, " ", true),
+            "only a secret is kept by leaving it blank"
+        );
     }
 
     #[test]

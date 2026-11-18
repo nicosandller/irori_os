@@ -604,3 +604,83 @@ async fn an_engine_that_limits_people_is_told_who_asks_and_the_others_are_not() 
 
     host.shutdown().await;
 }
+
+/// A protocol extension with a page of its own: the page's question reaches its process, over
+/// the same link an engine's does, and the answer comes back (Tesla's usage page asks its
+/// protocol for the month's spend).
+#[tokio::test]
+async fn a_protocol_answers_its_own_page() {
+    use std::os::unix::fs::PermissionsExt;
+
+    const PROTOCOL: &str = r#"#!/bin/sh
+while read line; do
+  case "$line" in
+    *app_request*) echo "page: $line" >&2; echo '{"type":"app_answer","id":0,"value":{"spent":1.5}}';;
+  esac
+done
+"#;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("meter");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "meter"
+            name = "Meter"
+            version = "0.1.0"
+            # The first release whose toolkit hands a protocol its page's questions.
+            irori = ">=1.7.0"
+
+            [[contributes.protocol]]
+            iot_class = "cloud_polling"
+            entity_kinds = ["sensor"]
+            run = { command = "bin/meter" }
+
+            [[contributes.app]]
+            label = "Usage"
+            entry = "app/index.html"
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/meter");
+    std::fs::write(&program, PROTOCOL).expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        Vec::new(),
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    let meter = ExtensionId::try_from("meter").expect("valid");
+    eventually("the protocol runs", || {
+        core.extensions()
+            .get(&meter)
+            .is_some_and(|overview| overview.status == ExtensionStatus::Running)
+    })
+    .await;
+
+    let answer = core
+        .app_request(
+            &meter,
+            "usage.summary".into(),
+            serde_json::json!({}),
+            irori_protocol::engine::Caller::owner(),
+        )
+        .await
+        .expect("answered");
+    assert_eq!(answer, serde_json::json!({"spent": 1.5}));
+    let said = |what: &str| core.log(&meter).iter().any(|line| line.contains(what));
+    assert!(
+        said(r#""method":"usage.summary""#),
+        "{:?}",
+        core.log(&meter)
+    );
+
+    host.shutdown().await;
+}

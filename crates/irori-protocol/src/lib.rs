@@ -303,6 +303,15 @@ impl Picture {
 enum ActionReply {
     Done(oneshot::Sender<Result<(), String>>),
     Picture(oneshot::Sender<Result<Picture, String>>),
+    Page(oneshot::Sender<Result<serde_json::Value, String>>),
+}
+
+/// What the extension's page asked: a method of its own naming, its parameters, and who asked.
+#[derive(Debug)]
+struct PageAsk {
+    method: String,
+    params: serde_json::Value,
+    caller: engine::Caller,
 }
 
 /// What a person filled in for an action with ways: which way, and its fields by id. Empty for a
@@ -334,6 +343,9 @@ pub struct IncomingAction {
     /// Set when it's a page asking a camera for a picture, which travels the same way too.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Picture`].
     picture: Option<UniqueId>,
+    /// Set when it's the extension's own page asking it something, which travels the same way
+    /// too. [`ProtocolContext::next`] hands those out as [`Incoming::Page`].
+    page: Option<PageAsk>,
     /// Set when it's a page asking to watch a camera live, which travels the same way too.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Live`].
     live: Option<IncomingLive>,
@@ -357,6 +369,9 @@ impl IncomingAction {
             ActionReply::Picture(reply) => {
                 let _ = reply.send(result.and_then(|()| Err("it sent no picture".to_owned())));
             }
+            ActionReply::Page(reply) => {
+                let _ = reply.send(result.map(|()| serde_json::Value::Null));
+            }
         }
     }
 
@@ -368,6 +383,9 @@ impl IncomingAction {
             }
             ActionReply::Done(reply) => {
                 let _ = reply.send(result.map(|_| ()));
+            }
+            ActionReply::Page(reply) => {
+                let _ = reply.send(result.map(|_| serde_json::Value::Null));
             }
         }
     }
@@ -412,24 +430,31 @@ impl IncomingAction {
         if let Some(talk) = self.talk {
             return Incoming::Talk(talk);
         }
-        match (self.unpair, self.picture, self.reply) {
-            (Some((unique_id, force)), _, ActionReply::Done(reply)) => {
+        match (self.unpair, self.picture, self.page, self.reply) {
+            (Some((unique_id, force)), _, _, ActionReply::Done(reply)) => {
                 Incoming::Unpair(IncomingUnpair {
                     unique_id,
                     force,
                     reply,
                 })
             }
-            (_, Some(unique_id), ActionReply::Picture(reply)) => {
+            (_, Some(unique_id), _, ActionReply::Picture(reply)) => {
                 Incoming::Picture(IncomingPicture { unique_id, reply })
             }
-            (unpair, picture, reply) => Incoming::Action(Self {
+            (_, _, Some(ask), ActionReply::Page(reply)) => Incoming::Page(IncomingPage {
+                method: ask.method,
+                params: ask.params,
+                caller: ask.caller,
+                reply,
+            }),
+            (unpair, picture, page, reply) => Incoming::Action(Self {
                 action_id: self.action_id,
                 stop: self.stop,
                 way: self.way,
                 fields: self.fields,
                 unpair,
                 picture,
+                page,
                 live: None,
                 talk: None,
                 reply,
@@ -450,6 +475,26 @@ pub struct IncomingPicture {
 
 impl IncomingPicture {
     pub fn reply(self, result: Result<Picture, String>) {
+        let _ = self.reply.send(result);
+    }
+}
+
+/// A question from the extension's own page (its manifest's `contributes.app`;
+/// `docs/specs/automations.md` §B4): a method the page and the protocol agree on, and its
+/// parameters. Answer exactly once, quickly: the page waits. Dropping it without answering tells
+/// the page it failed.
+#[derive(Debug)]
+pub struct IncomingPage {
+    pub method: String,
+    pub params: serde_json::Value,
+    /// Who asked, as the core saw it. The page can't set this.
+    pub caller: engine::Caller,
+    reply: oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
+impl IncomingPage {
+    /// `Err` is shown to the person, so say what went wrong in their terms.
+    pub fn answer(self, result: Result<serde_json::Value, String>) {
         let _ = self.reply.send(result);
     }
 }
@@ -483,6 +528,7 @@ pub enum Incoming {
     Action(IncomingAction),
     Unpair(IncomingUnpair),
     Picture(IncomingPicture),
+    Page(IncomingPage),
     Live(IncomingLive),
     Talk(IncomingTalk),
 }
@@ -674,6 +720,9 @@ impl ProtocolContext {
                         }
                         Incoming::Picture(picture) => {
                             picture.reply(Err("this protocol has no pictures".into()));
+                        }
+                        Incoming::Page(page) => {
+                            page.answer(Err("this extension's page can't ask it anything".into()));
                         }
                         Incoming::Live(live) => {
                             live.feed.end(Some("this protocol has no live video".into()));
@@ -1102,6 +1151,7 @@ pub mod host {
             fields: BTreeMap::new(),
             unpair: None,
             picture: None,
+            page: None,
             live: None,
             talk: None,
             reply: ActionReply::Done(reply),
@@ -1153,9 +1203,40 @@ pub mod host {
             fields: BTreeMap::new(),
             unpair: None,
             picture: Some(unique_id),
+            page: None,
             live: None,
             talk: None,
             reply: ActionReply::Picture(reply),
+        };
+        (incoming, result)
+    }
+
+    /// Builds a question from the extension's page, as it travels: on the actions channel.
+    /// [`ProtocolContext::next`] hands it out as [`Incoming::Page`].
+    pub fn incoming_page(
+        method: String,
+        params: serde_json::Value,
+        caller: crate::engine::Caller,
+    ) -> (
+        IncomingAction,
+        oneshot::Receiver<Result<serde_json::Value, String>>,
+    ) {
+        let (reply, result) = oneshot::channel();
+        let incoming = IncomingAction {
+            action_id: String::new(),
+            stop: false,
+            way: None,
+            fields: BTreeMap::new(),
+            unpair: None,
+            picture: None,
+            page: Some(PageAsk {
+                method,
+                params,
+                caller,
+            }),
+            live: None,
+            talk: None,
+            reply: ActionReply::Page(reply),
         };
         (incoming, result)
     }
@@ -1178,6 +1259,7 @@ pub mod host {
             fields: BTreeMap::new(),
             unpair: None,
             picture: None,
+            page: None,
             live: Some(crate::IncomingLive {
                 unique_id,
                 quality,
@@ -1211,6 +1293,7 @@ pub mod host {
             fields: BTreeMap::new(),
             unpair: None,
             picture: None,
+            page: None,
             live: None,
             talk: Some(crate::IncomingTalk {
                 unique_id,

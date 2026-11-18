@@ -676,6 +676,16 @@
             "$ref": "#/$defs/ProtocolAction"
           }
         },
+        "answer_within_seconds": {
+          "description": "How long the core waits for its answer to a service call, in seconds: for a protocol\nwhose devices take a while (a car that has to wake first). Leave it out for the usual 10.\nAt most [`MAX_CALL_ANSWER_SECONDS`].",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "maximum": 120,
+          "minimum": 1
+        },
         "entity_kinds": {
           "description": "The kinds of entity it creates. It must handle the standard services of each kind.",
           "type": "array",
