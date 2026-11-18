@@ -1,7 +1,7 @@
 [extension]
 id = "switchbot"
 name = "SwitchBot"
-version = "0.1.0"
+version = "0.1.1"
 irori = ">=1.6.0"
 # 1.6.0 is the first core whose network map has a vendor's cloud on it, and the first that knows
 # the bluetooth permission.

@@ -476,8 +476,8 @@ fn card(
         <section class="ext-card">
             <span class="ext-category">{category_label(&entry.category)}</span>
             <div class="ext-card-head">
-                // `entry.icon` already reflects whether the icon endpoint has bytes to serve
-                // right now (the server checks the same live state), so nothing to combine here.
+                // `entry.icon` is whether the icon endpoint has bytes to serve, which for an
+                // official extension it does before Install: the binary carries each one's icon.
                 {icon(&entry.id, entry.icon)}
                 <div class="ext-card-title">
                     <span class="name">{entry.name.clone()}</span>

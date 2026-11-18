@@ -38,6 +38,16 @@ pub const DEFAULT_RETAIN_DAYS: u32 = 10;
 /// The most changes one read returns. The newest are kept, and they come back oldest first.
 pub const MAX_RETURNED: usize = 2_000;
 
+/// An entity's changes, and whether older ones were left out.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Changes {
+    /// Oldest first.
+    pub states: Vec<EntityState>,
+    /// There were more than [`MAX_RETURNED`] since the time asked for, and the oldest of them
+    /// were left out. Whoever replays or charts these needs to know the start is missing.
+    pub truncated: bool,
+}
+
 /// Saves waiting on the writer. Past this, new changes are dropped.
 const QUEUE: usize = 1_024;
 
@@ -203,7 +213,7 @@ enum Job {
     Query {
         entity_id: EntityId,
         since: Timestamp,
-        reply: std::sync::mpsc::Sender<Vec<EntityState>>,
+        reply: std::sync::mpsc::Sender<Changes>,
     },
     Summaries {
         entity_id: EntityId,
@@ -300,7 +310,7 @@ fn lock(queue: &Mutex<Queue>) -> MutexGuard<'_, Queue> {
 fn abandon(job: Job) {
     match job {
         Job::Query { reply, .. } => {
-            let _ = reply.send(Vec::new());
+            let _ = reply.send(Changes::default());
         }
         Job::Summaries { reply, .. } => {
             let _ = reply.send(Vec::new());
@@ -510,9 +520,21 @@ impl Recorder {
         self.shared.mailbox.wake.notify_one();
     }
 
+    /// How many state changes were dropped, since this start, because the writer was behind.
+    /// Those changes are missing from history for good (issue #97).
+    pub fn dropped(&self) -> u64 {
+        self.shared.dropped.load(Ordering::Relaxed)
+    }
+
     /// Changes for `entity_id` with `last_updated >= since`, oldest first. At most
     /// [`MAX_RETURNED`], keeping the newest when there are more.
     pub fn since(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState> {
+        self.changes_since(entity_id, since).states
+    }
+
+    /// [`Recorder::since`], saying whether older changes were left out to keep to
+    /// [`MAX_RETURNED`] (issue #97).
+    pub fn changes_since(&self, entity_id: &EntityId, since: Timestamp) -> Changes {
         let (reply_tx, reply_rx) = std::sync::mpsc::channel();
         if !self.enqueue_waiting(Job::Query {
             entity_id: entity_id.clone(),
@@ -520,7 +542,7 @@ impl Recorder {
             reply: reply_tx,
         }) {
             tracing::warn!("the recorder has stopped; history could not be read");
-            return Vec::new();
+            return Changes::default();
         }
         reply_rx.recv().unwrap_or_default()
     }
@@ -787,7 +809,7 @@ fn apply(
                 Ok(rows) => rows,
                 Err(error) => {
                     tracing::warn!(%error, "history could not be read");
-                    Vec::new()
+                    Changes::default()
                 }
             };
             let _ = reply.send(rows);
@@ -1031,9 +1053,9 @@ fn read(
     connection: &Connection,
     entity_id: &EntityId,
     since: Timestamp,
-) -> Result<Vec<EntityState>, String> {
+) -> Result<Changes, String> {
     let Some(since_ns) = nanos(since) else {
-        return Ok(Vec::new());
+        return Ok(Changes::default());
     };
     let mut statement = connection
         .prepare(
@@ -1048,13 +1070,19 @@ fn read(
             rusqlite::params![
                 entity_id.as_str(),
                 since_ns,
-                i64::try_from(MAX_RETURNED).expect("the history cap fits in a SQL limit")
+                // One past the cap, to tell a full answer from a cut one.
+                i64::try_from(MAX_RETURNED + 1).expect("the history cap fits in a SQL limit")
             ],
             |row| row.get::<_, String>(0),
         )
         .map_err(|error| error.to_string())?;
     let mut states = Vec::new();
-    for row in rows {
+    let mut truncated = false;
+    for (n, row) in rows.enumerate() {
+        if n == MAX_RETURNED {
+            truncated = true;
+            break;
+        }
         let text = row.map_err(|error| error.to_string())?;
         match serde_json::from_str::<EntityState>(&text) {
             Ok(state) => states.push(state),
@@ -1062,7 +1090,7 @@ fn read(
         }
     }
     states.reverse();
-    Ok(states)
+    Ok(Changes { states, truncated })
 }
 
 fn prune(connection: &Connection, retention: &Retention) -> Result<(), String> {
@@ -1306,6 +1334,23 @@ mod tests {
         assert_eq!(recorder.since(&other, at("1970-01-01T00:00:00Z")).len(), 1);
     }
 
+    /// A change that doesn't fit the queue is counted where someone can see it, not only in a
+    /// log line.
+    #[test]
+    fn a_dropped_change_is_counted() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        assert_eq!(recorder.dropped(), 0);
+        // The queue looks full: the writer isn't woken, so it stays that way for the append.
+        lock(&recorder.shared.mailbox.queue).appends = QUEUE;
+        recorder.append(sample("switch.plug", true, now()));
+        assert_eq!(recorder.dropped(), 1);
+        lock(&recorder.shared.mailbox.queue).appends = 0;
+        recorder.append(sample("switch.plug", false, now()));
+        assert!(recorder.check());
+        assert_eq!(recorder.dropped(), 1, "one that fits isn't counted");
+    }
+
     #[test]
     fn a_read_keeps_the_newest_when_there_are_more_than_the_cap() {
         let dir = tempfile::tempdir().expect("a temp dir");
@@ -1334,6 +1379,50 @@ mod tests {
             seen.last().expect("the cap is not zero").last_updated,
             later(start, i64::try_from(total - 1).expect("the index fits"))
         );
+    }
+
+    /// One past the cap is a cut answer, and says so (issue #97).
+    #[test]
+    fn a_read_past_the_cap_says_it_was_cut() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        let plug = entity("switch.plug");
+        let start = now();
+        for i in 0..=MAX_RETURNED {
+            recorder.append(sample(
+                "switch.plug",
+                true,
+                later(start, i64::try_from(i).expect("the index fits")),
+            ));
+            if i % 100 == 0 {
+                assert!(recorder.check(), "the writer is still accepting changes");
+            }
+        }
+        let changes = recorder.changes_since(&plug, at("1970-01-01T00:00:00Z"));
+        assert_eq!(changes.states.len(), MAX_RETURNED);
+        assert!(changes.truncated, "the answer says it was cut");
+    }
+
+    /// Exactly the cap is a whole answer, not a cut one.
+    #[test]
+    fn a_read_of_exactly_the_cap_is_not_cut() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        let plug = entity("switch.plug");
+        let start = now();
+        for i in 0..MAX_RETURNED {
+            recorder.append(sample(
+                "switch.plug",
+                true,
+                later(start, i64::try_from(i).expect("the index fits")),
+            ));
+            if i % 100 == 0 {
+                assert!(recorder.check(), "the writer is still accepting changes");
+            }
+        }
+        let changes = recorder.changes_since(&plug, at("1970-01-01T00:00:00Z"));
+        assert_eq!(changes.states.len(), MAX_RETURNED);
+        assert!(!changes.truncated);
     }
 
     #[test]

@@ -514,6 +514,7 @@ fn Mark() -> impl IntoView {
 const SIDEBAR_KEY: &str = "irori.sidebar";
 
 /// Where turning motion off in Settings is remembered.
+/// Read by `index.html` as well, before the page runs: the two must name the same key.
 const MOTION_KEY: &str = "irori.motion";
 
 /// The pages the sidebar links to, besides Settings: address, name, and an icon drawn in 24×24

@@ -476,6 +476,10 @@ struct HistoryView {
     /// own name, and "someone" for the rest.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     by: BTreeMap<ContextId, String>,
+    /// The day had more changes than one answer holds, and the oldest were left out: `states`
+    /// doesn't start at the start of the day. Absent when nothing was left out.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
 }
 
 /// How many calls one answer looks up the sender of.
@@ -494,7 +498,7 @@ async fn entity_history(
             format!("there's no entity `{entity_id}`"),
         );
     }
-    let states = state.0.history.for_entity(&entity_id);
+    let irori_recorder::Changes { states, truncated } = state.0.history.last_day(&entity_id);
     // The calls the changes answered, found in the activity log. At most as many as there are
     // changes in a day worth drawing.
     let calls: Vec<ContextId> = states
@@ -526,6 +530,7 @@ async fn entity_history(
         entity: entity_id.clone(),
         states,
         by,
+        truncated,
     })
     .into_response()
 }
@@ -1697,8 +1702,17 @@ async fn remove_helper(
 /// An extension's icon. Served with a policy that forbids everything an image doesn't need, so
 /// an icon from a third-party extension can't run script even when opened on its own — and the
 /// page only ever shows it through `<img>`, where it couldn't anyway.
+///
+/// The running extension's own icon first, since an installed copy may be another version.
+/// Otherwise an official extension's, from this binary, so its card has its picture before
+/// Install.
 async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionId>) -> Response {
-    match state.0.core.extension_icon(&id) {
+    let svg = state
+        .0
+        .core
+        .extension_icon(&id)
+        .or_else(|| crate::packages::official_icon(&id).map(str::to_owned));
+    match svg {
         Some(svg) => (
             [
                 (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
@@ -2341,12 +2355,10 @@ async fn catalog(State(state): State<AppState>) -> Json<Vec<CatalogEntry>> {
             .into_iter()
             .map(|item| {
                 let overview = running.get(&item.id);
-                // Live, not the catalog's own claim: an installed extension's manifest is only
-                // read once its supervised task actually describes it, which can be a moment
-                // after `installed` turns true, and a manifest missing `run` or a protocol
-                // contribution never gets described at all (host.rs). Either way, this says
-                // whether `extension_icon` actually has bytes right now.
-                let icon = state.0.core.has_extension_icon(&item.id);
+                // Whether `extension_icon` has bytes to serve: the running extension's own, or
+                // the one this binary carries for every official extension, installed or not.
+                let icon = state.0.core.has_extension_icon(&item.id)
+                    || crate::packages::official_icon(&item.id).is_some();
                 let busy = work.get(&item.id).map(|work| work.as_str());
                 // Secrets never come back out (§3.4). They live in `secrets.toml` and so aren't
                 // in this file at all, but a hand-written one could still name a `writeOnly`
@@ -2926,6 +2938,14 @@ struct Health<'a> {
     uptime_ms: u128,
     features: &'a [&'static str],
     sqlite: SqliteHealth<'a>,
+    history: HistoryHealth,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryHealth {
+    /// State changes left out of history since this start because the recorder fell behind.
+    /// They are missing for good: a chart or a replay over that time is incomplete (issue #97).
+    dropped_changes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -2953,6 +2973,9 @@ async fn health(State(state): State<AppState>) -> Response {
             version: inner.build.sqlite_version,
             journal_mode: &inner.db.journal_mode,
             ok: inner.history.check(),
+        },
+        history: HistoryHealth {
+            dropped_changes: inner.history.dropped(),
         },
     })
     .into_response()
@@ -3390,6 +3413,15 @@ mod tests {
         let headers = res.headers().clone();
         let body = res.into_body().collect().await?.to_bytes().to_vec();
         Ok((status, headers, body))
+    }
+
+    #[tokio::test]
+    async fn health_counts_history_dropped_since_the_start() -> anyhow::Result<()> {
+        let (status, _, body) = get("/api/health").await?;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(json["history"]["dropped_changes"], 0, "{json}");
+        Ok(())
     }
 
     #[tokio::test]
@@ -4271,9 +4303,8 @@ mod tests {
         Ok(())
     }
 
-    /// The catalog's `icon` field is whether `extension_icon` can serve bytes for it *right now*
-    /// (running, with an icon in its manifest) — not a static claim from the catalog file — so
-    /// the Extensions page never points an `<img>` at a file that isn't there yet, or ever.
+    /// The catalog's `icon` field is whether `extension_icon` can serve bytes for it, and an
+    /// official extension can before it's installed: its card shows what it is from the start.
     #[tokio::test]
     async fn the_catalog_reports_whether_an_icon_is_actually_servable() -> anyhow::Result<()> {
         let (core, host) = demo().await?;
@@ -4290,7 +4321,11 @@ mod tests {
             .iter()
             .find(|e| e["id"] == "mqtt")
             .expect("mqtt is official");
-        assert_eq!(mqtt["icon"], false, "{catalog}");
+        assert_eq!(mqtt["installed"], false, "{catalog}");
+        assert_eq!(
+            mqtt["icon"], true,
+            "not installed, and still has its icon: {catalog}"
+        );
         assert_eq!(mqtt["full_access"], false, "{catalog}");
         let zigbee = entries
             .iter()
@@ -7773,6 +7808,24 @@ mod tests {
             String::from_utf8(body.to_vec())?
                 .trim_start()
                 .starts_with("<svg")
+        );
+
+        // Not installed: the icon this binary carries, locked down the same way.
+        let res = server
+            .app()?
+            .oneshot(Request::get("/api/extensions/mqtt/icon.svg").body(Body::empty())?)
+            .await?;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(res.headers()["content-type"], "image/svg+xml");
+        assert!(
+            res.headers()["content-security-policy"]
+                .to_str()?
+                .contains("sandbox")
+        );
+        let body = res.into_body().collect().await?.to_bytes();
+        assert_eq!(
+            std::str::from_utf8(&body)?,
+            crate::packages::official_icon(&"mqtt".parse()?).expect("mqtt has one")
         );
 
         let (status, _) = server

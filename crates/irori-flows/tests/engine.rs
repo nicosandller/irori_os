@@ -254,6 +254,26 @@ fn too_bright_ends_at_the_gate_and_says_what_it_read() {
     assert_eq!(run.steps[1].reads[0].value, serde_json::json!(42.0));
 }
 
+/// Changes the engine was never sent can't fire anything, and the trigger can't tell; the
+/// near-miss log says so, so "why didn't it fire?" has an answer (issue #97).
+#[test]
+fn missed_changes_are_a_near_miss_for_every_watching_trigger() {
+    let mut engine = engine_with(hallway());
+    engine.missed(37, at(10));
+    let (calls, done, misses) = effects(&mut engine, at(10));
+    assert!(calls.is_empty() && done.is_empty(), "nothing runs");
+    assert_eq!(misses.len(), 1, "{misses:?}");
+    assert_eq!(misses[0].kind, NearMissKind::Missed);
+    assert!(
+        misses[0].message.contains("37 events") && misses[0].message.contains(MOTION),
+        "{}",
+        misses[0].message
+    );
+    // It goes to disk and comes back the same.
+    let written = serde_json::to_string(&misses[0]).expect("serializes");
+    assert!(written.contains(r#""kind":"missed""#), "{written}");
+}
+
 #[test]
 fn an_unavailable_sensor_fails_closed_and_is_a_near_miss_for_its_trigger() {
     let mut engine = engine_with(hallway());

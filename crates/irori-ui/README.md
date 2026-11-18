@@ -181,8 +181,8 @@ The same goes for the Floorplan's markers and drawing, which redraw on every rea
 pan: they transition, and nothing on them plays as it appears.
 
 **Turning it off:** Settings → Appearance → Motion, remembered per browser (`irori.motion`), sets
-`data-motion="off"` on `.shell`. The system's *reduce motion* setting does the same whatever
-the switch says.
+`data-motion="off"` on `<html>`, so the sign-in page obeys it too. The system's *reduce motion*
+setting does the same whatever the switch says.
 
 ## Why Leptos (ROADMAP D27)
 

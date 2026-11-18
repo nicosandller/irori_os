@@ -57,7 +57,7 @@ What moves today, and where to find it.
 | Every button | Eases into hover colours; gives a little (`scale: .97`) under a press. | `:where(button…)` base rule — zero specificity, so each button's own rules win. |
 | Toggle | Knob springs across, stretches while held, breathes while a command waits on the device (`.pending`). | `devices/controls/mod.rs` `knob`; CSS `.toggle`. |
 | Sliders | Drawn by the page: filled to the thumb (`--fill`), colour temperature as its colours; the thumb swells under the pointer; the label follows while dragging. | `devices/controls/light.rs` `light_controls`, `floorplan.rs` inspector; CSS `input[type="range"]`. |
-| Sidebar | The current page is a highlight that glides between entries; icons lean in on hover, the cog turns. | `glide.rs`; CSS `.glide`, `.sidebar > .glide`. |
+| Sidebar | The current page is a highlight that glides between entries, and goes with its entry when the sidebar folds or an extension's page joins the list; icons lean in on hover, the cog turns. On a phone it is a bar of icons along the top, with only the page being read spelled out. | `glide.rs`; CSS `.glide`, `.sidebar > .glide`. |
 | Changing page | The page arrives from where it is in the sidebar — up from below for a page further down, down from above for one further up; between devices it crossfades. | `transition.rs` (View Transition API through the router); CSS `::view-transition-*`. |
 | List → device | The list slides aside and the device's name travels from its row into the heading; back reverses it. | `transition.rs`; only the opened device's name carries a transition name. |
 | Start tiles | A tile grows into the heading of the page it opens, while the page rises in behind. | `transition.rs` `expand`; the tile and the new `.page-head` are `hero`. |
@@ -78,7 +78,7 @@ What moves today, and where to find it.
 | Floorplan zoom wheel | On the floorplan and the network map. A knurled strip over the zoom buttons, faint until reached for. Its ridges are a pattern slid along by the zoom itself (`--roll`, a turn for every doubling), so it rolls whatever did the zooming and springs to rest after a button's jump; held, it follows the hand with no easing. | `floorplan/zoom.rs`; CSS `.zoom-wheel`. |
 | Floorplan drawing aids | The diamond on the middle of a wall swells and fills as it takes hold of the point being drawn; guide lines and angle labels only appear and move, never animate in. | `floorplan/snapping.rs`, `floorplan.rs`; CSS `.middle`, `.guide`, `.angle`. |
 | Floorplan ambience | A lit light pools warm light, as bright as the light and clipped to its room's walls; a motion sensor ripples across its room while it senses someone; changing floor, the plan sinks away and the next floor comes down (or the reverse). | `floorplan/ambience.rs`, `transition.rs` `around`. |
-| Windows | A window rises into place while the page dims behind it. | `modal.rs`; CSS `.modal`, `.modal-backdrop`. |
+| Windows | A window rises into place while the page dims behind it. It takes the keyboard's focus as it opens, keeps Tab inside it, and hands the focus back to what opened it. | `modal.rs`; CSS `.modal`, `.modal-backdrop`. |
 | Add device | The extension cards arrive one after another; picking one grows it into the next step's heading while the step slides aside (Back reverses it); found devices come in one after another, one that turns up later glows once; **Add** turns into a ring, then a check that draws itself, and the card folds away as the device appears under "In your home"; while it's listening and has found nothing, a ring pings to say so; the button's count pops in. | `devices.rs` `AddDevice`, `ProtocolStep`; `transition.rs` `step`, `name_target`; CSS `.protocol-card`, `.device-card`, `.add-one`, `.listening-ring`, `.count-badge`. |
 | Helper builder | The kinds come in one after another as the window opens, each lifting under the pointer with its icon leaning; picking one pops its icon into the heading. Filled in by the assistant, every field glows ember once and settles, a little after the one before; a second filling-in glows again. A group's members and a choice's options pop in as chips; a schedule's hours are ember bars on a day's line that slide and stretch as their times change, and its **+** turns as it's pointed at. The check below is one line that changes in place: its mark turns while it checks, lights ember when the helper would be made, and goes the error's colour with the reason when it wouldn't. **Create** is Add device's: a ring, then a check that draws itself, and the window goes. | `devices/builder.rs` `HelperBuilder`, `picker`, `week`, `check_line`; CSS `.kind-card`, `.builder-body[data-filled]`, `.chip`, `.week-block`, `.builder-check`, `.add-one`. |
 | Helper preview | Below the builder's form, what the helper would have said over the last day, drawn with the history drawer's chart or timeline and changing in place as its settings do; one a person sets has its own control to try, and a press says "Pressed 2×", popping in again with each press. | `devices/builder.rs` `tried`, `try_here`; CSS `.builder-preview`, `.builder-pressed`. |
@@ -148,6 +148,11 @@ or one in a row of a switcher (`segmented.rs`), the choice is a `<span class="gl
 without travelling the first time, and fades out where nothing is chosen. Where the column
 becomes a row (on a phone), CSS hides it and the chosen item draws its own highlight.
 
+A choice is not the only thing that moves the chosen item: the sidebar folds and its entries
+shift down, a tab's count grows a digit. `glide.rs` watches the size of the list and of what
+is directly in it (a `ResizeObserver`), and measures again when one changes, so the highlight
+is never left standing where the item used to be.
+
 ### Every page change says where it's going
 
 The router asks the browser for a view transition on every page change; `transition.rs` says
@@ -155,7 +160,7 @@ which change it is as `data-nav` on `<html>`, and CSS animates by it:
 
 | `data-nav` | When | What moves |
 |---|---|---|
-| `down` / `up` | To a page further down / up the sidebar | The page rises from below / drops from above; the shell stays put, its highlight gliding on its own. |
+| `down` / `up` | To a page further down / up the sidebar. The assistant is the mark at the very top; an extension's own page sits between Extensions and Settings. | The page rises from below / drops from above; the shell stays put, its highlight gliding on its own. |
 | `into-device` / `to-list` | The device list ↔ a device | Sideways, and the device's name travels between its row and the heading. |
 | `tile` | A Start tile, clicked | The tile grows into the new page's heading row. |
 | `fade` | Between two devices, or anywhere the sidebar doesn't list | A crossfade. |
@@ -226,10 +231,28 @@ Motion: the line draws in once, the area settles in behind it, now's dot lands a
 
 ### Off, and reduced motion
 
-Both the media query and `data-motion="off"` (on `.shell`, and on `<html>` for page changes)
-zero the tokens and set `animation: none; transition: none` everywhere, view transitions
-included. Anything that uses the tokens is covered for free; anything that draws its own
-motion (a script-driven animation, a new pseudo-element tree) needs adding to those rules.
+Both the media query and `data-motion="off"` on `<html>` zero the tokens and set
+`animation: none; transition: none` everywhere, view transitions included. The rules hang off
+`<html>` and not `.shell`, because the sign-in page and the welcome are drawn beside the shell
+and have to obey the switch too. Anything that uses the tokens is covered for free; anything
+that draws its own motion (a script-driven animation, a new pseudo-element tree) needs adding
+to those rules.
+
+Two things follow from "the page must say the same things without motion":
+
+- **Draw the end state, animate the arrival.** A tick that draws itself is drawn in its plain
+  styles and animated *from* undrawn (`@keyframes draw`, `backwards`). The other way round —
+  undrawn in its styles, drawn by an animation that fills `forwards` — leaves nothing on the
+  page when animations are off.
+- **A bar that only says "busy" gets a still form.** A band sweeping along a track, stopped
+  part-way, reads as that much done. With motion off the whole bar is tinted instead
+  (`.ext-btn .bar`, `.update-bar.unsaid`, `.assistant-progress.unknown`).
+
+### One name, one set of keyframes
+
+`@keyframes` names are shared by the whole stylesheet, and a second set under a name already
+taken quietly replaces the first for everything that uses it. Look for the name before adding
+one, and reuse what is there (`rise`, `settle`, `pop`, `drop-in`, `draw`, `turn`, `shake`).
 
 ## 5. Adding motion — a checklist
 
