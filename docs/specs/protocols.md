@@ -488,6 +488,11 @@ Accepting (`POST /api/extensions/{id}/layout`) makes the missing floors and room
 `areas.toml`, each room on the floor it was proposed on. Devices whose `suggested_area` names one
 of the new rooms land in it at once, unless a person has said where they are (config.md §5).
 
+A core from before `suggest_layout` doesn't know the message, and an unknown message ends the
+protocol's link, as does a name that isn't a valid `Name`. A protocol that proposes a layout
+requires a core that knows it in its manifest's `irori`, and sends only names it has trimmed and
+checked.
+
 ## 7. Service calls
 
 ### 7.1 Standard services
