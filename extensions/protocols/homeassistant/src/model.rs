@@ -1,0 +1,1441 @@
+//! Home Assistant's registries and states, as Irori's devices, entities and values; and Irori's
+//! commands, as Home Assistant service calls.
+//!
+//! Irori's entity kinds already use Home Assistant's names (`docs/specs/entities.md`), so each
+//! capability and value is written in that shared vocabulary and checked by Irori's own types:
+//! what they refuse is left out (a value) or listed as unmodeled (an entity), never sent.
+//!
+//! Which entities come over ([`plan`]): by default, those on a Home Assistant device, of a kind
+//! Irori models, that aren't disabled, hidden, or one of the device's settings or diagnostics.
+//! The settings widen that by integration or area, or narrow it. At most [`MAX_ENTITIES`].
+
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+
+use irori_protocol::ServiceError;
+use irori_types::{
+    Capabilities, Connection, ConnectionKind, DeviceDescription, EntityCategory, EntityDescription,
+    EntityKind, Name, ObjectId, SensorClass, Service, State, SuggestedArea, SuggestedFloor,
+    SuggestedLayout, UniqueId, Unmodeled, Waiting,
+};
+use serde::Deserialize;
+use serde_json::{Map, Value, json};
+
+use crate::settings::Settings;
+
+/// The most entities this extension carries (rule 6): well inside the 4,096 the core's report
+/// queue holds, and the load `dev/ha-load` proves the core takes without falling behind.
+pub const MAX_ENTITIES: usize = 2_000;
+/// The most unmodeled entries listed: a big home has hundreds, and the list is for reading.
+pub const MAX_UNMODELED: usize = 500;
+
+/// The kinds this extension carries, as in the manifest's `entity_kinds`.
+pub const BRIDGED: [&str; 14] = [
+    "light",
+    "switch",
+    "sensor",
+    "binary_sensor",
+    "button",
+    "number",
+    "select",
+    "cover",
+    "lock",
+    "fan",
+    "event",
+    "valve",
+    "siren",
+    "climate",
+];
+
+/// The `Waiting` item's id when more entities qualify than [`MAX_ENTITIES`].
+pub const OVER_LIMIT: &str = "homeassistant-entity-limit";
+
+// --- Home Assistant's registries, as `config/*_registry/list` answers them ------------------
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HaFloor {
+    pub floor_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub level: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HaArea {
+    pub area_id: String,
+    pub name: String,
+    #[serde(default)]
+    pub floor_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HaDevice {
+    pub id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub name_by_user: Option<String>,
+    #[serde(default)]
+    pub manufacturer: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub sw_version: Option<String>,
+    #[serde(default)]
+    pub hw_version: Option<String>,
+    #[serde(default)]
+    pub serial_number: Option<String>,
+    #[serde(default)]
+    pub area_id: Option<String>,
+    #[serde(default)]
+    pub via_device_id: Option<String>,
+    /// `[["mac", "aa:bb:…"], ["zigbee", "00:11:…"]]`.
+    #[serde(default)]
+    pub connections: Vec<(String, String)>,
+    #[serde(default)]
+    pub disabled_by: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HaEntity {
+    /// The registry entry's own id: stable across renames of `entity_id`.
+    pub id: String,
+    pub entity_id: String,
+    #[serde(default)]
+    pub platform: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub area_id: Option<String>,
+    #[serde(default)]
+    pub disabled_by: Option<String>,
+    #[serde(default)]
+    pub hidden_by: Option<String>,
+    #[serde(default)]
+    pub entity_category: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub original_name: Option<String>,
+    #[serde(default)]
+    pub has_entity_name: bool,
+}
+
+/// Everything read from Home Assistant in one go.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Registry {
+    pub floors: Vec<HaFloor>,
+    pub areas: Vec<HaArea>,
+    pub devices: Vec<HaDevice>,
+    pub entities: Vec<HaEntity>,
+    /// Each entity's state and attributes, by `entity_id`.
+    pub states: HashMap<String, HaState>,
+}
+
+/// One entity's state as Home Assistant keeps it: `s` and `a` in a compact state.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct HaState {
+    pub state: String,
+    pub attributes: Map<String, Value>,
+}
+
+/// A list from a registry, skipping entries this extension can't read rather than all of them.
+pub fn list<T: serde::de::DeserializeOwned>(value: &Value) -> Vec<T> {
+    value
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| match serde_json::from_value(item.clone()) {
+                    Ok(item) => Some(item),
+                    Err(why) => {
+                        tracing::debug!(%why, "skipping a registry entry");
+                        None
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `get_states`' answer, by `entity_id`.
+pub fn states(value: &Value) -> HashMap<String, HaState> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            Some((
+                item["entity_id"].as_str()?.to_owned(),
+                HaState {
+                    state: item["state"].as_str()?.to_owned(),
+                    attributes: item["attributes"].as_object().cloned().unwrap_or_default(),
+                },
+            ))
+        })
+        .collect()
+}
+
+// --- What comes over ------------------------------------------------------------------------
+
+/// One bridged entity: what Irori is told, and how to reach it in Home Assistant.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Bridged {
+    pub description: EntityDescription,
+    pub entity_id: String,
+}
+
+impl Bridged {
+    pub fn domain(&self) -> &str {
+        domain(&self.entity_id)
+    }
+}
+
+/// What this extension tells Irori about a Home Assistant.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Plan {
+    /// Each one before any device it reaches through (`via_device_unique_id`).
+    pub devices: Vec<DeviceDescription>,
+    /// Sorted by `unique_id`.
+    pub entities: Vec<Bridged>,
+    pub unmodeled: Vec<Unmodeled>,
+    pub waiting: Vec<Waiting>,
+    pub layout: SuggestedLayout,
+}
+
+pub fn domain(entity_id: &str) -> &str {
+    entity_id
+        .split_once('.')
+        .map_or(entity_id, |(domain, _)| domain)
+}
+
+/// A Home Assistant name as an Irori name: trimmed, at most 100 characters. `None` when nothing
+/// is left, or Irori refuses it anyway.
+pub fn name(text: &str) -> Option<Name> {
+    let trimmed = text.trim();
+    let cut: String = trimmed.chars().take(100).collect();
+    Name::try_from(cut.trim_end()).ok()
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+/// Works out what comes over.
+pub fn plan(registry: &Registry, settings: &Settings) -> Plan {
+    let areas: HashMap<&str, &HaArea> = registry
+        .areas
+        .iter()
+        .map(|area| (area.area_id.as_str(), area))
+        .collect();
+    let devices: HashMap<&str, &HaDevice> = registry
+        .devices
+        .iter()
+        .map(|device| (device.id.as_str(), device))
+        .collect();
+    let area_name = |id: Option<&String>| id.and_then(|id| areas.get(id.as_str())).map(|a| &a.name);
+    let listed = |list: &[String], value: &str| list.iter().any(|item| same(item, value));
+
+    let mut taken: Vec<(&HaEntity, Option<&HaDevice>, Capabilities)> = Vec::new();
+    let mut unmodeled: Vec<(Option<&HaDevice>, Unmodeled)> = Vec::new();
+    for entity in &registry.entities {
+        if entity.disabled_by.is_some() {
+            continue;
+        }
+        let device = entity
+            .device_id
+            .as_deref()
+            .and_then(|id| devices.get(id).copied())
+            .filter(|device| device.disabled_by.is_none());
+        if entity.device_id.is_some() && device.is_none() {
+            // Its device is disabled, or gone.
+            continue;
+        }
+        let area = area_name(
+            entity
+                .area_id
+                .as_ref()
+                .or(device.and_then(|d| d.area_id.as_ref())),
+        );
+        let in_area = |list: &[String]| area.is_some_and(|area| listed(list, area));
+        if listed(&settings.exclude_integrations, &entity.platform)
+            || in_area(&settings.exclude_areas)
+        {
+            continue;
+        }
+        let included = listed(&settings.include_integrations, &entity.platform)
+            || in_area(&settings.include_areas);
+        let by_default =
+            device.is_some() && entity.hidden_by.is_none() && entity.entity_category.is_none();
+        if !(by_default || included) {
+            continue;
+        }
+        let Some(state) = registry.states.get(&entity.entity_id) else {
+            // Not loaded in Home Assistant right now: nothing to tell its kind or abilities by.
+            continue;
+        };
+        let domain = domain(&entity.entity_id);
+        match capabilities(domain, &state.attributes) {
+            Ok(capabilities) => taken.push((entity, device, capabilities)),
+            Err(reason) => {
+                let Ok(platform) = ObjectId::try_from(domain) else {
+                    continue;
+                };
+                unmodeled.push((
+                    device,
+                    Unmodeled {
+                        device_unique_id: None,
+                        platform,
+                        name: entity_label(entity, state),
+                        reason,
+                    },
+                ));
+            }
+        }
+    }
+
+    // The same ones every time, whatever order Home Assistant lists them in.
+    taken.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+    let over = taken.len().saturating_sub(MAX_ENTITIES);
+    taken.truncate(MAX_ENTITIES);
+
+    // Devices with something taken, and the devices they're reached through, parents first.
+    let mut wanted: BTreeSet<&str> = taken
+        .iter()
+        .filter_map(|(_, device, _)| device.map(|d| d.id.as_str()))
+        .collect();
+    let mut described: Vec<DeviceDescription> = Vec::new();
+    let mut done: BTreeSet<&str> = BTreeSet::new();
+    let mut parents: Vec<&str> = Vec::new();
+    for id in &wanted {
+        // A chain of `via_device_id`s, nearest first; at most a few long.
+        let mut at = devices.get(id).and_then(|d| d.via_device_id.as_deref());
+        while let Some(parent) = at {
+            if parents.contains(&parent) || wanted.contains(parent) || parents.len() > 64 {
+                break;
+            }
+            parents.push(parent);
+            at = devices.get(parent).and_then(|d| d.via_device_id.as_deref());
+        }
+    }
+    wanted.extend(
+        parents
+            .iter()
+            .copied()
+            .filter(|id| devices.contains_key(id)),
+    );
+    fn visit<'a>(
+        id: &'a str,
+        devices: &HashMap<&'a str, &'a HaDevice>,
+        wanted: &BTreeSet<&'a str>,
+        done: &mut BTreeSet<&'a str>,
+        out: &mut Vec<&'a HaDevice>,
+        depth: usize,
+    ) {
+        if done.contains(id) || depth > 64 {
+            return;
+        }
+        let Some(device) = devices.get(id) else {
+            return;
+        };
+        if let Some(parent) = device.via_device_id.as_deref()
+            && wanted.contains(parent)
+        {
+            visit(parent, devices, wanted, done, out, depth + 1);
+        }
+        if done.insert(id) {
+            out.push(device);
+        }
+    }
+    let mut ordered = Vec::new();
+    for id in &wanted {
+        visit(id, &devices, &wanted, &mut done, &mut ordered, 0);
+    }
+    let mut device_ids: BTreeSet<&str> = BTreeSet::new();
+    for device in ordered {
+        if let Some(description) = describe_device(device, &areas, &device_ids) {
+            device_ids.insert(device.id.as_str());
+            described.push(description);
+        }
+    }
+
+    let entities: Vec<Bridged> = taken
+        .into_iter()
+        .filter_map(|(entity, device, capabilities)| {
+            let device = device.filter(|d| device_ids.contains(d.id.as_str()));
+            describe_entity(entity, device, capabilities, &registry.states)
+        })
+        .collect();
+
+    let unmodeled = unmodeled
+        .into_iter()
+        .map(|(device, mut item)| {
+            item.device_unique_id = device
+                .filter(|d| device_ids.contains(d.id.as_str()))
+                .and_then(|d| UniqueId::try_from(d.id.as_str()).ok());
+            item
+        })
+        .take(MAX_UNMODELED)
+        .collect();
+
+    let mut waiting = Vec::new();
+    if over > 0
+        && let (Ok(unique_id), Some(home)) =
+            (UniqueId::try_from(OVER_LIMIT), name("Home Assistant"))
+    {
+        waiting.push(Waiting {
+            unique_id,
+            name: home,
+            reason: format!(
+                "{over} more entities qualify than the {MAX_ENTITIES} this extension brings over. Leave some integrations or areas out in its settings."
+            ),
+            secret: None,
+        });
+    }
+
+    Plan {
+        devices: described,
+        entities,
+        unmodeled,
+        waiting,
+        layout: layout(&registry.floors, &registry.areas),
+    }
+}
+
+fn entity_label(entity: &HaEntity, state: &HaState) -> Option<Name> {
+    entity
+        .name
+        .as_deref()
+        .or(state
+            .attributes
+            .get("friendly_name")
+            .and_then(Value::as_str))
+        .or(entity.original_name.as_deref())
+        .and_then(name)
+}
+
+fn describe_device(
+    device: &HaDevice,
+    areas: &HashMap<&str, &HaArea>,
+    described: &BTreeSet<&str>,
+) -> Option<DeviceDescription> {
+    let unique_id = UniqueId::try_from(device.id.as_str()).ok()?;
+    let label = device
+        .name_by_user
+        .as_deref()
+        .and_then(name)
+        .or_else(|| device.name.as_deref().and_then(name))
+        .or_else(|| device.model.as_deref().and_then(name))
+        .or_else(|| name("Home Assistant device"))?;
+    let tidy = |text: &Option<String>| {
+        text.as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    let serial = tidy(&device.serial_number);
+    let mut connections: Vec<Connection> = device
+        .connections
+        .iter()
+        .filter_map(|(kind, value)| {
+            let kind = match kind.as_str() {
+                "mac" | "bluetooth" => ConnectionKind::Mac,
+                "zigbee" => ConnectionKind::Ieee,
+                _ => return None,
+            };
+            Connection::new(kind, value).ok()
+        })
+        .collect();
+    if let Some(serial) = &serial
+        && let Ok(connection) = Connection::new(ConnectionKind::Serial, serial)
+    {
+        connections.push(connection);
+    }
+    connections.dedup();
+    let description = DeviceDescription {
+        unique_id,
+        name: label,
+        manufacturer: tidy(&device.manufacturer),
+        model: tidy(&device.model),
+        sw_version: tidy(&device.sw_version),
+        hw_version: tidy(&device.hw_version),
+        serial_number: serial,
+        suggested_area: device
+            .area_id
+            .as_deref()
+            .and_then(|id| areas.get(id))
+            .and_then(|area| name(&area.name)),
+        via_device_unique_id: device
+            .via_device_id
+            .as_deref()
+            .filter(|parent| described.contains(parent) && *parent != device.id)
+            .and_then(|parent| UniqueId::try_from(parent).ok()),
+        connections,
+    };
+    description.validate().ok()?;
+    Some(description)
+}
+
+fn describe_entity(
+    entity: &HaEntity,
+    device: Option<&HaDevice>,
+    capabilities: Capabilities,
+    states: &HashMap<String, HaState>,
+) -> Option<Bridged> {
+    let unique_id = UniqueId::try_from(entity.id.as_str()).ok()?;
+    let own = entity.name.as_deref().or(entity.original_name.as_deref());
+    let label = match device {
+        // A device's main feature has no name of its own, and goes by its device's.
+        Some(_) if entity.has_entity_name && entity.name.is_none() && own.is_none() => None,
+        Some(_) => own.and_then(name),
+        None => own
+            .or(states
+                .get(&entity.entity_id)
+                .and_then(|state| state.attributes.get("friendly_name"))
+                .and_then(Value::as_str))
+            .and_then(name)
+            .or_else(|| name(&entity.entity_id)),
+    };
+    let device_unique_id = device.and_then(|d| UniqueId::try_from(d.id.as_str()).ok());
+    if label.is_none() && device_unique_id.is_none() {
+        return None;
+    }
+    let description = EntityDescription {
+        unique_id,
+        name: label,
+        device_unique_id,
+        suggested_object_id: entity
+            .entity_id
+            .split_once('.')
+            .and_then(|(_, object)| ObjectId::try_from(object).ok()),
+        capabilities,
+        entity_category: match entity.entity_category.as_deref() {
+            Some("config") => Some(EntityCategory::Config),
+            Some("diagnostic") => Some(EntityCategory::Diagnostic),
+            _ => None,
+        },
+    };
+    description.validate().ok()?;
+    Some(Bridged {
+        description,
+        entity_id: entity.entity_id.clone(),
+    })
+}
+
+/// Home Assistant's floors and areas, by name, for the owner to bring over in one step.
+pub fn layout(floors: &[HaFloor], areas: &[HaArea]) -> SuggestedLayout {
+    let floor_names: HashMap<&str, Name> = floors
+        .iter()
+        .filter_map(|floor| Some((floor.floor_id.as_str(), name(&floor.name)?)))
+        .collect();
+    SuggestedLayout {
+        floors: floors
+            .iter()
+            .filter_map(|floor| {
+                Some(SuggestedFloor {
+                    name: floor_names.get(floor.floor_id.as_str())?.clone(),
+                    level: floor
+                        .level
+                        .map(|level| level.clamp(i64::from(i8::MIN), i64::from(i8::MAX)))
+                        .and_then(|level| i8::try_from(level).ok()),
+                })
+            })
+            .take(irori_types::MAX_LAYOUT_FLOORS)
+            .collect(),
+        areas: areas
+            .iter()
+            .filter_map(|area| {
+                Some(SuggestedArea {
+                    name: name(&area.name)?,
+                    floor: area
+                        .floor_id
+                        .as_deref()
+                        .and_then(|id| floor_names.get(id))
+                        .cloned(),
+                })
+            })
+            .take(irori_types::MAX_LAYOUT_AREAS)
+            .collect(),
+    }
+}
+
+// --- Capabilities ---------------------------------------------------------------------------
+
+fn text_list(value: Option<&Value>) -> Vec<String> {
+    match value {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect(),
+        // A siren's tones can be a map of id to name.
+        Some(Value::Object(items)) => items.keys().cloned().collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn features(attributes: &Map<String, Value>) -> u64 {
+    attributes
+        .get("supported_features")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+}
+
+fn number(attributes: &Map<String, Value>, key: &str) -> Option<f64> {
+    attributes
+        .get(key)
+        .and_then(Value::as_f64)
+        .filter(|n| n.is_finite())
+}
+
+fn sensor_class(attributes: &Map<String, Value>) -> Option<SensorClass> {
+    attributes
+        .get("device_class")
+        .and_then(Value::as_str)
+        .and_then(SensorClass::from_ha)
+}
+
+fn device_class(attributes: &Map<String, Value>) -> Value {
+    attributes
+        .get("device_class")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// Why something isn't brought over: `Some` for a kind Irori has that this extension doesn't
+/// carry (yet), or one it couldn't read; `None` for a kind Irori doesn't have.
+type NotBridged = Option<String>;
+
+/// What an entity of `domain` can do, from its attributes, as Irori's types take it.
+pub fn capabilities(domain: &str, a: &Map<String, Value>) -> Result<Capabilities, NotBridged> {
+    let caps = match domain {
+        "light" => {
+            let modes = text_list(a.get("supported_color_modes"));
+            let has = |mode: &str| modes.iter().any(|m| m == mode);
+            let rgb = ["hs", "xy", "rgb", "rgbw", "rgbww"].iter().any(|m| has(m));
+            let temp = has("color_temp").then(|| {
+                let kelvin = |key: &str, fallback: f64| {
+                    number(a, key).unwrap_or(fallback).clamp(1000.0, 20000.0).round()
+                };
+                json!({ "min": kelvin("min_color_temp_kelvin", 2000.0), "max": kelvin("max_color_temp_kelvin", 6500.0) })
+            });
+            let dims = modes.iter().any(|m| m != "onoff" && m != "unknown");
+            json!({ "kind": "light", "brightness": dims, "rgb": rgb, "color_temp_kelvin": temp })
+        }
+        "switch" => json!({ "kind": "switch", "device_class": device_class(a) }),
+        "binary_sensor" => json!({
+            "kind": "binary_sensor",
+            "device_class": a.get("device_class").and_then(Value::as_str)
+                .and_then(irori_types::BinarySensorClass::from_ha),
+        }),
+        "sensor" => {
+            let class = sensor_class(a);
+            let options = text_list(a.get("options"));
+            let unit = a.get("unit_of_measurement").and_then(Value::as_str);
+            let state_class = a.get("state_class").and_then(Value::as_str);
+            let enumerated = a.get("device_class").and_then(Value::as_str) == Some("enum");
+            let text = enumerated || class.is_some_and(SensorClass::reports_text);
+            let mut caps = json!({
+                "kind": "sensor",
+                "value_type": if text { "text" } else { "number" },
+                "device_class": class,
+                "unit": unit,
+                "state_class": state_class,
+            });
+            if text && !options.is_empty() {
+                caps["options"] = json!(options);
+            }
+            if !text && unit.is_none() && state_class.is_none() && class.is_none() {
+                // Nothing says it's a measurement: a sensor reporting words ("charging") with no
+                // class. Text, so its values aren't refused.
+                caps["value_type"] = json!("text");
+            }
+            caps
+        }
+        "button" => json!({ "kind": "button", "device_class": device_class(a) }),
+        "number" => json!({
+            "kind": "number",
+            "min": number(a, "min").unwrap_or(0.0),
+            "max": number(a, "max").unwrap_or(100.0),
+            "step": number(a, "step").unwrap_or(1.0),
+            "unit": a.get("unit_of_measurement"),
+            "device_class": sensor_class(a),
+            "mode": a.get("mode").and_then(Value::as_str).unwrap_or("auto"),
+        }),
+        "select" => json!({ "kind": "select", "options": text_list(a.get("options")) }),
+        "cover" => {
+            let f = features(a);
+            json!({
+                "kind": "cover",
+                "device_class": device_class(a),
+                "position": f & 4 != 0,
+                "stop": f & 8 != 0,
+                "tilt": f & 128 != 0,
+            })
+        }
+        "valve" => {
+            let f = features(a);
+            json!({
+                "kind": "valve",
+                "device_class": device_class(a),
+                "position": f & 4 != 0,
+                "stop": f & 8 != 0,
+            })
+        }
+        "lock" => {
+            let code = a.get("code_format").and_then(Value::as_str);
+            json!({
+                "kind": "lock",
+                "open": features(a) & 1 != 0,
+                "requires_code": code.is_some(),
+                "code_format": code,
+            })
+        }
+        "fan" => {
+            let f = features(a);
+            let speeds = if f & 1 != 0 {
+                a.get("percentage_step")
+                    .and_then(Value::as_f64)
+                    .filter(|step| *step > 0.0)
+                    .map_or(100, |step| (100.0 / step).round() as u64)
+            } else {
+                0
+            };
+            json!({
+                "kind": "fan",
+                "speed_count": speeds.min(100),
+                "oscillate": f & 2 != 0,
+                "direction": f & 4 != 0,
+                "preset_modes": if f & 8 != 0 { text_list(a.get("preset_modes")) } else { Vec::new() },
+            })
+        }
+        "event" => json!({
+            "kind": "event",
+            "event_types": text_list(a.get("event_types")),
+            "device_class": device_class(a),
+        }),
+        "siren" => {
+            let f = features(a);
+            json!({
+                "kind": "siren",
+                "tones": if f & 4 != 0 { text_list(a.get("available_tones")) } else { Vec::new() },
+                "volume": f & 8 != 0,
+                "duration": f & 16 != 0,
+            })
+        }
+        "climate" => {
+            let f = features(a);
+            let humidity = (f & 4 != 0).then(|| {
+                json!({
+                    "min": number(a, "min_humidity").unwrap_or(30.0),
+                    "max": number(a, "max_humidity").unwrap_or(99.0),
+                })
+            });
+            json!({
+                "kind": "climate",
+                "hvac_modes": text_list(a.get("hvac_modes")),
+                "min_temp": number(a, "min_temp").unwrap_or(7.0),
+                "max_temp": number(a, "max_temp").unwrap_or(35.0),
+                "temp_step": number(a, "target_temp_step").unwrap_or(0.5),
+                "target_temperature": f & 1 != 0,
+                "target_temperature_range": f & 2 != 0,
+                "target_humidity": humidity,
+                "fan_modes": if f & 8 != 0 { text_list(a.get("fan_modes")) } else { Vec::new() },
+                "preset_modes": if f & 16 != 0 { text_list(a.get("preset_modes")) } else { Vec::new() },
+                "swing_modes": if f & 32 != 0 { text_list(a.get("swing_modes")) } else { Vec::new() },
+            })
+        }
+        other => {
+            return Err(irori_has(other).then(|| {
+                "Irori has this kind of entity, but the Home Assistant extension doesn't bring it over yet".to_owned()
+            }));
+        }
+    };
+    let mut caps = caps;
+    if let Value::Object(fields) = &mut caps {
+        fields.retain(|_, value| !value.is_null());
+    }
+    match serde_json::from_value::<Capabilities>(caps.clone()) {
+        Ok(caps) => Ok(caps),
+        Err(first) => {
+            // A class Irori doesn't know, or one its rules don't allow with this unit: the entity
+            // is still useful without it.
+            if let Value::Object(fields) = &mut caps {
+                fields.remove("device_class");
+            }
+            serde_json::from_value(caps)
+                .map_err(|_| Some(format!("Irori couldn't read what it can do: {first}")))
+        }
+    }
+}
+
+/// Whether Irori has a kind by this name.
+fn irori_has(domain: &str) -> bool {
+    serde_json::from_value::<EntityKind>(json!(domain)).is_ok()
+}
+
+// --- Values ---------------------------------------------------------------------------------
+
+/// What one of Home Assistant's states says, for Irori.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Reading {
+    /// The device isn't reachable: availability, not a value.
+    Unavailable,
+    /// Reachable, with this value (`None`: Home Assistant doesn't know it).
+    Value(Option<State>),
+    /// Nothing to report: a button, which has no value.
+    Nothing,
+}
+
+/// Home Assistant's state `s` and attributes `a`, for an entity with `caps`.
+pub fn reading(caps: &Capabilities, s: &str, a: &Map<String, Value>) -> Reading {
+    if s == "unavailable" {
+        return Reading::Unavailable;
+    }
+    if matches!(caps, Capabilities::Button(_)) {
+        return Reading::Nothing;
+    }
+    if s == "unknown" {
+        return Reading::Value(None);
+    }
+    let int = |key: &str, max: u64| a.get(key).and_then(Value::as_u64).filter(|n| *n <= max);
+    let text = |key: &str| a.get(key).and_then(Value::as_str);
+    let value = match caps {
+        Capabilities::Light(light) => {
+            let on = s == "on";
+            let mode = match text("color_mode") {
+                Some("color_temp") if light.rgb => Some("color_temp"),
+                Some("hs" | "xy" | "rgb" | "rgbw" | "rgbww")
+                    if light.color_temp_kelvin.is_some() =>
+                {
+                    Some("rgb")
+                }
+                _ => None,
+            };
+            json!({
+                "kind": "light",
+                "on": on,
+                "brightness": int("brightness", 255).filter(|b| *b >= 1 && light.brightness),
+                "color_mode": mode,
+                "color_temp_kelvin": int("color_temp_kelvin", 20000)
+                    .filter(|k| *k >= 1000 && light.color_temp_kelvin.is_some()),
+                "rgb": a.get("rgb_color").filter(|_| light.rgb),
+            })
+        }
+        Capabilities::Switch(_) => json!({ "kind": "switch", "on": s == "on" }),
+        Capabilities::BinarySensor(_) => json!({ "kind": "binary_sensor", "on": s == "on" }),
+        Capabilities::Siren(_) => json!({ "kind": "siren", "on": s == "on" }),
+        Capabilities::Sensor(sensor) => match sensor.value_type {
+            irori_types::SensorValueType::Number => match s.parse::<f64>() {
+                Ok(n) if n.is_finite() => json!({ "kind": "sensor", "value": n }),
+                _ => return Reading::Value(None),
+            },
+            irori_types::SensorValueType::Text => {
+                if !sensor.options.is_empty() && !sensor.options.iter().any(|o| o == s) {
+                    return Reading::Value(None);
+                }
+                json!({ "kind": "sensor", "value": s })
+            }
+        },
+        Capabilities::Number(_) => match s.parse::<f64>() {
+            Ok(n) if n.is_finite() => json!({ "kind": "number", "value": n }),
+            _ => return Reading::Value(None),
+        },
+        Capabilities::Select(select) => {
+            if !select.options.iter().any(|o| o == s) {
+                return Reading::Value(None);
+            }
+            json!({ "kind": "select", "option": s })
+        }
+        Capabilities::Cover(_) => json!({
+            "kind": "cover",
+            "state": s,
+            "position": int("current_position", 100),
+            "tilt": int("current_tilt_position", 100),
+        }),
+        Capabilities::Valve(_) => json!({
+            "kind": "valve",
+            "state": s,
+            "position": int("current_position", 100),
+        }),
+        Capabilities::Lock(_) => json!({ "kind": "lock", "state": s }),
+        Capabilities::Fan(fan) => json!({
+            "kind": "fan",
+            "on": s == "on",
+            "percentage": int("percentage", 100).filter(|_| fan.speed_count > 0),
+            "oscillating": a.get("oscillating").filter(|_| fan.oscillate),
+            "direction": a.get("direction").filter(|_| fan.direction),
+            "preset_mode": a.get("preset_mode"),
+        }),
+        Capabilities::Event(_) => match text("event_type") {
+            Some(event_type) => json!({ "kind": "event", "event_type": event_type }),
+            None => return Reading::Value(None),
+        },
+        Capabilities::Climate(_) => json!({
+            "kind": "climate",
+            "hvac_mode": s,
+            "hvac_action": a.get("hvac_action"),
+            "current_temperature": number(a, "current_temperature"),
+            "target_temperature": number(a, "temperature"),
+            "target_temp_low": number(a, "target_temp_low"),
+            "target_temp_high": number(a, "target_temp_high"),
+            "current_humidity": number(a, "current_humidity"),
+            "target_humidity": number(a, "humidity"),
+            "fan_mode": a.get("fan_mode"),
+            "swing_mode": a.get("swing_mode"),
+            "preset_mode": a.get("preset_mode"),
+        }),
+        _ => return Reading::Value(None),
+    };
+    let mut value = value;
+    if let Value::Object(fields) = &mut value {
+        fields.retain(|_, value| !value.is_null());
+    }
+    match serde_json::from_value::<State>(value) {
+        Ok(state) => Reading::Value(Some(state)),
+        Err(why) => {
+            tracing::debug!(%why, state = s, "a value Irori doesn't take");
+            Reading::Value(None)
+        }
+    }
+}
+
+// --- Commands -------------------------------------------------------------------------------
+
+/// The Home Assistant service call for one of Irori's commands to `bridged`: its domain, service
+/// and data. Only a service of the entity's own kind, and only for the kinds this extension
+/// carries: never anything else.
+pub fn command(
+    bridged: &Bridged,
+    service: &Service,
+) -> Result<(String, String, Map<String, Value>), ServiceError> {
+    let full = service.name().as_str();
+    let (domain, action) = full
+        .split_once('.')
+        .ok_or_else(|| ServiceError::failed(format!("`{full}` isn't a service")))?;
+    if domain != bridged.domain() || !BRIDGED.contains(&domain) {
+        return Err(ServiceError::failed(format!(
+            "`{full}` isn't for {}",
+            bridged.entity_id
+        )));
+    }
+    let mut data = match serde_json::to_value(service) {
+        Ok(Value::Object(data)) => data,
+        Ok(_) => Map::new(),
+        Err(why) => return Err(ServiceError::failed(why.to_string())),
+    };
+    data.retain(|_, value| !value.is_null());
+    let rename = |data: &mut Map<String, Value>, from: &str, to: &str| {
+        if let Some(value) = data.remove(from) {
+            data.insert(to.to_owned(), value);
+        }
+    };
+    let action = match (domain, action) {
+        ("light", "turn_on") => {
+            rename(&mut data, "rgb", "rgb_color");
+            "turn_on"
+        }
+        ("cover", "open") => "open_cover",
+        ("cover", "close") => "close_cover",
+        ("cover", "stop") => "stop_cover",
+        ("cover", "set_position") => "set_cover_position",
+        ("cover", "set_tilt") => {
+            rename(&mut data, "tilt", "tilt_position");
+            "set_cover_tilt_position"
+        }
+        ("valve", "open") => "open_valve",
+        ("valve", "close") => "close_valve",
+        ("valve", "stop") => "stop_valve",
+        ("valve", "set_position") => "set_valve_position",
+        // The core answers these itself, with a `set_value` (`docs/specs/protocols.md` §7.1).
+        ("number", "increment" | "decrement") => {
+            return Err(ServiceError::failed(format!(
+                "`{full}` isn't sent to a protocol"
+            )));
+        }
+        (_, action) => action,
+    };
+    Ok((domain.to_owned(), action.to_owned(), data))
+}
+
+/// The context id in a compact state's `c`: a string, or `{ "id": … }`.
+pub fn context_id(value: Option<&Value>) -> Option<&str> {
+    match value? {
+        Value::String(id) => Some(id),
+        Value::Object(context) => context.get("id").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// Entities by `entity_id`, for following Home Assistant's state changes.
+pub fn by_entity_id(entities: &[Bridged]) -> BTreeMap<String, usize> {
+    entities
+        .iter()
+        .enumerate()
+        .map(|(index, bridged)| (bridged.entity_id.clone(), index))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use irori_types::{CoverState, LightState, LightTurnOn, OpenState, SetPosition, SetTilt};
+
+    fn attrs(value: Value) -> Map<String, Value> {
+        value.as_object().cloned().expect("an object")
+    }
+
+    fn settings() -> Settings {
+        serde_json::from_value(json!({ "url": "http://127.0.0.1:8123", "token": "t" }))
+            .expect("settings")
+    }
+
+    fn device(id: &str, area: Option<&str>) -> HaDevice {
+        serde_json::from_value(json!({
+            "id": id, "name": format!("Device {id}"), "area_id": area,
+            "connections": [["mac", "AA:BB:CC:DD:EE:FF"], ["zigbee", "00:11:22:33:44:55:66:77"], ["upnp", "uuid"]],
+            "serial_number": " SN-1 ",
+        }))
+        .expect("device")
+    }
+
+    fn entity(id: &str, entity_id: &str, device: Option<&str>) -> HaEntity {
+        serde_json::from_value(json!({
+            "id": id, "entity_id": entity_id, "platform": "hue", "device_id": device,
+            "has_entity_name": true, "original_name": null,
+        }))
+        .expect("entity")
+    }
+
+    fn registry() -> Registry {
+        let mut registry = Registry {
+            floors: list(
+                &json!([{ "floor_id": "up", "name": " Upstairs ", "level": 1 }, { "floor_id": "deep", "name": "Bunker", "level": -300 }]),
+            ),
+            areas: list(&json!([
+                { "area_id": "kitchen", "name": "Kitchen", "floor_id": "up" },
+                { "area_id": "garage", "name": "Garage" },
+            ])),
+            devices: vec![device("d1", Some("kitchen")), device("d2", Some("garage"))],
+            entities: vec![
+                entity("e1", "light.kitchen", Some("d1")),
+                entity("e2", "sensor.kitchen_temperature", Some("d1")),
+                entity("e3", "light.garage", Some("d2")),
+                entity("e4", "media_player.kitchen", Some("d1")),
+                entity("e5", "weather.home", Some("d1")),
+                entity("e6", "light.loose", None),
+            ],
+            states: HashMap::new(),
+        };
+        registry.entities[1].original_name = Some("Temperature".into());
+        for (entity_id, state, a) in [
+            (
+                "light.kitchen",
+                "on",
+                json!({ "supported_color_modes": ["color_temp", "hs"], "brightness": 200, "color_mode": "color_temp", "color_temp_kelvin": 3000, "min_color_temp_kelvin": 2202, "max_color_temp_kelvin": 6535 }),
+            ),
+            (
+                "sensor.kitchen_temperature",
+                "21.5",
+                json!({ "device_class": "temperature", "unit_of_measurement": "°C", "state_class": "measurement" }),
+            ),
+            (
+                "light.garage",
+                "off",
+                json!({ "supported_color_modes": ["onoff"] }),
+            ),
+            ("media_player.kitchen", "idle", json!({})),
+            ("weather.home", "sunny", json!({})),
+            (
+                "light.loose",
+                "off",
+                json!({ "supported_color_modes": ["onoff"], "friendly_name": "Loose light" }),
+            ),
+        ] {
+            registry.states.insert(
+                entity_id.into(),
+                HaState {
+                    state: state.into(),
+                    attributes: attrs(a),
+                },
+            );
+        }
+        registry
+    }
+
+    #[test]
+    fn devices_carry_their_area_connections_and_serial() {
+        let plan = plan(&registry(), &settings());
+        let d1 = &plan.devices[0];
+        assert_eq!(d1.unique_id.as_str(), "d1");
+        assert_eq!(
+            d1.suggested_area.as_ref().map(Name::as_str),
+            Some("Kitchen")
+        );
+        assert_eq!(d1.serial_number.as_deref(), Some("SN-1"));
+        let kinds: Vec<_> = d1
+            .connections
+            .iter()
+            .map(|c| (c.kind, c.value().to_owned()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                (ConnectionKind::Mac, "aabbccddeeff".to_owned()),
+                (ConnectionKind::Ieee, "0011223344556677".to_owned()),
+                (ConnectionKind::Serial, "SN-1".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn by_default_only_modeled_entities_on_devices_come_over() {
+        let plan = plan(&registry(), &settings());
+        let ids: Vec<_> = plan.entities.iter().map(|b| b.entity_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "light.kitchen",
+                "sensor.kitchen_temperature",
+                "light.garage"
+            ]
+        );
+        // The main light goes by its device's name; the sensor has its own.
+        assert_eq!(plan.entities[0].description.name, None);
+        assert_eq!(
+            plan.entities[1].description.name.as_ref().map(Name::as_str),
+            Some("Temperature")
+        );
+        assert_eq!(
+            plan.entities[0]
+                .description
+                .suggested_object_id
+                .as_ref()
+                .map(ObjectId::as_str),
+            Some("kitchen")
+        );
+        // A kind Irori has but this extension doesn't carry says so; one Irori lacks doesn't.
+        let unmodeled: Vec<_> = plan
+            .unmodeled
+            .iter()
+            .map(|u| {
+                (
+                    u.platform.as_str(),
+                    u.reason.is_some(),
+                    u.device_unique_id.is_some(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            unmodeled,
+            [("media_player", true, true), ("weather", false, true)]
+        );
+    }
+
+    #[test]
+    fn disabled_hidden_and_diagnostic_entities_stay_out_unless_included() {
+        let mut registry = registry();
+        registry.entities[0].hidden_by = Some("user".into());
+        registry.entities[1].entity_category = Some("diagnostic".into());
+        registry.entities[2].disabled_by = Some("user".into());
+        let ids = |plan: &Plan| {
+            plan.entities
+                .iter()
+                .map(|b| b.entity_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(ids(&plan(&registry, &settings())).is_empty());
+
+        let mut wide = settings();
+        wide.include_integrations = vec!["HUE".into()];
+        let widened = plan(&registry, &wide);
+        // Disabled stays out even then; the device-less light comes over under its own name.
+        assert_eq!(
+            ids(&widened),
+            ["light.kitchen", "sensor.kitchen_temperature", "light.loose"]
+        );
+        assert_eq!(
+            widened.entities[1].description.entity_category,
+            Some(EntityCategory::Diagnostic)
+        );
+        let loose = &widened.entities[2].description;
+        assert_eq!(loose.device_unique_id, None);
+        assert_eq!(loose.name.as_ref().map(Name::as_str), Some("Loose light"));
+    }
+
+    #[test]
+    fn areas_and_integrations_can_be_left_out() {
+        let mut narrow = settings();
+        narrow.exclude_areas = vec!["garage".into()];
+        let plan = plan(&registry(), &narrow);
+        assert!(plan.entities.iter().all(|b| b.entity_id != "light.garage"));
+        assert!(plan.devices.iter().all(|d| d.unique_id.as_str() != "d2"));
+
+        let mut none = settings();
+        none.exclude_integrations = vec!["hue".into()];
+        assert!(super::plan(&registry(), &none).entities.is_empty());
+
+        let mut garage_only = settings();
+        garage_only.include_areas = vec!["Garage".into()];
+        garage_only.exclude_areas = vec!["Kitchen".into()];
+        let ids: Vec<_> = super::plan(&registry(), &garage_only)
+            .entities
+            .into_iter()
+            .map(|b| b.entity_id)
+            .collect();
+        assert_eq!(ids, ["light.garage"]);
+    }
+
+    #[test]
+    fn past_the_limit_the_rest_wait_and_the_same_ones_always_come_over() {
+        let mut registry = registry();
+        registry.entities.clear();
+        for n in (0..MAX_ENTITIES + 5).rev() {
+            let entity_id = format!("switch.s{n}");
+            registry
+                .entities
+                .push(entity(&format!("id{n:05}"), &entity_id, Some("d1")));
+            registry.states.insert(
+                entity_id,
+                HaState {
+                    state: "on".into(),
+                    attributes: Map::new(),
+                },
+            );
+        }
+        let plan = plan(&registry, &settings());
+        assert_eq!(plan.entities.len(), MAX_ENTITIES);
+        assert_eq!(plan.entities[0].description.unique_id.as_str(), "id00000");
+        assert_eq!(plan.waiting.len(), 1);
+        assert!(
+            plan.waiting[0].reason.starts_with("5 more"),
+            "{}",
+            plan.waiting[0].reason
+        );
+    }
+
+    #[test]
+    fn a_device_reached_through_another_comes_after_it() {
+        let mut registry = registry();
+        let mut hub = device("a-hub", None);
+        hub.connections.clear();
+        hub.serial_number = None;
+        registry.devices.push(hub);
+        registry.devices[0].via_device_id = Some("a-hub".into());
+        registry.devices[1].via_device_id = Some("missing".into());
+        let plan = plan(&registry, &settings());
+        let order: Vec<_> = plan.devices.iter().map(|d| d.unique_id.as_str()).collect();
+        assert_eq!(order, ["a-hub", "d1", "d2"]);
+        assert_eq!(
+            plan.devices[1]
+                .via_device_unique_id
+                .as_ref()
+                .map(UniqueId::as_str),
+            Some("a-hub")
+        );
+        assert_eq!(plan.devices[2].via_device_unique_id, None);
+    }
+
+    #[test]
+    fn floors_and_areas_are_proposed_by_name() {
+        let plan = plan(&registry(), &settings());
+        let floors: Vec<_> = plan
+            .layout
+            .floors
+            .iter()
+            .map(|f| (f.name.as_str(), f.level))
+            .collect();
+        assert_eq!(floors, [("Upstairs", Some(1)), ("Bunker", Some(-128))]);
+        let areas: Vec<_> = plan
+            .layout
+            .areas
+            .iter()
+            .map(|a| (a.name.as_str(), a.floor.as_ref().map(Name::as_str)))
+            .collect();
+        assert_eq!(areas, [("Kitchen", Some("Upstairs")), ("Garage", None)]);
+    }
+
+    #[test]
+    fn a_light_reads_as_irori_takes_it() {
+        let registry = registry();
+        let plan = plan(&registry, &settings());
+        let light = &plan.entities[0];
+        let Capabilities::Light(caps) = &light.description.capabilities else {
+            panic!("a light");
+        };
+        assert!(caps.brightness && caps.rgb);
+        assert_eq!(
+            caps.color_temp_kelvin.map(|r| (r.min, r.max)),
+            Some((2202, 6535))
+        );
+        let state = &registry.states["light.kitchen"];
+        assert_eq!(
+            reading(
+                &light.description.capabilities,
+                &state.state,
+                &state.attributes
+            ),
+            Reading::Value(Some(State::Light(LightState {
+                on: true,
+                brightness: Some(200),
+                color_mode: Some(irori_types::ColorMode::ColorTemp),
+                color_temp_kelvin: Some(3000),
+                rgb: None,
+            })))
+        );
+        // Brightness 0 is Irori's "off"; it's left out rather than refused.
+        let off = attrs(json!({ "brightness": 0 }));
+        assert!(matches!(
+            reading(&light.description.capabilities, "off", &off),
+            Reading::Value(Some(State::Light(LightState {
+                on: false,
+                brightness: None,
+                ..
+            })))
+        ));
+        assert_eq!(
+            reading(&light.description.capabilities, "unavailable", &off),
+            Reading::Unavailable
+        );
+        assert_eq!(
+            reading(&light.description.capabilities, "unknown", &off),
+            Reading::Value(None)
+        );
+    }
+
+    #[test]
+    fn values_irori_refuses_are_unknown_not_sent() {
+        let sensor =
+            capabilities("sensor", &attrs(json!({ "unit_of_measurement": "W" }))).expect("sensor");
+        assert_eq!(reading(&sensor, "abc", &Map::new()), Reading::Value(None));
+        let select =
+            capabilities("select", &attrs(json!({ "options": ["a", "b"] }))).expect("select");
+        assert_eq!(reading(&select, "c", &Map::new()), Reading::Value(None));
+        let words = capabilities("sensor", &Map::new()).expect("a sensor with no unit");
+        assert!(matches!(
+            reading(&words, "charging", &Map::new()),
+            Reading::Value(Some(_))
+        ));
+    }
+
+    #[test]
+    fn a_class_irori_doesnt_know_is_dropped_not_the_entity() {
+        let caps = capabilities(
+            "binary_sensor",
+            &attrs(json!({ "device_class": "something_new" })),
+        )
+        .expect("still a binary sensor");
+        assert_eq!(caps.kind(), EntityKind::BinarySensor);
+    }
+
+    #[test]
+    fn a_cover_reads_its_position() {
+        let caps = capabilities(
+            "cover",
+            &attrs(json!({ "supported_features": 15, "device_class": "blind" })),
+        )
+        .expect("cover");
+        assert_eq!(
+            reading(&caps, "opening", &attrs(json!({ "current_position": 40 }))),
+            Reading::Value(Some(State::Cover(CoverState {
+                state: OpenState::Opening,
+                position: Some(40),
+                tilt: None,
+            })))
+        );
+    }
+
+    fn bridged(entity_id: &str, caps: Capabilities) -> Bridged {
+        Bridged {
+            description: EntityDescription {
+                unique_id: UniqueId::try_from("x").expect("id"),
+                name: name("X"),
+                device_unique_id: None,
+                suggested_object_id: None,
+                capabilities: caps,
+                entity_category: None,
+            },
+            entity_id: entity_id.into(),
+        }
+    }
+
+    #[test]
+    fn commands_become_home_assistants_own_services() {
+        let light = bridged(
+            "light.kitchen",
+            capabilities("light", &attrs(json!({ "supported_color_modes": ["hs"] })))
+                .expect("light"),
+        );
+        let (domain, service, data) = command(
+            &light,
+            &Service::LightTurnOn(LightTurnOn {
+                brightness: Some(9),
+                color_temp_kelvin: None,
+                rgb: Some([1, 2, 3]),
+            }),
+        )
+        .expect("a call");
+        assert_eq!((domain.as_str(), service.as_str()), ("light", "turn_on"));
+        assert_eq!(
+            Value::Object(data),
+            json!({ "brightness": 9, "rgb_color": [1, 2, 3] })
+        );
+        assert_eq!(
+            command(&light, &Service::LightTurnOff).expect("off").1,
+            "turn_off"
+        );
+
+        let cover = bridged(
+            "cover.blind",
+            capabilities("cover", &attrs(json!({ "supported_features": 255 }))).expect("cover"),
+        );
+        for (service, expected, data) in [
+            (Service::CoverOpen, "open_cover", json!({})),
+            (Service::CoverClose, "close_cover", json!({})),
+            (Service::CoverStop, "stop_cover", json!({})),
+            (
+                Service::CoverSetPosition(SetPosition { position: 30 }),
+                "set_cover_position",
+                json!({ "position": 30 }),
+            ),
+            (
+                Service::CoverSetTilt(SetTilt { tilt: 70 }),
+                "set_cover_tilt_position",
+                json!({ "tilt_position": 70 }),
+            ),
+        ] {
+            let (_, name, sent) = command(&cover, &service).expect("a call");
+            assert_eq!(name, expected);
+            assert_eq!(Value::Object(sent), data);
+        }
+        let valve = bridged(
+            "valve.main",
+            capabilities("valve", &attrs(json!({ "supported_features": 15 }))).expect("valve"),
+        );
+        assert_eq!(
+            command(&valve, &Service::ValveOpen).expect("open").1,
+            "open_valve"
+        );
+        assert_eq!(
+            command(
+                &valve,
+                &Service::ValveSetPosition(SetPosition { position: 5 })
+            )
+            .expect("set")
+            .1,
+            "set_valve_position"
+        );
+        // Never a service of another kind, whatever the entity.
+        assert!(command(&light, &Service::SwitchTurnOn).is_err());
+        assert!(command(&cover, &Service::LightTurnOff).is_err());
+    }
+
+    #[test]
+    fn a_context_comes_as_text_or_an_object() {
+        assert_eq!(context_id(Some(&json!("abc"))), Some("abc"));
+        assert_eq!(
+            context_id(Some(&json!({ "id": "def", "user_id": null }))),
+            Some("def")
+        );
+        assert_eq!(context_id(None), None);
+    }
+}
