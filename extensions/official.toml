@@ -53,6 +53,16 @@ crate = "irori-protocol-mqtt"
 bin = "irori-ext-mqtt"
 
 [[extension]]
+id = "homeassistant"
+name = "Home Assistant"
+category = "protocol"
+description = "Try Irori on the home your Home Assistant already runs: its devices, rooms and floors, while Home Assistant keeps running them."
+version = "0.1.0"
+source = "extensions/protocols/homeassistant"
+crate = "irori-protocol-homeassistant"
+bin = "irori-ext-homeassistant"
+
+[[extension]]
 id = "tplink"
 name = "TP-Link Tapo and Kasa"
 category = "protocol"
