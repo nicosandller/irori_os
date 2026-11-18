@@ -61,7 +61,7 @@ A big Home Assistant must not crowd out a home's own devices, so this extension 
 - **At most 2,000 entities.** Past that the same 2,000 are always taken (in the order of their
   registry ids), and the extension's page says how many more qualified and how to narrow it.
 - **A sensor reports at most once a second**, the newest value winning.
-- **About 200 reports a second in all**, in batches of 20 every 100 ms, the longest waiting first.
+- **About 150 reports a second in all**, in batches of 15 every 100 ms, the longest waiting first.
   What answers a command goes first.
 - **Nothing that didn't change.** A change to an attribute that doesn't change the value Irori
   holds isn't reported. Attributes aren't sent: Irori's typed value has what it uses.
