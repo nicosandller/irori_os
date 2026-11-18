@@ -7150,6 +7150,53 @@ mod tests {
         Ok(())
     }
 
+    /// A listener that has stopped reading altogether (a stuck page, an engine that hung) holds
+    /// "Add all" up once, for a moment, and not again at every step.
+    #[tokio::test]
+    async fn a_listener_that_stopped_reading_holds_add_all_up_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Crowd>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let (devices, entities) = CROWD;
+        for _ in 0..1000 {
+            let found = core.held_devices();
+            if found.len() == devices
+                && found
+                    .iter()
+                    .all(|device| device.provides.values().sum::<usize>() == entities)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(core.held_devices().len(), devices, "the crowd was found");
+
+        // Subscribed, and never read.
+        let stuck = core.subscribe();
+        let started = tokio::time::Instant::now();
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "crowd"}),
+            )
+            .await?;
+        let took = started.elapsed();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], devices, "{body}");
+        assert_eq!(core.entities().len(), devices * entities);
+        // One wait of half a second, not one at each of the dozen or so steps.
+        assert!(took < Duration::from_secs(3), "took {took:?}");
+        drop(stuck);
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// A found device joins the home when "+ Add device" adds it, with its entities, and it's
     /// written down so a restart keeps it. There's no ignoring any more: taking a device out is
     /// removing it, so a request that still asks to ignore one is refused rather than
