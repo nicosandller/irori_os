@@ -20,8 +20,8 @@
 #              - `history.dropped_changes` (/api/health) doesn't grow;
 #              - Irori logs no "fell behind" (an engine's or history's missed events);
 #              - the demo flow (a demo switch on → a demo light on) fires within 1 s, every time;
-#              - the core's (the `irori` process alone, not the extensions') CPU time over the
-#                window and its memory, against the baseline's, within 10%.
+#              - the core (the `irori` process alone, not the extensions') uses at most 5% of a
+#                core over the window and at most 64 MB more memory than the baseline's.
 #
 # usage: dev/ha-load [--release] [--window SECONDS] [--settle SECONDS] [--sizes "2000 5000"]
 #                    [--rate N] [--trials N]
@@ -402,14 +402,15 @@ for row in rows:
     if int(row["flow_misses"]) != 0:
         problems.append("the flow was late or didn't fire")
     if row is not base:
-        cpu = float(row["cpu_s"]) - float(base["cpu_s"])
-        rss = float(row["rss_mb"]) / float(base["rss_mb"]) - 1
-        row_cpu = (float(row["cpu_s"]) / max(float(base["cpu_s"]), 0.01)) - 1
-        print(f'{row["run"]}: core CPU {row_cpu:+.0%} ({cpu:+.2f} s over the window), memory {rss:+.0%} against the baseline')
-        if row_cpu > 0.10:
-            problems.append(f"core CPU {row_cpu:+.0%} over the baseline")
-        if rss > 0.10:
-            problems.append(f"core memory {rss:+.0%} over the baseline")
+        # The budget for a bridged home of up to 2,000 entities, in steady state.
+        pct = float(row["cpu_pct"])
+        extra = float(row["rss_mb"]) - float(base["rss_mb"])
+        print(f'{row["run"]}: core CPU {pct:.1f}% of a core (budget 5%), memory {extra:+.1f} MB '
+              f'against the baseline (budget +64 MB)')
+        if pct > 5:
+            problems.append(f"core CPU {pct:.1f}% of a core, over the 5% budget")
+        if extra > 64:
+            problems.append(f"core memory {extra:+.1f} MB, over the +64 MB budget")
     print(f'{row["run"]}: {"PASS" if not problems else "FAIL: " + "; ".join(problems)}')
     ok &= not problems
 sys.exit(0 if ok else 1)
