@@ -41,6 +41,9 @@ struct Shape {
     unmodeled: Vec<irori_types::Unmodeled>,
     /// Whether any device is known at all, for telling "no such device" from "nothing yet".
     any_devices: bool,
+    /// The device this one is a copy of: its name, and its page while it's in the home. Part
+    /// of the shape so the line follows the twin being added, renamed or gone.
+    twin: Option<(String, Option<String>)>,
 }
 
 #[component]
@@ -111,12 +114,29 @@ fn shape_of(home: &Home, id: &str) -> Shape {
                 .collect()
         })
         .unwrap_or_default();
+    let twin = device
+        .as_ref()
+        .and_then(|device| device.duplicate_of.as_ref())
+        .map(|twin| twin_of(home, twin));
     Shape {
         device,
         areas: home.areas.clone(),
         entities,
         unmodeled,
         any_devices: !home.devices.is_empty(),
+        twin,
+    }
+}
+
+/// The device a copy is the same as, by name: a link when it's in the home, and only its name
+/// while it waits to be added, since it has no page of its own yet.
+fn twin_of(home: &Home, twin: &irori_types::DeviceId) -> (String, Option<String>) {
+    if let Some(found) = home.devices.iter().find(|other| &other.id == twin) {
+        (found.name.to_string(), Some(format!("/devices/{twin}")))
+    } else if let Some(held) = home.held.iter().find(|other| &other.id == twin) {
+        (format!("{} (waiting to be added)", held.name), None)
+    } else {
+        (twin.to_string(), None)
     }
 }
 
@@ -297,19 +317,7 @@ fn page(
             })
             .collect::<Vec<_>>()
     });
-    // The device this one is a copy of, by name: a link when it's in the home, and only its
-    // name while it waits to be added, since it has no page of its own yet.
-    let twin = device.duplicate_of.clone().map(|twin| {
-        live.home.with_untracked(|home| {
-            if let Some(found) = home.devices.iter().find(|other| other.id == twin) {
-                (found.name.to_string(), Some(format!("/devices/{twin}")))
-            } else if let Some(held) = home.held.iter().find(|other| other.id == twin) {
-                (format!("{} (waiting to be added)", held.name), None)
-            } else {
-                (twin.to_string(), None)
-            }
-        })
-    });
+    let twin = shape.twin.clone();
     let what = device.name.to_string();
     let name = device.name.to_string();
     let description = device
@@ -1678,6 +1686,40 @@ mod tests {
         let before = shape_of(&home(reading("2026-09-16T10:00:00Z", false)), "radar");
         let after = shape_of(&home(reading("2026-09-16T10:00:01Z", true)), "radar");
         assert_eq!(before, after);
+    }
+
+    /// A copy's "Same device as" line follows its twin: only a name while the twin waits to be
+    /// added, a link to its page once it's in the home.
+    #[test]
+    fn a_copy_names_its_twin_and_links_it_once_added() {
+        let mut copy = device();
+        copy.id = "bridge_radar".parse().expect("a valid device id");
+        copy.duplicate_of = Some("radar".parse().expect("a valid device id"));
+        let held = api::HeldDevice {
+            id: "radar".parse().expect("a valid device id"),
+            protocol: "esphome".to_owned(),
+            name: "Radar".parse().expect("a valid name"),
+            manufacturer: None,
+            model: None,
+            provides: Default::default(),
+        };
+        let waiting = Home {
+            devices: vec![copy.clone()],
+            held: vec![held],
+            ..Home::default()
+        };
+        assert_eq!(
+            shape_of(&waiting, "bridge_radar").twin,
+            Some(("Radar (waiting to be added)".to_owned(), None))
+        );
+        let added = Home {
+            devices: vec![copy, device()],
+            ..Home::default()
+        };
+        assert_eq!(
+            shape_of(&added, "bridge_radar").twin,
+            Some(("Radar".to_owned(), Some("/devices/radar".to_owned())))
+        );
     }
 
     /// A rename does change it, or the new name would never appear.
