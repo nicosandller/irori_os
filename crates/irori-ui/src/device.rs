@@ -297,6 +297,19 @@ fn page(
             })
             .collect::<Vec<_>>()
     });
+    // The device this one is a copy of, by name: a link when it's in the home, and only its
+    // name while it waits to be added, since it has no page of its own yet.
+    let twin = device.duplicate_of.clone().map(|twin| {
+        live.home.with_untracked(|home| {
+            if let Some(found) = home.devices.iter().find(|other| other.id == twin) {
+                (found.name.to_string(), Some(format!("/devices/{twin}")))
+            } else if let Some(held) = home.held.iter().find(|other| other.id == twin) {
+                (format!("{} (waiting to be added)", held.name), None)
+            } else {
+                (twin.to_string(), None)
+            }
+        })
+    });
     let what = device.name.to_string();
     let name = device.name.to_string();
     let description = device
@@ -426,9 +439,12 @@ fn page(
                     <dt>"Also reachable through"</dt>
                     <dd>{also_through.join(", ")}</dd>
                 })}
-                {device.duplicate_of.clone().map(|twin| view! {
+                {twin.map(|(name, href)| view! {
                     <dt>"Same device as"</dt>
-                    <dd><A href=format!("/devices/{twin}") attr:class="row-link">{twin.to_string()}</A></dd>
+                    <dd>{match href {
+                        Some(href) => view! { <A href=href attr:class="row-link">{name}</A> }.into_any(),
+                        None => name.into_any(),
+                    }}</dd>
                 })}
                 <dt>"Area"</dt>
                 // The area is a reading until its pencil is pressed, when it becomes the picker

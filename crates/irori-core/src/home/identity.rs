@@ -63,7 +63,7 @@ pub(crate) fn keys_of(description: &DeviceDescription) -> BTreeSet<Key> {
         }
     }
     if let Some(serial) = description.serial_number.as_deref().map(str::trim)
-        && !serial.is_empty()
+        && says_which(serial)
     {
         keys.insert(Key::Serial(serial.to_owned()));
     }
@@ -72,10 +72,33 @@ pub(crate) fn keys_of(description: &DeviceDescription) -> BTreeSet<Key> {
         keys.insert(match connection.kind {
             ConnectionKind::Mac => Key::Mac(value),
             ConnectionKind::Ieee => Key::Ieee(value),
-            ConnectionKind::Serial => Key::Serial(value),
+            ConnectionKind::Serial if says_which(&value) => Key::Serial(value),
+            ConnectionKind::Serial => continue,
         });
     }
     keys
+}
+
+/// Whether a serial number can tell one device from another. A placeholder (`unknown`, `0`,
+/// `N/A`) or one so short two makers could both use it can't: two extensions that each have
+/// one device saying `unknown` would otherwise hide one of them. The ambiguity rule only
+/// catches a placeholder once one extension uses it twice.
+fn says_which(serial: &str) -> bool {
+    const PLACEHOLDERS: [&str; 8] = [
+        "unknown",
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "default",
+        "serial",
+        "not available",
+    ];
+    serial.chars().filter(char::is_ascii_alphanumeric).count() >= 4
+        && !PLACEHOLDERS.contains(&serial.to_ascii_lowercase().as_str())
+        && !serial
+            .chars()
+            .all(|c| c == '0' || !c.is_ascii_alphanumeric())
 }
 
 /// Every device's identifiers, in the home or only found, and which devices are copies.
@@ -276,17 +299,32 @@ mod tests {
     }
 
     #[test]
+    fn a_placeholder_serial_is_no_key() {
+        for serial in ["unknown", "N/A", "0", "0000-0000", "123", "Default"] {
+            assert!(
+                keys_of(&described("8a9b2c4d", Some(serial))).is_empty(),
+                "{serial}"
+            );
+            let mut description = described("ha-device-1", None);
+            description.connections =
+                vec![Connection::new(ConnectionKind::Serial, serial).expect("valid")];
+            assert!(keys_of(&description).is_empty(), "{serial}");
+        }
+        assert!(!keys_of(&described("8a9b2c4d", Some("SN-42"))).is_empty());
+    }
+
+    #[test]
     fn connections_are_keys_of_their_own_kind() {
         let mut description = described("ha-device-1", None);
         description.connections = vec![
             Connection::new(ConnectionKind::Mac, "AA-BB-CC-DD-EE-FF").expect("valid"),
-            Connection::new(ConnectionKind::Serial, "SN1").expect("valid"),
+            Connection::new(ConnectionKind::Serial, "SN-1001").expect("valid"),
         ];
         assert_eq!(
             keys_of(&description),
             BTreeSet::from([
                 Key::Mac("aabbccddeeff".to_owned()),
-                Key::Serial("SN1".to_owned())
+                Key::Serial("SN-1001".to_owned())
             ])
         );
     }
