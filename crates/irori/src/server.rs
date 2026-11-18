@@ -1150,7 +1150,9 @@ struct AddedFound {
 /// Adds every device one extension has found and is holding, as "+ Add device" would one at a
 /// time, in a single edit of `devices.toml` ("Add all"). A home with hundreds of found devices
 /// (a bridge to another system) would otherwise take one request, and one rewrite of the file,
-/// per device. Devices of other extensions are left where they are.
+/// per device. They join the core a few at a time, so the events they bring never pile up past
+/// what a listener can fall behind by ([`Config::add_devices`]). Devices of other extensions are
+/// left where they are.
 async fn add_found_devices(
     State(state): State<AppState>,
     Extension(trail): Extension<trail::Trail>,
@@ -1159,11 +1161,12 @@ async fn add_found_devices(
     let core = &state.0.core;
     let protocol = request.protocol;
     trail.target(protocol.as_str());
-    let found: Vec<DeviceId> = core
+    // Each with how many entities it brings, for adding them a few at a time.
+    let found: Vec<(DeviceId, usize)> = core
         .held_devices()
         .into_iter()
         .filter(|device| device.protocol == protocol)
-        .map(|device| device.id)
+        .map(|device| (device.id, device.provides.values().sum()))
         .collect();
     if found.is_empty() {
         let known = core
@@ -1180,17 +1183,7 @@ async fn add_found_devices(
             )
         };
     }
-    let edited = state
-        .0
-        .config
-        .edit(core, |settings| {
-            for id in &found {
-                settings.devices.entry(id.clone()).or_default().added = true;
-            }
-            Ok(())
-        })
-        .await;
-    match edited {
+    match state.0.config.add_devices(core, &found).await {
         Ok(()) => {
             trail.detail(found.len().to_string());
             Json(AddedFound { added: found.len() }).into_response()
@@ -1270,21 +1263,22 @@ async fn accept_layout(
         .await;
     match edited {
         Ok(made) => {
-            trail.detail(format!(
-                "{} {}, {} {}",
-                made.areas.len(),
-                if made.areas.len() == 1 {
-                    "room"
-                } else {
-                    "rooms"
-                },
-                made.floors.len(),
-                if made.floors.len() == 1 {
-                    "floor"
-                } else {
-                    "floors"
-                },
-            ));
+            // "2 rooms, 1 floor", leaving out what it made none of.
+            let counted = |n: usize, one: &str, many: &str| match n {
+                0 => None,
+                1 => Some(format!("1 {one}")),
+                n => Some(format!("{n} {many}")),
+            };
+            trail.detail(
+                [
+                    counted(made.areas.len(), "room", "rooms"),
+                    counted(made.floors.len(), "floor", "floors"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", "),
+            );
             Json(made).into_response()
         }
         Err(e) => edit_failed(e),
@@ -7177,6 +7171,202 @@ mod tests {
         assert!(status.is_client_error(), "{status}");
         assert_eq!(held("mesh"), mesh);
 
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A protocol that finds a crowd: as many devices and entities as a bridge to another home
+    /// system brings, each entity with a state.
+    #[derive(Debug)]
+    struct Crowd;
+
+    /// How many devices the crowd has, and entities on each: 2,000 entities in all.
+    const CROWD: (usize, usize) = (200, 10);
+
+    impl irori_protocol::Protocol for Crowd {
+        type Config = MeshSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "crowd"
+            name = "Crowd"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: MeshSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let (devices, entities) = CROWD;
+            for device in 0..devices {
+                ctx.describe_device(irori_types::DeviceDescription {
+                    unique_id: format!("d{device}").parse()?,
+                    name: format!("Device {device}").parse()?,
+                    manufacturer: None,
+                    model: None,
+                    sw_version: None,
+                    hw_version: None,
+                    serial_number: None,
+                    suggested_area: None,
+                    via_device_unique_id: None,
+                    connections: Vec::new(),
+                })
+                .await?;
+                for entity in 0..entities {
+                    let unique_id = format!("d{device}_e{entity}");
+                    ctx.describe_entity(irori_types::EntityDescription {
+                        unique_id: unique_id.parse()?,
+                        name: Some(format!("Switch {entity}").parse()?),
+                        device_unique_id: Some(format!("d{device}").parse()?),
+                        suggested_object_id: None,
+                        capabilities: irori_types::Capabilities::Switch(
+                            irori_types::SwitchCapabilities { device_class: None },
+                        ),
+                        entity_category: None,
+                    })
+                    .await?;
+                    ctx.report_state(irori_types::StateReport {
+                        unique_id: unique_id.parse()?,
+                        state: Some(irori_types::State::Switch(irori_types::SwitchState {
+                            on: entity % 2 == 0,
+                        })),
+                        attributes: Default::default(),
+                        caused_by: None,
+                        replayed: false,
+                    });
+                }
+            }
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// Adding a crowd of found devices at once brings thousands of events, more than a listener
+    /// can fall behind by. "Add all" hands them to the core a few hundred at a time, so a
+    /// listener that reads as the history and the event log do misses none of them.
+    #[tokio::test]
+    async fn adding_a_crowd_of_devices_leaves_no_listener_behind() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Crowd>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let (devices, entities) = CROWD;
+        for _ in 0..1000 {
+            let found = core.held_devices();
+            if found.len() == devices
+                && found
+                    .iter()
+                    .all(|device| device.provides.values().sum::<usize>() == entities)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(core.held_devices().len(), devices, "the crowd was found");
+
+        // A listener that takes each event as it comes, yielding between them as one that
+        // writes somewhere does.
+        let mut events = core.subscribe();
+        let listener = tokio::spawn(async move {
+            let mut read = 0usize;
+            loop {
+                match events.recv().await {
+                    Ok(_) => read += 1,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        return Err(missed);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(read),
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "crowd"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], devices, "{body}");
+        assert!(core.held_devices().is_empty());
+        assert_eq!(core.entities().len(), devices * entities);
+        // Written once, with every one of them.
+        let file = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert_eq!(file.matches("added = true").count(), devices, "{file}");
+
+        // Give the listener the last step, then see how it fared.
+        for _ in 0..500 {
+            if core.events_waiting() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Before the host stops: stopping marks every entity unavailable at once, which is
+        // not what this is about.
+        listener.abort();
+        let heard = listener.await;
+        host.shutdown().await;
+        match heard {
+            Err(e) if e.is_cancelled() => {}
+            Ok(Err(missed)) => anyhow::bail!("a listener missed {missed} events"),
+            Ok(Ok(_)) => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    }
+
+    /// A listener that has stopped reading altogether (a stuck page, an engine that hung) holds
+    /// "Add all" up once, for a moment, and not again at every step.
+    #[tokio::test]
+    async fn a_listener_that_stopped_reading_holds_add_all_up_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Crowd>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let (devices, entities) = CROWD;
+        for _ in 0..1000 {
+            let found = core.held_devices();
+            if found.len() == devices
+                && found
+                    .iter()
+                    .all(|device| device.provides.values().sum::<usize>() == entities)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(core.held_devices().len(), devices, "the crowd was found");
+
+        // Subscribed, and never read.
+        let stuck = core.subscribe();
+        let started = tokio::time::Instant::now();
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "crowd"}),
+            )
+            .await?;
+        let took = started.elapsed();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], devices, "{body}");
+        assert_eq!(core.entities().len(), devices * entities);
+        // One wait of half a second, not one at each of the dozen or so steps.
+        assert!(took < Duration::from_secs(3), "took {took:?}");
+        drop(stuck);
         host.shutdown().await;
         Ok(())
     }

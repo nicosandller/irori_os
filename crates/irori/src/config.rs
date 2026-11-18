@@ -22,6 +22,35 @@ use tokio::sync::Mutex;
 /// file feels live, and slow enough that the cost is three `stat` calls.
 const POLL: Duration = Duration::from_secs(2);
 
+/// About how many events one step of adding devices publishes ([`Config::add_devices`]): a
+/// quarter of what a listener can fall behind by.
+const ADD_STEP_EVENTS: usize = Core::event_buffer() / 4;
+
+/// How long a listener may go without reading before adding devices stops waiting for it.
+const STALLED: Duration = Duration::from_millis(500);
+
+/// Waits until the listeners have read all but a step's worth of what has been published, or
+/// until none of them has read anything for [`STALLED`]. Answers whether they kept up.
+async fn drained(core: &Core) -> bool {
+    let mut waiting = core.events_waiting();
+    let mut since = tokio::time::Instant::now();
+    while waiting > ADD_STEP_EVENTS {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let now = core.events_waiting();
+        if now < waiting {
+            since = tokio::time::Instant::now();
+        } else if since.elapsed() >= STALLED {
+            tracing::warn!(
+                waiting = now,
+                "a listener isn't reading; adding devices goes on"
+            );
+            return false;
+        }
+        waiting = now;
+    }
+    true
+}
+
 /// The config directory. Cheap to clone; all clones share one lock, so edits happen one at a
 /// time and never interleave with a reload.
 #[derive(Debug, Clone)]
@@ -124,6 +153,58 @@ impl Config {
         }
         core.apply_settings(settings);
         Ok(made)
+    }
+
+    /// Adds found devices to the home ("Add all"), each with how many entities it brings.
+    ///
+    /// `devices.toml` is written once, for all of them. The core is then told in steps: each
+    /// device that joins publishes an event for itself and two for each of its entities, and a
+    /// couple of hundred devices told at once would be thousands of events, more than a
+    /// listener (the history, the event log, an automation engine) can fall behind by before it
+    /// misses some. So each step is a few hundred events, and the next waits until the listeners
+    /// have read most of the last. A listener that has stopped reading altogether doesn't hold
+    /// the rest up for long: after a moment without progress, the rest go without waiting.
+    ///
+    /// The lock is held throughout, so the watch loop doesn't hand the core the whole file at
+    /// once in the middle of it.
+    pub async fn add_devices(
+        &self,
+        core: &Core,
+        devices: &[(DeviceId, usize)],
+    ) -> Result<(), EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        let before = store.settings();
+        let mut settings = before.clone();
+        for (id, _) in devices {
+            settings.devices.entry(id.clone()).or_default().added = true;
+        }
+        let written = store.save(&settings).map_err(EditError::Io)?;
+        if !written.is_empty() {
+            let files: Vec<&str> = written.iter().map(|file| file.name()).collect();
+            tracing::info!(files = ?files, "config written");
+        }
+        // The steps: the settings as they were, with one more batch of devices added each time.
+        let mut step = before;
+        let mut events = 0;
+        // Once a listener has stopped reading, waiting for it again at every step would only
+        // keep the lock (and the person) waiting half a second a step.
+        let mut keeping_up = true;
+        for (at, (id, entities)) in devices.iter().enumerate() {
+            step.devices.entry(id.clone()).or_default().added = true;
+            events += 1 + 2 * entities;
+            let last = at + 1 == devices.len();
+            if events >= ADD_STEP_EVENTS && !last {
+                core.apply_settings(step.clone());
+                events = 0;
+                if keeping_up {
+                    keeping_up = drained(core).await;
+                }
+            }
+        }
+        // The last step is the file as written, so the core ends up agreeing with the disk.
+        core.apply_settings(settings);
+        Ok(())
     }
 
     /// Removes a device from the home (`docs/specs/config.md` §3.2): everything Irori keeps of it

@@ -170,6 +170,14 @@ pub enum Incoming {
 
 type Answer = oneshot::Sender<Result<serde_json::Value, EngineError>>;
 
+/// The requests waiting for the core's answer, until nothing more is read from the core.
+#[derive(Debug, Default)]
+struct Pending {
+    answers: HashMap<u64, Answer>,
+    /// Nothing more is read: a request made now would never be answered.
+    closed: bool,
+}
+
 #[derive(Debug, Clone)]
 struct Outbox(mpsc::UnboundedSender<FromExt>);
 
@@ -184,7 +192,7 @@ impl Outbox {
 pub struct EngineClient {
     out: Outbox,
     next_id: Arc<AtomicU64>,
-    pending: Arc<Mutex<HashMap<u64, Answer>>>,
+    pending: Arc<Mutex<Pending>>,
 }
 
 impl EngineClient {
@@ -194,10 +202,13 @@ impl EngineClient {
     ) -> Result<serde_json::Value, EngineError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .insert(id, tx);
+        {
+            let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
+            if pending.closed {
+                return Err(EngineError("the core went away".into()));
+            }
+            pending.answers.insert(id, tx);
+        }
         self.out.send(build(id));
         match tokio::time::timeout(REQUEST_TIMEOUT, rx).await {
             Ok(answer) => answer.unwrap_or_else(|_| Err(EngineError("the core went away".into()))),
@@ -205,6 +216,7 @@ impl EngineClient {
                 self.pending
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
+                    .answers
                     .remove(&id);
                 Err(EngineError(
                     "the core didn't answer within 30 seconds".into(),
@@ -344,7 +356,7 @@ where
     let client = EngineClient {
         out: out.clone(),
         next_id: Arc::new(AtomicU64::new(0)),
-        pending: Arc::new(Mutex::new(HashMap::new())),
+        pending: Arc::new(Mutex::new(Pending::default())),
     };
     // Unbounded: the reader must never wait on the engine. An engine that awaits an answer
     // while pushes pile up would otherwise block the reader on a full channel, and the answer
@@ -352,81 +364,101 @@ where
     let (in_tx, in_rx) = mpsc::unbounded_channel();
     let pending = Arc::clone(&client.pending);
     tokio::spawn(async move {
-        loop {
-            let message = match read_json::<ToExt>(&mut reader).await {
-                Ok(message) => message,
-                Err(_) => {
-                    let _ = in_tx.send(Incoming::Stop);
-                    return;
-                }
-            };
-            let incoming = match message {
-                ToExt::Answer { id, value, error } => {
-                    let answer = pending
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .remove(&id);
-                    if let Some(answer) = answer {
-                        let _ = answer.send(match error {
-                            None => Ok(value.unwrap_or(serde_json::Value::Null)),
-                            Some(error) => Err(EngineError(error)),
-                        });
-                    }
-                    continue;
-                }
-                ToExt::StateChanged {
-                    entity_id,
-                    old_state,
-                    new_state,
-                } => Incoming::StateChanged {
-                    entity_id,
-                    old_state,
-                    new_state,
-                },
-                ToExt::RegistryChanged { missed } => {
-                    if let Some(events) = missed
-                        && in_tx.send(Incoming::Missed { events }).is_err()
-                    {
-                        return;
-                    }
-                    Incoming::RegistryChanged
-                }
-                ToExt::AppRequest {
-                    id,
-                    method,
-                    params,
-                    caller,
-                } => Incoming::App(AppRequest {
-                    method,
-                    params,
-                    caller: caller.unwrap_or_else(Caller::owner),
-                    id,
-                    out: out.clone(),
-                }),
-                ToExt::Stop => {
-                    let _ = in_tx.send(Incoming::Stop);
-                    return;
-                }
-                // Protocol traffic: an engine has no devices and makes no protocol requests.
-                ToExt::Hello { .. }
-                | ToExt::Reply { .. }
-                | ToExt::Loaded { .. }
-                | ToExt::LiveStart { .. }
-                | ToExt::LiveStop { .. }
-                | ToExt::TalkStart { .. }
-                | ToExt::TalkAudio { .. }
-                | ToExt::TalkStop { .. }
-                | ToExt::ServiceCall { .. }
-                | ToExt::ActionCall { .. }
-                | ToExt::UnpairDevice { .. }
-                | ToExt::CameraPicture { .. } => continue,
-            };
-            if in_tx.send(incoming).is_err() {
-                return;
-            }
-        }
+        read_incoming(&mut reader, &pending, &in_tx, &out).await;
+        // Nothing more is read: what is still waiting for an answer won't get one, nor will
+        // what is asked from now on. Said now, so an engine mid-request when told to stop stops
+        // within the host's grace instead of waiting out the request's timeout.
+        let mut pending = pending.lock().unwrap_or_else(PoisonError::into_inner);
+        pending.closed = true;
+        pending.answers.clear();
     });
     Ok((settings, client, in_rx))
+}
+
+/// Reads what the core sends until it says stop or goes away: answers go to their requests,
+/// everything else to the engine.
+async fn read_incoming<R>(
+    reader: &mut BufReader<R>,
+    pending: &Mutex<Pending>,
+    in_tx: &mpsc::UnboundedSender<Incoming>,
+    out: &Outbox,
+) where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    loop {
+        let message = match read_json::<ToExt>(reader).await {
+            Ok(message) => message,
+            Err(_) => {
+                let _ = in_tx.send(Incoming::Stop);
+                return;
+            }
+        };
+        let incoming = match message {
+            ToExt::Answer { id, value, error } => {
+                let answer = pending
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .answers
+                    .remove(&id);
+                if let Some(answer) = answer {
+                    let _ = answer.send(match error {
+                        None => Ok(value.unwrap_or(serde_json::Value::Null)),
+                        Some(error) => Err(EngineError(error)),
+                    });
+                }
+                continue;
+            }
+            ToExt::StateChanged {
+                entity_id,
+                old_state,
+                new_state,
+            } => Incoming::StateChanged {
+                entity_id,
+                old_state,
+                new_state,
+            },
+            ToExt::RegistryChanged { missed } => {
+                if let Some(events) = missed
+                    && in_tx.send(Incoming::Missed { events }).is_err()
+                {
+                    return;
+                }
+                Incoming::RegistryChanged
+            }
+            ToExt::AppRequest {
+                id,
+                method,
+                params,
+                caller,
+            } => Incoming::App(AppRequest {
+                method,
+                params,
+                caller: caller.unwrap_or_else(Caller::owner),
+                id,
+                out: out.clone(),
+            }),
+            ToExt::Stop => {
+                let _ = in_tx.send(Incoming::Stop);
+                return;
+            }
+            // Protocol traffic: an engine has no devices and makes no protocol requests.
+            ToExt::Hello { .. }
+            | ToExt::Reply { .. }
+            | ToExt::Loaded { .. }
+            | ToExt::LiveStart { .. }
+            | ToExt::LiveStop { .. }
+            | ToExt::TalkStart { .. }
+            | ToExt::TalkAudio { .. }
+            | ToExt::TalkStop { .. }
+            | ToExt::ServiceCall { .. }
+            | ToExt::ActionCall { .. }
+            | ToExt::UnpairDevice { .. }
+            | ToExt::CameraPicture { .. } => continue,
+        };
+        if in_tx.send(incoming).is_err() {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -508,6 +540,44 @@ mod tests {
         request.answer(Ok(serde_json::json!({"flows": []})));
         let line = lines.next_line().await.expect("read").expect("a line");
         assert_eq!(line, r#"{"type":"app_answer","id":7,"value":{"flows":[]}}"#);
+    }
+
+    /// Once the core says stop nothing more is read, so a request still waiting fails at once,
+    /// and so does one made after: an engine stopping mid-request isn't held past the host's
+    /// grace by the request's timeout.
+    #[tokio::test]
+    async fn a_request_fails_at_once_when_the_core_says_stop() {
+        let (core_side, engine_side) = tokio::io::duplex(64 * 1024);
+        let (engine_read, engine_write) = tokio::io::split(engine_side);
+        let (core_read, mut core_write) = tokio::io::split(core_side);
+        core_write
+            .write_all(b"{\"type\":\"hello\",\"settings\":{}}\n")
+            .await
+            .expect("write hello");
+        let (_settings, client, mut incoming) =
+            connect(engine_read, engine_write).await.expect("connects");
+
+        let asking = tokio::spawn({
+            let client = client.clone();
+            async move { client.get_registry().await }
+        });
+        let mut lines = tokio::io::BufReader::new(core_read).lines();
+        let line = lines.next_line().await.expect("read").expect("a line");
+        assert_eq!(line, r#"{"type":"get_registry","id":0}"#);
+        core_write
+            .write_all(b"{\"type\":\"stop\"}\n")
+            .await
+            .expect("write");
+        assert!(matches!(incoming.recv().await, Some(Incoming::Stop)));
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(1), asking)
+            .await
+            .expect("the waiting request fails at once")
+            .expect("joins");
+        assert!(waited.is_err(), "{waited:?}");
+        let after = tokio::time::timeout(std::time::Duration::from_secs(1), client.get_states())
+            .await
+            .expect("a request after the stop fails at once");
+        assert!(after.is_err(), "{after:?}");
     }
 
     /// A request the core never answers fails after a while, instead of hanging the engine.
