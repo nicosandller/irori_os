@@ -119,8 +119,9 @@ writes nothing; one that isn't installed is `404`. It is written in the activity
 An extension that proposes floors and rooms ([protocols.md](protocols.md) §6.9) carries them in
 `GET /api/home` as `suggested_layout`: `{ "floors"?: [{ "name", "level"? }], "areas"?: [{ "name",
 "floor"? }] }`, holding only the ones the home doesn't have by those names (trimmed, ignoring
-case). It is there for an owner only, like the rest of `extensions`, and left out when there's
-nothing to bring over, so a home whose extensions propose nothing reads as it always did.
+case). Like the rest of `extensions`, it is shown only to someone who sees the whole home, and
+only the owner can accept it. It is left out when there's nothing to bring over, so a home whose
+extensions propose nothing reads as it always did.
 
 `POST /api/extensions/<id>/layout`, with no body, is the owner accepting it: it makes the missing
 floors, then the missing rooms, each on the floor it was proposed on, in one edit of `areas.toml`
