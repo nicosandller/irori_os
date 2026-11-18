@@ -3960,7 +3960,7 @@ mod tests {
         for bridge in ["hubone", "hubtwo"] {
             home.describe_device(
                 &ext(bridge),
-                bridged("x1", &[(irori_types::ConnectionKind::Serial, "SN1")]),
+                bridged("x1", &[(irori_types::ConnectionKind::Serial, "SN-1001")]),
             )
             .expect("bridged");
         }

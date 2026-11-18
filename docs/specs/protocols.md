@@ -300,7 +300,9 @@ says what the device is, and the core recognises it:
   `unique_id` that isn't an address, like Matter's fabric and node or a Cast or ONVIF uuid,
   matches by serial number alone.
 - An identifier one extension gives to more than one of its devices (a maker's placeholder
-  serial number, say) tells nothing apart and matches nothing.
+  serial number, say) tells nothing apart and matches nothing. Nor does a serial number that
+  is a placeholder on its face: fewer than four letters or digits, only zeros, or one of
+  `unknown`, `none`, `null`, `n/a`, `na`, `default`, `serial` or `not available`.
 - On a match, the device that named connections is the copy: its `duplicate_of` is the other
   device's id ([entities.md](entities.md) §4.3). Of several matches, it is a copy of the first in
   id order that named no connections; when every match named some, of the first whose id comes
