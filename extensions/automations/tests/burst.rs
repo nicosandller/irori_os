@@ -298,6 +298,7 @@ async fn a_burst_of_registry_changes_is_read_a_handful_of_times_locally() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let mut running = started(dir.path(), Home::hallway()).await;
     let at_start = running.home.reads();
+    let began = Instant::now();
 
     let chunks = 20;
     for chunk in 0..chunks {
@@ -336,13 +337,19 @@ async fn a_burst_of_registry_changes_is_read_a_handful_of_times_locally() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    // Settled: the flow on the entity that came with the burst works.
+    // While changes keep coming the home is read at most once a second, and once more as
+    // they settle: about three times here, more only if this machine stretched the burst.
+    let lasted = began.elapsed();
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     let reads = running.home.reads() - at_start;
+    let allowed = usize::try_from(lasted.as_secs()).unwrap_or(usize::MAX) + 3;
+    eprintln!("{BURST} registry changes over {lasted:?} were read {reads} times");
     assert!(
-        (1..=6).contains(&reads),
-        "{BURST} registry changes were read {reads} times"
+        (1..=allowed).contains(&reads),
+        "{BURST} registry changes over {lasted:?} were read {reads} times, more than {allowed}"
     );
+
+    // Settled: the flow on the entity that came with the burst works.
     running.push.send(changed(LATE, true, 2)).expect("push");
     assert!(
         call_within(&mut running.calls, Duration::from_secs(1)).await,
