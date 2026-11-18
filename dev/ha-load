@@ -9,15 +9,22 @@
 #   bridge-N   the Home Assistant extension pointed at a fake Home Assistant of N entities whose
 #              sensors change 300 times a second, every device it finds added (N = 2000, 5000).
 #
-# Each run waits for the home to settle, then measures for a window:
+# Each run goes through three phases, each measured on its own:
 #
-#   - `history.dropped_changes` (/api/health) stays 0;
-#   - Irori logs no "fell behind" (an engine's or history's missed events);
-#   - the demo flow (a demo switch turning on → a demo light on) fires within 1 s, every time;
-#   - the core's (the `irori` process alone, not the extensions') CPU time over the window and
-#     its memory, against the baseline's.
+#   adding     every found device added at once (one edit of the home): nothing falls behind
+#              and history drops nothing.
+#   starting   the home started again with everything added, as after every update or power
+#              cut: what fell behind or was dropped, how long until the demo flow works again
+#              (against the baseline's) and until the bridged sensors report again.
+#   running    after a settle, a window under steady load:
+#              - `history.dropped_changes` (/api/health) doesn't grow;
+#              - Irori logs no "fell behind" (an engine's or history's missed events);
+#              - the demo flow (a demo switch on → a demo light on) fires within 1 s, every time;
+#              - the core's (the `irori` process alone, not the extensions') CPU time over the
+#                window and its memory, against the baseline's, within 10%.
 #
-# usage: dev/ha-load [--release] [--window SECONDS] [--sizes "2000 5000"] [--rate N]
+# usage: dev/ha-load [--release] [--window SECONDS] [--settle SECONDS] [--sizes "2000 5000"]
+#                    [--rate N] [--trials N]
 #
 # Builds what it runs (debug by default; --release for the shipped profile, much slower to
 # build). Everything it makes is under a temporary folder, removed at the end unless
@@ -31,7 +38,7 @@ export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"
 profile=debug
 cargo_profile=()
 window=60
-settle=45
+settle=20
 sizes="2000 5000"
 rate=300
 trials=10
@@ -43,7 +50,7 @@ while [[ $# -gt 0 ]]; do
     --sizes) sizes="$2"; shift ;;
     --rate) rate="$2"; shift ;;
     --trials) trials="$2"; shift ;;
-    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 1 ;;
   esac
   shift
@@ -147,8 +154,86 @@ print(s + days * 86400)'
 
 rss_mb() { ps -o rss= -p "$1" | awk '{printf "%.1f", $1/1024}'; }
 
+# Starts irori on a home's data, logging to <phase>.log; sets $irori.
+start_irori() { # <home> <port> <phase>
+  RUST_LOG=info "$bin/irori" run --bind "127.0.0.1:$2" --data "$1/data" \
+    --config "$1/config" >"$1/$3.log" 2>&1 &
+  irori=$!
+  pids+=("$irori")
+  wait_for 60 "irori to answer" api GET /api/health
+}
+
+stop_irori() {
+  kill "$irori" 2>/dev/null || true
+  wait "$irori" 2>/dev/null || true
+}
+
+lagged() { # <log> [from line]: how many "fell behind" lines after that line
+  tail -n +"$((${2:-0} + 1))" "$1" | grep -c "fell behind" || true
+}
+
+lines() { wc -l <"$1" | tr -d ' '; }
+
+dropped_now() {
+  api GET /api/health | python3 -c 'import json,sys; print(json.load(sys.stdin)["history"]["dropped_changes"])'
+}
+
+bridged_ready() { # <entities>: most of the bridged entities have a state
+  python3 - "$base" "$1" <<'PY'
+import json, re, sys, urllib.request
+states = json.load(urllib.request.urlopen(sys.argv[1] + "/api/states"))
+bridged = [s for s in states if re.match(r"^(sensor|light|binary_sensor)\.d\d+(_|$)", s["entity_id"]) and s.get("state") is not None]
+sys.exit(0 if len(bridged) >= min(int(sys.argv[2]), 2000) * 0.95 else 1)
+PY
+}
+
+# One go of the demo flow: the switch on, then how many ms later the light came on (-1: it didn't).
+flow_trial() { # <switch> <light>
+  local switch="$1" light="$2"
+  api POST /api/command "{\"entity_id\":\"$light\",\"command\":\"turn_off\"}" >/dev/null
+  api POST /api/command "{\"entity_id\":\"$switch\",\"command\":\"turn_off\"}" >/dev/null
+  sleep 1
+  api POST /api/command "{\"entity_id\":\"$switch\",\"command\":\"turn_on\"}" >/dev/null
+  sleep 2
+  api GET /api/states | python3 -c '
+import json, re, sys
+from datetime import datetime
+states = {s["entity_id"]: s for s in json.load(sys.stdin)}
+def when(text):
+  # Down to microseconds, which is what Python reads.
+  text = re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00"))
+  return datetime.fromisoformat(text)
+sw, li = states[sys.argv[1]], states[sys.argv[2]]
+on = lambda s: (s.get("state") or {}).get("on")
+if not on(li) or not on(sw):
+  print(-1)
+else:
+  print(int((when(li["last_changed"]) - when(sw["last_changed"])).total_seconds() * 1000))' "$switch" "$light"
+}
+
+# Seconds until the bridged sensors report again after a start at <epoch>.
+reporting_after() { # <epoch seconds> <entities>
+  local since="$1"
+  if (($2 == 0)); then echo 0; return; fi
+  until python3 - "$base" "$since" <<'PY'
+import json, re, sys, urllib.request
+from datetime import datetime
+states = json.load(urllib.request.urlopen(sys.argv[1] + "/api/states"))
+def when(text):
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00"))
+    return datetime.fromisoformat(text).timestamp()
+fresh = [s for s in states if re.match(r"^sensor\.d\d+_", s["entity_id"]) and when(s["last_reported"]) > float(sys.argv[2])]
+sys.exit(0 if len(fresh) >= 100 else 1)
+PY
+  do
+    if (($(date +%s) - ${since%.*} > 600)); then echo 600; return; fi
+    sleep 1
+  done
+  python3 -c "import time; print(round(time.time() - $since, 1))"
+}
+
 results="$work/results.tsv"
-printf 'run\tcpu_s\tcpu_pct\trss_mb\tdropped\tfell_behind\tflow_max_ms\tflow_misses\tentities\treports_s\n' >"$results"
+printf 'run\tcpu_s\tcpu_pct\trss_mb\tdropped\tfell_behind\tflow_max_ms\tflow_misses\tentities\treports_s\tadd_fell_behind\tadd_dropped\tstart_fell_behind\tstart_dropped\tstart_s\tflow_back_s\n' >"$results"
 
 run() { # <name> <entities, 0 for none>
   local name="$1" entities="$2"
@@ -175,19 +260,19 @@ run() { # <name> <entities, 0 for none>
   fi
 
   echo "== $name: irori on $base (data in $home)"
-  RUST_LOG=info "$bin/irori" run --bind "127.0.0.1:$port" --data "$home/data" \
-    --config "$home/config" >"$home/irori.log" 2>&1 &
-  local irori=$!
-  pids+=("$irori")
-  wait_for 60 "irori to answer" api GET /api/health
+  start_irori "$home" "$port" setup
 
   # Demo's devices, then the flow, on the demo's first switch and light.
-  wait_for 60 "the demo's devices" sh -c "curl -fsS $base/api/home | grep -q demo_"
+  wait_for 60 "the demo's devices to be found" sh -c "curl -fsS $base/api/home | grep -q '\"held\"'"
   api POST /api/devices/add '{"protocol":"demo"}' >/dev/null
-  wait_for 60 "the demo's entities" sh -c "curl -fsS $base/api/states | grep -q '\"switch.demo_'"
+  wait_for 60 "the demo's entities" python3 - "$base" <<'PY'
+import json, sys, urllib.request
+states = json.load(urllib.request.urlopen(sys.argv[1] + "/api/states"))
+sys.exit(0 if sum(s["entity_id"].startswith(("switch.", "light.")) for s in states) >= 2 else 1)
+PY
   local switch light
-  switch="$(api GET /api/states | python3 -c 'import json,sys; print(sorted(s["entity_id"] for s in json.load(sys.stdin) if s["entity_id"].startswith("switch.demo_"))[0])')"
-  light="$(api GET /api/states | python3 -c 'import json,sys; print(sorted(s["entity_id"] for s in json.load(sys.stdin) if s["entity_id"].startswith("light.demo_"))[0])')"
+  switch="$(api GET /api/states | python3 -c 'import json,sys; print(sorted(s["entity_id"] for s in json.load(sys.stdin) if s["entity_id"].startswith("switch."))[0])')"
+  light="$(api GET /api/states | python3 -c 'import json,sys; print(sorted(s["entity_id"] for s in json.load(sys.stdin) if s["entity_id"].startswith("light."))[0])')"
   wait_for 60 "Automations" api GET /api/apps
   local saved
   saved="$(api POST /api/apps/automations/rpc "$(flow_for "$switch" "$light")")"
@@ -199,27 +284,48 @@ run() { # <name> <entities, 0 for none>
     wait_for 120 "Home Assistant's devices to be found" python3 - "$base" <<'PY'
 import json, sys, urllib.request
 home = json.load(urllib.request.urlopen(sys.argv[1] + "/api/home"))
-held = [d for d in home.get("held", []) if d.get("protocol") == "homeassistant"]
+held = [d for d in home.get("held", []) if "homeassistant" in json.dumps(d)]
 sys.exit(0 if len(held) >= 100 else 1)
 PY
     api POST /api/extensions/homeassistant/layout >/dev/null || true
     api POST /api/devices/add '{"protocol":"homeassistant"}' >/dev/null
-    wait_for 180 "the bridged entities' states" python3 - "$base" "$entities" <<'PY'
-import json, sys, urllib.request
-states = json.load(urllib.request.urlopen(sys.argv[1] + "/api/states"))
-bridged = [s for s in states if s["entity_id"].startswith(("sensor.d", "light.d", "binary_sensor.d")) and s.get("state") is not None]
-sys.exit(0 if len(bridged) >= min(int(sys.argv[2]), 2000) * 0.95 else 1)
-PY
+    wait_for 180 "the bridged entities' states" bridged_ready "$entities"
   fi
+  # Adding everything at once is one edit of the home; what fell behind then is the add's.
+  sleep 3
+  local add_lag add_dropped
+  add_lag="$(lagged "$home/setup.log")"
+  add_dropped="$(dropped_now)"
+
+  # A home with all of it added starts again (as after every update or power cut), then runs.
+  stop_irori
+  echo "   restarting"
+  local started flow_back start_s
+  started="$(python3 -c 'import time; print(time.time())')"
+  start_irori "$home" "$port" run
+  wait_for 60 "Automations after the restart" api GET /api/apps
+  # How long until the flow works again (each go takes 3 s), and the bridged sensors report.
+  local ms
+  until ms="$(flow_trial "$switch" "$light")" && ((ms >= 0 && ms <= 1000)); do
+    if (($(date +%s) - ${started%.*} > 600)); then break; fi
+  done
+  flow_back="$(python3 -c "import time; print(round(time.time() - $started, 1))")"
+  start_s="$(reporting_after "$started" "$entities")"
+  echo "   started again: the flow works after ${flow_back}s, bridged sensors report after ${start_s}s"
 
   echo "   settling for ${settle}s"
   sleep "$settle"
+  local start_lag start_dropped mark
+  mark="$(lines "$home/run.log")"
+  start_lag="$(lagged "$home/run.log")"
+  start_dropped="$(dropped_now)"
   local count_before cpu_before
   count_before="$(api GET /api/states | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
   local bridged_before
   bridged_before="$(api GET /api/states | python3 -c '
 import json,sys
-print(json.dumps({s["entity_id"]: s["last_reported"] for s in json.load(sys.stdin) if s["entity_id"].startswith("sensor.d")}))')"
+import re
+print(json.dumps({s["entity_id"]: s["last_reported"] for s in json.load(sys.stdin) if re.match(r"^sensor\.d\d+_", s["entity_id"])}))')"
   cpu_before="$(cputime "$irori")"
   echo "   measuring for ${window}s"
   sleep "$window"
@@ -230,53 +336,37 @@ print(json.dumps({s["entity_id"]: s["last_reported"] for s in json.load(sys.stdi
   reports="$(api GET /api/states | python3 -c '
 import json,sys
 before = json.loads(sys.argv[1])
-now = {s["entity_id"]: s["last_reported"] for s in json.load(sys.stdin) if s["entity_id"].startswith("sensor.d")}
+import re
+now = {s["entity_id"]: s["last_reported"] for s in json.load(sys.stdin) if re.match(r"^sensor\.d\d+_", s["entity_id"])}
 print(sum(1 for k, v in now.items() if before.get(k) != v))' "$bridged_before")"
 
   # The flow, under load: the switch on, then the light should follow within a second.
   local worst=0 misses=0
   for _ in $(seq "$trials"); do
-    api POST /api/command "{\"entity_id\":\"$light\",\"command\":\"turn_off\"}" >/dev/null
-    api POST /api/command "{\"entity_id\":\"$switch\",\"command\":\"turn_off\"}" >/dev/null
-    sleep 1
-    api POST /api/command "{\"entity_id\":\"$switch\",\"command\":\"turn_on\"}" >/dev/null
-    sleep 2
     local ms
-    ms="$(api GET /api/states | python3 -c '
-import json, re, sys
-from datetime import datetime
-states = {s["entity_id"]: s for s in json.load(sys.stdin)}
-def when(text):
-    # Down to microseconds, which is what Python reads.
-    text = re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00"))
-    return datetime.fromisoformat(text)
-sw, li = states[sys.argv[1]], states[sys.argv[2]]
-on = lambda s: (s.get("state") or {}).get("on")
-if not on(li) or not on(sw):
-    print(-1)
-else:
-    print(int((when(li["last_changed"]) - when(sw["last_changed"])).total_seconds() * 1000))' "$switch" "$light")"
+    ms="$(flow_trial "$switch" "$light")"
     if ((ms < 0 || ms > 1000)); then misses=$((misses + 1)); fi
     if ((ms > worst)); then worst=$ms; fi
   done
 
   local dropped fell
-  dropped="$(api GET /api/health | python3 -c 'import json,sys; print(json.load(sys.stdin)["history"]["dropped_changes"])')"
-  fell="$(grep -c "fell behind" "$home/irori.log" || true)"
+  dropped=$(($(dropped_now) - start_dropped))
+  fell="$(lagged "$home/run.log" "$mark")"
   local cpu pct
   cpu="$(python3 -c "print(round($cpu_after - $cpu_before, 2))")"
   pct="$(python3 -c "print(round(100 * ($cpu_after - $cpu_before) / $window, 2))")"
   local per_second
   per_second="$(python3 -c "print(round($reports / $window, 1))")"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$cpu" "$pct" "$rss" "$dropped" "$fell" \
-    "$worst" "$misses" "$count_before" "$per_second" >>"$results"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$cpu" "$pct" "$rss" \
+    "$dropped" "$fell" "$worst" "$misses" "$count_before" "$per_second" \
+    "$add_lag" "$add_dropped" "$start_lag" "$start_dropped" "$start_s" "$flow_back" >>"$results"
+  echo "   adding: fell behind $add_lag, dropped $add_dropped; starting again: fell behind $start_lag, dropped $start_dropped"
   echo "   cpu ${cpu}s (${pct}% of a core), rss ${rss} MB, dropped $dropped, fell behind $fell, flow worst ${worst} ms, misses $misses/$trials"
   if ((entities > 0)); then
     echo "   sensors that changed in the window: $reports; fake: $(tail -1 "$home/fake.log")"
   fi
 
-  kill "$irori" 2>/dev/null || true
-  wait "$irori" 2>/dev/null || true
+  stop_irori
   if [[ -n "$fake" ]]; then
     kill "$fake" 2>/dev/null || true
   fi
@@ -301,6 +391,14 @@ for row in rows:
         problems.append("history dropped changes")
     if int(row["fell_behind"]) != 0:
         problems.append("something fell behind")
+    if int(row["start_fell_behind"]) != 0 or int(row["start_dropped"]) != 0:
+        problems.append("starting again, something fell behind or history dropped changes")
+    back = float(row["flow_back_s"]) - float(base["flow_back_s"])
+    if back > 10:
+        problems.append(f'starting again, the flow worked {back:.0f} s later than without Home Assistant')
+    if int(row["add_fell_behind"]) != 0 or int(row["add_dropped"]) != 0:
+        problems.append(f'adding every device at once, {row["add_fell_behind"]} fell-behind lines and '
+                        f'{row["add_dropped"]} dropped')
     if int(row["flow_misses"]) != 0:
         problems.append("the flow was late or didn't fire")
     if row is not base:

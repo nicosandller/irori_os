@@ -58,11 +58,10 @@ async fn main() -> std::io::Result<()> {
         ticks += 1;
         if !sensors.is_empty() {
             for _ in 0..per_tick {
-                seed ^= seed << 13;
-                seed ^= seed >> 7;
-                seed ^= seed << 17;
-                let pick = usize::try_from(seed % sensors.len() as u64).unwrap_or(0);
-                let value = format!("{:.1}", (seed % 400) as f64 / 10.0);
+                // Two draws: one number for both would tie each sensor to one value whenever
+                // the count of sensors is a multiple of the values' range.
+                let pick = usize::try_from(next(&mut seed) % sensors.len() as u64).unwrap_or(0);
+                let value = format!("{:.1}", (next(&mut seed) % 400) as f64 / 10.0);
                 fake.set_state(&sensors[pick], &value, json!({}));
                 sent += 1;
             }
@@ -71,4 +70,12 @@ async fn main() -> std::io::Result<()> {
             println!("sent {sent} connections {}", fake.connections());
         }
     }
+}
+
+/// The next number of a xorshift sequence.
+fn next(seed: &mut u64) -> u64 {
+    *seed ^= *seed << 13;
+    *seed ^= *seed >> 7;
+    *seed ^= *seed << 17;
+    *seed
 }
