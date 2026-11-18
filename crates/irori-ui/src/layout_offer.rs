@@ -38,7 +38,11 @@ fn named(layout: &SuggestedLayout) -> String {
             !layout
                 .areas
                 .iter()
-                .any(|area| area.floor.as_ref() == Some(&floor.name))
+                .any(|area| {
+                    area.floor
+                        .as_ref()
+                        .is_some_and(|on| irori_types::same_name(on, &floor.name))
+                })
         })
         .map(|floor| floor.name.to_string());
     rooms.chain(floors).collect::<Vec<_>>().join(", ")
@@ -145,5 +149,8 @@ mod tests {
         assert_eq!(counted(&layout(&[], &[("Hall", None)])), "1 room");
         assert_eq!(counted(&layout(&["Attic", "Cellar"], &[])), "2 floors");
         assert_eq!(named(&both), "Kitchen (Ground), Hall, Office, Upstairs");
+        // A floor its rooms name in another case is still named once.
+        let cased = layout(&["Ground"], &[("Kitchen", Some("ground"))]);
+        assert_eq!(named(&cased), "Kitchen (ground)");
     }
 }

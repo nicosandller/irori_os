@@ -1263,21 +1263,22 @@ async fn accept_layout(
         .await;
     match edited {
         Ok(made) => {
-            trail.detail(format!(
-                "{} {}, {} {}",
-                made.areas.len(),
-                if made.areas.len() == 1 {
-                    "room"
-                } else {
-                    "rooms"
-                },
-                made.floors.len(),
-                if made.floors.len() == 1 {
-                    "floor"
-                } else {
-                    "floors"
-                },
-            ));
+            // "2 rooms, 1 floor", leaving out what it made none of.
+            let counted = |n: usize, one: &str, many: &str| match n {
+                0 => None,
+                1 => Some(format!("1 {one}")),
+                n => Some(format!("{n} {many}")),
+            };
+            trail.detail(
+                [
+                    counted(made.areas.len(), "room", "rooms"),
+                    counted(made.floors.len(), "floor", "floors"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", "),
+            );
             Json(made).into_response()
         }
         Err(e) => edit_failed(e),
