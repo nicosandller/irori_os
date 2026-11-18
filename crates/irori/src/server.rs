@@ -3986,6 +3986,127 @@ mod tests {
         Server::new(core)?.json("POST", path, body).await
     }
 
+    /// What a home on a native protocol is served, recorded once and held still: `/api/home`,
+    /// `/api/session`, the found ("held") list and one device's page, for a demo home with one
+    /// device added and the rest found. Work for bridged homes (milestone 11) adds to the core,
+    /// and this is how it shows that a home without a bridge is answered exactly as before.
+    ///
+    /// The device page has no address of its own: it is that device's record, its entities and
+    /// their states, as the page reads them. Times and context ids differ on every run and are
+    /// blanked; everything else has to match the recording. A change that is meant to move what
+    /// a native home is served re-records it with `IRORI_RECORD_NATIVE_SNAPSHOT=1`, and the diff
+    /// of `server/native_snapshot.json` shows what moved.
+    #[tokio::test]
+    async fn a_native_home_is_served_as_it_was_recorded() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        // Ready means the demo has said everything it says at the start: every device found, and
+        // the action it offers (said after its first states, which is all `demo` waits for).
+        for _ in 0..500 {
+            let found = core.held_devices().len() + core.devices().len();
+            let ready = found > 2
+                && core
+                    .extensions()
+                    .values()
+                    .any(|overview| !overview.available_actions.is_empty());
+            if ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core.clone())?;
+        std::fs::write(
+            server.config_dir().join("devices.toml"),
+            "[devices.demo_living_room_lamp]\nadded = true\n",
+        )?;
+        server
+            .config
+            .edit(&core, |_| Ok(()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let home = server.read("/api/home").await?;
+        let session = server.read("/api/session").await?;
+        let lamp = "demo_living_room_lamp";
+        let device = server
+            .read("/api/devices")
+            .await?
+            .as_array()
+            .and_then(|all| all.iter().find(|d| d["id"] == lamp).cloned())
+            .unwrap_or_default();
+        let entities: Vec<serde_json::Value> = server
+            .read("/api/entities")
+            .await?
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter(|e| e["device_id"] == lamp)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ids: Vec<&serde_json::Value> = entities.iter().map(|e| &e["id"]).collect();
+        let states: Vec<serde_json::Value> = server
+            .read("/api/states")
+            .await?
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter(|s| ids.contains(&&s["entity_id"]))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut served = serde_json::json!({
+            "home": home,
+            "session": session,
+            "held": home["held"],
+            "device_page": {"device": device, "entities": entities, "states": states},
+        });
+        blank_what_moves(&mut served);
+        host.shutdown().await;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/server/native_snapshot.json");
+        if std::env::var_os("IRORI_RECORD_NATIVE_SNAPSHOT").is_some() {
+            std::fs::write(&path, serde_json::to_string_pretty(&served)? + "\n")?;
+        }
+        let recorded: serde_json::Value =
+            serde_json::from_str(include_str!("server/native_snapshot.json"))?;
+        assert!(
+            served == recorded,
+            "a native home is served differently from the recording in {}.\n\
+             If that is meant, re-record with IRORI_RECORD_NATIVE_SNAPSHOT=1.\n\
+             served:\n{}",
+            path.display(),
+            serde_json::to_string_pretty(&served)?
+        );
+        Ok(())
+    }
+
+    /// Blanks what differs on every run: when a state changed, and the id of what changed it.
+    fn blank_what_moves(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, inner) in map.iter_mut() {
+                    match key.as_str() {
+                        "last_changed" | "last_reported" | "last_updated" => {
+                            *inner = "<time>".into();
+                        }
+                        "context" => {
+                            if let Some(id) = inner.get_mut("id") {
+                                *id = "<id>".into();
+                            }
+                            blank_what_moves(inner);
+                        }
+                        _ => blank_what_moves(inner),
+                    }
+                }
+            }
+            serde_json::Value::Array(all) => all.iter_mut().for_each(blank_what_moves),
+            _ => {}
+        }
+    }
+
     /// Everything the Devices page needs arrives in one response.
     #[tokio::test]
     async fn dev_home_describes_the_whole_home() -> anyhow::Result<()> {
