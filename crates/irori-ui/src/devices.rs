@@ -943,6 +943,37 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
         });
     };
 
+    // "Add all": every found device in one request, so a bridge that brings a couple of hundred
+    // doesn't take a couple of hundred. They all leave the found list together.
+    let whole = StoredValue::new(id.clone());
+    let add_all = move || {
+        let ids = addable.get_untracked();
+        if ids.len() < 2 {
+            add(ids);
+            return;
+        }
+        busy.update(|busy| busy.extend(ids.iter().cloned()));
+        picked.update(BTreeSet::clear);
+        trouble.set(None);
+        let extension = whole.get_value();
+        spawn_local(async move {
+            let snapshot = found.get_untracked();
+            match crate::api::add_found_devices(&extension).await {
+                Ok(_) => {
+                    let gone: Vec<DeviceId> = snapshot.iter().map(|d| d.id.clone()).collect();
+                    leaving.update(|leaving| leaving.extend(snapshot));
+                    set_timeout(
+                        move || leaving.update(|leaving| leaving.retain(|d| !gone.contains(&d.id))),
+                        LEAVING_FOR,
+                    );
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(format!("Couldn't add them: {why}"))),
+            }
+            busy.update(|busy| busy.retain(|id| !ids.contains(id)));
+        });
+    };
+
     let back = move |_| on_back.run(());
     let protocol = id.clone();
     let for_actions = id.clone();
@@ -1046,7 +1077,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                     <button
                                         type="button"
                                         class="primary"
-                                        on:click=move |_| add(addable.get_untracked())
+                                        on:click=move |_| add_all()
                                     >
                                         {format!("Add all ({count})")}
                                     </button>

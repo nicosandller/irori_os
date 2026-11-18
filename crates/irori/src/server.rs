@@ -226,6 +226,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/floors/{id}", patch(edit_floor).delete(remove_floor))
         .route("/api/areas/{id}", patch(edit_area).delete(remove_area))
         .route("/api/floorplan", get(floorplan).put(save_floorplan))
+        .route("/api/devices/add", post(add_found_devices))
         .route(
             "/api/devices/{id}",
             patch(edit_device).delete(remove_device),
@@ -1128,6 +1129,71 @@ async fn edit_device(
         // The device as it now is, so the page doesn't have to guess what the change produced.
         // whole-home: the owner's edit answers with the device
         Ok(()) => Json(core.devices().into_iter().find(|device| device.id == id)).into_response(),
+        Err(e) => edit_failed(e),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddFound {
+    /// The extension whose found devices all join the home.
+    protocol: irori_types::ProtocolId,
+}
+
+#[derive(Debug, Serialize)]
+struct AddedFound {
+    /// How many devices joined the home.
+    added: usize,
+}
+
+/// Adds every device one extension has found and is holding, as "+ Add device" would one at a
+/// time, in a single edit of `devices.toml` ("Add all"). A home with hundreds of found devices
+/// (a bridge to another system) would otherwise take one request, and one rewrite of the file,
+/// per device. Devices of other extensions are left where they are.
+async fn add_found_devices(
+    State(state): State<AppState>,
+    Extension(trail): Extension<trail::Trail>,
+    Json(request): Json<AddFound>,
+) -> Response {
+    let core = &state.0.core;
+    let protocol = request.protocol;
+    trail.target(protocol.as_str());
+    let found: Vec<DeviceId> = core
+        .held_devices()
+        .into_iter()
+        .filter(|device| device.protocol == protocol)
+        .map(|device| device.id)
+        .collect();
+    if found.is_empty() {
+        let known = core
+            .extensions()
+            .keys()
+            .any(|id| id.as_str() == protocol.as_str());
+        return if known {
+            // Nothing to add, and nothing written.
+            Json(AddedFound { added: 0 }).into_response()
+        } else {
+            refused(
+                StatusCode::NOT_FOUND,
+                format!("there's no extension `{protocol}`"),
+            )
+        };
+    }
+    let edited = state
+        .0
+        .config
+        .edit(core, |settings| {
+            for id in &found {
+                settings.devices.entry(id.clone()).or_default().added = true;
+            }
+            Ok(())
+        })
+        .await;
+    match edited {
+        Ok(()) => {
+            trail.detail(found.len().to_string());
+            Json(AddedFound { added: found.len() }).into_response()
+        }
         Err(e) => edit_failed(e),
     }
 }
@@ -6481,6 +6547,127 @@ mod tests {
         Ok(())
     }
 
+    /// "Add all" takes in every device one extension is holding, in one edit, and touches no
+    /// other extension's. Asked again there's nothing left and nothing is written; an extension
+    /// that isn't there is a 404.
+    #[tokio::test]
+    async fn every_found_device_of_one_extension_is_added_at_once() -> anyhow::Result<()> {
+        let core = core();
+        // The server first, so nothing the extensions find is already added.
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Mesh>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let held = |protocol: &str| {
+            core.held_devices()
+                .into_iter()
+                .filter(|device| device.protocol.as_str() == protocol)
+                .map(|device| device.id.to_string())
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..500 {
+            if held("mesh").len() == 4 && held("demo").len() > 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let demo = held("demo");
+        let mesh = held("mesh");
+        assert_eq!(mesh.len(), 4, "{mesh:?}");
+        assert!(demo.len() > 1, "{demo:?}");
+        assert!(core.devices().is_empty(), "nothing joins on its own");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "demo"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], demo.len(), "{body}");
+
+        // Out of the found list and into the home, written down.
+        let home = server.read("/api/home").await?;
+        let still_held: Vec<&str> = home["held"]
+            .as_array()
+            .map(|all| all.iter().filter_map(|d| d["id"].as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            still_held.iter().all(|id| !id.starts_with("demo_")),
+            "{still_held:?}"
+        );
+        let in_home: Vec<&str> = home["devices"]
+            .as_array()
+            .map(|all| all.iter().filter_map(|d| d["id"].as_str()).collect())
+            .unwrap_or_default();
+        for id in &demo {
+            assert!(in_home.contains(&id.as_str()), "{id} in {in_home:?}");
+        }
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        for id in &demo {
+            assert!(devices.contains(&format!("[devices.{id}]")), "{devices}");
+        }
+
+        // The other extension's devices are just as they were: found, held, not written down.
+        assert_eq!(held("mesh"), mesh);
+        for id in &mesh {
+            assert!(!devices.contains(id.as_str()), "{devices}");
+            assert!(!in_home.contains(&id.as_str()), "{id}");
+        }
+
+        // Again: nothing left to add, and the file isn't rewritten.
+        let written = std::fs::metadata(server.config_dir().join("devices.toml"))?.modified()?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "demo"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 0, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(server.config_dir().join("devices.toml"))?,
+            devices
+        );
+        assert_eq!(
+            std::fs::metadata(server.config_dir().join("devices.toml"))?.modified()?,
+            written
+        );
+
+        // An extension nobody has is a 404, and a body that isn't one is refused.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "nowhere"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("nowhere")),
+            "{body}"
+        );
+        let (status, _) = server
+            .json("POST", "/api/devices/add", serde_json::json!({}))
+            .await?;
+        assert!(status.is_client_error(), "{status}");
+        assert_eq!(held("mesh"), mesh);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// A found device joins the home when "+ Add device" adds it, with its entities, and it's
     /// written down so a restart keeps it. There's no ignoring any more: taking a device out is
     /// removing it, so a request that still asks to ignore one is refused rather than
@@ -9621,6 +9808,11 @@ mod tests {
             ("POST", "/api/restart", serde_json::Value::Null),
             (
                 "POST",
+                "/api/devices/add",
+                serde_json::json!({ "protocol": "demo" }),
+            ),
+            (
+                "POST",
                 "/api/extensions/demo/install",
                 serde_json::json!({}),
             ),
@@ -11476,6 +11668,7 @@ mod tests {
         ("DELETE", "/api/areas/{id}", Run),
         ("GET", "/api/floorplan", Filtered),
         ("PUT", "/api/floorplan", Run),
+        ("POST", "/api/devices/add", Run),
         ("PATCH", "/api/devices/{id}", Run),
         ("DELETE", "/api/devices/{id}", Run),
         ("PATCH", "/api/entities/{id}", Run),

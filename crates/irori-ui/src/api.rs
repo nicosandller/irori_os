@@ -631,6 +631,39 @@ pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), 
     checked(response).await
 }
 
+/// Adds every device `extension` has found and is holding, in one request ("Add all"). Answers
+/// how many joined the home.
+pub async fn add_found_devices(extension: &ExtensionId) -> Result<usize, String> {
+    #[derive(Serialize)]
+    struct AddFound<'a> {
+        protocol: &'a str,
+    }
+    #[derive(Deserialize)]
+    struct Added {
+        added: usize,
+    }
+    let response = post("/api/devices/add")
+        .json(&AddFound {
+            protocol: extension.as_str(),
+        })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if response.ok() {
+        return response
+            .json::<Added>()
+            .await
+            .map(|added| added.added)
+            .map_err(|e| e.to_string());
+    }
+    let status = response.status();
+    Err(match response.json::<Refused>().await {
+        Ok(refused) => refused.error,
+        Err(_) => format!("Irori refused that ({status})"),
+    })
+}
+
 /// Why a device wasn't removed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoveFailed {
