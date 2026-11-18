@@ -18,8 +18,8 @@ use serde::{Deserialize, Deserializer};
 
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 pub struct Settings {
-    /// Home Assistant's address, as you open it in a browser on this network:
-    /// `http://homeassistant.local:8123`, or `https://…` when it serves TLS.
+    /// Home Assistant's local address, as you open it in a browser on this network:
+    /// `http://homeassistant.local:8123`, or `http://` and its IP address.
     #[schemars(title = "Home Assistant address")]
     pub url: String,
     /// A long-lived access token of an administrator: in Home Assistant, your profile →
@@ -64,16 +64,13 @@ fn nothing() -> Vec<String> {
 }
 
 impl Settings {
-    /// Where the WebSocket API is: `ws://…/api/websocket`, or `wss://` for an `https` address.
+    /// Where the WebSocket API is: `ws://…/api/websocket`.
     pub fn websocket_url(&self) -> String {
         let base = self.url.trim_end_matches('/');
-        match base.strip_prefix("https://") {
-            Some(rest) => format!("wss://{rest}/api/websocket"),
-            None => format!(
-                "ws://{}/api/websocket",
-                base.strip_prefix("http://").unwrap_or(base)
-            ),
-        }
+        format!(
+            "ws://{}/api/websocket",
+            base.strip_prefix("http://").unwrap_or(base)
+        )
     }
 }
 
@@ -116,15 +113,18 @@ impl<'de> Deserialize<'de> for Settings {
     }
 }
 
-/// `http(s)://host[:port][/]`, with a host on the local network. Returned without a trailing `/`.
+/// `http://host[:port][/]`, with a host on the local network. Returned without a trailing `/`.
+///
+/// Not `https://`: a certificate is only trusted when a public authority issued it for the name
+/// used, and none is ever issued for a local name or a private address, so it could never connect.
 fn local_url(url: &str) -> Result<String, String> {
     let url = url.trim().trim_end_matches('/');
+    if url.starts_with("https://") {
+        return Err("use http:// and Home Assistant's local address, like http://homeassistant.local:8123: a certificate can't be checked for a local address, so https:// would never connect".into());
+    }
     let rest = url
         .strip_prefix("http://")
-        .or_else(|| url.strip_prefix("https://"))
-        .ok_or(
-            "the address starts with http:// or https://, like http://homeassistant.local:8123",
-        )?;
+        .ok_or("the address starts with http://, like http://homeassistant.local:8123")?;
     if rest.contains(['/', '?', '#', '@']) {
         return Err(
             "the address is only Home Assistant's host and port, like http://homeassistant.local:8123"
@@ -255,8 +255,8 @@ mod tests {
         assert!(!format!("{settings:?}").contains("abc"));
         for (url, ws) in [
             (
-                "https://192.168.1.20:8123",
-                "wss://192.168.1.20:8123/api/websocket",
+                "http://192.168.1.20:8123",
+                "ws://192.168.1.20:8123/api/websocket",
             ),
             ("http://127.0.0.1:9", "ws://127.0.0.1:9/api/websocket"),
             ("http://[fd00::5]:8123", "ws://[fd00::5]:8123/api/websocket"),
@@ -271,6 +271,8 @@ mod tests {
     fn an_address_off_the_local_network_is_refused() {
         for url in [
             "https://example.ui.nabu.casa",
+            "https://homeassistant.local:8123",
+            "https://192.168.1.20:8123",
             "http://8.8.8.8:8123",
             "http://homeassistant:8123",
             "homeassistant.local:8123",

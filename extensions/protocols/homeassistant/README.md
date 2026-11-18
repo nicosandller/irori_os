@@ -8,10 +8,9 @@ in Irori. Nothing about your Home Assistant changes.
 ## What it does
 
 - **Signs in** to Home Assistant's WebSocket API (`/api/websocket`) with a long-lived access
-  token of an administrator. `https://` addresses connect over TLS (`wss://`), and the
-  certificate must be one a public authority issued for that very name: a self-signed one, or a
-  Let's Encrypt one for a public name reached by a local address, is refused. Use `http://` and
-  the local address then; the token never leaves the local network either way.
+  token of an administrator, at its local `http://` address (`ws://`). Not `https://`: a
+  certificate is only trusted when a public authority issued it for the name used, and none is
+  ever issued for a local name or a private address. The token never leaves the local network.
 - **Reads** the floor, area, device and entity registries and every entity's state, and follows
   them: entities' changes through `subscribe_entities` (only the entities it brought over), and
   the four registries' `*_registry_updated` events. A registry change is read again two seconds

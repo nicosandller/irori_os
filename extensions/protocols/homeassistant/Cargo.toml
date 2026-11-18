@@ -22,10 +22,10 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true, features = ["net", "time"] }
-# The same version and TLS roots the `irori` binary already links for `irori watch`, so `wss://`
-# adds nothing to the lockfile, and this crate's features can't change what `irori` is built
-# with. Kept off the workspace's `tokio-tungstenite` (Matter's, loopback only, no TLS) on purpose.
-tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+# The same version the `irori` binary already links for `irori watch`, so this adds nothing to the
+# lockfile. Plain `ws://` only: a local address can't have a certificate a public authority
+# issued (see `settings.rs`). Kept off the workspace's `tokio-tungstenite` (Matter's) on purpose.
+tokio-tungstenite = "0.26"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 

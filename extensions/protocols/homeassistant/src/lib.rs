@@ -199,6 +199,9 @@ struct Bridge {
     layout: Option<SuggestedLayout>,
     /// Each entity's availability as last told.
     told: HashMap<UniqueId, Availability>,
+    /// What the last plan brought over, by `entity_id`: kept while Home Assistant has no state
+    /// for one (see [`model::plan_keeping`]).
+    brought: HashMap<String, Bridged>,
 }
 
 impl Bridge {
@@ -549,8 +552,16 @@ impl Session<'_> {
         registry: &Registry,
         settings: &Settings,
     ) -> Result<(), HaError> {
-        let plan = model::plan(registry, settings);
+        let plan = model::plan_keeping(registry, settings, &self.bridge.brought);
         self.bridge.apply(ctx, &plan).await;
+        self.bridge.brought = plan
+            .entities
+            .iter()
+            .map(|b| (b.entity_id.clone(), b.clone()))
+            .collect();
+        for id in &plan.absent {
+            self.tell(id.clone(), Availability::Unavailable);
+        }
         let before: Vec<&str> = self.entities.iter().map(|b| b.entity_id.as_str()).collect();
         let after: Vec<&str> = plan.entities.iter().map(|b| b.entity_id.as_str()).collect();
         let resubscribe = before != after || self.entities_subscription.is_none();
