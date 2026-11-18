@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "exclude_areas": {
+      "title": "Leave out these areas",
+      "description": "Never bring over entities in these areas (by name).",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "x-irori-group": "What comes over"
+    },
+    "exclude_integrations": {
+      "title": "Leave out these integrations",
+      "description": "Never bring over entities of these integrations.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "x-irori-group": "What comes over"
+    },
+    "include_areas": {
+      "title": "Also bring over these areas",
+      "description": "Also bring over every entity in these areas (by name), as for integrations above.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "x-irori-group": "What comes over"
+    },
+    "include_integrations": {
+      "title": "Also bring over these integrations",
+      "description": "Also bring over every entity of these integrations (`hue`, `zha`, `mqtt`…), even ones\nIrori leaves out by default: those on no device, hidden ones, and devices' settings and\ndiagnostics. Disabled entities never come over.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "x-irori-group": "What comes over"
+    },
+    "token": {
+      "title": "Access token",
+      "description": "A long-lived access token of an administrator: in Home Assistant, your profile →\nSecurity → Long-lived access tokens → Create token. An administrator's, because only\nthey can read Home Assistant's devices, areas and entities.",
+      "$ref": "#/$defs/Secret"
+    },
+    "url": {
+      "title": "Home Assistant address",
+      "description": "Home Assistant's address, as you open it in a browser on this network:\n`http://homeassistant.local:8123`, or `https://…` when it serves TLS.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url",
+    "token"
+  ],
+  "$defs": {
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}

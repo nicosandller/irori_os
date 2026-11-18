@@ -23,6 +23,7 @@ members = [
     "extensions/protocols/matter",
     "extensions/protocols/mqtt",
     "extensions/protocols/switchbot",
+    "extensions/protocols/homeassistant",
     "extensions/protocols/tplink",
     "extensions/protocols/zigbee",
     "extras/irori-assist",
@@ -66,6 +67,7 @@ irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
 irori-protocol-tplink = { path = "extensions/protocols/tplink" }
 irori-protocol-matter = { path = "extensions/protocols/matter" }
 irori-protocol-switchbot = { path = "extensions/protocols/switchbot" }
+irori-protocol-homeassistant = { path = "extensions/protocols/homeassistant" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates

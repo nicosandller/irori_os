@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# The Home Assistant extension's load gate (milestone 11, rule 6): a big Home Assistant bridged
+# into Irori mustn't make a home's own devices and automations slower or forgetful.
+#
+# Runs a scratch native Irori with Demo, Automations and a demo flow three times, each in a new
+# data folder on a free port (never 8480, 8490 or 8491, never dev/.native):
+#
+#   baseline   no Home Assistant;
+#   bridge-N   the Home Assistant extension pointed at a fake Home Assistant of N entities whose
+#              sensors change 300 times a second, every device it finds added (N = 2000, 5000).
+#
+# Each run waits for the home to settle, then measures for a window:
+#
+#   - `history.dropped_changes` (/api/health) stays 0;
+#   - Irori logs no "fell behind" (an engine's or history's missed events);
+#   - the demo flow (a demo switch turning on → a demo light on) fires within 1 s, every time;
+#   - the core's (the `irori` process alone, not the extensions') CPU time over the window and
+#     its memory, against the baseline's.
+#
+# usage: dev/ha-load [--release] [--window SECONDS] [--sizes "2000 5000"] [--rate N]
+#
+# Builds what it runs (debug by default; --release for the shipped profile, much slower to
+# build). Everything it makes is under a temporary folder, removed at the end unless
+# IRORI_LOAD_KEEP=1.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"
+
+profile=debug
+cargo_profile=()
+window=60
+settle=45
+sizes="2000 5000"
+rate=300
+trials=10
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --release) profile=release; cargo_profile=(--release) ;;
+    --window) window="$2"; shift ;;
+    --settle) settle="$2"; shift ;;
+    --sizes) sizes="$2"; shift ;;
+    --rate) rate="$2"; shift ;;
+    --trials) trials="$2"; shift ;;
+    -h | --help) sed -n '2,26p' "$0"; exit 0 ;;
+    *) echo "error: unknown argument: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+echo "== building ($profile)"
+cargo build --locked ${cargo_profile[@]+"${cargo_profile[@]}"} -p irori \
+  -p irori-protocol-demo -p irori-engine-automations -p irori-protocol-homeassistant
+cargo build --locked ${cargo_profile[@]+"${cargo_profile[@]}"} -p irori-protocol-homeassistant \
+  --features fake --example fake_ha
+target="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+bin="$target/$profile"
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/irori-ha-load.XXXXXX")"
+pids=()
+cleanup() {
+  for pid in "${pids[@]+"${pids[@]}"}"; do kill "$pid" 2>/dev/null || true; done
+  wait 2>/dev/null || true
+  if [[ "${IRORI_LOAD_KEEP:-0}" != 1 ]]; then rm -rf "$work"; else echo "kept $work"; fi
+}
+trap cleanup EXIT
+
+# A package folder, as an install leaves it: the manifest, its files, and bin/<binary>.
+package() { # <id> <source dir> <binary>
+  local dest="$1" src="$2" binary="$3"
+  mkdir -p "$dest/bin"
+  cp "$src/irori-extension.toml" "$dest/"
+  for file in icon.svg config.schema.json; do
+    if [[ -f "$src/$file" ]]; then cp "$src/$file" "$dest/"; fi
+  done
+  cp "$bin/$binary" "$dest/bin/"
+}
+
+free_port() {
+  python3 - <<'PY'
+import socket
+while True:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    if port not in (8480, 8490, 8491):
+        print(port)
+        break
+PY
+}
+
+api() { # <method> <path> [json]
+  local method="$1" path="$2"
+  if [[ $# -ge 3 ]]; then
+    curl -fsS -X "$method" "$base$path" -H 'content-type: application/json' -d "$3"
+  else
+    curl -fsS -X "$method" "$base$path"
+  fi
+}
+
+wait_for() { # <seconds> <description> <command…>
+  local seconds="$1" what="$2"
+  shift 2
+  local deadline=$((SECONDS + seconds))
+  until "$@" >/dev/null 2>&1; do
+    if ((SECONDS >= deadline)); then
+      echo "error: timed out waiting for $what" >&2
+      return 1
+    fi
+    sleep 1
+  done
+}
+
+# The demo flow: the demo's first switch turning on turns the demo's first light on.
+flow_for() { # <switch> <light>
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+switch, light = sys.argv[1], sys.argv[2]
+flow = {
+    "id": "load_gate", "name": "Load gate", "mode": "restart",
+    "description": "The load gate's demo flow: the switch turns the light on.",
+    "nodes": {
+        "on": {"type": "trigger", "trigger": {"type": "state", "entity": switch, "to": True}},
+        "light": {"type": "call", "service": "light.turn_on", "entity": light},
+    },
+    "wires": [["on", "light"]],
+    "layout": {"on": [0, 0], "light": [280, 0]},
+}
+print(json.dumps({"method": "flows.save", "params": {"flow": flow}}))
+PY
+}
+
+cputime() { # seconds of CPU the process has used
+  ps -o time= -p "$1" | python3 -c '
+import sys
+t = sys.stdin.read().strip()
+days = 0
+if "-" in t:
+    d, t = t.split("-", 1); days = int(d)
+parts = [float(p) for p in t.split(":")]
+s = 0.0
+for p in parts: s = s * 60 + p
+print(s + days * 86400)'
+}
+
+rss_mb() { ps -o rss= -p "$1" | awk '{printf "%.1f", $1/1024}'; }
+
+results="$work/results.tsv"
+printf 'run\tcpu_s\tcpu_pct\trss_mb\tdropped\tfell_behind\tflow_max_ms\tflow_misses\tentities\treports_s\n' >"$results"
+
+run() { # <name> <entities, 0 for none>
+  local name="$1" entities="$2"
+  local home="$work/$name" port
+  port="$(free_port)"
+  base="http://127.0.0.1:$port"
+  mkdir -p "$home/data/extensions" "$home/config"
+  package "$home/data/extensions/demo" extensions/demo irori-ext-demo
+  package "$home/data/extensions/automations" extensions/automations irori-ext-automations
+  if [[ -d extensions/automations/app/dist ]]; then
+    cp -r extensions/automations/app/dist "$home/data/extensions/automations/app"
+  fi
+  local fake_url="" fake=""
+  if ((entities > 0)); then
+    package "$home/data/extensions/homeassistant" extensions/protocols/homeassistant irori-ext-homeassistant
+    local fake_port
+    fake_port="$(free_port)"
+    "$target/$profile/examples/fake_ha" --port "$fake_port" --devices $((entities / 10)) \
+      --per-device 10 --rate "$rate" --token load-gate-token >"$home/fake.log" 2>&1 &
+    fake=$!
+    pids+=("$fake")
+    fake_url="http://127.0.0.1:$fake_port"
+    wait_for 20 "the fake Home Assistant" grep -q listening "$home/fake.log"
+  fi
+
+  echo "== $name: irori on $base (data in $home)"
+  RUST_LOG=info "$bin/irori" run --bind "127.0.0.1:$port" --data "$home/data" \
+    --config "$home/config" >"$home/irori.log" 2>&1 &
+  local irori=$!
+  pids+=("$irori")
+  wait_for 60 "irori to answer" api GET /api/health
+
+  # Demo's devices, then the flow, on the demo's first switch and light.
+  wait_for 60 "the demo's devices" sh -c "curl -fsS $base/api/home | grep -q demo_"
+  api POST /api/devices/add '{"protocol":"demo"}' >/dev/null
+  wait_for 60 "the demo's entities" sh -c "curl -fsS $base/api/states | grep -q '\"switch.demo_'"
+  local switch light
+  switch="$(api GET /api/states | python3 -c 'import json,sys; print(sorted(s["entity_id"] for s in json.load(sys.stdin) if s["entity_id"].startswith("switch.demo_"))[0])')"
+  light="$(api GET /api/states | python3 -c 'import json,sys; print(sorted(s["entity_id"] for s in json.load(sys.stdin) if s["entity_id"].startswith("light.demo_"))[0])')"
+  wait_for 60 "Automations" api GET /api/apps
+  local saved
+  saved="$(api POST /api/apps/automations/rpc "$(flow_for "$switch" "$light")")"
+  echo "   flow: $switch → $light ($saved)" | cut -c1-200
+
+  if ((entities > 0)); then
+    api POST /api/extensions/homeassistant/settings \
+      "{\"url\":\"$fake_url\",\"token\":\"load-gate-token\"}" >/dev/null
+    wait_for 120 "Home Assistant's devices to be found" python3 - "$base" <<'PY'
+import json, sys, urllib.request
+home = json.load(urllib.request.urlopen(sys.argv[1] + "/api/home"))
+held = [d for d in home.get("held", []) if d.get("protocol") == "homeassistant"]
+sys.exit(0 if len(held) >= 100 else 1)
+PY
+    api POST /api/extensions/homeassistant/layout >/dev/null || true
+    api POST /api/devices/add '{"protocol":"homeassistant"}' >/dev/null
+    wait_for 180 "the bridged entities' states" python3 - "$base" "$entities" <<'PY'
+import json, sys, urllib.request
+states = json.load(urllib.request.urlopen(sys.argv[1] + "/api/states"))
+bridged = [s for s in states if s["entity_id"].startswith(("sensor.d", "light.d", "binary_sensor.d")) and s.get("state") is not None]
+sys.exit(0 if len(bridged) >= min(int(sys.argv[2]), 2000) * 0.95 else 1)
+PY
+  fi
+
+  echo "   settling for ${settle}s"
+  sleep "$settle"
+  local count_before cpu_before
+  count_before="$(api GET /api/states | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
+  local bridged_before
+  bridged_before="$(api GET /api/states | python3 -c '
+import json,sys
+print(json.dumps({s["entity_id"]: s["last_reported"] for s in json.load(sys.stdin) if s["entity_id"].startswith("sensor.d")}))')"
+  cpu_before="$(cputime "$irori")"
+  echo "   measuring for ${window}s"
+  sleep "$window"
+  local cpu_after rss
+  cpu_after="$(cputime "$irori")"
+  rss="$(rss_mb "$irori")"
+  local reports
+  reports="$(api GET /api/states | python3 -c '
+import json,sys
+before = json.loads(sys.argv[1])
+now = {s["entity_id"]: s["last_reported"] for s in json.load(sys.stdin) if s["entity_id"].startswith("sensor.d")}
+print(sum(1 for k, v in now.items() if before.get(k) != v))' "$bridged_before")"
+
+  # The flow, under load: the switch on, then the light should follow within a second.
+  local worst=0 misses=0
+  for _ in $(seq "$trials"); do
+    api POST /api/command "{\"entity_id\":\"$light\",\"command\":\"turn_off\"}" >/dev/null
+    api POST /api/command "{\"entity_id\":\"$switch\",\"command\":\"turn_off\"}" >/dev/null
+    sleep 1
+    api POST /api/command "{\"entity_id\":\"$switch\",\"command\":\"turn_on\"}" >/dev/null
+    sleep 2
+    local ms
+    ms="$(api GET /api/states | python3 -c '
+import json, re, sys
+from datetime import datetime
+states = {s["entity_id"]: s for s in json.load(sys.stdin)}
+def when(text):
+    # Down to microseconds, which is what Python reads.
+    text = re.sub(r"(\.\d{6})\d+", r"\1", text.replace("Z", "+00:00"))
+    return datetime.fromisoformat(text)
+sw, li = states[sys.argv[1]], states[sys.argv[2]]
+on = lambda s: (s.get("state") or {}).get("on")
+if not on(li) or not on(sw):
+    print(-1)
+else:
+    print(int((when(li["last_changed"]) - when(sw["last_changed"])).total_seconds() * 1000))' "$switch" "$light")"
+    if ((ms < 0 || ms > 1000)); then misses=$((misses + 1)); fi
+    if ((ms > worst)); then worst=$ms; fi
+  done
+
+  local dropped fell
+  dropped="$(api GET /api/health | python3 -c 'import json,sys; print(json.load(sys.stdin)["history"]["dropped_changes"])')"
+  fell="$(grep -c "fell behind" "$home/irori.log" || true)"
+  local cpu pct
+  cpu="$(python3 -c "print(round($cpu_after - $cpu_before, 2))")"
+  pct="$(python3 -c "print(round(100 * ($cpu_after - $cpu_before) / $window, 2))")"
+  local per_second
+  per_second="$(python3 -c "print(round($reports / $window, 1))")"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$name" "$cpu" "$pct" "$rss" "$dropped" "$fell" \
+    "$worst" "$misses" "$count_before" "$per_second" >>"$results"
+  echo "   cpu ${cpu}s (${pct}% of a core), rss ${rss} MB, dropped $dropped, fell behind $fell, flow worst ${worst} ms, misses $misses/$trials"
+  if ((entities > 0)); then
+    echo "   sensors that changed in the window: $reports; fake: $(tail -1 "$home/fake.log")"
+  fi
+
+  kill "$irori" 2>/dev/null || true
+  wait "$irori" 2>/dev/null || true
+  if [[ -n "$fake" ]]; then
+    kill "$fake" 2>/dev/null || true
+  fi
+}
+
+run baseline 0
+for size in $sizes; do
+  run "bridge-$size" "$size"
+done
+
+echo
+echo "== results"
+column -t -s $'\t' "$results"
+python3 - "$results" <<'PY'
+import csv, sys
+rows = list(csv.DictReader(open(sys.argv[1]), delimiter="\t"))
+base = rows[0]
+ok = True
+for row in rows:
+    problems = []
+    if int(row["dropped"]) != 0:
+        problems.append("history dropped changes")
+    if int(row["fell_behind"]) != 0:
+        problems.append("something fell behind")
+    if int(row["flow_misses"]) != 0:
+        problems.append("the flow was late or didn't fire")
+    if row is not base:
+        cpu = float(row["cpu_s"]) - float(base["cpu_s"])
+        rss = float(row["rss_mb"]) / float(base["rss_mb"]) - 1
+        row_cpu = (float(row["cpu_s"]) / max(float(base["cpu_s"]), 0.01)) - 1
+        print(f'{row["run"]}: core CPU {row_cpu:+.0%} ({cpu:+.2f} s over the window), memory {rss:+.0%} against the baseline')
+        if row_cpu > 0.10:
+            problems.append(f"core CPU {row_cpu:+.0%} over the baseline")
+        if rss > 0.10:
+            problems.append(f"core memory {rss:+.0%} over the baseline")
+    print(f'{row["run"]}: {"PASS" if not problems else "FAIL: " + "; ".join(problems)}')
+    ok &= not problems
+sys.exit(0 if ok else 1)
+PY

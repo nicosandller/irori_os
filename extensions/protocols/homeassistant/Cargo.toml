@@ -1,0 +1,41 @@
+[package]
+name = "irori-protocol-homeassistant"
+description = "A Home Assistant's devices, areas and floors in Irori, while Home Assistant keeps running them."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[features]
+# The fake Home Assistant (`src/fake.rs`): for this crate's tests and the load gate's
+# `examples/fake_ha.rs` (`dev/ha-load`). Never in the shipped binary.
+fake = []
+
+[dependencies]
+irori-types.workspace = true
+irori-protocol.workspace = true
+irori-cloud.workspace = true
+
+futures-util.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["net", "time"] }
+# The same version and TLS roots the `irori` binary already links for `irori watch`, so `wss://`
+# adds nothing to the lockfile, and this crate's features can't change what `irori` is built
+# with. Kept off the workspace's `tokio-tungstenite` (Matter's, loopback only, no TLS) on purpose.
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "irori-ext-homeassistant"
+path = "src/main.rs"
+
+[[example]]
+name = "fake_ha"
+required-features = ["fake"]
+
+[lints]
+workspace = true

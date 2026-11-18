@@ -78,6 +78,7 @@ pub fn official_icon(id: &ExtensionId) -> Option<&'static str> {
         "zigbee" => include_str!("../../../extensions/protocols/zigbee/icon.svg"),
         "matter" => include_str!("../../../extensions/protocols/matter/icon.svg"),
         "switchbot" => include_str!("../../../extensions/protocols/switchbot/icon.svg"),
+        "homeassistant" => include_str!("../../../extensions/protocols/homeassistant/icon.svg"),
         "automations" => include_str!("../../../extensions/automations/icon.svg"),
         _ => return None,
     })
