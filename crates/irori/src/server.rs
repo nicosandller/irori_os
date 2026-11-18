@@ -4154,9 +4154,10 @@ mod tests {
         let (core, host) = demo().await?;
         // Ready means the demo has said everything it says at the start: every device found, and
         // the action it offers (said after its first states, which is all `demo` waits for).
+        let mut ready = false;
         for _ in 0..500 {
             let found = core.held_devices().len() + core.devices().len();
-            let ready = found > 2
+            ready = found > 2
                 && core
                     .extensions()
                     .values()
@@ -4166,6 +4167,9 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+        // A slow machine that didn't get the demo started would otherwise fail below as a
+        // confusing difference from the recording.
+        anyhow::ensure!(ready, "the demo didn't finish starting within 5 s");
         let server = Server::new(core.clone())?;
         std::fs::write(
             server.config_dir().join("devices.toml"),
