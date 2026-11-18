@@ -541,6 +541,18 @@ impl Core {
         self.0.events.subscribe()
     }
 
+    /// How many events some listener has yet to read. Work that publishes a great many at once
+    /// (adding a couple of hundred devices) waits for this to fall before publishing more, so no
+    /// listener falls far enough behind to miss any. Reading it changes nothing.
+    pub fn events_waiting(&self) -> usize {
+        self.0.events.len()
+    }
+
+    /// How many events a listener can fall behind before it starts missing them.
+    pub const fn event_buffer() -> usize {
+        EVENT_BUFFER
+    }
+
     /// Devices their protocol removed for good (`docs/specs/protocols.md` §4, *Remove a
     /// device*), for the config files to forget as they would a device a person removed.
     /// Taking a device out of the home, which puts it back among what was found, isn't this.
