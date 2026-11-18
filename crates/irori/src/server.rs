@@ -1263,21 +1263,22 @@ async fn accept_layout(
         .await;
     match edited {
         Ok(made) => {
-            trail.detail(format!(
-                "{} {}, {} {}",
-                made.areas.len(),
-                if made.areas.len() == 1 {
-                    "room"
-                } else {
-                    "rooms"
-                },
-                made.floors.len(),
-                if made.floors.len() == 1 {
-                    "floor"
-                } else {
-                    "floors"
-                },
-            ));
+            // "2 rooms, 1 floor", leaving out what it made none of.
+            let counted = |n: usize, one: &str, many: &str| match n {
+                0 => None,
+                1 => Some(format!("1 {one}")),
+                n => Some(format!("{n} {many}")),
+            };
+            trail.detail(
+                [
+                    counted(made.areas.len(), "room", "rooms"),
+                    counted(made.floors.len(), "floor", "floors"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", "),
+            );
             Json(made).into_response()
         }
         Err(e) => edit_failed(e),
@@ -7320,6 +7321,53 @@ mod tests {
             Ok(Ok(_)) => {}
             Err(e) => return Err(e.into()),
         }
+        Ok(())
+    }
+
+    /// A listener that has stopped reading altogether (a stuck page, an engine that hung) holds
+    /// "Add all" up once, for a moment, and not again at every step.
+    #[tokio::test]
+    async fn a_listener_that_stopped_reading_holds_add_all_up_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Crowd>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let (devices, entities) = CROWD;
+        for _ in 0..1000 {
+            let found = core.held_devices();
+            if found.len() == devices
+                && found
+                    .iter()
+                    .all(|device| device.provides.values().sum::<usize>() == entities)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(core.held_devices().len(), devices, "the crowd was found");
+
+        // Subscribed, and never read.
+        let stuck = core.subscribe();
+        let started = tokio::time::Instant::now();
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "crowd"}),
+            )
+            .await?;
+        let took = started.elapsed();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], devices, "{body}");
+        assert_eq!(core.entities().len(), devices * entities);
+        // One wait of half a second, not one at each of the dozen or so steps.
+        assert!(took < Duration::from_secs(3), "took {took:?}");
+        drop(stuck);
+        host.shutdown().await;
         Ok(())
     }
 
