@@ -105,8 +105,10 @@ that extension has found and is holding (the `held` list), as `PATCH /api/device
 { "added": true }` would one at a time, in a single edit of `devices.toml`
 ([config.md](config.md) §3.2). The devices join the home a few hundred events' worth at a time,
 each step waiting for the listeners on the event stream to catch up, so none of them (the history,
-the websocket, an automation engine) falls far enough behind to miss events; the answer comes once
-all of them have joined. The answer is `{ "added": <how many> }`. Devices of other
+the websocket, an automation engine) falls far enough behind to miss events. A listener that has
+stopped reading altogether is waited for once, for half a second, and then the remaining steps go
+without waiting; it misses events, as it would anyway. The answer comes once all of them have
+joined. The answer is `{ "added": <how many> }`. Devices of other
 extensions are left as they are. An extension that holds nothing answers `{ "added": 0 }` and
 writes nothing; one that isn't installed is `404`. It is written in the activity log as
 `devices_added`, with the extension as its target and the count as its detail.
