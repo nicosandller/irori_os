@@ -7,7 +7,7 @@
 //! anything else in Home Assistant (see [`client`]).
 //!
 //! It goes easy on the core (see [`throttle`]): at most [`model::MAX_ENTITIES`] entities, each
-//! sensor reporting at most once a second, about 200 reports a second in all, and nothing
+//! sensor reporting at most once a second, about 150 reports a second in all, and nothing
 //! reported that hasn't changed. Connection trouble is its own to handle: it reconnects with its
 //! own backoff (a second, doubling to a minute) and marks what it brought over unavailable
 //! meanwhile, so the host's restart is never needed.

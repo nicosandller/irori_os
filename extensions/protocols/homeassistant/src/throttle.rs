@@ -23,7 +23,7 @@ use tokio::time::Instant;
 /// How often a batch leaves.
 pub const TICK: Duration = Duration::from_millis(100);
 /// How many reports leave per batch.
-pub const PER_TICK: usize = 20;
+pub const PER_TICK: usize = 15;
 /// The most reports a second, in all.
 pub const PER_SECOND: usize = PER_TICK * 10;
 /// The least time between two reports of one sensor.
