@@ -50,7 +50,7 @@
     },
     "url": {
       "title": "Home Assistant address",
-      "description": "Home Assistant's address, as you open it in a browser on this network:\n`http://homeassistant.local:8123`, or `https://…` when it serves TLS.",
+      "description": "Home Assistant's local address, as you open it in a browser on this network:\n`http://homeassistant.local:8123`, or `http://` and its IP address.",
       "type": "string"
     }
   },

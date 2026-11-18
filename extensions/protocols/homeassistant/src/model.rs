@@ -200,6 +200,9 @@ pub struct Plan {
     pub unmodeled: Vec<Unmodeled>,
     pub waiting: Vec<Waiting>,
     pub layout: SuggestedLayout,
+    /// Entities kept from before although Home Assistant has no state for them right now (their
+    /// integration is reloading): unavailable until it does.
+    pub absent: Vec<UniqueId>,
 }
 
 pub fn domain(entity_id: &str) -> &str {
@@ -222,6 +225,18 @@ fn same(a: &str, b: &str) -> bool {
 
 /// Works out what comes over.
 pub fn plan(registry: &Registry, settings: &Settings) -> Plan {
+    plan_keeping(registry, settings, &HashMap::new())
+}
+
+/// [`plan`], keeping the entities in `known` (by `entity_id`, as last brought over) that Home
+/// Assistant still lists but has no state for right now. An integration reloading drops its
+/// states for a moment; read then, they'd seem gone, and be removed from the home with the room
+/// and name they were given there.
+pub fn plan_keeping(
+    registry: &Registry,
+    settings: &Settings,
+    known: &HashMap<String, Bridged>,
+) -> Plan {
     let areas: HashMap<&str, &HaArea> = registry
         .areas
         .iter()
@@ -270,7 +285,11 @@ pub fn plan(registry: &Registry, settings: &Settings) -> Plan {
             continue;
         }
         let Some(state) = registry.states.get(&entity.entity_id) else {
-            // Not loaded in Home Assistant right now: nothing to tell its kind or abilities by.
+            // Not loaded in Home Assistant right now: nothing to tell its kind or abilities by,
+            // unless it was brought over before.
+            if let Some(before) = known.get(&entity.entity_id) {
+                taken.push((entity, device, before.description.capabilities.clone()));
+            }
             continue;
         };
         let domain = domain(&entity.entity_id);
@@ -362,7 +381,14 @@ pub fn plan(registry: &Registry, settings: &Settings) -> Plan {
         .into_iter()
         .filter_map(|(entity, device, capabilities)| {
             let device = device.filter(|d| device_ids.contains(d.id.as_str()));
-            describe_entity(entity, device, capabilities, &registry.states)
+            let mut bridged = describe_entity(entity, device, capabilities, &registry.states)?;
+            // Without a state there's no `friendly_name`: it keeps the name it had.
+            if !registry.states.contains_key(&entity.entity_id)
+                && let Some(before) = known.get(&entity.entity_id)
+            {
+                bridged.description.name = before.description.name.clone();
+            }
+            Some(bridged)
         })
         .collect();
 
@@ -392,12 +418,18 @@ pub fn plan(registry: &Registry, settings: &Settings) -> Plan {
         });
     }
 
+    let absent = entities
+        .iter()
+        .filter(|b| !registry.states.contains_key(&b.entity_id))
+        .map(|b| b.description.unique_id.clone())
+        .collect();
     Plan {
         devices: described,
         entities,
         unmodeled,
         waiting,
         layout: layout(&registry.floors, &registry.areas),
+        absent,
     }
 }
 
@@ -485,7 +517,7 @@ fn describe_entity(
     let own = entity.name.as_deref().or(entity.original_name.as_deref());
     let label = match device {
         // A device's main feature has no name of its own, and goes by its device's.
-        Some(_) if entity.has_entity_name && entity.name.is_none() && own.is_none() => None,
+        Some(_) if entity.has_entity_name && own.is_none() => None,
         Some(_) => own.and_then(name),
         None => own
             .or(states

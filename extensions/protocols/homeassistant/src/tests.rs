@@ -523,6 +523,40 @@ async fn an_entity_that_stops_qualifying_is_removed() {
     world.stop().await;
 }
 
+/// An integration reloading drops its states for a moment. Read then, its entities are still in
+/// Home Assistant: they stay in the home, unavailable, rather than being removed with the room
+/// and name they were given there.
+#[tokio::test]
+async fn an_entity_without_a_state_for_a_moment_stays_unavailable() {
+    let fake = FakeHa::start(home()).await.expect("a fake");
+    let world = world(&fake).await;
+    world.running().await;
+    world
+        .until("entities", |log| (log.entities.len() == 2).then_some(()))
+        .await;
+    fake.with_world(|w| w.states.remove("light.kitchen"));
+    fake.registry_changed("device_registry_updated");
+    world
+        .until("the light unavailable", |log| {
+            log.availability
+                .iter()
+                .any(|(target, a)| {
+                    *a == Availability::Unavailable
+                        && matches!(target, AvailabilityTarget::Entities(ids)
+                            if ids.iter().any(|id| id.as_str() == "e-light"))
+                })
+                .then_some(())
+        })
+        .await;
+    {
+        let log = world.log.lock().expect("log");
+        assert!(log.removed.is_empty(), "removed {:?}", log.removed);
+        // Nor described again: it's what it was.
+        assert_eq!(log.entities.len(), 2);
+    }
+    world.stop().await;
+}
+
 #[tokio::test]
 async fn a_token_that_cannot_read_the_registries_waits_for_an_administrators() {
     let mut home = home();
