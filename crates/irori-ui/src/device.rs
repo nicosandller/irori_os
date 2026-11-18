@@ -281,6 +281,22 @@ fn page(
             .map(|(_, extension)| (extension.name.clone(), extension.unpairs))
             .unwrap_or_default()
     });
+    // The other extensions that reach this same device, by their own names where the page
+    // knows them (`docs/specs/protocols.md` §6.1).
+    let also_through = live.home.with_untracked(|home| {
+        device
+            .also_through
+            .iter()
+            .map(|protocol| {
+                home.extensions
+                    .iter()
+                    .find(|(id, _)| id.as_str() == protocol.as_str())
+                    .map(|(_, extension)| extension.name.clone())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| protocol.to_string())
+            })
+            .collect::<Vec<_>>()
+    });
     let what = device.name.to_string();
     let name = device.name.to_string();
     let description = device
@@ -404,6 +420,16 @@ fn page(
                 <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
                 <dd>{device.protocol.to_string()}</dd>
+                // The same hardware, found by another extension too: one line, until handing it
+                // over from one to the other is something this page offers.
+                {(!also_through.is_empty()).then(|| view! {
+                    <dt>"Also reachable through"</dt>
+                    <dd>{also_through.join(", ")}</dd>
+                })}
+                {device.duplicate_of.clone().map(|twin| view! {
+                    <dt>"Same device as"</dt>
+                    <dd><A href=format!("/devices/{twin}") attr:class="row-link">{twin.to_string()}</A></dd>
+                })}
                 <dt>"Area"</dt>
                 // The area is a reading until its pencil is pressed, when it becomes the picker
                 // in the same place: the page says where a device is without offering to move
@@ -1573,6 +1599,8 @@ mod tests {
             area_id: None,
             suggested_area: None,
             via_device_id: None,
+            duplicate_of: None,
+            also_through: Vec::new(),
         }
     }
 

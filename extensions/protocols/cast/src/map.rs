@@ -117,6 +117,7 @@ pub fn descriptions(found: &Found) -> Result<(DeviceDescription, EntityDescripti
         serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
+        connections: Vec::new(),
     };
     let entity = EntityDescription {
         unique_id: entity_id,

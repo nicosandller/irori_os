@@ -4,6 +4,13 @@
   "description": "A physical or virtual thing a protocol talks to, e.g. a Zigbee motion sensor. A device\nhas one or more entities.",
   "type": "object",
   "properties": {
+    "also_through": {
+      "description": "The other extensions that reach this same device, whose copies are its duplicates.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ProtocolId"
+      }
+    },
     "area_id": {
       "description": "The resolved area for this device: a person's placement when they chose a room (or\ndeliberately none), otherwise the room matching `suggested_area` while placement is still\nunsaid. Absent means it isn't in a room — either on purpose, or because no matching room\nexists yet (`docs/specs/config.md` §5).",
       "anyOf": [
@@ -20,6 +27,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/Description"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "duplicate_of": {
+      "description": "The device this one is a second way to: the same hardware, found by another extension\nthat names its connections, such as a bridge to another hub. Set by the core\n(`docs/specs/protocols.md` §6.1), and only on a device that was added before its twin\nwas found; a duplicate that isn't in the home yet isn't offered.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DeviceId"
         },
         {
           "type": "null"

@@ -284,6 +284,35 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | `manufacturer`, `model`, `sw_version`, `hw_version`, `serial_number` | string | no | Informational, updated every time |
 | `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
 | `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
+| `connections` | `[{ "kind": "mac" \| "ieee" \| "serial", "value": string }]` | no | What hardware it is, for an extension that reaches devices another extension may reach too (a bridge to another hub). Left out by an extension that talks to its devices directly. An empty `value` is refused |
+
+**One device, two extensions.** A `unique_id` belongs to its extension, so a plug reached both
+through a bridge to another hub and by its own extension would be two devices. `connections`
+says what the device is, and the core recognises it:
+
+- Values are kept in one spelling. A `mac` (EUI-48) or `ieee` (EUI-64) address is lowercase,
+  without `:`, `-`, `.`, spaces or a leading `0x`: `AA:BB:CC:DD:EE:FF` is `aabbccddeeff`. A
+  `serial` is trimmed and otherwise kept as it is.
+- A device with connections is compared with the devices of *other* extensions, by their
+  `connections`, their `serial_number`, and their `unique_id` when it is an address: 12 hex
+  digits is a MAC (ESPHome, TP-Link, SwitchBot), 16 an IEEE address (Zigbee: `0x…`, and
+  Zigbee2MQTT's `zigbee2mqtt_0x…`). A serial number only ever matches a serial number. A
+  `unique_id` that isn't an address, like Matter's fabric and node or a Cast or ONVIF uuid,
+  matches by serial number alone.
+- An identifier one extension gives to more than one of its devices (a maker's placeholder
+  serial number, say) tells nothing apart and matches nothing.
+- On a match, the device that named connections is the copy: its `duplicate_of` is the other
+  device's id ([entities.md](entities.md) §4.3). Of several matches, it is a copy of the first in
+  id order that named no connections; when every match named some, of the first whose id comes
+  before its own, so two copies never point at each other.
+- A copy that isn't in the home isn't held or offered: it is left out of the found list, and "Add
+  all" passes it over. The device it copies lists the copy's extension in `also_through`.
+- A copy that was added before its twin was found stays in the home, and both carry the flags.
+  Handing one over to the other is a later step.
+- When the other device is gone from its extension, the copy is offered again. Taking a device
+  out of the home is not that: it is still found, and its copies stay copies.
+- An extension that never sends `connections` changes nothing: until one does, the core builds
+  no index and compares nothing.
 
 ### 6.2 EntityDescription
 

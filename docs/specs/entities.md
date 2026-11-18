@@ -112,6 +112,11 @@ A physical or virtual thing a protocol talks to. It has one or more entities.
 | `area_id` | `AreaId` | no | |
 | `suggested_area` | `Name` | no | The room the device says it's in; used only while no one has placed it ([config.md](config.md) §5) |
 | `via_device_id` | `DeviceId` | no | The bridge or coordinator it's reached through |
+| `duplicate_of` | `DeviceId` | no | Set by the core: this device is a second way to that one, the same hardware found by another extension that names its `connections` ([protocols.md](protocols.md) §6.1). Only on a copy that was added before its twin was found |
+| `also_through` | `[ProtocolId]` | no | Set by the core: the other extensions whose copies of this device are its duplicates. Left out when there are none |
+
+A device's `id` stays tied to its protocol: two extensions reaching the same hardware make two
+devices, and the core only flags them as one (`duplicate_of`, `also_through`).
 
 ### 4.4 Entity
 

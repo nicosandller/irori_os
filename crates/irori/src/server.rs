@@ -5608,6 +5608,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 })
                 .await?;
                 ctx.describe_entity(irori_types::EntityDescription {
@@ -5784,6 +5785,7 @@ mod tests {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             })
             .await?;
             ctx.describe_entity(irori_types::EntityDescription {
@@ -6655,6 +6657,176 @@ mod tests {
         Ok(())
     }
 
+    /// Two extensions that reach the same plug: `Native` by its MAC, `Bridge` through another
+    /// hub that names the plug's connections. The bridge also reaches a lamp nothing else does.
+    struct Native;
+    struct Bridge;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct NoSettings {}
+
+    fn plain(unique_id: &str, name: &str) -> anyhow::Result<irori_types::DeviceDescription> {
+        Ok(irori_types::DeviceDescription {
+            unique_id: unique_id.parse()?,
+            name: name.parse()?,
+            manufacturer: None,
+            model: None,
+            sw_version: None,
+            hw_version: None,
+            serial_number: None,
+            suggested_area: None,
+            via_device_unique_id: None,
+            connections: Vec::new(),
+        })
+    }
+
+    impl irori_protocol::Protocol for Native {
+        type Config = NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "native"
+            name = "Native"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let plug = plain("AA:BB:CC:DD:EE:FF", "Plug")
+                .map_err(|e| irori_protocol::ProtocolError::new(e.to_string()))?;
+            ctx.describe_device(plug).await?;
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    impl irori_protocol::Protocol for Bridge {
+        type Config = NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "bridge"
+            name = "Bridge"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let failed = |e: anyhow::Error| irori_protocol::ProtocolError::new(e.to_string());
+            let mut plug = plain("hub-plug", "Plug").map_err(failed)?;
+            plug.connections = vec![
+                irori_types::Connection::new(irori_types::ConnectionKind::Mac, "aa-bb-cc-dd-ee-ff")
+                    .map_err(|e| irori_protocol::ProtocolError::new(e.to_string()))?,
+            ];
+            let mut lamp = plain("hub-lamp", "Lamp").map_err(failed)?;
+            lamp.connections = vec![
+                irori_types::Connection::new(
+                    irori_types::ConnectionKind::Ieee,
+                    "0x00124b0022aabbcc",
+                )
+                .map_err(|e| irori_protocol::ProtocolError::new(e.to_string()))?,
+            ];
+            ctx.describe_device(plug).await?;
+            ctx.describe_device(lamp).await?;
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// A plug two extensions both reach is offered once: the bridged copy isn't held and "Add
+    /// all" passes it over, and the plug's own entry says it's also reached through the bridge.
+    #[tokio::test]
+    async fn a_device_two_extensions_reach_is_offered_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<Native>().map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Bridge>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let held = || {
+            core.held_devices()
+                .into_iter()
+                .map(|device| device.id.to_string())
+                .collect::<Vec<_>>()
+        };
+        // Whichever extension spoke first, the copy ends up not offered.
+        for _ in 0..500 {
+            let now = held();
+            if now.len() == 2
+                && now.contains(&"bridge_hub_lamp".to_owned())
+                && now.iter().any(|id| id.starts_with("native_"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let plug = held()
+            .into_iter()
+            .find(|id| id.starts_with("native_"))
+            .expect("the plug is offered");
+        assert_eq!(held(), ["bridge_hub_lamp".to_owned(), plug.clone()]);
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "bridge"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 1, "only the lamp: {body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(!devices.contains("bridge_hub_plug"), "{devices}");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "native"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 1, "{body}");
+        let home = server.read("/api/home").await?;
+        let listed = |id: &str| {
+            home["devices"]
+                .as_array()
+                .and_then(|all| all.iter().find(|d| d["id"] == id))
+                .cloned()
+        };
+        let native = listed(&plug).expect("the plug is in");
+        assert_eq!(
+            native["also_through"],
+            serde_json::json!(["bridge"]),
+            "{native}"
+        );
+        assert!(native.get("duplicate_of").is_none(), "{native}");
+        let lamp = listed("bridge_hub_lamp").expect("the lamp is in");
+        assert!(lamp.get("also_through").is_none(), "{lamp}");
+        assert!(lamp.get("duplicate_of").is_none(), "{lamp}");
+        assert!(listed("bridge_hub_plug").is_none());
+        assert!(held().is_empty(), "the copy is never offered");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// A bridge that knows how its home is divided: two floors, three rooms (one said twice,
     /// one Irori has already), and devices that say which room they're in.
     struct Rooms;
@@ -6721,6 +6893,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: Some(room.parse()?),
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 })
                 .await?;
             }
@@ -8332,6 +8505,7 @@ mod tests {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             })
             .await?;
             ctx.describe_entity(EntityDescription {
