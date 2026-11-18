@@ -62,6 +62,8 @@ pub fn what(entry: &AuditEntry) -> String {
         "floor_changed" => named("changed the floor"),
         "floor_removed" => named("removed the floor"),
         "floorplan_saved" => "saved the floorplan".to_owned(),
+        "devices_added" if detail.is_empty() => named("added the found devices of"),
+        "devices_added" => format!("{} ({detail})", named("added the found devices of")),
         "device_changed" => named("changed the device"),
         "device_removed" => named("removed the device"),
         "entity_changed" => named("changed"),

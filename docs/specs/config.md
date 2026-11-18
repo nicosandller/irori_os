@@ -121,6 +121,10 @@ a room) is the same decision — that device is in the home. Earlier versions of
 `added = true` for every device already in the home, so a home kept its devices across the change
 to adding them by hand.
 
+**Add all** on an extension's screen adds every device it has found at once, in one edit of this
+file (`POST /api/devices/add`, [api.md](api.md) §3): the same `added = true`, written once for the
+lot rather than once per device. It touches no other extension's devices.
+
 **Removing** a device takes everything Irori keeps of it out of these files: its row here, its
 entities' rows, and its spot on the floorplan. The device goes back to being found, listed under
 **+ Add device**.
