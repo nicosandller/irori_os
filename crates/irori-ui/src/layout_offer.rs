@@ -35,14 +35,11 @@ fn named(layout: &SuggestedLayout) -> String {
         .floors
         .iter()
         .filter(|floor| {
-            !layout
-                .areas
-                .iter()
-                .any(|area| {
-                    area.floor
-                        .as_ref()
-                        .is_some_and(|on| irori_types::same_name(on, &floor.name))
-                })
+            !layout.areas.iter().any(|area| {
+                area.floor
+                    .as_ref()
+                    .is_some_and(|on| irori_types::same_name(on, &floor.name))
+            })
         })
         .map(|floor| floor.name.to_string());
     rooms.chain(floors).collect::<Vec<_>>().join(", ")
