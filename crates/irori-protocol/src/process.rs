@@ -297,8 +297,12 @@ pub enum ToExt {
         new_state: Box<EntityState>,
     },
     /// An entity or device was added, changed or removed (after `subscribe { registry: true }`).
-    /// Ask again with `get_registry`.
-    RegistryChanged {},
+    /// Ask again with `get_registry`. Also sent when the engine fell behind the home's events:
+    /// then `missed` says how many it wasn't sent, and it should read the states again too.
+    RegistryChanged {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        missed: Option<u64>,
+    },
     /// The extension's page asked it something.
     AppRequest {
         id: u64,
@@ -818,7 +822,7 @@ fn handle_host_line(
         ToExt::Hello { .. }
         | ToExt::Answer { .. }
         | ToExt::StateChanged { .. }
-        | ToExt::RegistryChanged {}
+        | ToExt::RegistryChanged { .. }
         | ToExt::AppRequest { .. } => {}
     }
     ReadControl::Continue

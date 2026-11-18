@@ -430,6 +430,12 @@ impl Service {
                     .state_changed(old_state.map(|s| *s), *new_state, now());
                 self.apply_effects();
             }
+            Incoming::Missed { events } => {
+                // Said before the `RegistryChanged` that reads the home again: the triggers
+                // that may have missed a change say so first.
+                self.engine.missed(events, now());
+                self.apply_effects();
+            }
             Incoming::RegistryChanged => {
                 // The registry changed, or this engine missed events: read both again.
                 match self.client.get_registry().await {

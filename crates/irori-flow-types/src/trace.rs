@@ -153,6 +153,9 @@ pub enum NearMissKind {
     Unavailable,
     /// Reported again with the value it already had.
     SameValue,
+    /// Irori fell behind and the engine wasn't sent some of the home's events, so the flow's
+    /// triggers may have missed a change. One per flow each time (issue #97).
+    Missed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
