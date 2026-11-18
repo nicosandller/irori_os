@@ -70,8 +70,11 @@ pub struct Timing {
     /// The wait after Home Assistant refused the token, or it can't read the registries.
     pub refused_retry: Duration,
     /// How long registry changes settle before they're read again: a restart of an integration
-    /// sends dozens at once.
+    /// sends dozens at once. Each further change waits this long again, up to
+    /// [`SETTLE_MOST`] times it in all.
     pub settle: Duration,
+    /// How often it looks again while Home Assistant is starting.
+    pub starting_retry: Duration,
     /// A connection that lasted this long starts the backoff over.
     pub steady: Duration,
     /// How often a batch of reports leaves ([`throttle::TICK`]).
@@ -85,12 +88,15 @@ impl Default for Timing {
             most_retry: Duration::from_secs(60),
             refused_retry: Duration::from_secs(300),
             settle: Duration::from_secs(2),
+            starting_retry: Duration::from_secs(5),
             steady: Duration::from_secs(60),
             tick: throttle::TICK,
         }
     }
 }
 
+/// The longest a burst of registry changes puts off reading them again, in [`Timing::settle`]s.
+const SETTLE_MOST: u32 = 5;
 /// How many events are handled before a person's request gets another look.
 const BATCH: usize = 256;
 /// How long a command's Home Assistant context is remembered, to tell which change it caused.
@@ -338,13 +344,16 @@ async fn session(
         mut events,
         reader,
     } = connection;
-    struct Abort(tokio::task::JoinHandle<()>);
+    // However the session ends: the reader stops, and a command still waiting for an answer
+    // hears at once that it won't come.
+    struct Abort(tokio::task::JoinHandle<()>, Client);
     impl Drop for Abort {
         fn drop(&mut self) {
             self.0.abort();
+            self.1.give_up();
         }
     }
-    let _reader = Abort(reader);
+    let _reader = Abort(reader, client.clone());
     tracing::info!(
         version = version.as_deref().unwrap_or("unknown"),
         "connected to Home Assistant"
@@ -367,11 +376,24 @@ async fn session(
             Some(Err(why)) => return Ended::Lost(why.to_string()),
         }
     }
-    let registry = match while_waiting(ctx, read(&client)).await {
-        None => return Ended::Stopped,
-        Some(Ok(registry)) => registry,
-        Some(Err(why)) if why.is_unauthorized() => return not_admin(ctx, bridge).await,
-        Some(Err(why)) => return Ended::Lost(why.to_string()),
+    let registry = loop {
+        match while_waiting(ctx, read(client.clone())).await {
+            None => return Ended::Stopped,
+            Some(Ok(registry)) => break registry,
+            Some(Err(why)) if why.is_unauthorized() => return not_admin(ctx, bridge).await,
+            // Read now, the entities still loading would seem gone, and be removed.
+            Some(Err(why)) if why.is_starting() => {
+                ctx.set_health(Health::Degraded(format!("{why}; waiting for it")))
+                    .await;
+                if while_waiting(ctx, tokio::time::sleep(timing.starting_retry))
+                    .await
+                    .is_none()
+                {
+                    return Ended::Stopped;
+                }
+            }
+            Some(Err(why)) => return Ended::Lost(why.to_string()),
+        }
     };
     let mut session = Session {
         client,
@@ -396,12 +418,23 @@ async fn session(
     let (done_tx, mut done) = mpsc::channel::<Done>(64);
     let mut tick = tokio::time::interval(timing.tick);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // When the registries are read again, and when the first change since the last read came.
     let mut settle_at: Option<Instant> = None;
+    let mut first_change: Option<Instant> = None;
+    // A read under way: commands are answered meanwhile.
+    let mut reading: Option<RegistryRead> = None;
     loop {
         let flushing = !session.throttle.is_empty() || !session.availability.is_empty();
+        let idle = reading.is_none();
         let settle = async {
             match settle_at {
-                Some(at) => tokio::time::sleep_until(at).await,
+                Some(at) if idle => tokio::time::sleep_until(at).await,
+                _ => std::future::pending().await,
+            }
+        };
+        let read_done = async {
+            match reading.as_mut() {
+                Some(read) => read.await,
                 None => std::future::pending().await,
             }
         };
@@ -423,7 +456,9 @@ async fn session(
                     }
                     for event in arrived {
                         if session.heard(event) {
-                            settle_at.get_or_insert_with(|| Instant::now() + timing.settle);
+                            let now = Instant::now();
+                            let first = *first_change.get_or_insert(now);
+                            settle_at = Some((now + timing.settle).min(first + timing.settle * SETTLE_MOST));
                         }
                     }
                 }
@@ -432,12 +467,22 @@ async fn session(
             _ = tick.tick(), if flushing => session.flush(ctx).await,
             () = settle => {
                 settle_at = None;
-                let registry = match read(&session.client).await {
-                    Ok(registry) => registry,
+                first_change = None;
+                reading = Some(Box::pin(read(session.client.clone())));
+            }
+            read = read_done => {
+                reading = None;
+                match read {
+                    Ok(registry) => {
+                        if let Err(why) = session.take(ctx, &registry, settings).await {
+                            return Ended::Lost(why.to_string());
+                        }
+                    }
+                    // Stopping, most likely: what's there now isn't what it brought over.
+                    Err(why) if why.is_starting() => {
+                        settle_at.get_or_insert_with(|| Instant::now() + timing.starting_retry);
+                    }
                     Err(why) => return Ended::Lost(why.to_string()),
-                };
-                if let Err(why) = session.take(ctx, &registry, settings).await {
-                    return Ended::Lost(why.to_string());
                 }
             }
         }
@@ -465,14 +510,23 @@ async fn not_admin(ctx: &ProtocolContext, bridge: &mut Bridge) -> Ended {
 }
 
 /// Reads everything this extension needs from Home Assistant.
-async fn read(client: &Client) -> Result<Registry, HaError> {
+/// A read of the registries under way.
+type RegistryRead = std::pin::Pin<Box<dyn Future<Output = Result<Registry, HaError>> + Send>>;
+
+/// Refuses while Home Assistant isn't `RUNNING`: starting, its entities appear one integration
+/// at a time; stopping, they go.
+async fn read(client: Client) -> Result<Registry, HaError> {
     let ask = |message| client.request(message, client::READ_TIMEOUT);
-    // Asked so Home Assistant's own answer about its version and units is in the log.
     let config = ask(Outgoing::GetConfig).await?;
     tracing::debug!(
         location = config["location_name"].as_str().unwrap_or(""),
         "read Home Assistant's config"
     );
+    if let Some(state) = config["state"].as_str()
+        && state != "RUNNING"
+    {
+        return Err(HaError::starting(state));
+    }
     let floors = ask(Outgoing::FloorRegistry).await?;
     let areas = ask(Outgoing::AreaRegistry).await?;
     let devices = ask(Outgoing::DeviceRegistry).await?;
@@ -500,12 +554,16 @@ impl Session<'_> {
         let before: Vec<&str> = self.entities.iter().map(|b| b.entity_id.as_str()).collect();
         let after: Vec<&str> = plan.entities.iter().map(|b| b.entity_id.as_str()).collect();
         let resubscribe = before != after || self.entities_subscription.is_none();
-        for gone in self.entities.iter().filter(|b| {
-            !plan
-                .entities
-                .iter()
-                .any(|p| p.description.unique_id == b.description.unique_id)
-        }) {
+        let kept: std::collections::HashSet<&UniqueId> = plan
+            .entities
+            .iter()
+            .map(|b| &b.description.unique_id)
+            .collect();
+        for gone in self
+            .entities
+            .iter()
+            .filter(|b| !kept.contains(&b.description.unique_id))
+        {
             self.throttle.forget(&gone.description.unique_id);
             self.reported.remove(&gone.description.unique_id);
         }
