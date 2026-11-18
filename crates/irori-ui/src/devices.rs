@@ -1089,6 +1089,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                         }}
                     </span>
                 </div>
+                <crate::layout_offer::LayoutOffer extension=id.clone() />
                 <crate::waiting::WaitingFor extension=id.clone() />
                 {move || {
                     let nothing = drawn.with(Vec::is_empty) && {

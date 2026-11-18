@@ -172,6 +172,31 @@
       ]
     },
     {
+      "description": "The floors and rooms it proposes (`docs/specs/protocols.md` §6.9), replacing the last\nproposal. Both lists empty withdraws it.",
+      "type": "object",
+      "properties": {
+        "areas": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SuggestedArea"
+          }
+        },
+        "floors": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SuggestedFloor"
+          }
+        },
+        "type": {
+          "type": "string",
+          "const": "suggest_layout"
+        }
+      },
+      "required": [
+        "type"
+      ]
+    },
+    {
       "type": "object",
       "properties": {
         "networks": {
@@ -3979,6 +4004,53 @@
       "required": [
         "unique_id",
         "state"
+      ]
+    },
+    "SuggestedArea": {
+      "description": "A room an extension proposes.",
+      "type": "object",
+      "properties": {
+        "floor": {
+          "description": "The name of the floor it is on: one in the same proposal, or one Irori already has.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Name"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ]
+    },
+    "SuggestedFloor": {
+      "description": "A floor an extension proposes.",
+      "type": "object",
+      "properties": {
+        "level": {
+          "description": "0 is the entrance level, negative is below ground. Absent is 0.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int8",
+          "maximum": 127,
+          "minimum": -128
+        },
+        "name": {
+          "$ref": "#/$defs/Name"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "name"
       ]
     },
     "SwitchClass": {

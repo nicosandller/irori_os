@@ -1284,6 +1284,7 @@ mod tests {
                         continue;
                     }
                     host::Op::SetWaiting(_)
+                    | host::Op::SuggestLayout(_)
                     | host::Op::SetActionOpen(..)
                     | host::Op::SetNetworks(_) => continue,
                 };
