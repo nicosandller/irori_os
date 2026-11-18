@@ -113,6 +113,7 @@ core's process.
 | Set health | `running`, or `degraded` with a reason | §6.5 |
 | Set waiting | what it found but can't use until a person helps, replacing the last list | §6.6 |
 | Set unmodeled | what it found that Irori has no entity kind for yet, replacing the last list | §6.7 |
+| Suggest a layout | floors and rooms, by name, that the owner can bring over; replacing the last proposal | §6.9 |
 | Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
 | Offer actions | which of its manifest's `actions` can be used right now, replacing the last list | §5.1 |
 | Say an action is open | an action id, and how long it has left, or that it has closed | §5.1 |
@@ -458,6 +459,35 @@ What draws a map today:
   type, and one that doesn't say is drawn on Wi-Fi.
 - **Demo**: all three, made up, so the map can be seen without hardware.
 
+### 6.9 Suggested layout
+
+How the home is divided, as a protocol knows it: a bridge to another home system (Home Assistant)
+has that system's floors and areas. The protocol proposes them with `suggest_layout`, and the
+owner brings them over in one step. Nothing is made until they do, and nothing that exists is
+ever renamed, moved or removed: a proposal only adds what's missing.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `floors[].name` | `Name` | yes | |
+| `floors[].level` | integer, -128 to 127 | no | 0 is the entrance level, negative is below ground. Left out is 0 |
+| `areas[].name` | `Name` | yes | A room |
+| `areas[].floor` | `Name` | no | The floor it's on: one in the same proposal, or one Irori already has. A name that's neither leaves the room on no floor |
+
+The protocol sends the **whole proposal** whenever it changes; an empty one withdraws it. The core
+keeps the latest, in memory, until the protocol stops, crashes or is removed, like waiting
+(§6.6). A name said twice (compared trimmed and ignoring case) is kept once, the first time, and
+a proposal keeps at most 256 floors and 1024 rooms.
+
+The owner's home (`GET /api/home`, [api.md](api.md) §3) shows the proposal on the extension as
+`suggested_layout`, holding only the floors and rooms the home doesn't have by those names yet,
+matched as a `suggested_area` is (trimmed, ignoring case; [config.md](config.md) §5). Once the home
+has them all the field is gone, so an extension that never proposes anything looks exactly as it
+did. A room the owner removes later is proposed again while the protocol still names it.
+
+Accepting (`POST /api/extensions/{id}/layout`) makes the missing floors and rooms in one edit of
+`areas.toml`, each room on the floor it was proposed on. Devices whose `suggested_area` names one
+of the new rooms land in it at once, unless a person has said where they are (config.md §5).
+
 ## 7. Service calls
 
 ### 7.1 Standard services
@@ -688,6 +718,7 @@ answered with the same `id`. Sample conversations are in
 | → core | `state_report` | `report`: `StateReport` | A new state (§6.3). Not answered. |
 | core → | `reply` | `id`, `error`? | The answer to the messages above, and to `store`. |
 | → core | `set_waiting`, `set_unmodeled`, `set_networks` | `waiting` / `unmodeled` / `networks` (lists) | Devices waiting to be added, what it found but doesn't model, the networks it sees (§6.6–§6.8). Each replaces the last. Not answered. |
+| → core | `suggest_layout` | `floors`?, `areas`? (lists) | Floors and rooms it proposes (§6.9). Replaces the last proposal; both empty withdraws it. Not answered. |
 
 **Calls and actions**
 

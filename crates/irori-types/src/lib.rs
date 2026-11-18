@@ -19,6 +19,7 @@ pub mod format;
 mod home;
 mod kind;
 mod kinds;
+mod layout;
 mod network;
 mod num;
 mod protocol;
@@ -109,6 +110,9 @@ pub use kinds::water_heater::{
     WaterHeaterState,
 };
 pub use kinds::{Field, Typed, ValueShape, mode_to_turn_on};
+pub use layout::{
+    MAX_LAYOUT_AREAS, MAX_LAYOUT_FLOORS, SuggestedArea, SuggestedFloor, SuggestedLayout, same_name,
+};
 pub use network::{
     LinkQuality, MAX_NETWORK_LINKS, MAX_NETWORK_NODES, MAX_NETWORK_READING, MAX_NETWORKS, Network,
     NetworkLink, NetworkMedium, NetworkNode, NetworkRole, access_point_id, host_name,

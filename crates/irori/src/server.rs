@@ -236,6 +236,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/entities/{id}/live", get(live::camera))
         .route("/api/entities/{id}/talk", get(live::talk))
         .route("/api/extensions/{id}/secrets", put(give_secret))
+        .route("/api/extensions/{id}/layout", post(accept_layout))
         .route(
             "/api/extensions/{id}/settings",
             post(set_extension_settings),
@@ -1197,6 +1198,98 @@ async fn add_found_devices(
         Ok(()) => {
             trail.detail(found.len().to_string());
             Json(AddedFound { added: found.len() }).into_response()
+        }
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// What accepting an extension's floors and rooms made.
+#[derive(Debug, Serialize)]
+struct LayoutMade {
+    floors: Vec<Floor>,
+    areas: Vec<Area>,
+}
+
+/// Makes the floors and rooms an extension proposes (`docs/specs/protocols.md` §6.9) that the
+/// home doesn't have by those names yet, in one edit of the config, each room on the floor it
+/// was proposed on. A floor or room that's there already is left exactly as it is: nothing is
+/// renamed, moved or removed. Devices whose `suggested_area` names a new room land in it, as
+/// they would in a room made by hand.
+async fn accept_layout(
+    State(state): State<AppState>,
+    Extension(trail): Extension<trail::Trail>,
+    Path(id): Path<ExtensionId>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(proposed) = core.missing_layout(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    if proposed.is_empty() {
+        // Nothing new, and nothing written.
+        return Json(LayoutMade {
+            floors: Vec::new(),
+            areas: Vec::new(),
+        })
+        .into_response();
+    }
+    let edited = state
+        .0
+        .config
+        .edit(core, |settings| {
+            // Again, against the files as they are now: somebody may have made one meanwhile.
+            let missing = proposed.missing_from(settings);
+            let mut floors = Vec::new();
+            for suggested in missing.floors {
+                let floor = Floor {
+                    id: irori_core::new_floor_id(&suggested.name, &settings.floors),
+                    name: suggested.name,
+                    level: suggested.level.unwrap_or(0),
+                };
+                // Before the next id is worked out, so two names with one slug get two ids.
+                settings.floors.push(floor.clone());
+                floors.push(floor);
+            }
+            let mut areas = Vec::new();
+            for suggested in missing.areas {
+                let floor_id = suggested
+                    .floor
+                    .as_ref()
+                    .and_then(|name| settings.floor_named(name))
+                    .map(|floor| floor.id.clone());
+                let area = Area {
+                    id: irori_core::new_area_id(&suggested.name, &settings.areas),
+                    name: suggested.name,
+                    floor_id,
+                };
+                settings.areas.push(area.clone());
+                areas.push(area);
+            }
+            settings.floors.sort_by(|a, b| a.id.cmp(&b.id));
+            settings.areas.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(LayoutMade { floors, areas })
+        })
+        .await;
+    match edited {
+        Ok(made) => {
+            trail.detail(format!(
+                "{} {}, {} {}",
+                made.areas.len(),
+                if made.areas.len() == 1 {
+                    "room"
+                } else {
+                    "rooms"
+                },
+                made.floors.len(),
+                if made.floors.len() == 1 {
+                    "floor"
+                } else {
+                    "floors"
+                },
+            ));
+            Json(made).into_response()
         }
         Err(e) => edit_failed(e),
     }
@@ -6555,6 +6648,253 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
 
         host.shutdown().await;
+        Ok(())
+    }
+
+    /// A bridge that knows how its home is divided: two floors, three rooms (one said twice,
+    /// one Irori has already), and devices that say which room they're in.
+    struct Rooms;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct RoomsSettings {}
+
+    impl irori_protocol::Protocol for Rooms {
+        type Config = RoomsSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "rooms"
+            name = "Rooms"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: RoomsSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let floor = |name: &str, level| -> Result<_, irori_types::IdError> {
+                Ok(irori_types::SuggestedFloor {
+                    name: name.parse()?,
+                    level: Some(level),
+                })
+            };
+            let area = |name: &str, on: &str| -> Result<_, irori_types::IdError> {
+                Ok(irori_types::SuggestedArea {
+                    name: name.parse()?,
+                    floor: Some(on.parse()?),
+                })
+            };
+            ctx.suggest_layout(irori_types::SuggestedLayout {
+                floors: vec![
+                    floor("Ground", 0)?,
+                    floor("Upstairs", 1)?,
+                    floor("ground", 5)?,
+                ],
+                areas: vec![
+                    area("Kitchen", "Ground")?,
+                    area("Bedroom", "Upstairs")?,
+                    area("hall", "Upstairs")?,
+                    area("KITCHEN", "Upstairs")?,
+                ],
+            })
+            .await;
+            for (device, room) in [
+                ("fridge", "kitchen"),
+                ("lamp", "Kitchen"),
+                ("radio", "Bedroom"),
+            ] {
+                ctx.describe_device(irori_types::DeviceDescription {
+                    unique_id: device.parse()?,
+                    name: device.parse()?,
+                    manufacturer: None,
+                    model: None,
+                    sw_version: None,
+                    hw_version: None,
+                    serial_number: None,
+                    suggested_area: Some(room.parse()?),
+                    via_device_unique_id: None,
+                })
+                .await?;
+            }
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// An extension proposes floors and rooms; the owner's home shows only the ones it doesn't
+    /// have, accepting makes exactly those in one edit with each room on its floor, and devices
+    /// nobody placed land in the new rooms at once. A device somebody placed, or said is in no
+    /// room, stays where they put it. Asked again, nothing is written; the proposal goes when
+    /// the extension stops.
+    #[tokio::test]
+    async fn an_extensions_rooms_and_floors_are_brought_over_once_accepted() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Rooms>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let proposed = |core: &Core| {
+            core.extensions()
+                .get(&"rooms".parse::<ExtensionId>().expect("an id"))
+                .and_then(|overview| overview.suggested_layout.clone())
+        };
+        for _ in 0..500 {
+            if core.held_devices().len() + core.devices().len() == 3 && proposed(&core).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Every device added (the harness does that), and a Hall made by hand.
+        let server = Server::new(core.clone())?;
+        let (status, hall) = server
+            .json("POST", "/api/areas", serde_json::json!({"name": "Hall"}))
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{hall}");
+        // The lamp is said to be in no room, the radio in the hall.
+        server
+            .config
+            .edit(&core, |settings| {
+                let lamp: DeviceId = "rooms_lamp".parse().expect("an id");
+                let radio: DeviceId = "rooms_radio".parse().expect("an id");
+                settings.devices.entry(lamp).or_default().area = Placement::Nowhere;
+                settings.devices.entry(radio).or_default().area =
+                    Placement::In("hall".parse().expect("an id"));
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let area_of = |home: &serde_json::Value, device: &str| {
+            home["devices"]
+                .as_array()
+                .and_then(|all| all.iter().find(|d| d["id"] == device))
+                .map(|d| d["area_id"].clone())
+                .unwrap_or_default()
+        };
+        let home = server.read("/api/home").await?;
+        assert_eq!(
+            area_of(&home, "rooms_fridge"),
+            serde_json::Value::Null,
+            "{home}"
+        );
+
+        // Only what's missing, each name once: the Hall is there already.
+        assert_eq!(
+            home["extensions"]["rooms"]["suggested_layout"],
+            serde_json::json!({
+                "floors": [{"name": "Ground", "level": 0}, {"name": "Upstairs", "level": 1}],
+                "areas": [
+                    {"name": "Kitchen", "floor": "Ground"},
+                    {"name": "Bedroom", "floor": "Upstairs"},
+                ],
+            }),
+            "{home}"
+        );
+
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/extensions/rooms/layout",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        assert_eq!(made["floors"].as_array().map(Vec::len), Some(2), "{made}");
+        assert_eq!(made["areas"].as_array().map(Vec::len), Some(2), "{made}");
+
+        let home = server.read("/api/home").await?;
+        let floor_of = |name: &str| {
+            home["floors"]
+                .as_array()
+                .and_then(|all| all.iter().find(|f| f["name"] == name))
+                .map(|f| f["id"].clone())
+                .unwrap_or_default()
+        };
+        let room = |name: &str| {
+            home["areas"]
+                .as_array()
+                .and_then(|all| all.iter().find(|a| a["name"] == name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(room("Kitchen")["floor_id"], floor_of("Ground"), "{home}");
+        assert_eq!(room("Bedroom")["floor_id"], floor_of("Upstairs"), "{home}");
+        assert_eq!(home["floors"][0]["level"], 0, "{home}");
+        // The Hall wasn't moved to the floor the extension had it on.
+        assert_eq!(room("Hall")["floor_id"], serde_json::Value::Null, "{home}");
+        assert_eq!(home["areas"].as_array().map(Vec::len), Some(3), "{home}");
+
+        // Placed live, without a restart; what a person said still stands.
+        assert_eq!(
+            area_of(&home, "rooms_fridge"),
+            room("Kitchen")["id"],
+            "{home}"
+        );
+        assert_eq!(
+            area_of(&home, "rooms_lamp"),
+            serde_json::Value::Null,
+            "{home}"
+        );
+        assert_eq!(area_of(&home, "rooms_radio"), "hall", "{home}");
+
+        // Nothing left to propose: the field is gone, and asking again writes nothing.
+        assert!(
+            home["extensions"]["rooms"]
+                .get("suggested_layout")
+                .is_none(),
+            "{home}"
+        );
+        let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/extensions/rooms/layout",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        assert_eq!(made, serde_json::json!({"floors": [], "areas": []}));
+        assert_eq!(
+            std::fs::read_to_string(server.config_dir().join("areas.toml"))?,
+            areas
+        );
+
+        // An extension that isn't there.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/extensions/nowhere/layout",
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+        // Kept as it was said while it runs: a room taken away is proposed again.
+        let bedroom = room("Bedroom")["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let (status, body) = server
+            .json(
+                "DELETE",
+                &format!("/api/areas/{bedroom}"),
+                serde_json::json!(null),
+            )
+            .await?;
+        assert!(status.is_success(), "{status}: {body}");
+        let again = proposed(&core).expect("the bedroom again");
+        assert!(again.floors.is_empty(), "{again:?}");
+        assert_eq!(again.areas.len(), 1, "{again:?}");
+        assert_eq!(again.areas[0].name.as_str(), "Bedroom");
+
+        // And gone once it stops.
+        host.shutdown().await;
+        assert_eq!(proposed(&core), None);
         Ok(())
     }
 
@@ -11993,6 +12333,7 @@ mod tests {
         ("GET", "/api/floorplan", Filtered),
         ("PUT", "/api/floorplan", Run),
         ("POST", "/api/devices/add", Run),
+        ("POST", "/api/extensions/{id}/layout", Run),
         ("PATCH", "/api/devices/{id}", Run),
         ("DELETE", "/api/devices/{id}", Run),
         ("PATCH", "/api/entities/{id}", Run),
@@ -12321,6 +12662,49 @@ mod tests {
             hidden,
             entities,
         })
+    }
+
+    /// Bringing an extension's rooms over changes how the home is divided: the owner's to do.
+    /// A person with the whole home is refused as surely as one with some rooms, and nothing
+    /// is made.
+    #[tokio::test]
+    async fn only_the_owner_brings_an_extensions_rooms_over() -> anyhow::Result<()> {
+        let House {
+            server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            ..
+        } = house_with_a_vault().await?;
+        let before = server.core.areas();
+        for cookie in [&leo, &mia] {
+            let (status, got, _) = ask(
+                &app,
+                "POST",
+                "/api/extensions/demo/layout",
+                None,
+                Some(cookie),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{got}");
+        }
+        assert_eq!(server.core.areas(), before);
+        // The owner may: the demo proposes nothing, so nothing is made.
+        let (status, got, _) = ask(
+            &app,
+            "POST",
+            "/api/extensions/demo/layout",
+            None,
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got, serde_json::json!({"floors": [], "areas": []}));
+        Ok(())
     }
 
     /// Whatever isn't in a person's rooms isn't there for them: not in a list, not by its id, not

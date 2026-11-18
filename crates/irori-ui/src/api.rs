@@ -139,6 +139,10 @@ pub struct Extension {
     /// What it found that Irori has no entity kind for yet, listed on its devices.
     #[serde(default)]
     pub unmodeled: Vec<irori_types::Unmodeled>,
+    /// The floors and rooms it proposes that the home doesn't have yet. Absent when there are
+    /// none, which is every extension that doesn't bridge another home system.
+    #[serde(default)]
+    pub suggested_layout: Option<irori_types::SuggestedLayout>,
     /// Whether it has an icon, at `/api/extensions/<id>/icon.svg`.
     #[serde(default)]
     pub has_icon: bool,
@@ -1188,6 +1192,15 @@ pub async fn set_extension_settings(
     let response = post(&format!("/api/extensions/{id}/settings"))
         .json(settings)
         .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Makes the floors and rooms `extension` proposes that the home doesn't have yet.
+pub async fn accept_layout(extension: &ExtensionId) -> Result<(), String> {
+    let response = post(&format!("/api/extensions/{extension}/layout"))
         .send()
         .await
         .map_err(unreachable)?;

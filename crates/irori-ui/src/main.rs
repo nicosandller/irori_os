@@ -29,6 +29,7 @@ mod history;
 mod history_settings;
 mod icons;
 mod inline;
+mod layout_offer;
 mod log_window;
 mod machine;
 mod map;
