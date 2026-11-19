@@ -437,6 +437,15 @@ async fn nothing_but_reads_subscriptions_and_commands_ever_reaches_home_assistan
                 .then_some(())
         })
         .await;
+    // It tells Irori about the entity before it follows it in Home Assistant: wait for that too.
+    world
+        .until("following the new entity", |_| {
+            fake.received_types()
+                .iter()
+                .any(|t| t == "unsubscribe_events")
+                .then_some(())
+        })
+        .await;
     // And a reconnect.
     fake.drop_connections();
     world
