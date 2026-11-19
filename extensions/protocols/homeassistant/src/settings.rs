@@ -28,8 +28,8 @@ pub struct Settings {
     #[schemars(title = "Access token")]
     pub token: Secret,
     /// Also bring over every entity of these integrations (`hue`, `zha`, `mqtt`…), even ones
-    /// Irori leaves out by default: those on no device, hidden ones, and devices' settings and
-    /// diagnostics. Disabled entities never come over.
+    /// Irori leaves out by default: those on no device, and hidden ones. Disabled entities never
+    /// come over.
     #[schemars(
         title = "Also bring over these integrations",
         default = "nothing",

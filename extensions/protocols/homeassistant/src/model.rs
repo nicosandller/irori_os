@@ -5,9 +5,11 @@
 //! capability and value is written in that shared vocabulary and checked by Irori's own types:
 //! what they refuse is left out (a value) or listed as unmodeled (an entity), never sent.
 //!
-//! Which entities come over ([`plan`]): by default, those on a Home Assistant device, of a kind
-//! Irori models, that aren't disabled, hidden, or one of the device's settings or diagnostics.
-//! The settings widen that by integration or area, or narrow it. At most [`MAX_ENTITIES`].
+//! Which entities come over ([`plan`]): by default, those on a Home Assistant device and Home
+//! Assistant's own helpers (`input_*`), of a kind Irori models, that aren't disabled or hidden.
+//! A device's settings and diagnostics come over too, marked as such, so a device reads as it does
+//! on Home Assistant's device page. The settings widen that by integration or area, or narrow it.
+//! At most [`MAX_ENTITIES`].
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -29,7 +31,7 @@ pub const MAX_ENTITIES: usize = 2_000;
 pub const MAX_UNMODELED: usize = 500;
 
 /// The kinds this extension carries, as in the manifest's `entity_kinds`.
-pub const BRIDGED: [&str; 14] = [
+pub const BRIDGED: [&str; 28] = [
     "light",
     "switch",
     "sensor",
@@ -44,7 +46,37 @@ pub const BRIDGED: [&str; 14] = [
     "valve",
     "siren",
     "climate",
+    "media_player",
+    "camera",
+    "device_tracker",
+    "update",
+    "alarm_control_panel",
+    "vacuum",
+    "water_heater",
+    "humidifier",
+    "lawn_mower",
+    "scene",
+    "text",
+    "date",
+    "time",
+    "datetime",
 ];
+
+/// Home Assistant's helpers, each carried as the Irori kind it is: an `input_boolean` is a switch.
+/// An `input_datetime` is a date, a time or both, by what it holds.
+pub const HELPERS: [(&str, &str); 6] = [
+    ("input_boolean", "switch"),
+    ("input_number", "number"),
+    ("input_select", "select"),
+    ("input_text", "text"),
+    ("input_button", "button"),
+    ("input_datetime", "datetime"),
+];
+
+/// Whether this extension sends commands to entities of Home Assistant's `domain`.
+fn carried(domain: &str) -> bool {
+    BRIDGED.contains(&domain) || HELPERS.iter().any(|(helper, _)| *helper == domain)
+}
 
 /// The `Waiting` item's id when more entities qualify than [`MAX_ENTITIES`].
 pub const OVER_LIMIT: &str = "homeassistant-entity-limit";
@@ -279,8 +311,10 @@ pub fn plan_keeping(
         }
         let included = listed(&settings.include_integrations, &entity.platform)
             || in_area(&settings.include_areas);
-        let by_default =
-            device.is_some() && entity.hidden_by.is_none() && entity.entity_category.is_none();
+        let helper = HELPERS
+            .iter()
+            .any(|(helper, _)| *helper == domain(&entity.entity_id));
+        let by_default = (device.is_some() || helper) && entity.hidden_by.is_none();
         if !(by_default || included) {
             continue;
         }
@@ -619,6 +653,18 @@ fn number(attributes: &Map<String, Value>, key: &str) -> Option<f64> {
         .filter(|n| n.is_finite())
 }
 
+/// A text attribute Irori keeps short: 1 to 255 characters, cut at a character's edge.
+fn short<'a>(attributes: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
+    let text = attributes.get(key)?.as_str()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(match text.char_indices().nth(255) {
+        Some((at, _)) => &text[..at],
+        None => text,
+    })
+}
+
 fn sensor_class(attributes: &Map<String, Value>) -> Option<SensorClass> {
     attributes
         .get("device_class")
@@ -776,6 +822,147 @@ pub fn capabilities(domain: &str, a: &Map<String, Value>) -> Result<Capabilities
                 "swing_modes": if f & 32 != 0 { text_list(a.get("swing_modes")) } else { Vec::new() },
             })
         }
+        "media_player" => {
+            let f = features(a);
+            json!({
+                "kind": "media_player",
+                "device_class": a.get("device_class").and_then(Value::as_str)
+                    .and_then(irori_types::MediaPlayerClass::from_ha),
+                "volume": f & 4 != 0,
+                "mute": f & 8 != 0,
+                "seek": f & 2 != 0,
+                "play_media": f & 512 != 0,
+                "queue": f & (16 | 32) != 0,
+                "turn_on": f & 128 != 0,
+                "turn_off": f & 256 != 0,
+            })
+        }
+        "camera" => json!({
+            "kind": "camera",
+            "on_off": features(a) & 1 != 0,
+            "motion_detection": a.get("motion_detection").is_some_and(Value::is_boolean),
+        }),
+        "device_tracker" => json!({
+            "kind": "device_tracker",
+            "source_type": a.get("source_type").and_then(Value::as_str)
+                .filter(|s| ["gps", "router", "bluetooth", "bluetooth_le"].contains(s)),
+        }),
+        "update" => json!({
+            "kind": "update",
+            "device_class": a.get("device_class").and_then(Value::as_str)
+                .filter(|class| *class == "firmware"),
+            "install": features(a) & 1 != 0,
+            // Checking again is `homeassistant.update_entity`: not the update's own service.
+            "check": false,
+        }),
+        "alarm_control_panel" => {
+            let f = features(a);
+            let modes: Vec<&str> = [
+                (1, "home"),
+                (2, "away"),
+                (4, "night"),
+                (16, "custom_bypass"),
+                (32, "vacation"),
+            ]
+            .into_iter()
+            .filter(|(bit, _)| f & bit != 0)
+            .map(|(_, mode)| mode)
+            .collect();
+            let code = a.get("code_format").and_then(Value::as_str);
+            json!({
+                "kind": "alarm_control_panel",
+                "arm_modes": modes,
+                "trigger": f & 8 != 0,
+                "code_format": code,
+                "code_arm_required": code.is_some()
+                    && a.get("code_arm_required").and_then(Value::as_bool).unwrap_or(true),
+                // Home Assistant asks for the code to disarm whenever there is one.
+                "code_disarm_required": code.is_some(),
+            })
+        }
+        "vacuum" => {
+            let f = features(a);
+            json!({
+                "kind": "vacuum",
+                "start": f & 8192 != 0,
+                "pause": f & 4 != 0,
+                "stop": f & 8 != 0,
+                "return_home": f & 16 != 0,
+                "locate": f & 512 != 0,
+                "clean_spot": f & 1024 != 0,
+                "fan_speeds": if f & 32 != 0 { text_list(a.get("fan_speed_list")) } else { Vec::new() },
+            })
+        }
+        "water_heater" => {
+            let f = features(a);
+            let listed = text_list(a.get("operation_list"));
+            let modes: Vec<&str> = listed
+                .iter()
+                .filter_map(|mode| irori_types::WaterHeaterMode::parse(mode).map(|m| m.as_str()))
+                .collect();
+            if modes.is_empty() {
+                return Err(Some(if listed.is_empty() {
+                    "it doesn't say which modes it has".to_owned()
+                } else {
+                    format!(
+                        "its modes ({}) aren't ones Irori's water heaters have",
+                        listed.join(", ")
+                    )
+                }));
+            }
+            json!({
+                "kind": "water_heater",
+                "operation_modes": modes,
+                "min_temp": number(a, "min_temp").unwrap_or(30.0),
+                "max_temp": number(a, "max_temp").unwrap_or(60.0),
+                "temp_step": number(a, "target_temp_step").unwrap_or(0.5),
+                "target_temperature": f & 1 != 0,
+                "on_off": f & 8 != 0,
+            })
+        }
+        "humidifier" => json!({
+            "kind": "humidifier",
+            "device_class": a.get("device_class").and_then(Value::as_str)
+                .and_then(irori_types::HumidifierClass::from_ha),
+            "humidity": {
+                "min": number(a, "min_humidity").unwrap_or(0.0),
+                "max": number(a, "max_humidity").unwrap_or(100.0),
+            },
+            "modes": if features(a) & 1 != 0 { text_list(a.get("available_modes")) } else { Vec::new() },
+        }),
+        "lawn_mower" => {
+            let f = features(a);
+            json!({
+                "kind": "lawn_mower",
+                "start_mowing": f & 1 != 0,
+                "pause": f & 2 != 0,
+                "dock": f & 4 != 0,
+            })
+        }
+        "scene" => json!({ "kind": "scene" }),
+        "text" | "input_text" => json!({
+            "kind": "text",
+            "min_length": a.get("min").and_then(Value::as_u64).unwrap_or(0),
+            "max_length": a.get("max").and_then(Value::as_u64).unwrap_or(255),
+            "pattern": a.get("pattern").and_then(Value::as_str).filter(|p| !p.is_empty()),
+            "mode": a.get("mode").and_then(Value::as_str).filter(|m| *m == "password"),
+        }),
+        "date" | "time" | "datetime" => json!({ "kind": domain }),
+        "input_datetime" => {
+            let has = |key: &str| a.get(key).and_then(Value::as_bool).unwrap_or(false);
+            match (has("has_date"), has("has_time")) {
+                (true, true) => json!({ "kind": "datetime" }),
+                (true, false) => json!({ "kind": "date" }),
+                (false, true) => json!({ "kind": "time" }),
+                (false, false) => {
+                    return Err(Some("it holds neither a date nor a time".to_owned()));
+                }
+            }
+        }
+        "input_boolean" => json!({ "kind": "switch" }),
+        "input_number" => return capabilities("number", a),
+        "input_select" => return capabilities("select", a),
+        "input_button" => json!({ "kind": "button" }),
         other => {
             return Err(irori_has(other).then(|| {
                 "Irori has this kind of entity, but the Home Assistant extension doesn't bring it over yet".to_owned()
@@ -823,7 +1010,7 @@ pub fn reading(caps: &Capabilities, s: &str, a: &Map<String, Value>) -> Reading 
     if s == "unavailable" {
         return Reading::Unavailable;
     }
-    if matches!(caps, Capabilities::Button(_)) {
+    if matches!(caps, Capabilities::Button(_) | Capabilities::Scene(_)) {
         return Reading::Nothing;
     }
     if s == "unknown" {
@@ -916,6 +1103,96 @@ pub fn reading(caps: &Capabilities, s: &str, a: &Map<String, Value>) -> Reading 
             "swing_mode": a.get("swing_mode"),
             "preset_mode": a.get("preset_mode"),
         }),
+        Capabilities::MediaPlayer(_) => json!({
+            "kind": "media_player",
+            // `on` is a player that's on with nothing to say about playing.
+            "state": if s == "on" { "idle" } else { s },
+            "volume": number(a, "volume_level")
+                .filter(|v| (0.0..=1.0).contains(v))
+                .map(|v| (v * 100.0).round() as u8),
+            "muted": a.get("is_volume_muted").filter(|m| m.is_boolean()),
+            "title": short(a, "media_title"),
+            "artist": short(a, "media_artist"),
+            "album": short(a, "media_album_name"),
+            "app": short(a, "app_name"),
+            "content_type": short(a, "media_content_type"),
+            "duration": number(a, "media_duration").filter(|d| *d >= 0.0),
+            "position": number(a, "media_position").filter(|p| *p >= 0.0),
+        }),
+        Capabilities::Camera(camera) => json!({
+            "kind": "camera",
+            "state": s,
+            "motion_detection": a.get("motion_detection")
+                .filter(|m| camera.motion_detection && m.is_boolean()),
+        }),
+        Capabilities::DeviceTracker(_) => json!({
+            "kind": "device_tracker",
+            "home": s == "home",
+            "latitude": number(a, "latitude").filter(|l| (-90.0..=90.0).contains(l)),
+            "longitude": number(a, "longitude").filter(|l| (-180.0..=180.0).contains(l)),
+            "accuracy": number(a, "gps_accuracy").filter(|g| *g >= 0.0),
+        }),
+        Capabilities::Update(_) => {
+            // Older integrations say how far an install is with a number here.
+            let in_progress = match a.get("in_progress") {
+                Some(Value::Bool(on)) => *on,
+                Some(Value::Number(_)) => true,
+                _ => false,
+            };
+            let progress = number(a, "update_percentage")
+                .or_else(|| number(a, "in_progress"))
+                .filter(|p| in_progress && (0.0..=100.0).contains(p));
+            json!({
+                "kind": "update",
+                "available": s == "on",
+                "installed_version": short(a, "installed_version"),
+                "latest_version": short(a, "latest_version"),
+                "in_progress": in_progress,
+                "progress": progress,
+                "title": short(a, "title"),
+                "release_summary": a.get("release_summary").and_then(Value::as_str).filter(|t| !t.is_empty()),
+                "release_url": a.get("release_url").and_then(Value::as_str).filter(|t| !t.is_empty()),
+                "skipped_version": short(a, "skipped_version"),
+            })
+        }
+        Capabilities::AlarmControlPanel(_) => json!({ "kind": "alarm_control_panel", "state": s }),
+        Capabilities::Vacuum(vacuum) => json!({
+            "kind": "vacuum",
+            "activity": s,
+            "fan_speed": text("fan_speed").filter(|speed| vacuum.fan_speeds.iter().any(|f| f == speed)),
+        }),
+        Capabilities::WaterHeater(_) => json!({
+            "kind": "water_heater",
+            "operation_mode": s,
+            "current_temperature": number(a, "current_temperature"),
+            "target_temperature": number(a, "temperature"),
+        }),
+        Capabilities::Humidifier(humidifier) => json!({
+            "kind": "humidifier",
+            "on": s == "on",
+            "target_humidity": number(a, "humidity").filter(|h| (0.0..=100.0).contains(h)),
+            "current_humidity": number(a, "current_humidity").filter(|h| (0.0..=100.0).contains(h)),
+            "mode": text("mode").filter(|mode| humidifier.modes.iter().any(|m| m == mode)),
+            "action": text("action").and_then(irori_types::HumidifierAction::parse),
+        }),
+        Capabilities::LawnMower(_) => json!({ "kind": "lawn_mower", "activity": s }),
+        Capabilities::Text(_) => json!({ "kind": "text", "value": s }),
+        Capabilities::Date(_) => json!({ "kind": "date", "value": s }),
+        Capabilities::Time(_) => json!({ "kind": "time", "value": s }),
+        Capabilities::Datetime(_) => {
+            // A helper's is the home's local time with no offset; its `timestamp` is the moment.
+            let moment = if s.contains('T') {
+                Some(s.to_owned())
+            } else {
+                number(a, "timestamp")
+                    .and_then(|t| irori_types::Timestamp::from_second(t as i64))
+                    .map(|t| t.to_string())
+            };
+            match moment {
+                Some(moment) => json!({ "kind": "datetime", "value": moment }),
+                None => return Reading::Value(None),
+            }
+        }
         _ => return Reading::Value(None),
     };
     let mut value = value;
@@ -941,10 +1218,15 @@ pub fn command(
     service: &Service,
 ) -> Result<(String, String, Map<String, Value>), ServiceError> {
     let full = service.name().as_str();
-    let (domain, action) = full
+    let (kind, action) = full
         .split_once('.')
         .ok_or_else(|| ServiceError::failed(format!("`{full}` isn't a service")))?;
-    if domain != bridged.domain() || !BRIDGED.contains(&domain) {
+    // The service is of the kind Irori knows the entity as; Home Assistant's own domain is the
+    // entity's (a helper's `input_boolean` for a switch's `turn_on`).
+    let domain = bridged.domain();
+    let is_kind = serde_json::to_value(bridged.description.capabilities.kind())
+        .is_ok_and(|named| named == kind);
+    if !is_kind || !carried(domain) {
         return Err(ServiceError::failed(format!(
             "`{full}` isn't for {}",
             bridged.entity_id
@@ -962,6 +1244,28 @@ pub fn command(
         }
     };
     let action = match (domain, action) {
+        ("media_player", "volume_set") => {
+            if let Some(volume) = data.remove("volume").and_then(|v| v.as_f64()) {
+                data.insert("volume_level".into(), json!(volume / 100.0));
+            }
+            "volume_set"
+        }
+        ("media_player", "volume_mute") => {
+            rename(&mut data, "mute", "is_volume_muted");
+            "volume_mute"
+        }
+        ("media_player", "media_seek") => {
+            rename(&mut data, "position", "seek_position");
+            "media_seek"
+        }
+        ("media_player", "play_media") => {
+            rename(&mut data, "content_type", "media_content_type");
+            rename(&mut data, "content_id", "media_content_id");
+            // What it is goes along for a page to show; Home Assistant plays it by its id.
+            data.retain(|key, _| key.starts_with("media_content_"));
+            "play_media"
+        }
+        ("input_datetime", "set_value") => "set_datetime",
         ("light", "turn_on") => {
             rename(&mut data, "rgb", "rgb_color");
             "turn_on"
@@ -1052,7 +1356,7 @@ mod tests {
                 entity("e1", "light.kitchen", Some("d1")),
                 entity("e2", "sensor.kitchen_temperature", Some("d1")),
                 entity("e3", "light.garage", Some("d2")),
-                entity("e4", "media_player.kitchen", Some("d1")),
+                entity("e4", "timer.kitchen", Some("d1")),
                 entity("e5", "weather.home", Some("d1")),
                 entity("e6", "light.loose", None),
             ],
@@ -1075,7 +1379,7 @@ mod tests {
                 "off",
                 json!({ "supported_color_modes": ["onoff"] }),
             ),
-            ("media_player.kitchen", "idle", json!({})),
+            ("timer.kitchen", "idle", json!({})),
             ("weather.home", "sunny", json!({})),
             (
                 "light.loose",
@@ -1157,14 +1461,11 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(
-            unmodeled,
-            [("media_player", true, true), ("weather", false, true)]
-        );
+        assert_eq!(unmodeled, [("timer", true, true), ("weather", false, true)]);
     }
 
     #[test]
-    fn disabled_hidden_and_diagnostic_entities_stay_out_unless_included() {
+    fn disabled_and_hidden_entities_stay_out_unless_included_and_diagnostics_come_marked() {
         let mut registry = registry();
         registry.entities[0].hidden_by = Some("user".into());
         registry.entities[1].entity_category = Some("diagnostic".into());
@@ -1175,7 +1476,13 @@ mod tests {
                 .map(|b| b.entity_id.clone())
                 .collect::<Vec<_>>()
         };
-        assert!(ids(&plan(&registry, &settings())).is_empty());
+        // The diagnostic sensor comes over as one; hidden and disabled stay out.
+        let plain = plan(&registry, &settings());
+        assert_eq!(ids(&plain), ["sensor.kitchen_temperature"]);
+        assert_eq!(
+            plain.entities[0].description.entity_category,
+            Some(EntityCategory::Diagnostic)
+        );
 
         let mut wide = settings();
         wide.include_integrations = vec!["HUE".into()];
@@ -1459,6 +1766,252 @@ mod tests {
         // Never a service of another kind, whatever the entity.
         assert!(command(&light, &Service::SwitchTurnOn).is_err());
         assert!(command(&cover, &Service::LightTurnOff).is_err());
+    }
+
+    /// Each kind Irori has, as Home Assistant reports it in a real home: it comes over, and its
+    /// value reads.
+    #[test]
+    fn every_kind_irori_has_reads_from_home_assistant() {
+        for (entity_id, state, a) in [
+            (
+                "media_player.tv",
+                "playing",
+                json!({ "device_class": "tv", "supported_features": 153529, "volume_level": 0.25, "is_volume_muted": false, "media_title": "News", "app_name": "YouTube", "media_duration": 300, "media_position": 12.5 }),
+            ),
+            (
+                "media_player.cast",
+                "on",
+                json!({ "supported_features": 21437 }),
+            ),
+            (
+                "camera.front",
+                "idle",
+                json!({ "supported_features": 2, "access_token": "secret", "entity_picture": "/api/camera_proxy/camera.front?token=secret" }),
+            ),
+            (
+                "camera.porch",
+                "recording",
+                json!({ "supported_features": 3, "motion_detection": true }),
+            ),
+            (
+                "device_tracker.phone",
+                "home",
+                json!({ "source_type": "gps", "latitude": 36.5, "longitude": 137.8, "gps_accuracy": 14.1 }),
+            ),
+            (
+                "device_tracker.deco",
+                "not_home",
+                json!({ "tracking_type": "connection" }),
+            ),
+            (
+                "update.core",
+                "off",
+                json!({ "supported_features": 15, "installed_version": "2026.11.2", "latest_version": "2026.11.2", "in_progress": false, "title": "Home Assistant Core", "release_url": "https://www.home-assistant.io/" }),
+            ),
+            (
+                "update.bulb",
+                "on",
+                json!({ "device_class": "firmware", "supported_features": 5, "installed_version": "1.0", "latest_version": "1.1", "in_progress": true, "update_percentage": 40 }),
+            ),
+            (
+                "alarm_control_panel.garden",
+                "armed_home",
+                json!({ "supported_features": 63, "code_format": null, "code_arm_required": false }),
+            ),
+            (
+                "vacuum.dora",
+                "docked",
+                json!({ "supported_features": 14204, "fan_speed": "light", "fan_speed_list": ["light", "normal", "deep"] }),
+            ),
+            (
+                "water_heater.tank",
+                "eco",
+                json!({ "supported_features": 11, "operation_list": ["eco", "electric", "off"], "min_temp": 40, "max_temp": 75, "temperature": 55, "current_temperature": 52 }),
+            ),
+            (
+                "humidifier.closet",
+                "on",
+                json!({ "device_class": "dehumidifier", "supported_features": 1, "available_modes": ["auto", "dry"], "mode": "auto", "humidity": 50, "current_humidity": 61, "min_humidity": 30, "max_humidity": 80, "action": "drying" }),
+            ),
+            (
+                "lawn_mower.yard",
+                "mowing",
+                json!({ "supported_features": 7 }),
+            ),
+            (
+                "text.effect_color",
+                "ff0000",
+                json!({ "min": 0, "max": 255, "mode": "text", "pattern": null }),
+            ),
+            ("date.setting", "2026-11-19", json!({})),
+            ("time.setting", "12:29:00", json!({})),
+            ("datetime.alarm", "2026-11-19T07:00:00+00:00", json!({})),
+            (
+                "input_boolean.guest_mode",
+                "on",
+                json!({ "editable": true }),
+            ),
+            (
+                "input_number.energy_price",
+                "38.8",
+                json!({ "min": 0.0, "max": 100.0, "step": 1.0, "mode": "box", "unit_of_measurement": "JPY/kWh" }),
+            ),
+            (
+                "input_select.security_level",
+                "normal",
+                json!({ "options": ["off", "normal", "high"] }),
+            ),
+            (
+                "input_text.note",
+                "hello",
+                json!({ "min": 0, "max": 100, "mode": "text" }),
+            ),
+            (
+                "input_datetime.filter_changed",
+                "2026-11-08",
+                json!({ "has_date": true, "has_time": false, "timestamp": 1794063600.0 }),
+            ),
+            (
+                "input_datetime.wake",
+                "07:30:00",
+                json!({ "has_date": false, "has_time": true, "timestamp": 27000 }),
+            ),
+            (
+                "input_datetime.trip",
+                "2026-12-01 09:00:00",
+                json!({ "has_date": true, "has_time": true, "timestamp": 1796083200.0 }),
+            ),
+        ] {
+            let a = attrs(a);
+            let caps = capabilities(domain(entity_id), &a)
+                .unwrap_or_else(|why| panic!("{entity_id}: {why:?}"));
+            match reading(&caps, state, &a) {
+                Reading::Value(Some(_)) => {}
+                other => panic!("{entity_id} = {state}: {other:?}"),
+            }
+        }
+        // A scene and a helper button have nothing to report.
+        for (entity_id, a) in [
+            ("scene.evening", json!({})),
+            ("input_button.ring", json!({})),
+        ] {
+            let a = attrs(a);
+            let caps = capabilities(domain(entity_id), &a).expect(entity_id);
+            assert_eq!(reading(&caps, "unknown", &a), Reading::Nothing);
+        }
+    }
+
+    #[test]
+    fn what_irori_cant_hold_is_said_not_guessed() {
+        // Modes Irori's water heaters don't have: listed with the reason, not brought over wrong.
+        let why = capabilities(
+            "water_heater",
+            &attrs(
+                json!({ "supported_features": 2, "operation_list": ["auto", "manual_heating"] }),
+            ),
+        )
+        .expect_err("no modes Irori has");
+        assert!(why.is_some_and(|why| why.contains("auto, manual_heating")));
+        // A camera's access token stays in Home Assistant: it isn't part of what's sent.
+        let a = attrs(json!({ "supported_features": 2, "access_token": "secret" }));
+        let caps = capabilities("camera", &a).expect("camera");
+        let Reading::Value(Some(state)) = reading(&caps, "idle", &a) else {
+            panic!("a camera's state");
+        };
+        let sent = format!("{caps:?}{state:?}");
+        assert!(!sent.contains("secret"), "{sent}");
+        // A player's long title is cut, not refused.
+        let long = "x".repeat(400);
+        let a = attrs(json!({ "media_title": long }));
+        let caps = capabilities("media_player", &a).expect("player");
+        assert!(matches!(
+            reading(&caps, "playing", &a),
+            Reading::Value(Some(_))
+        ));
+    }
+
+    #[test]
+    fn helpers_and_new_kinds_are_told_in_home_assistants_words() {
+        let call = |entity_id: &str, a: Value, service: Value| {
+            let a = attrs(a);
+            let caps = capabilities(domain(entity_id), &a).expect(entity_id);
+            let mut service = service;
+            service["unique_id"] = json!("x");
+            service["context"] = json!({ "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9", "origin": { "type": "user", "user_id": "nico" } });
+            let service = serde_json::from_value::<irori_types::ServiceCall>(service)
+                .expect("a service")
+                .service;
+            let (domain, name, data) = command(&bridged(entity_id, caps), &service)?;
+            Ok::<_, ServiceError>((format!("{domain}.{name}"), Value::Object(data)))
+        };
+        let player = json!({ "supported_features": 153529 });
+        assert_eq!(
+            call(
+                "media_player.tv",
+                player.clone(),
+                json!({ "service": "media_player.volume_set", "data": { "volume": 40 } })
+            )
+            .expect("volume"),
+            (
+                "media_player.volume_set".to_owned(),
+                json!({ "volume_level": 0.4 })
+            )
+        );
+        assert_eq!(
+            call(
+                "media_player.tv",
+                player.clone(),
+                json!({ "service": "media_player.volume_mute", "data": { "mute": true } })
+            )
+            .expect("mute"),
+            (
+                "media_player.volume_mute".to_owned(),
+                json!({ "is_volume_muted": true })
+            )
+        );
+        assert_eq!(
+            call("media_player.tv", player, json!({ "service": "media_player.play_media", "data": { "content_type": "music", "content_id": "radio", "title": "Radio" } })).expect("play"),
+            ("media_player.play_media".to_owned(), json!({ "media_content_type": "music", "media_content_id": "radio" }))
+        );
+        assert_eq!(
+            call(
+                "input_boolean.guest",
+                json!({}),
+                json!({ "service": "switch.turn_on" })
+            )
+            .expect("on"),
+            ("input_boolean.turn_on".to_owned(), json!({}))
+        );
+        assert_eq!(
+            call(
+                "input_datetime.filter",
+                json!({ "has_date": true, "has_time": false }),
+                json!({ "service": "date.set_value", "data": { "date": "2026-11-19" } })
+            )
+            .expect("date"),
+            (
+                "input_datetime.set_datetime".to_owned(),
+                json!({ "date": "2026-11-19" })
+            )
+        );
+        assert_eq!(
+            call(
+                "alarm_control_panel.garden",
+                json!({ "supported_features": 63 }),
+                json!({ "service": "alarm_control_panel.alarm_disarm", "data": {} })
+            )
+            .expect("disarm"),
+            ("alarm_control_panel.alarm_disarm".to_owned(), json!({}))
+        );
+        // A helper is still only told what its kind takes.
+        assert!(
+            call(
+                "input_boolean.guest",
+                json!({}),
+                json!({ "service": "light.turn_on", "data": {} })
+            )
+            .is_err()
+        );
     }
 
     #[test]
