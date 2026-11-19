@@ -197,6 +197,92 @@ async fn fake_core_with(
     }
 }
 
+/// A run cut off by a stop that gave no warning (a crash, a kill) is recorded at the next
+/// start as interrupted, instead of never having been (issue #93).
+#[tokio::test]
+async fn a_run_cut_off_without_warning_is_recorded_at_the_next_start() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    std::fs::create_dir_all(dir.path().join("flows")).expect("mkdir");
+    std::fs::write(
+        dir.path().join("flows/hallway_motion_light.json"),
+        include_str!("../../../fixtures/types/flow/valid/hallway.json"),
+    )
+    .expect("wrote the flow");
+    let flow: irori_types::RuleId = "hallway_motion_light".parse().expect("an id");
+    let running = dir.path().join("data/running.json");
+
+    let start = || async {
+        let (core_end, engine_end) = tokio::io::duplex(1 << 20);
+        let (calls_tx, calls) = mpsc::unbounded_channel();
+        tokio::spawn(fake_core(core_end, calls_tx));
+        let (read, write) = tokio::io::split(engine_end);
+        let (_, client, _incoming) = irori_protocol::engine::connect(read, write)
+            .await
+            .expect("connects");
+        let store = Store::open(dir.path().join("flows"), dir.path().join("data"));
+        let (service, answers) = Service::start(client, store).await.expect("starts");
+        (service, answers, calls)
+    };
+
+    let (mut service, _answers, mut calls) = start().await;
+    let mut moved = binary(MOTION, true);
+    moved.last_updated =
+        Timestamp::from_jiff(stamp().as_jiff() + jiff::SignedDuration::from_secs(1));
+    moved.last_changed = moved.last_updated;
+    assert!(
+        service
+            .incoming(Incoming::StateChanged {
+                entity_id: id(MOTION),
+                old_state: Some(Box::new(binary(MOTION, false))),
+                new_state: Box::new(moved),
+            })
+            .await
+    );
+    calls.recv().await.expect("the light is asked to come on");
+    assert!(running.exists(), "the run in progress is kept on disk");
+    let run_id = service.engine.in_progress()[0].run_id.clone();
+
+    // Gone without `shutdown`: nothing got to say the run ended.
+    drop(service);
+
+    let (service, _answers, _calls) = start().await;
+    let runs = service.store.runs(&flow);
+    let cut = runs
+        .iter()
+        .find(|run| run.run_id == run_id)
+        .expect("the cut-off run is on the record");
+    assert_eq!(
+        cut.outcome,
+        Some(irori_flow_types::trace::Outcome::Aborted {
+            reason: irori_flow_types::trace::AbortReason::Interrupted,
+        })
+    );
+    assert!(cut.finished_at.is_some());
+    assert!(!running.exists(), "it's answered once");
+    drop(service);
+
+    // A stop with warning records the run itself, and leaves nothing to answer again.
+    let (mut service, _answers, mut calls) = start().await;
+    let mut moved = binary(MOTION, true);
+    moved.last_updated =
+        Timestamp::from_jiff(stamp().as_jiff() + jiff::SignedDuration::from_secs(5));
+    moved.last_changed = moved.last_updated;
+    assert!(
+        service
+            .incoming(Incoming::StateChanged {
+                entity_id: id(MOTION),
+                old_state: Some(Box::new(binary(MOTION, false))),
+                new_state: Box::new(moved),
+            })
+            .await
+    );
+    calls.recv().await.expect("the light is asked to come on");
+    assert!(running.exists());
+    service.engine.shutdown(irori_engine_automations::now());
+    service.apply_effects();
+    assert!(!running.exists(), "nothing left in progress");
+}
+
 #[tokio::test]
 async fn it_arms_what_it_finds_calls_as_its_runs_and_answers_its_page() {
     let dir = tempfile::tempdir().expect("a temp dir");

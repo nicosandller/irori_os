@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use irori_flow_types::Flow;
+use irori_flow_types::trace::{AbortReason, Outcome};
 use irori_flows::{Arm, Effect, Engine, IdGen, ulid, validate};
 use irori_protocol::WireCommand;
 use irori_protocol::engine::{EngineClient, Incoming, Registry};
@@ -61,6 +62,8 @@ pub struct Service {
     /// not known, and a change made while Irori was stopped is the one to find.
     started: bool,
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
+    /// The runs in progress when they were last kept on disk.
+    kept_running: BTreeSet<ContextId>,
 }
 
 impl Service {
@@ -219,7 +222,18 @@ impl Service {
             people: BTreeMap::new(),
             started: false,
             calls,
+            kept_running: BTreeSet::new(),
         };
+        // Runs a stop with no warning cut off last time: recorded, so the run's page says what
+        // happened instead of the run never having been.
+        for mut run in service.store.take_running() {
+            tracing::warn!(flow = %run.flow_id, run = %run.run_id, "a run was cut off when Irori stopped");
+            run.outcome = Some(Outcome::Aborted {
+                reason: AbortReason::Interrupted,
+            });
+            run.finished_at = Some(now());
+            service.store.add_run(&run);
+        }
         service.refresh_people().await;
         service.arm();
         service.started = true;
@@ -415,6 +429,13 @@ impl Service {
                     self.store.add_near_miss(&miss);
                 }
             }
+        }
+        // Written when a run starts or ends, not on every step: enough to say it was cut off.
+        let running = self.engine.in_progress();
+        let ids: BTreeSet<ContextId> = running.iter().map(|run| run.run_id.clone()).collect();
+        if ids != self.kept_running {
+            self.store.keep_running(&running);
+            self.kept_running = ids;
         }
     }
 
