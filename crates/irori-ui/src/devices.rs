@@ -944,22 +944,29 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
         });
     };
 
-    // "Add all": every found device in one request, so a bridge that brings a couple of hundred
-    // doesn't take a couple of hundred. They all leave the found list together.
+    // "Add all" and "Add selected": several found devices in one request, so a bridge that brings
+    // a couple of hundred doesn't take a couple of hundred. They leave the found list together.
+    // `all` sends no list, so the extension's every found device joins, as the button says.
     let whole = StoredValue::new(id.clone());
-    let add_all = move || {
-        let ids = addable.get_untracked();
+    let add_together = move |ids: Vec<DeviceId>, all: bool| {
         if ids.len() < 2 {
             add(ids);
             return;
         }
         busy.update(|busy| busy.extend(ids.iter().cloned()));
-        picked.update(BTreeSet::clear);
+        picked.update(|picked| picked.retain(|id| !ids.contains(id)));
         trouble.set(None);
         let extension = whole.get_value();
         spawn_local(async move {
-            let snapshot = found.get_untracked();
-            match crate::api::add_found_devices(&extension).await {
+            let snapshot: Vec<_> = found.with_untracked(|found| {
+                found
+                    .iter()
+                    .filter(|device| all || ids.contains(&device.id))
+                    .cloned()
+                    .collect()
+            });
+            let chosen = (!all).then_some(ids.as_slice());
+            match crate::api::add_found_devices(&extension, chosen).await {
                 Ok(_) => {
                     let gone: Vec<DeviceId> = snapshot.iter().map(|d| d.id.clone()).collect();
                     leaving.update(|leaving| leaving.extend(snapshot));
@@ -974,6 +981,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
             busy.update(|busy| busy.retain(|id| !ids.contains(id)));
         });
     };
+    let add_all = move || add_together(addable.get_untracked(), true);
 
     let back = move |_| on_back.run(());
     let protocol = id.clone();
@@ -1037,10 +1045,9 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                     {move || {
                         let count = addable.with(Vec::len);
                         (count > 1).then(|| view! {
-                            <label class="pick-all" title="Select all">
+                            <label class="pick-all">
                                 <input
                                     type="checkbox"
-                                    aria-label="Select all"
                                     prop:checked=move || {
                                         !addable.with(Vec::is_empty)
                                             && chosen.with(Vec::len) == addable.with(Vec::len)
@@ -1053,6 +1060,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                         }
                                     }
                                 />
+                                "Select all"
                             </label>
                         })
                     }}
@@ -1066,7 +1074,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                     <button
                                         type="button"
                                         class="primary"
-                                        on:click=move |_| add(chosen.get_untracked())
+                                        on:click=move |_| add_together(chosen.get_untracked(), false)
                                     >
                                         {format!("Add selected ({count})")}
                                     </button>
