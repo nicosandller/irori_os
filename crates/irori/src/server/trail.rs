@@ -112,6 +112,7 @@ pub const ACTIONS: &[(&str, &str, Log)] = &[
     ("PATCH", "/api/floors/{id}", Later("floor_changed")),
     ("DELETE", "/api/floors/{id}", Later("floor_removed")),
     ("PUT", "/api/floorplan", Later("floorplan_saved")),
+    ("POST", "/api/devices/add", Later("devices_added")),
     ("PATCH", "/api/devices/{id}", Later("device_changed")),
     ("DELETE", "/api/devices/{id}", Later("device_removed")),
     ("PATCH", "/api/entities/{id}", Later("entity_changed")),
