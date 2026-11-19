@@ -53,7 +53,11 @@ By default, entities that:
   `weather`, `calendar`, `todo`, `timer` and `schedule`. A helper comes over as the kind it is: an
   `input_boolean` is a switch, an `input_datetime` a date, a time or both. The weather comes in
   Irori's units (°C, hPa, km/h, km) whatever Home Assistant shows it in;
-- aren't disabled or hidden.
+- aren't disabled or hidden;
+- aren't part of Home Assistant itself: Core, the Supervisor, the operating system, its apps
+  (add-ons), its backups, and the cards, integrations and themes HACS installed, which Home
+  Assistant lists as devices. Naming their integration (`hassio`, `backup`, `hacs`) in
+  `include_integrations` brings them over.
 
 A device's settings and diagnostics (`entity_category`) come over too, marked as such, so a
 device has everything it has on Home Assistant's device page.

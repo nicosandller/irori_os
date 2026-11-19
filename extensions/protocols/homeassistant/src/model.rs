@@ -137,6 +137,23 @@ pub struct HaDevice {
     pub connections: Vec<(String, String)>,
     #[serde(default)]
     pub disabled_by: Option<String>,
+    /// `[["hue", "001788…"], ["hassio", "core"]]`: which integrations know it, and as what.
+    #[serde(default)]
+    pub identifiers: Vec<(String, String)>,
+}
+
+/// The integrations whose devices are Home Assistant itself rather than anything in the home:
+/// Core, the Supervisor and the operating system, its apps (add-ons), its backups, and what HACS
+/// installed (cards, integrations and themes, listed as devices).
+const HOME_ASSISTANT_ITSELF: [&str; 4] = ["hassio", "backup", "hacs", "marketplace"];
+
+impl HaDevice {
+    /// One of Home Assistant's own, as [`HOME_ASSISTANT_ITSELF`] lists them.
+    pub fn is_home_assistant_itself(&self) -> bool {
+        self.identifiers
+            .iter()
+            .any(|(integration, _)| HOME_ASSISTANT_ITSELF.contains(&integration.as_str()))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -323,6 +340,12 @@ pub fn plan_keeping(
         }
         let included = listed(&settings.include_integrations, &entity.platform)
             || in_area(&settings.include_areas);
+        // Home Assistant's own parts come over only when asked for by name.
+        if device.is_some_and(HaDevice::is_home_assistant_itself)
+            && !listed(&settings.include_integrations, &entity.platform)
+        {
+            continue;
+        }
         let helper = HELPERS
             .iter()
             .any(|(helper, _)| *helper == domain(&entity.entity_id))
@@ -1724,6 +1747,44 @@ mod tests {
             .map(|b| b.entity_id)
             .collect();
         assert_eq!(ids, ["light.garage"]);
+    }
+
+    #[test]
+    fn home_assistant_s_own_parts_stay_behind_unless_asked_for() {
+        let mut registry = registry();
+        for (id, integration) in [
+            ("core", "hassio"),
+            ("card", "marketplace"),
+            ("backups", "backup"),
+        ] {
+            let mut own = device(id, None);
+            own.identifiers = vec![(integration.into(), id.into())];
+            registry.devices.push(own);
+            let mut part = entity(&format!("e-{id}"), &format!("light.{id}"), Some(id));
+            part.platform = integration.into();
+            registry.entities.push(part);
+            registry.states.insert(
+                format!("light.{id}"),
+                HaState {
+                    state: "on".into(),
+                    attributes: attrs(json!({ "supported_color_modes": ["onoff"] })),
+                },
+            );
+        }
+        let plan = plan(&registry, &settings());
+        let ids: Vec<_> = plan.devices.iter().map(|d| d.unique_id.as_str()).collect();
+        assert_eq!(ids, ["d1", "d2"]);
+        assert!(
+            plan.entities
+                .iter()
+                .all(|b| !b.entity_id.starts_with("light.c"))
+        );
+
+        let mut asked = settings();
+        asked.include_integrations = vec!["hassio".into()];
+        let plan = super::plan(&registry, &asked);
+        assert!(plan.entities.iter().any(|b| b.entity_id == "light.core"));
+        assert!(plan.entities.iter().all(|b| b.entity_id != "light.card"));
     }
 
     #[test]
