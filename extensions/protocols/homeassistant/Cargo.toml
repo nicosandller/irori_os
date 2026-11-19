@@ -21,7 +21,7 @@ futures-util.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["net", "time"] }
+tokio = { workspace = true, features = ["net", "time", "io-util"] }
 # The same version the `irori` binary already links for `irori watch`, so this adds nothing to the
 # lockfile. Plain `ws://` only: a local address can't have a certificate a public authority
 # issued (see `settings.rs`). Kept off the workspace's `tokio-tungstenite` (Matter's) on purpose.

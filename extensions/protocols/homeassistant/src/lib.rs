@@ -13,6 +13,7 @@
 //! meanwhile, so the host's restart is never needed.
 
 pub mod client;
+pub mod http;
 pub mod model;
 pub mod settings;
 pub mod throttle;
@@ -27,8 +28,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use irori_protocol::{
-    AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
-    ServiceError,
+    AvailabilityTarget, Health, Incoming, IncomingCall, IncomingPicture, Picture, Protocol,
+    ProtocolContext, ProtocolError, ServiceError,
 };
 use irori_types::{
     Availability, Capabilities, ContextId, DeviceDescription, EntityDescription, SecretRequest,
@@ -103,6 +104,32 @@ const BATCH: usize = 256;
 const CAUSE_KEPT: Duration = Duration::from_secs(30);
 /// The waiting item while the token can't read the registries.
 const NOT_ADMIN: &str = "homeassistant-not-admin";
+/// What a request is told while Home Assistant isn't there.
+const NOT_CONNECTED: &str = "Home Assistant isn't connected right now";
+/// The most a picture can be (`docs/specs/protocols.md` §5.2), and how long it can take.
+const PICTURE_MOST: usize = 2_000_000;
+const PICTURE_WITHIN: Duration = Duration::from_millis(4500);
+/// The picture types Irori takes.
+const PICTURE_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/svg+xml"];
+
+/// Answers what this extension doesn't do: actions, unpairing, live video and talking.
+fn turn_away(incoming: Incoming) {
+    match incoming {
+        Incoming::Action(action) => action.reply(Err("Home Assistant has no actions here".into())),
+        Incoming::Unpair(unpair) => {
+            unpair.reply(Err(
+                "remove it in Home Assistant; it leaves Irori too".into()
+            ));
+        }
+        Incoming::Live(live) => live.feed.end(Some(
+            "this camera can't be watched live through Home Assistant yet".into(),
+        )),
+        Incoming::Talk(talk) => talk.line.end(Some(
+            "you can't talk through a camera in Home Assistant from Irori".into(),
+        )),
+        Incoming::Call(_) | Incoming::Picture(_) => {}
+    }
+}
 
 /// Runs until told to stop. Never fails: Home Assistant going away is waited out here.
 pub async fn drive(
@@ -170,10 +197,12 @@ async fn while_waiting<T>(ctx: &mut ProtocolContext, future: impl Future<Output 
     loop {
         tokio::select! {
             biased;
-            call = ctx.next_call() => match call {
-                Some(call) => call.reply(Err(ServiceError::unavailable(
-                    "Home Assistant isn't connected right now",
+            incoming = ctx.next() => match incoming {
+                Some(Incoming::Call(call)) => call.reply(Err(ServiceError::unavailable(
+                    NOT_CONNECTED,
                 ))),
+                Some(Incoming::Picture(picture)) => picture.reply(Err(NOT_CONNECTED.into())),
+                Some(other) => turn_away(other),
                 None => return None,
             },
             out = &mut future => return Some(out),
@@ -444,8 +473,10 @@ async fn session(
         tokio::select! {
             // A person's command is answered even while events are waiting.
             biased;
-            call = ctx.next_call() => match call {
-                Some(call) => session.call(call, &done_tx),
+            incoming = ctx.next() => match incoming {
+                Some(Incoming::Call(call)) => session.call(call, &done_tx),
+                Some(Incoming::Picture(picture)) => session.picture(picture, settings),
+                Some(other) => turn_away(other),
                 None => return Ended::Stopped,
             },
             Some(finished) = done.recv() => session.done(finished),
@@ -805,6 +836,43 @@ impl Session<'_> {
                     "Home Assistant didn't do it: {why}"
                 )))),
             }
+        });
+    }
+
+    /// A camera's picture as it is now, from Home Assistant's camera proxy. Its token stays in
+    /// Home Assistant: the request signs in with the extension's own.
+    fn picture(&self, picture: IncomingPicture, settings: &Settings) {
+        let camera = self
+            .by_unique_id
+            .get(&picture.unique_id)
+            .map(|&index| &self.entities[index])
+            .filter(|bridged| matches!(bridged.description.capabilities, Capabilities::Camera(_)));
+        let Some(camera) = camera else {
+            picture.reply(Err("that isn't one of Home Assistant's cameras".into()));
+            return;
+        };
+        let path = format!("/api/camera_proxy/{}", camera.entity_id);
+        let base = settings.url.clone();
+        let token = settings.token.expose().to_owned();
+        tokio::spawn(async move {
+            let answer = http::get(&base, &path, &token, PICTURE_MOST, PICTURE_WITHIN).await;
+            picture.reply(answer.and_then(|answer| {
+                if PICTURE_TYPES.contains(&answer.content_type.as_str()) {
+                    Ok(Picture {
+                        content_type: answer.content_type,
+                        bytes: answer.body,
+                    })
+                } else {
+                    Err(format!(
+                        "Home Assistant sent a {} rather than a picture",
+                        if answer.content_type.is_empty() {
+                            "reply"
+                        } else {
+                            answer.content_type.as_str()
+                        }
+                    ))
+                }
+            }));
         });
     }
 
