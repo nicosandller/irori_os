@@ -53,8 +53,7 @@ struct Running {
 }
 
 /// A small home: two floors, a kitchen with a dimmable light (a Hue bulb, reached through its
-/// bridge) and a temperature sensor, and a media player Irori has but this extension doesn't
-/// carry.
+/// bridge) and a temperature sensor, and a timer Irori has but this extension doesn't carry.
 fn home() -> World {
     let mut world = World::new(TOKEN);
     world
@@ -68,10 +67,10 @@ fn home() -> World {
             "model": "LCA001", "area_id": "kitchen", "via_device_id": "hue-bridge",
             "connections": [["zigbee", "00:17:88:01:0b:ad:be:ef"]], "serial_number": null,
         }))
-        .device(json!({ "id": "speaker", "name": "Kitchen speaker", "area_id": "kitchen" }))
+        .device(json!({ "id": "speaker", "name": "Kitchen timer", "area_id": "kitchen" }))
         .entity("e-light", "light.kitchen", Some("bulb"), "off", json!({ "supported_color_modes": ["brightness"] }))
         .entity("e-temp", "sensor.kitchen_temperature", Some("bulb"), "21.5", json!({ "device_class": "temperature", "unit_of_measurement": "°C", "state_class": "measurement" }))
-        .entity("e-player", "media_player.kitchen", Some("speaker"), "idle", json!({}));
+        .entity("e-player", "timer.kitchen", Some("speaker"), "idle", json!({}));
     world
 }
 
@@ -235,7 +234,7 @@ async fn brings_over_devices_rooms_and_states() {
             (log.devices.len() == 2).then(|| log.devices.clone())
         })
         .await;
-    // The bridge first, then the bulb that's reached through it; the speaker has nothing that
+    // The bridge first, then the bulb that's reached through it; the timer has nothing that
     // comes over, so it doesn't either.
     assert_eq!(devices[0].unique_id.as_str(), "hue-bridge");
     assert_eq!(devices[1].unique_id.as_str(), "bulb");
@@ -294,7 +293,7 @@ async fn brings_over_devices_rooms_and_states() {
             (!log.unmodeled.is_empty()).then(|| log.unmodeled.clone())
         })
         .await;
-    assert_eq!(unmodeled[0].platform.as_str(), "media_player");
+    assert_eq!(unmodeled[0].platform.as_str(), "timer");
     assert!(unmodeled[0].reason.is_some());
 
     // What's already there is a replay, not something happening now.
@@ -507,7 +506,7 @@ async fn an_entity_that_stops_qualifying_is_removed() {
     fake.with_world(|w| {
         for entity in &mut w.entities {
             if entity["id"] == "e-temp" {
-                entity["entity_category"] = json!("diagnostic");
+                entity["hidden_by"] = json!("user");
             }
         }
     });

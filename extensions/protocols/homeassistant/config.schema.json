@@ -35,7 +35,7 @@
     },
     "include_integrations": {
       "title": "Also bring over these integrations",
-      "description": "Also bring over every entity of these integrations (`hue`, `zha`, `mqtt`…), even ones\nIrori leaves out by default: those on no device, hidden ones, and devices' settings and\ndiagnostics. Disabled entities never come over.",
+      "description": "Also bring over every entity of these integrations (`hue`, `zha`, `mqtt`…), even ones\nIrori leaves out by default: those on no device, and hidden ones. Disabled entities never\ncome over.",
       "type": "array",
       "default": [],
       "items": {

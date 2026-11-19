@@ -23,9 +23,9 @@ in Irori. Nothing about your Home Assistant changes.
   an entity is renamed. Each keeps its name and its entity id after the `.`.
 - **Proposes Home Assistant's floors and rooms**, by name, for the owner to bring over in one
   step from the extension's page. Devices land in their rooms once those exist.
-- **Lists what it doesn't bring over** on the extension's page: entities of kinds Irori has but
-  this extension doesn't carry yet (media players, vacuums, updates…), with that reason, and
-  kinds Irori doesn't have (weather, calendars…).
+- **Lists what it doesn't bring over** on the extension's page: an entity Irori couldn't take
+  (a water heater whose modes Irori's don't include), with the reason, and kinds Irori doesn't
+  have (weather, calendars…).
 - **Passes commands on** as `call_service` to the entity, and answers once Home Assistant has
   carried it out, within 8 seconds. The change it causes is reported as caused by that command.
 - **Reconnects on its own** when Home Assistant restarts or the network drops: after a second,
@@ -36,17 +36,23 @@ in Irori. Nothing about your Home Assistant changes.
 
 By default, entities that:
 
-- are on a Home Assistant device;
-- are of a kind this extension carries: `light`, `switch`, `sensor`, `binary_sensor`, `button`,
-  `number`, `select`, `cover`, `lock`, `fan`, `event`, `valve`, `siren` and `climate`;
-- aren't disabled or hidden, and aren't one of a device's settings or diagnostics
-  (`entity_category`).
+- are on a Home Assistant device, or are one of Home Assistant's helpers (`input_boolean`,
+  `input_number`, `input_select`, `input_text`, `input_button`, `input_datetime`);
+- are of a kind Irori has: `light`, `switch`, `sensor`, `binary_sensor`, `button`, `number`,
+  `select`, `cover`, `lock`, `fan`, `event`, `valve`, `siren`, `climate`, `media_player`, `camera`,
+  `device_tracker`, `update`, `alarm_control_panel`, `vacuum`, `water_heater`, `humidifier`,
+  `lawn_mower`, `scene`, `text`, `date`, `time` and `datetime`. A helper comes over as the kind it
+  is: an `input_boolean` is a switch, an `input_datetime` a date, a time or both;
+- aren't disabled or hidden.
+
+A device's settings and diagnostics (`entity_category`) come over too, marked as such, so a
+device has everything it has on Home Assistant's device page.
 
 The settings widen or narrow that:
 
 - `include_integrations` / `include_areas` also bring over everything else of those
-  integrations or in those areas: entities on no device, hidden ones, settings and diagnostics.
-  Disabled entities never come over.
+  integrations or in those areas: entities on no device and hidden ones. Disabled entities never
+  come over.
 - `exclude_integrations` / `exclude_areas` leave those out, whatever else says.
 
 Areas are matched by name, integrations by their domain (`hue`, `zha`, `mqtt`…), both ignoring
@@ -103,9 +109,11 @@ extension then says so on its page and asks for another token there.
 
 ## Not yet
 
-- Media players, vacuums, humidifiers, water heaters, updates, alarm panels, lawn mowers, texts,
-  dates and times, device trackers, cameras and scenes: Irori has these kinds, but this extension
-  doesn't carry them yet. They're listed as unmodeled.
+- Home Assistant's `timer` and `schedule` helpers: Irori has these kinds, but keeps them itself,
+  so they're listed as unmodeled.
+- Remotes, notifications, weather, calendars, to-do lists and images: Irori has no kind for them
+  yet.
+- Checking for an update again (`homeassistant.update_entity` isn't the update's own service).
 - History from Home Assistant's recorder (#167), a welcome step for trying Irori this way (#166),
   showing which side runs what (#169), handing a device over from Home Assistant to a native
   extension (#168), and packaging for Home Assistant OS (#170, #171).

@@ -1,7 +1,7 @@
 [extension]
 id = "homeassistant"
 name = "Home Assistant"
-version = "0.1.0"
+version = "0.2.0"
 irori = ">=1.7.0"
 # 1.7.0 is the first core that takes rooms and floors an extension proposes (`suggest_layout`) and
 # a device's `connections`; an older one would drop this extension's link at its first message.
@@ -15,7 +15,12 @@ icon = "icon.svg"
 # entities or automations.
 [[contributes.protocol]]
 iot_class = "local_push"
-entity_kinds = ["light", "switch", "sensor", "binary_sensor", "button", "number", "select", "cover", "lock", "fan", "event", "valve", "siren", "climate"]
+entity_kinds = [
+    "light", "switch", "sensor", "binary_sensor", "button", "number", "select", "cover", "lock",
+    "fan", "event", "valve", "siren", "climate", "media_player", "camera", "device_tracker",
+    "update", "alarm_control_panel", "vacuum", "water_heater", "humidifier", "lawn_mower", "scene",
+    "text", "date", "time", "datetime",
+]
 run = { command = "bin/irori-ext-homeassistant" }
 
 # Home Assistant's address is checked when the settings are read: only a local address is taken.
