@@ -44,7 +44,8 @@ use crate::{Entity, EntityKind, EntityState};
 /// 26. Adds `camera`.
 /// 27. Adds live video (`live`, `qualities`), turning (`pan_tilt`, `zoom`, `presets`) and
 ///     talking through it (`talk`) to cameras' capabilities, and `presets` to their state.
-pub const ENTITY_FORMAT: u32 = 27;
+/// 28. Adds `image`, `notify`, `remote`, `weather`, `calendar` and `todo`.
+pub const ENTITY_FORMAT: u32 = 28;
 
 /// The camera capabilities format 27 added, which an older reader is sent without.
 const CAMERA_27_CAPABILITIES: &[&str] =
@@ -88,6 +89,12 @@ impl EntityKind {
             Self::Timer => 24,
             Self::Schedule => 25,
             Self::Camera => 26,
+            Self::Image
+            | Self::Notify
+            | Self::Remote
+            | Self::Weather
+            | Self::Calendar
+            | Self::Todo => 28,
         }
     }
 }

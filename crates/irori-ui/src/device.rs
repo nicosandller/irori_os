@@ -222,11 +222,13 @@ fn page(
     let areas = shape.areas.clone();
     // A camera's picture gets a card of its own, open, between what the device is and the rest
     // of what it has.
-    let (cameras, entities): (Vec<Entity>, Vec<Entity>) = shape
-        .entities
-        .iter()
-        .cloned()
-        .partition(|entity| matches!(entity.capabilities, Capabilities::Camera(_)));
+    let (cameras, entities): (Vec<Entity>, Vec<Entity>) =
+        shape.entities.iter().cloned().partition(|entity| {
+            matches!(
+                entity.capabilities,
+                Capabilities::Camera(_) | Capabilities::Image(_)
+            )
+        });
     let has_camera = !cameras.is_empty();
     let also_has = also_has(&shape.unmodeled);
     let subtitle = [device.manufacturer.clone(), device.model.clone()]
@@ -818,7 +820,7 @@ fn EntityRow(
                 view! {
                     <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
                         <div class="drawer-inner">
-                            {matches!(entity.capabilities, Capabilities::Camera(_))
+                            {matches!(entity.capabilities, Capabilities::Camera(_) | Capabilities::Image(_))
                                 .then(|| devices::camera_picture(&entity, open))}
                             {history_panel(entity.clone(), history.clone(), state.into())}
                         </div>
@@ -1088,7 +1090,7 @@ pub(crate) fn drawn_day(
 ) -> AnyView {
     if matches!(
         entity.capabilities,
-        Capabilities::Button(_) | Capabilities::Scene(_)
+        Capabilities::Button(_) | Capabilities::Scene(_) | Capabilities::Notify(_)
     ) {
         return presses(&states);
     }
@@ -1403,7 +1405,18 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             flag_word(&entity.capabilities, switch.on).to_owned()
         }
-        (Capabilities::Button(_) | Capabilities::Scene(_), _) => "—".to_owned(),
+        (Capabilities::Button(_) | Capabilities::Scene(_) | Capabilities::Notify(_), _) => {
+            "—".to_owned()
+        }
+        (Capabilities::Image(_), _) => "Picture".to_owned(),
+        (Capabilities::Remote(_), Some(State::Remote(remote))) => devices::remote_words(remote),
+        (Capabilities::Weather(_), Some(State::Weather(weather))) => {
+            devices::weather_words(weather)
+        }
+        (Capabilities::Calendar(_), Some(State::Calendar(calendar))) => {
+            devices::calendar_words(calendar)
+        }
+        (Capabilities::Todo(_), Some(State::Todo(todo))) => devices::todo_words(todo.open),
         (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
         (Capabilities::Cover(_), Some(State::Cover(cover))) => {
             devices::opening_words(cover.opening())

@@ -31,7 +31,7 @@ pub const MAX_ENTITIES: usize = 2_000;
 pub const MAX_UNMODELED: usize = 500;
 
 /// The kinds this extension carries, as in the manifest's `entity_kinds`.
-pub const BRIDGED: [&str; 28] = [
+pub const BRIDGED: [&str; 36] = [
     "light",
     "switch",
     "sensor",
@@ -60,7 +60,19 @@ pub const BRIDGED: [&str; 28] = [
     "date",
     "time",
     "datetime",
+    "image",
+    "notify",
+    "remote",
+    "weather",
+    "calendar",
+    "todo",
+    "timer",
+    "schedule",
 ];
+
+/// Kinds that stand on their own in Home Assistant, often on no device (a weather service, a
+/// shopping list, a timer helper): brought over by default, like helpers.
+pub const STANDALONE: [&str; 5] = ["weather", "calendar", "todo", "timer", "schedule"];
 
 /// Home Assistant's helpers, each carried as the Irori kind it is: an `input_boolean` is a switch.
 /// An `input_datetime` is a date, a time or both, by what it holds.
@@ -313,7 +325,8 @@ pub fn plan_keeping(
             || in_area(&settings.include_areas);
         let helper = HELPERS
             .iter()
-            .any(|(helper, _)| *helper == domain(&entity.entity_id));
+            .any(|(helper, _)| *helper == domain(&entity.entity_id))
+            || STANDALONE.contains(&domain(&entity.entity_id));
         let by_default = (device.is_some() || helper) && entity.hidden_by.is_none();
         if !(by_default || included) {
             continue;
@@ -965,6 +978,19 @@ pub fn capabilities(domain: &str, a: &Map<String, Value>) -> Result<Capabilities
                 }
             }
         }
+        "image" => json!({ "kind": "image" }),
+        "notify" => json!({ "kind": "notify", "title": features(a) & 1 != 0 }),
+        "remote" => json!({
+            "kind": "remote",
+            // ACTIVITY is 4.
+            "activities": if features(a) & 4 != 0 { text_list(a.get("activity_list")) } else { Vec::new() },
+        }),
+        "weather" => json!({ "kind": "weather" }),
+        "calendar" => json!({ "kind": "calendar" }),
+        // CREATE_TODO_ITEM is 1.
+        "todo" => json!({ "kind": "todo", "add": features(a) & 1 != 0 }),
+        "timer" => json!({ "kind": "timer" }),
+        "schedule" => json!({ "kind": "schedule" }),
         "input_boolean" => json!({ "kind": "switch" }),
         "input_number" => return capabilities("number", a),
         "input_select" => return capabilities("select", a),
@@ -1015,12 +1041,130 @@ pub enum Reading {
     Nothing,
 }
 
+/// Seconds in Home Assistant's `H:MM:SS` (a timer's `duration`, `remaining`), which may start
+/// with days: `1 day, 2:00:00`.
+fn duration_seconds(text: &str) -> Option<f64> {
+    let (days, clock) = match text.split_once(", ") {
+        Some((days, clock)) => (days.split_whitespace().next()?.parse::<f64>().ok()?, clock),
+        None => (0.0, text),
+    };
+    let mut parts = clock.split(':');
+    let (h, m, s) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() {
+        return None;
+    }
+    let (h, m, s): (f64, f64, f64) = (h.parse().ok()?, m.parse().ok()?, s.parse().ok()?);
+    Some(days * 86_400.0 + h * 3600.0 + m * 60.0 + s)
+}
+
+/// A weather entity's state in Irori's units: Home Assistant says which units it uses.
+fn weather(s: &str, a: &Map<String, Value>) -> Value {
+    let unit = |key: &str| a.get(key).and_then(Value::as_str).unwrap_or("");
+    let temperature = |key: &str| {
+        number(a, key).and_then(|t| match unit("temperature_unit") {
+            "°C" | "" => Some(t),
+            "°F" => Some((t - 32.0) * 5.0 / 9.0),
+            "K" => Some(t - 273.15),
+            _ => None,
+        })
+    };
+    let pressure = number(a, "pressure").and_then(|p| {
+        Some(match unit("pressure_unit") {
+            "hPa" | "mbar" | "" => p,
+            "kPa" | "cbar" => p * 10.0,
+            "Pa" => p / 100.0,
+            "inHg" => p * 33.863_886,
+            "mmHg" => p * 1.333_224,
+            "psi" => p * 68.947_573,
+            _ => return None,
+        })
+    });
+    let speed = |key: &str| {
+        number(a, key).and_then(|v| {
+            Some(match unit("wind_speed_unit") {
+                "km/h" | "" => v,
+                "m/s" => v * 3.6,
+                "mph" => v * 1.609_344,
+                "kn" => v * 1.852,
+                "ft/s" => v * 1.097_28,
+                _ => return None,
+            })
+        })
+    };
+    let visibility = number(a, "visibility").and_then(|v| {
+        Some(match unit("visibility_unit") {
+            "km" | "" => v,
+            "mi" => v * 1.609_344,
+            "m" => v / 1000.0,
+            _ => return None,
+        })
+    });
+    let round = |v: Option<f64>| v.map(|v| (v * 10.0).round() / 10.0);
+    json!({
+        "kind": "weather",
+        "condition": s,
+        "temperature": round(temperature("temperature")),
+        "apparent_temperature": round(temperature("apparent_temperature")),
+        "dew_point": round(temperature("dew_point")),
+        "humidity": number(a, "humidity"),
+        "pressure": round(pressure),
+        "wind_speed": round(speed("wind_speed")),
+        "wind_gust_speed": round(speed("wind_gust_speed")),
+        // Some services say it as a compass point (`NW`), which isn't a number.
+        "wind_bearing": number(a, "wind_bearing"),
+        "cloud_coverage": number(a, "cloud_coverage"),
+        "uv_index": number(a, "uv_index"),
+        "visibility": round(visibility),
+    })
+}
+
+/// The event a calendar's state is about, in the home's own time: Home Assistant writes its
+/// start and end as `2026-11-20 09:00:00`, local, and an all-day event's from midnight.
+fn calendar_event(a: &Map<String, Value>) -> Value {
+    let Some(summary) = short(a, "message") else {
+        return Value::Null;
+    };
+    let all_day = a.get("all_day").and_then(Value::as_bool).unwrap_or(false);
+    let day = |key: &str| a.get(key).and_then(Value::as_str).and_then(|t| t.get(..10));
+    let time = |key: &str| {
+        a.get(key)
+            .and_then(Value::as_str)
+            .and_then(|t| t.get(11..19))
+            .filter(|_| !all_day)
+    };
+    let detail = |key: &str| {
+        a.get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .map(|t| t.chars().take(4096).collect::<String>())
+    };
+    match (day("start_time"), day("end_time")) {
+        (Some(start), Some(end)) => json!({
+            "summary": summary,
+            "start": start,
+            "start_time": time("start_time"),
+            "end": end,
+            "end_time": time("end_time"),
+            "location": detail("location"),
+            "description": detail("description"),
+        }),
+        _ => Value::Null,
+    }
+}
+
 /// Home Assistant's state `s` and attributes `a`, for an entity with `caps`.
 pub fn reading(caps: &Capabilities, s: &str, a: &Map<String, Value>) -> Reading {
     if s == "unavailable" {
         return Reading::Unavailable;
     }
-    if matches!(caps, Capabilities::Button(_) | Capabilities::Scene(_)) {
+    if matches!(
+        caps,
+        Capabilities::Button(_)
+            | Capabilities::Scene(_)
+            | Capabilities::Image(_)
+            | Capabilities::Notify(_)
+    ) {
         return Reading::Nothing;
     }
     if s == "unknown" {
@@ -1205,6 +1349,37 @@ pub fn reading(caps: &Capabilities, s: &str, a: &Map<String, Value>) -> Reading 
                 None => return Reading::Value(None),
             }
         }
+        Capabilities::Remote(remote) => json!({
+            "kind": "remote",
+            "on": s == "on",
+            "activity": text("current_activity")
+                .filter(|activity| s == "on" && remote.activities.iter().any(|a| a == activity)),
+        }),
+        Capabilities::Weather(_) => weather(s, a),
+        Capabilities::Calendar(_) => json!({
+            "kind": "calendar",
+            "on": s == "on",
+            "event": calendar_event(a),
+        }),
+        Capabilities::Todo(_) => match s.parse::<u32>() {
+            Ok(open) => json!({ "kind": "todo", "open": open }),
+            Err(_) => return Reading::Value(None),
+        },
+        Capabilities::Timer(_) => {
+            let seconds = |key: &str| text(key).and_then(duration_seconds);
+            json!({
+                "kind": "timer",
+                "state": s,
+                "duration": seconds("duration").unwrap_or(0.0),
+                "finishes_at": text("finishes_at").filter(|_| s == "active"),
+                "remaining": seconds("remaining").filter(|_| s == "paused"),
+            })
+        }
+        Capabilities::Schedule(_) => json!({
+            "kind": "schedule",
+            "on": s == "on",
+            "next_change": text("next_event"),
+        }),
         _ => return Reading::Value(None),
     };
     let mut value = value;
@@ -1278,6 +1453,15 @@ pub fn command(
             "play_media"
         }
         ("input_datetime", "set_value") => "set_datetime",
+        ("remote", "send_command") => {
+            rename(&mut data, "repeats", "num_repeats");
+            "send_command"
+        }
+        // Home Assistant's takes the seconds to add, or take away, as its `duration`.
+        ("timer", "change") => {
+            rename(&mut data, "by", "duration");
+            "change"
+        }
         ("light", "turn_on") => {
             rename(&mut data, "rgb", "rgb_color");
             "turn_on"
@@ -1368,7 +1552,7 @@ mod tests {
                 entity("e1", "light.kitchen", Some("d1")),
                 entity("e2", "sensor.kitchen_temperature", Some("d1")),
                 entity("e3", "light.garage", Some("d2")),
-                entity("e4", "timer.kitchen", Some("d1")),
+                entity("e4", "tts.kitchen", Some("d1")),
                 entity("e5", "weather.home", Some("d1")),
                 entity("e6", "light.loose", None),
             ],
@@ -1391,7 +1575,7 @@ mod tests {
                 "off",
                 json!({ "supported_color_modes": ["onoff"] }),
             ),
-            ("timer.kitchen", "idle", json!({})),
+            ("tts.kitchen", "unknown", json!({})),
             ("weather.home", "sunny", json!({})),
             (
                 "light.loose",
@@ -1444,7 +1628,8 @@ mod tests {
             [
                 "light.kitchen",
                 "sensor.kitchen_temperature",
-                "light.garage"
+                "light.garage",
+                "weather.home"
             ]
         );
         // The main light goes by its device's name; the sensor has its own.
@@ -1461,7 +1646,7 @@ mod tests {
                 .map(ObjectId::as_str),
             Some("kitchen")
         );
-        // A kind Irori has but this extension doesn't carry says so; one Irori lacks doesn't.
+        // Every kind Irori has comes over; one Irori lacks is listed, with no reason to give.
         let unmodeled: Vec<_> = plan
             .unmodeled
             .iter()
@@ -1473,7 +1658,7 @@ mod tests {
                 )
             })
             .collect();
-        assert_eq!(unmodeled, [("timer", true, true), ("weather", false, true)]);
+        assert_eq!(unmodeled, [("tts", false, true)]);
     }
 
     #[test]
@@ -1490,7 +1675,7 @@ mod tests {
         };
         // The diagnostic sensor comes over as one; hidden and disabled stay out.
         let plain = plan(&registry, &settings());
-        assert_eq!(ids(&plain), ["sensor.kitchen_temperature"]);
+        assert_eq!(ids(&plain), ["sensor.kitchen_temperature", "weather.home"]);
         assert_eq!(
             plain.entities[0].description.entity_category,
             Some(EntityCategory::Diagnostic)
@@ -1502,13 +1687,18 @@ mod tests {
         // Disabled stays out even then; the device-less light comes over under its own name.
         assert_eq!(
             ids(&widened),
-            ["light.kitchen", "sensor.kitchen_temperature", "light.loose"]
+            [
+                "light.kitchen",
+                "sensor.kitchen_temperature",
+                "weather.home",
+                "light.loose"
+            ]
         );
         assert_eq!(
             widened.entities[1].description.entity_category,
             Some(EntityCategory::Diagnostic)
         );
-        let loose = &widened.entities[2].description;
+        let loose = &widened.entities[3].description;
         assert_eq!(loose.device_unique_id, None);
         assert_eq!(loose.name.as_ref().map(Name::as_str), Some("Loose light"));
     }
@@ -1904,6 +2094,41 @@ mod tests {
                 "2026-12-01 09:00:00",
                 json!({ "has_date": true, "has_time": true, "timestamp": 1796083200.0 }),
             ),
+            (
+                "remote.living_room_tv",
+                "on",
+                json!({ "supported_features": 4, "activity_list": ["Watch TV", "Play"], "current_activity": "Watch TV" }),
+            ),
+            (
+                "weather.forecast_home",
+                "partlycloudy",
+                json!({ "temperature": 14.5, "humidity": 71, "pressure": 1012.3, "wind_speed": 12.2, "wind_bearing": 250.4, "temperature_unit": "°C", "pressure_unit": "hPa", "wind_speed_unit": "km/h", "visibility_unit": "km" }),
+            ),
+            (
+                "calendar.family",
+                "off",
+                json!({ "message": "Dentist", "all_day": false, "start_time": "2026-11-20 09:00:00", "end_time": "2026-11-20 10:00:00", "location": "", "description": "" }),
+            ),
+            (
+                "todo.shopping_list",
+                "3",
+                json!({ "supported_features": 15 }),
+            ),
+            (
+                "timer.laundry",
+                "active",
+                json!({ "duration": "0:45:00", "finishes_at": "2026-11-19T10:00:00+00:00", "editable": true }),
+            ),
+            (
+                "timer.oven",
+                "paused",
+                json!({ "duration": "1 day, 2:00:00", "remaining": "0:12:30" }),
+            ),
+            (
+                "schedule.heating",
+                "on",
+                json!({ "next_event": "2026-11-19T22:00:00+09:00", "editable": true }),
+            ),
         ] {
             let a = attrs(a);
             let caps = capabilities(domain(entity_id), &a)
@@ -1913,15 +2138,70 @@ mod tests {
                 other => panic!("{entity_id} = {state}: {other:?}"),
             }
         }
-        // A scene and a helper button have nothing to report.
+        // A scene, a helper button, an image and a notify target have nothing to report.
         for (entity_id, a) in [
             ("scene.evening", json!({})),
             ("input_button.ring", json!({})),
+            (
+                "image.doorbell_last_visitor",
+                json!({ "access_token": "secret" }),
+            ),
+            ("notify.phone", json!({ "supported_features": 1 })),
         ] {
             let a = attrs(a);
             let caps = capabilities(domain(entity_id), &a).expect(entity_id);
             assert_eq!(reading(&caps, "unknown", &a), Reading::Nothing);
         }
+    }
+
+    #[test]
+    fn weather_calendars_and_timers_come_in_irori_s_units_and_the_home_s_time() {
+        let read = |entity_id: &str, s: &str, a: Value| {
+            let a = attrs(a);
+            let caps = capabilities(domain(entity_id), &a).expect(entity_id);
+            match reading(&caps, s, &a) {
+                Reading::Value(Some(state)) => serde_json::to_value(state).expect("json"),
+                other => panic!("{entity_id}: {other:?}"),
+            }
+        };
+        assert_eq!(
+            read(
+                "weather.home",
+                "rainy",
+                json!({ "temperature": 50, "temperature_unit": "°F", "pressure": 29.92, "pressure_unit": "inHg", "wind_speed": 10, "wind_speed_unit": "mph", "wind_bearing": "NW", "visibility": 6.2, "visibility_unit": "mi" })
+            ),
+            json!({ "kind": "weather", "condition": "rainy", "temperature": 10.0, "pressure": 1013.2, "wind_speed": 16.1, "visibility": 10.0 })
+        );
+        // All day: days only, the end the day after.
+        assert_eq!(
+            read(
+                "calendar.bins",
+                "on",
+                json!({ "message": "Recycling", "all_day": true, "start_time": "2026-11-19 00:00:00", "end_time": "2026-11-20 00:00:00" })
+            ),
+            json!({ "kind": "calendar", "on": true, "event": { "summary": "Recycling", "start": "2026-11-19", "end": "2026-11-20" } })
+        );
+        assert_eq!(
+            read("calendar.empty", "off", json!({})),
+            json!({ "kind": "calendar", "on": false })
+        );
+        assert_eq!(
+            read(
+                "timer.oven",
+                "paused",
+                json!({ "duration": "1 day, 2:00:00", "remaining": "0:12:30" })
+            ),
+            json!({ "kind": "timer", "state": "paused", "duration": 93600.0, "remaining": 750.0 })
+        );
+        // An activity it doesn't list isn't one it says; nor any once it's off.
+        assert_eq!(
+            read(
+                "remote.hub",
+                "off",
+                json!({ "supported_features": 4, "activity_list": ["Watch TV"], "current_activity": "Watch TV" })
+            ),
+            json!({ "kind": "remote", "on": false })
+        );
     }
 
     #[test]
@@ -2037,6 +2317,48 @@ mod tests {
             )
             .expect("disarm"),
             ("alarm_control_panel.alarm_disarm".to_owned(), json!({}))
+        );
+        assert_eq!(
+            call(
+                "remote.living_room_tv",
+                json!({ "supported_features": 4, "activity_list": ["Watch TV"] }),
+                json!({ "service": "remote.send_command", "data": { "command": ["volume_up"], "repeats": 3 } })
+            )
+            .expect("send"),
+            (
+                "remote.send_command".to_owned(),
+                json!({ "command": ["volume_up"], "num_repeats": 3 })
+            )
+        );
+        assert_eq!(
+            call(
+                "notify.phone",
+                json!({ "supported_features": 1 }),
+                json!({ "service": "notify.send_message", "data": { "message": "Leak in the kitchen", "title": "Leak" } })
+            )
+            .expect("notify"),
+            (
+                "notify.send_message".to_owned(),
+                json!({ "message": "Leak in the kitchen", "title": "Leak" })
+            )
+        );
+        assert_eq!(
+            call(
+                "todo.shopping_list",
+                json!({ "supported_features": 15 }),
+                json!({ "service": "todo.add_item", "data": { "item": "Milk" } })
+            )
+            .expect("add"),
+            ("todo.add_item".to_owned(), json!({ "item": "Milk" }))
+        );
+        assert_eq!(
+            call(
+                "timer.laundry",
+                json!({ "duration": "0:45:00" }),
+                json!({ "service": "timer.change", "data": { "by": -60.0 } })
+            )
+            .expect("change"),
+            ("timer.change".to_owned(), json!({ "duration": -60.0 }))
         );
         // A helper is still only told what its kind takes.
         assert!(

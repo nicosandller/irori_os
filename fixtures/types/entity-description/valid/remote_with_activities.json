@@ -1,0 +1,11 @@
+{
+  "unique_id": "hub_remote",
+  "name": "Living room",
+  "capabilities": {
+    "kind": "remote",
+    "activities": [
+      "Watch TV",
+      "Listen to music"
+    ]
+  }
+}

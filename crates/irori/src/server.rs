@@ -1898,18 +1898,25 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
     }
 }
 
-/// What a camera sees now, as its protocol draws it (`docs/specs/api.md`). Never cached, and
+/// What a camera sees now, or the picture an image keeps, as its protocol draws it
+/// (`docs/specs/api.md`). Never cached, and
 /// served so that opening it on its own can't run anything: a protocol may send an SVG.
 async fn camera_picture(
     State(state): State<AppState>,
     Extension(reach): Extension<Reach>,
     Path(id): Path<EntityId>,
 ) -> Response {
-    if id.kind() != irori_types::EntityKind::Camera {
-        return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
+    if !matches!(
+        id.kind(),
+        irori_types::EntityKind::Camera | irori_types::EntityKind::Image
+    ) {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("`{id}` isn't a camera or an image"),
+        );
     }
     if state.0.core.seen(&reach).state(&id).is_none() {
-        return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
+        return refused(StatusCode::NOT_FOUND, format!("there's no `{id}`"));
     }
     match state.0.core.camera_picture(&id).await {
         Ok(picture) => (

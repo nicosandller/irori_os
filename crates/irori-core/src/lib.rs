@@ -1312,16 +1312,17 @@ impl Core {
         self.ask(&extension, asked, UNPAIR_TIMEOUT).await
     }
 
-    /// A picture of what a camera sees now, from its protocol (`docs/specs/protocols.md` §5.2).
+    /// A picture of what a camera sees now, or the one an image keeps, from its protocol
+    /// (`docs/specs/protocols.md` §5.2).
     /// Checked before it's passed on: an image type a page can show and nothing bigger than
     /// [`irori_protocol::MAX_PICTURE`].
     pub async fn camera_picture(
         &self,
         entity_id: &EntityId,
     ) -> Result<irori_protocol::Picture, CallActionError> {
-        if entity_id.kind() != EntityKind::Camera {
+        if !matches!(entity_id.kind(), EntityKind::Camera | EntityKind::Image) {
             return Err(CallActionError::Failed(format!(
-                "`{entity_id}` isn't a camera"
+                "`{entity_id}` isn't a camera or an image"
             )));
         }
         let (protocol, unique_id) = {

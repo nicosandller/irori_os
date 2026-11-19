@@ -688,6 +688,30 @@
         {
           "maxLength": 71,
           "pattern": "^camera\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 70,
+          "pattern": "^image\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^notify\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 71,
+          "pattern": "^remote\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 72,
+          "pattern": "^weather\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 73,
+          "pattern": "^calendar\\.[a-z0-9]+(_[a-z0-9]+)*$"
+        },
+        {
+          "maxLength": 69,
+          "pattern": "^todo\\.[a-z0-9]+(_[a-z0-9]+)*$"
         }
       ]
     },
@@ -883,9 +907,14 @@
         "media_player.turn_on",
         "media_player.volume_mute",
         "media_player.volume_set",
+        "notify.send_message",
         "number.decrement",
         "number.increment",
         "number.set_value",
+        "remote.send_command",
+        "remote.toggle",
+        "remote.turn_off",
+        "remote.turn_on",
         "scene.turn_on",
         "select.select_option",
         "siren.toggle",
@@ -901,6 +930,7 @@
         "timer.finish",
         "timer.pause",
         "timer.start",
+        "todo.add_item",
         "update.check",
         "update.clear_skipped",
         "update.install",

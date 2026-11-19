@@ -22,12 +22,15 @@ use crate::kinds::light::LightTurnOn;
 use crate::kinds::lock::LockCode;
 use crate::kinds::media_player::{MediaSeek, PlayMedia, VolumeMute, VolumeSet};
 use crate::kinds::moment::{DateSetValue, DatetimeSetValue, TimeSetValue};
+use crate::kinds::notify::NotifySendMessage;
 use crate::kinds::number::{NumberSetValue, NumberStep};
 use crate::kinds::opening::SetPosition;
+use crate::kinds::remote::{RemoteSendCommand, RemoteTurnOn};
 use crate::kinds::select::SelectOption;
 use crate::kinds::siren::SirenTurnOn;
 use crate::kinds::text::TextSetValue;
 use crate::kinds::timer::{TimerChange, TimerStart};
+use crate::kinds::todo::TodoAddItem;
 use crate::kinds::vacuum::VacuumFanSpeed;
 use crate::kinds::water_heater::{WaterHeaterOperationMode, WaterHeaterSetTemperature};
 use crate::{
@@ -610,6 +613,11 @@ pub enum Service {
     TimerCancel,
     TimerFinish,
     TimerChange(TimerChange),
+    NotifySendMessage(NotifySendMessage),
+    RemoteTurnOn(RemoteTurnOn),
+    RemoteTurnOff,
+    RemoteSendCommand(RemoteSendCommand),
+    TodoAddItem(TodoAddItem),
 }
 
 impl Service {
@@ -710,6 +718,11 @@ impl Service {
             Self::TimerCancel => ServiceName::TimerCancel,
             Self::TimerFinish => ServiceName::TimerFinish,
             Self::TimerChange(_) => ServiceName::TimerChange,
+            Self::NotifySendMessage(_) => ServiceName::NotifySendMessage,
+            Self::RemoteTurnOn(_) => ServiceName::RemoteTurnOn,
+            Self::RemoteTurnOff => ServiceName::RemoteTurnOff,
+            Self::RemoteSendCommand(_) => ServiceName::RemoteSendCommand,
+            Self::TodoAddItem(_) => ServiceName::TodoAddItem,
         }
     }
 }
@@ -907,6 +920,16 @@ pub enum ServiceName {
     TimerFinish,
     #[serde(rename = "timer.change")]
     TimerChange,
+    #[serde(rename = "notify.send_message")]
+    NotifySendMessage,
+    #[serde(rename = "remote.turn_on")]
+    RemoteTurnOn,
+    #[serde(rename = "remote.turn_off")]
+    RemoteTurnOff,
+    #[serde(rename = "remote.send_command")]
+    RemoteSendCommand,
+    #[serde(rename = "todo.add_item")]
+    TodoAddItem,
 }
 
 impl ServiceName {
@@ -1006,6 +1029,11 @@ impl ServiceName {
         Self::TimerCancel,
         Self::TimerFinish,
         Self::TimerChange,
+        Self::NotifySendMessage,
+        Self::RemoteTurnOn,
+        Self::RemoteTurnOff,
+        Self::RemoteSendCommand,
+        Self::TodoAddItem,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -1105,6 +1133,11 @@ impl ServiceName {
             Self::TimerCancel => "timer.cancel",
             Self::TimerFinish => "timer.finish",
             Self::TimerChange => "timer.change",
+            Self::NotifySendMessage => "notify.send_message",
+            Self::RemoteTurnOn => "remote.turn_on",
+            Self::RemoteTurnOff => "remote.turn_off",
+            Self::RemoteSendCommand => "remote.send_command",
+            Self::TodoAddItem => "todo.add_item",
         }
     }
 
@@ -1200,6 +1233,11 @@ impl ServiceName {
             | Self::TimerCancel
             | Self::TimerFinish
             | Self::TimerChange => EntityKind::Timer,
+            Self::NotifySendMessage => EntityKind::Notify,
+            Self::RemoteTurnOn | Self::RemoteTurnOff | Self::RemoteSendCommand => {
+                EntityKind::Remote
+            }
+            Self::TodoAddItem => EntityKind::Todo,
         }
     }
 }
@@ -1326,6 +1364,10 @@ impl JsonSchema for ServiceCall {
         let volume_mute = generator.subschema_for::<VolumeMute>();
         let media_seek = generator.subschema_for::<MediaSeek>();
         let play_media = generator.subschema_for::<PlayMedia>();
+        let notify_send = generator.subschema_for::<NotifySendMessage>();
+        let remote_turn_on = generator.subschema_for::<RemoteTurnOn>();
+        let remote_send = generator.subschema_for::<RemoteSendCommand>();
+        let todo_add = generator.subschema_for::<TodoAddItem>();
         // Per service: the shape of `data`.
         let rules: Vec<_> = ServiceName::ALL
             .iter()
@@ -1380,6 +1422,10 @@ impl JsonSchema for ServiceCall {
                     ServiceName::MediaPlayerVolumeMute => volume_mute.clone(),
                     ServiceName::MediaPlayerSeek => media_seek.clone(),
                     ServiceName::MediaPlayerPlayMedia => play_media.clone(),
+                    ServiceName::NotifySendMessage => notify_send.clone(),
+                    ServiceName::RemoteTurnOn => remote_turn_on.clone(),
+                    ServiceName::RemoteSendCommand => remote_send.clone(),
+                    ServiceName::TodoAddItem => todo_add.clone(),
                     _ => no_data.clone(),
                 };
                 json_schema!({

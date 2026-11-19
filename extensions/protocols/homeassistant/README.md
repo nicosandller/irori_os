@@ -25,10 +25,11 @@ in Irori. Nothing about your Home Assistant changes.
   step from the extension's page. Devices land in their rooms once those exist.
 - **Lists what it doesn't bring over** on the extension's page: an entity Irori couldn't take
   (a water heater whose modes Irori's don't include), with the reason, and kinds Irori doesn't
-  have (weather, calendars…).
-- **Shows a camera's picture** when a page asks for it, from Home Assistant's camera proxy
-  (`/api/camera_proxy/<entity_id>` over plain `http://`, signed in with the same token). The
-  camera's own access token, in its attributes, is never passed on.
+  have (Home Assistant's voice pipeline: `tts`, `stt`, `conversation`…).
+- **Shows a camera's picture, or an image's,** when a page asks for it, from Home Assistant's
+  camera or image proxy (`/api/camera_proxy/<entity_id>`, `/api/image_proxy/<entity_id>`, over
+  plain `http://`, signed in with the same token). Their own access token, in their attributes,
+  is never passed on.
 - **Streams a camera live** when Home Assistant streams it: `camera/stream` gives an HLS
   playlist of fragmented MP4, the container Irori's live view plays, so its init segment and then
   each new segment are passed on as they are, starting at the newest, until nobody watches.
@@ -42,13 +43,16 @@ in Irori. Nothing about your Home Assistant changes.
 
 By default, entities that:
 
-- are on a Home Assistant device, or are one of Home Assistant's helpers (`input_boolean`,
-  `input_number`, `input_select`, `input_text`, `input_button`, `input_datetime`);
+- are on a Home Assistant device, are one of Home Assistant's helpers (`input_boolean`,
+  `input_number`, `input_select`, `input_text`, `input_button`, `input_datetime`, `timer`,
+  `schedule`), or are a weather service, a calendar or a to-do list, which often have no device;
 - are of a kind Irori has: `light`, `switch`, `sensor`, `binary_sensor`, `button`, `number`,
   `select`, `cover`, `lock`, `fan`, `event`, `valve`, `siren`, `climate`, `media_player`, `camera`,
   `device_tracker`, `update`, `alarm_control_panel`, `vacuum`, `water_heater`, `humidifier`,
-  `lawn_mower`, `scene`, `text`, `date`, `time` and `datetime`. A helper comes over as the kind it
-  is: an `input_boolean` is a switch, an `input_datetime` a date, a time or both;
+  `lawn_mower`, `scene`, `text`, `date`, `time`, `datetime`, `image`, `notify`, `remote`,
+  `weather`, `calendar`, `todo`, `timer` and `schedule`. A helper comes over as the kind it is: an
+  `input_boolean` is a switch, an `input_datetime` a date, a time or both. The weather comes in
+  Irori's units (°C, hPa, km/h, km) whatever Home Assistant shows it in;
 - aren't disabled or hidden.
 
 A device's settings and diagnostics (`entity_category`) come over too, marked as such, so a
@@ -84,7 +88,8 @@ A big Home Assistant must not crowd out a home's own devices, so this extension 
 
 What this extension can send is a closed list, checked again before anything leaves: signing in,
 `get_config`, the four registries' `list`, `get_states`, `subscribe_entities`,
-`subscribe_events`, `unsubscribe_events`, and `call_service`. `call_service` is only sent in
+`subscribe_events`, `unsubscribe_events`, `camera/stream` (which only starts a stream to read),
+and `call_service`. `call_service` is only sent in
 answer to a command someone gave in Irori, to that entity, with a service of its own kind. It
 never touches Home Assistant's registries, areas or automations, and it can't unpair anything.
 A test fails if anything else can be sent.
@@ -115,10 +120,12 @@ extension then says so on its page and asks for another token there.
 
 ## Not yet
 
-- Home Assistant's `timer` and `schedule` helpers: Irori has these kinds, but keeps them itself,
-  so they're listed as unmodeled.
-- Remotes, notifications, weather, calendars, to-do lists and images: Irori has no kind for them
-  yet.
+- Weather forecasts, a calendar's other events and adding to it, and a to-do list's items
+  (reading, ticking off, removing): each kind has its present state and its main action for now.
+- Home Assistant's voice pipeline (`tts`, `stt`, `conversation`, `ai_task`, `wake_word`,
+  `assist_satellite`): it is Home Assistant's own, not something in the home, so Irori has no kind
+  for it. Listed as unmodeled.
+- A water heater whose modes aren't ones Irori's water heaters have is listed, with its modes.
 - Checking for an update again (`homeassistant.update_entity` isn't the update's own service).
 - History from Home Assistant's recorder (#167), a welcome step for trying Irori this way (#166),
   showing which side runs what (#169), handing a device over from Home Assistant to a native
