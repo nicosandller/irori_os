@@ -29,6 +29,9 @@ in Irori. Nothing about your Home Assistant changes.
 - **Shows a camera's picture** when a page asks for it, from Home Assistant's camera proxy
   (`/api/camera_proxy/<entity_id>` over plain `http://`, signed in with the same token). The
   camera's own access token, in its attributes, is never passed on.
+- **Streams a camera live** when Home Assistant streams it: `camera/stream` gives an HLS
+  playlist of fragmented MP4, the container Irori's live view plays, so its init segment and then
+  each new segment are passed on as they are, starting at the newest, until nobody watches.
 - **Passes commands on** as `call_service` to the entity, and answers once Home Assistant has
   carried it out, within 8 seconds. The change it causes is reported as caused by that command.
 - **Reconnects on its own** when Home Assistant restarts or the network drops: after a second,

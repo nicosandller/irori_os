@@ -837,11 +837,17 @@ pub fn capabilities(domain: &str, a: &Map<String, Value>) -> Result<Capabilities
                 "turn_off": f & 256 != 0,
             })
         }
-        "camera" => json!({
-            "kind": "camera",
-            "on_off": features(a) & 1 != 0,
-            "motion_detection": a.get("motion_detection").is_some_and(Value::is_boolean),
-        }),
+        "camera" => {
+            // A camera Home Assistant streams is watched through that stream, at its one size.
+            let live = features(a) & 2 != 0;
+            json!({
+                "kind": "camera",
+                "on_off": features(a) & 1 != 0,
+                "motion_detection": a.get("motion_detection").is_some_and(Value::is_boolean),
+                "live": live,
+                "qualities": if live { vec!["high"] } else { Vec::new() },
+            })
+        }
         "device_tracker" => json!({
             "kind": "device_tracker",
             "source_type": a.get("source_type").and_then(Value::as_str)
