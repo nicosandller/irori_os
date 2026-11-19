@@ -492,6 +492,11 @@ What draws a map today:
 - **ONVIF Cameras**: each camera, wired straight to Irori or on the home's Wi-Fi. A Reolink says which
   through its own API; another camera through ONVIF's network interfaces when it gives their
   type, and one that doesn't say is drawn on Wi-Fi.
+- **Home Assistant**: Irori, then Home Assistant on the home's network, then each device that comes
+  over, straight from Home Assistant or from the device it's reached through (a bulb through its
+  Hue bridge, a Zigbee device through Zigbee2MQTT). A device is on Zigbee, Bluetooth or the home's
+  network when Home Assistant knows its address there, and an online service it lists as a device
+  (the weather, the sun) is reached over the internet.
 - **Demo**: all three, made up, so the map can be seen without hardware.
 
 ### 6.9 Suggested layout

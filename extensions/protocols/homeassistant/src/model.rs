@@ -16,8 +16,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use irori_protocol::ServiceError;
 use irori_types::{
     Capabilities, Connection, ConnectionKind, DeviceDescription, EntityCategory, EntityDescription,
-    EntityKind, Name, ObjectId, SensorClass, Service, State, SuggestedArea, SuggestedFloor,
-    SuggestedLayout, UniqueId, Unmodeled, Waiting,
+    EntityKind, Name, Network, ObjectId, SensorClass, Service, State, SuggestedArea,
+    SuggestedFloor, SuggestedLayout, UniqueId, Unmodeled, Waiting,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -140,6 +140,9 @@ pub struct HaDevice {
     /// `[["hue", "001788…"], ["hassio", "core"]]`: which integrations know it, and as what.
     #[serde(default)]
     pub identifiers: Vec<(String, String)>,
+    /// `service` for an online service Home Assistant lists as a device (the weather, a calendar).
+    #[serde(default)]
+    pub entry_type: Option<String>,
 }
 
 /// The integrations whose devices are Home Assistant itself rather than anything in the home:
@@ -264,6 +267,8 @@ pub struct Plan {
     /// Entities kept from before although Home Assistant has no state for them right now (their
     /// integration is reloading): unavailable until it does.
     pub absent: Vec<UniqueId>,
+    /// The map of the devices that come over.
+    pub network: Network,
 }
 
 pub fn domain(entity_id: &str) -> &str {
@@ -440,12 +445,15 @@ pub fn plan_keeping(
         visit(id, &devices, &wanted, &mut done, &mut ordered, 0);
     }
     let mut device_ids: BTreeSet<&str> = BTreeSet::new();
+    let mut drawn: Vec<&HaDevice> = Vec::new();
     for device in ordered {
         if let Some(description) = describe_device(device, &areas, &device_ids) {
             device_ids.insert(device.id.as_str());
             described.push(description);
+            drawn.push(device);
         }
     }
+    let network = crate::network::draw(&drawn);
 
     let entities: Vec<Bridged> = taken
         .into_iter()
@@ -494,6 +502,7 @@ pub fn plan_keeping(
         .map(|b| b.description.unique_id.clone())
         .collect();
     Plan {
+        network,
         devices: described,
         entities,
         unmodeled,

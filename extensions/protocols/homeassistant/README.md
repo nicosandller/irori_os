@@ -59,6 +59,11 @@ By default, entities that:
   Assistant lists as devices. Naming their integration (`hassio`, `backup`, `hacs`) in
   `include_integrations` brings them over.
 
+The network map draws them too: Home Assistant between Irori and its devices, each device hanging
+off the one Home Assistant says it's reached through (a Hue bridge, Zigbee2MQTT), over Zigbee,
+Bluetooth or the home's network when Home Assistant knows its address there. Online services it
+lists as devices (the weather, the sun) are drawn over the internet.
+
 A device's settings and diagnostics (`entity_category`) come over too, marked as such, so a
 device has everything it has on Home Assistant's device page.
 

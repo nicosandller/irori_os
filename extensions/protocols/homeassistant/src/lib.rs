@@ -16,6 +16,7 @@ pub mod client;
 pub mod http;
 pub mod live;
 pub mod model;
+pub mod network;
 pub mod settings;
 pub mod throttle;
 
@@ -225,6 +226,7 @@ struct Bridge {
     unmodeled: Option<Vec<Unmodeled>>,
     waiting: Option<Vec<Waiting>>,
     layout: Option<SuggestedLayout>,
+    network: Option<irori_types::Network>,
     /// Each entity's availability as last told.
     told: HashMap<UniqueId, Availability>,
     /// What the last plan brought over, by `entity_id`: kept while Home Assistant has no state
@@ -298,6 +300,10 @@ impl Bridge {
         if self.layout.as_ref() != Some(&plan.layout) {
             ctx.suggest_layout(plan.layout.clone()).await;
             self.layout = Some(plan.layout.clone());
+        }
+        if self.network.as_ref() != Some(&plan.network) {
+            ctx.set_networks(vec![plan.network.clone()]).await;
+            self.network = Some(plan.network.clone());
         }
     }
 
