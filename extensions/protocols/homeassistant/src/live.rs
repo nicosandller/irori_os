@@ -17,6 +17,9 @@ use crate::http;
 
 /// How long asking for the stream, and fetching a playlist, may take.
 const ASK_WITHIN: Duration = Duration::from_secs(10);
+/// How long a playlist may take while the camera starts: Home Assistant answers once it has the
+/// first segment, which a camera reached over RTSP can take a while to send.
+const STARTING_WITHIN: Duration = Duration::from_secs(30);
 /// How long one segment may take to fetch.
 const SEGMENT_WITHIN: Duration = Duration::from_secs(10);
 /// The biggest init segment and fragment Irori takes.
@@ -106,6 +109,8 @@ pub fn resolve(base: &str, reference: &str) -> String {
     }
     let directory = base.split('?').next().unwrap_or(base);
     let directory = &directory[..=directory.rfind('/').unwrap_or(0)];
+    // Home Assistant names them `./segment/7.m4s`; it serves them without the `./`.
+    let reference = reference.trim_start_matches("./");
     format!("{directory}{reference}")
 }
 
@@ -158,13 +163,23 @@ async fn stream(
         .and_then(|url| url.as_str())
         .ok_or("Home Assistant didn't say where its stream is")?
         .to_owned();
-    let text = |path: String| async move {
-        let answer = http::get(base, &path, token, 1 << 20, ASK_WITHIN).await?;
-        String::from_utf8(answer.body)
-            .map_err(|_| "Home Assistant's playlist isn't text".to_owned())
+    let text = |path: String, within: Duration| async move {
+        let answer = http::get(base, &path, token, 1 << 20, within).await?;
+        let kind = answer.content_type.clone();
+        String::from_utf8(answer.body).map_err(|bad| {
+            let head: Vec<u8> = bad.as_bytes().iter().take(16).copied().collect();
+            tracing::warn!(content_type = %kind, length = bad.as_bytes().len(), ?head, "a playlist that isn't text");
+            "Home Assistant's playlist isn't text".to_owned()
+        })
     };
 
-    let top = text(master.clone()).await?;
+    tracing::info!(
+        entity_id,
+        "Home Assistant gave a stream; reading its playlist"
+    );
+    // Home Assistant answers the first read once the camera has sent its first segment.
+    let top = text(master.clone(), STARTING_WITHIN).await?;
+    tracing::info!(entity_id, "read the stream's playlist");
     let (playlist, codecs) = match variant(&top) {
         Some(variant) => (resolve(&master, &variant.uri), variant.codecs),
         None => (master.clone(), None),
@@ -189,8 +204,13 @@ async fn stream(
     let mut grew_at = tokio::time::Instant::now();
     let mut fetched: BTreeSet<u64> = BTreeSet::new();
     loop {
-        let media = media(&text(playlist.clone()).await?);
+        let media = media(&text(playlist.clone(), STARTING_WITHIN).await?);
         if !sent_init {
+            tracing::debug!(
+                segments = media.segments.len(),
+                init = media.init.is_some(),
+                "the stream's media playlist"
+            );
             let init = media
                 .init
                 .as_deref()
@@ -296,5 +316,9 @@ mod tests {
             "/api/hls/abc/segment/7.m4s"
         );
         assert_eq!(resolve(master, "/other/init.mp4"), "/other/init.mp4");
+        assert_eq!(
+            resolve("/api/hls/abc/playlist.m3u8", "./segment/7.m4s"),
+            "/api/hls/abc/segment/7.m4s"
+        );
     }
 }

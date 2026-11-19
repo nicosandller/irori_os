@@ -2088,6 +2088,7 @@ dependencies = [
 name = "irori-protocol-homeassistant"
 version = "0.0.0"
 dependencies = [
+ "flate2",
  "futures-util",
  "irori-cloud",
  "irori-protocol",
