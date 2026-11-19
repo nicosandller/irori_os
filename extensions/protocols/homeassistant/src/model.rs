@@ -982,13 +982,17 @@ pub fn capabilities(domain: &str, a: &Map<String, Value>) -> Result<Capabilities
     match serde_json::from_value::<Capabilities>(caps.clone()) {
         Ok(caps) => Ok(caps),
         Err(first) => {
-            // A class Irori doesn't know, or one its rules don't allow with this unit: the entity
-            // is still useful without it.
-            if let Value::Object(fields) = &mut caps {
-                fields.remove("device_class");
+            // A class Irori doesn't know, or one its rules don't allow with this unit; or a state
+            // class newer than Irori's (`measurement_angle`): the entity is still useful without.
+            for field in ["device_class", "state_class"] {
+                if let Value::Object(fields) = &mut caps {
+                    fields.remove(field);
+                }
+                if let Ok(caps) = serde_json::from_value(caps.clone()) {
+                    return Ok(caps);
+                }
             }
-            serde_json::from_value(caps)
-                .map_err(|_| Some(format!("Irori couldn't read what it can do: {first}")))
+            Err(Some(format!("Irori couldn't read what it can do: {first}")))
         }
     }
 }
@@ -1109,21 +1113,23 @@ pub fn reading(caps: &Capabilities, s: &str, a: &Map<String, Value>) -> Reading 
             "swing_mode": a.get("swing_mode"),
             "preset_mode": a.get("preset_mode"),
         }),
-        Capabilities::MediaPlayer(_) => json!({
+        Capabilities::MediaPlayer(player) => json!({
             "kind": "media_player",
             // `on` is a player that's on with nothing to say about playing.
             "state": if s == "on" { "idle" } else { s },
+            // Only what can be told from Irori is said: a car's player reports a volume it can't
+            // be set to.
             "volume": number(a, "volume_level")
-                .filter(|v| (0.0..=1.0).contains(v))
+                .filter(|v| player.volume && (0.0..=1.0).contains(v))
                 .map(|v| (v * 100.0).round() as u8),
-            "muted": a.get("is_volume_muted").filter(|m| m.is_boolean()),
+            "muted": a.get("is_volume_muted").filter(|m| player.mute && m.is_boolean()),
             "title": short(a, "media_title"),
             "artist": short(a, "media_artist"),
             "album": short(a, "media_album_name"),
             "app": short(a, "app_name"),
             "content_type": short(a, "media_content_type"),
             "duration": number(a, "media_duration").filter(|d| *d >= 0.0),
-            "position": number(a, "media_position").filter(|p| *p >= 0.0),
+            "position": number(a, "media_position").filter(|p| player.seek && *p >= 0.0),
         }),
         Capabilities::Camera(camera) => json!({
             "kind": "camera",
@@ -1789,6 +1795,17 @@ mod tests {
                 "on",
                 json!({ "supported_features": 21437 }),
             ),
+            // A car's player: a volume and a position it reports but can't be told.
+            (
+                "media_player.car",
+                "playing",
+                json!({ "supported_features": 0, "volume_level": 0.5, "is_volume_muted": false, "media_position": 30 }),
+            ),
+            (
+                "sensor.wind_direction",
+                "270",
+                json!({ "device_class": "wind_direction", "unit_of_measurement": "°", "state_class": "measurement_angle" }),
+            ),
             (
                 "camera.front",
                 "idle",
@@ -1926,6 +1943,18 @@ mod tests {
         };
         let sent = format!("{caps:?}{state:?}");
         assert!(!sent.contains("secret"), "{sent}");
+        // A player says only what it can be told: no volume, mute or position it can't set.
+        let a = attrs(
+            json!({ "supported_features": 0, "volume_level": 0.5, "is_volume_muted": true, "media_position": 30 }),
+        );
+        let caps = capabilities("media_player", &a).expect("player");
+        let Reading::Value(Some(state)) = reading(&caps, "playing", &a) else {
+            panic!("a player's state");
+        };
+        assert_eq!(
+            serde_json::to_value(&state).expect("json"),
+            json!({ "kind": "media_player", "state": "playing" })
+        );
         // A player's long title is cut, not refused.
         let long = "x".repeat(400);
         let a = attrs(json!({ "media_title": long }));
