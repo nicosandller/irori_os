@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use irori_protocol::host;
-use irori_protocol::{AvailabilityTarget, Health, IncomingCall, ProtocolError, ServiceError};
+use irori_protocol::{
+    AvailabilityTarget, Health, IncomingAction, IncomingCall, ProtocolError, ServiceError,
+};
 use irori_types::{
     Availability, Context, ContextId, DeviceDescription, EntityDescription, LightState,
     LightTurnOn, Origin, Service, ServiceCall, State, StateReport, SuggestedLayout, UniqueId,
@@ -45,6 +47,8 @@ struct Log {
 
 struct Running {
     calls: mpsc::Sender<IncomingCall>,
+    /// Kept open: a closed channel reads as the core going away.
+    _actions: mpsc::Sender<IncomingAction>,
     reports: host::Reports,
     log: Arc<Mutex<Log>>,
     states: BTreeMap<String, Vec<StateReport>>,
@@ -130,6 +134,7 @@ async fn world_with(settings: Settings) -> Running {
     let drive = tokio::spawn(drive(settings, ctx, FAST));
     Running {
         calls: host.calls,
+        _actions: host.actions,
         reports: host.reports,
         log,
         states: BTreeMap::new(),

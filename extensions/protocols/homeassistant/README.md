@@ -26,6 +26,9 @@ in Irori. Nothing about your Home Assistant changes.
 - **Lists what it doesn't bring over** on the extension's page: an entity Irori couldn't take
   (a water heater whose modes Irori's don't include), with the reason, and kinds Irori doesn't
   have (weather, calendars…).
+- **Shows a camera's picture** when a page asks for it, from Home Assistant's camera proxy
+  (`/api/camera_proxy/<entity_id>` over plain `http://`, signed in with the same token). The
+  camera's own access token, in its attributes, is never passed on.
 - **Passes commands on** as `call_service` to the entity, and answers once Home Assistant has
   carried it out, within 8 seconds. The change it causes is reported as caused by that command.
 - **Reconnects on its own** when Home Assistant restarts or the network drops: after a second,
