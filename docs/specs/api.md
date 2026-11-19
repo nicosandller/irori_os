@@ -101,7 +101,9 @@ areas, floors, held devices, the floorplan when one has been drawn, and `install
 waiting their turn to install, each with its `entity_id` and how many are `ahead` of it.
 
 `POST /api/devices/add` is `{ "protocol": "<extension id>" }`, for an owner: it adds every device
-that extension has found and is holding (the `held` list), as `PATCH /api/devices/<id>
+that extension has found and is holding (the `held` list; "Add all"), or, with
+`"devices": ["<device id>", …]`, only those of them ("Add selected"; an id that isn't among that
+extension's held devices is passed over), as `PATCH /api/devices/<id>
 { "added": true }` would one at a time, in a single edit of `devices.toml`
 ([config.md](config.md) §3.2). The devices join the home a few hundred events' worth at a time,
 each step waiting for the listeners on the event stream to catch up, so none of them (the history,
