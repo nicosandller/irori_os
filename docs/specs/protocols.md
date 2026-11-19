@@ -119,7 +119,7 @@ core's process.
 | Say an action is open | an action id, and how long it has left, or that it has closed | §5.1 |
 | Handle actions | receives an action id, and whether to start it or stop it early; replies with a result | §5.1 |
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
-| Send a picture | receives a camera entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` entities. §5.2 |
+| Send a picture | receives a camera or image entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` and `image` entities. §5.2 |
 | Send live video | receives a camera entity's `unique_id`, a quality and the codecs the page plays; sends an init segment, then video, until told to stop | Only for its own `camera` entities that say `live`. §5.3 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
@@ -189,7 +189,7 @@ On the wire these are `action_call { id, action_id, stop, way, fields }` and
 
 A camera's picture isn't state: it would fill history and mean nothing to a flow. A page asks for
 one when it wants it (`GET /api/entities/{id}/picture`, [api.md](api.md)), and the core asks the
-camera's protocol.
+camera's protocol. An `image` entity's picture is asked for the same way: the one it keeps now.
 
 - The protocol replies with the picture as it is now: its type (`image/jpeg`, `image/png`,
   `image/webp` or `image/svg+xml`) and its bytes, at most 2 MB. Anything else is refused.
@@ -563,6 +563,11 @@ manifest's `entity_kinds`.
 | `timer.start` | `duration` (optional), seconds above 0, at most a year | Left out: its own `duration`, or what was left when it was paused |
 | `timer.pause`, `timer.cancel`, `timer.finish` | none | |
 | `timer.change` | `by`, seconds to add, or to take away when negative | Taken past its end, it finishes |
+| `notify.send_message` | `message`, 1–4096 characters; `title` (optional), 1–255 | A title only for one with `title` |
+| `remote.turn_on` | `activity` (optional), one of its `activities` | `remote.toggle` resolves to `turn_on` or `turn_off` |
+| `remote.turn_off` | none | |
+| `remote.send_command` | `command`, 1–32 names its protocol knows (`volume_up`); `device` (optional), which of the devices it drives; `repeats` (optional), 1–255 | |
+| `todo.add_item` | `item`, 1–255 characters | Needs `add` |
 | `date.set_value` | `date`, a calendar day (`2026-10-14`) | Home Assistant's field names, here and below |
 | `time.set_value` | `time`, a time of day (`06:45:00`, or `06:45`) | |
 | `datetime.set_value` | `datetime`, a `Timestamp` | An ESPHome device counts seconds from 1970 to 2106, and refuses a moment outside that |

@@ -842,16 +842,23 @@ impl Session<'_> {
     /// A camera's picture as it is now, from Home Assistant's camera proxy. Its token stays in
     /// Home Assistant: the request signs in with the extension's own.
     fn picture(&self, picture: IncomingPicture, settings: &Settings) {
-        let camera = self
+        let bridged = self
             .by_unique_id
             .get(&picture.unique_id)
-            .map(|&index| &self.entities[index])
-            .filter(|bridged| matches!(bridged.description.capabilities, Capabilities::Camera(_)));
-        let Some(camera) = camera else {
-            picture.reply(Err("that isn't one of Home Assistant's cameras".into()));
-            return;
+            .map(|&index| &self.entities[index]);
+        // A camera's is what it sees now; an image's is the one it keeps.
+        let proxy = match bridged.map(|bridged| &bridged.description.capabilities) {
+            Some(Capabilities::Camera(_)) => "camera_proxy",
+            Some(Capabilities::Image(_)) => "image_proxy",
+            _ => {
+                picture.reply(Err(
+                    "that isn't one of Home Assistant's cameras or images".into()
+                ));
+                return;
+            }
         };
-        let path = format!("/api/camera_proxy/{}", camera.entity_id);
+        let Some(bridged) = bridged else { return };
+        let path = format!("/api/{proxy}/{}", bridged.entity_id);
         let base = settings.url.clone();
         let token = settings.token.expose().to_owned();
         tokio::spawn(async move {

@@ -84,6 +84,13 @@ const CALENDAR: &str = r#"<rect x="4" y="5.5" width="16" height="14.5" rx="1.5"/
 /// A robot vacuum from above: its body, its bumper and its lid.
 const CAMERA: &str = r#"<path d="M3.5 7.500h11a1.500 1.500 0 0 1 1.500 1.500v6a1.500 1.500 0 0 1-1.500 1.500h-11A1.500 1.500 0 0 1 2 15V9a1.500 1.500 0 0 1 1.500-1.500Z"/><path d="m16 11 5-3v8l-5-3"/><circle cx="9" cy="12" r="2.200"/>"#;
 pub const ROBOT: &str = r#"<circle cx="12" cy="12" r="8.5"/><path d="M5.5 8.500a8.500 8.500 0 0 1 13 0"/><circle cx="12" cy="12.5" r="2.5"/>"#;
+/// A framed picture: a mountain and a sun.
+pub const PICTURE: &str = r#"<rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="m3.5 17 5.5-5.5 4 4 2.5-2.5 5 5"/><circle cx="15.5" cy="9.5" r="1.5"/>"#;
+/// A remote control: its body, a round pad and two buttons.
+pub const REMOTE: &str = r#"<rect x="8" y="2.5" width="8" height="19" rx="2.5"/><circle cx="12" cy="8" r="2"/><path d="M10.5 13.5h.01M13.5 13.5h.01M10.5 16.5h.01M13.5 16.5h.01"/>"#;
+/// A list with ticks: a to-do list.
+pub const CHECKLIST: &str =
+    r#"<path d="m4 6.5 1.5 1.5L8 5.5M4 12.5 5.5 14 8 11.5M4.5 18.5h2.5M11 7h9M11 13h9M11 19h9"/>"#;
 /// A mower from the side: its deck, its wheels, and grass ahead of it.
 pub const MOWER: &str = r#"<path d="M4 15.5V12a3 3 0 0 1 3-3h6l4 6.5Z"/><circle cx="7" cy="17" r="2"/><circle cx="15" cy="17" r="2"/><path d="M20 17v-3M21.5 17v-2"/>"#;
 /// Three overlapping lights: a scene.
@@ -201,6 +208,12 @@ pub fn drawing(capabilities: &Capabilities) -> &'static str {
         Capabilities::DeviceTracker(_) => PIN,
         Capabilities::Timer(_) => CLOCK,
         Capabilities::Schedule(_) => CALENDAR,
+        Capabilities::Calendar(_) => CALENDAR,
+        Capabilities::Image(_) => PICTURE,
+        Capabilities::Notify(_) => BELL,
+        Capabilities::Remote(_) => REMOTE,
+        Capabilities::Weather(_) => CLOUD,
+        Capabilities::Todo(_) => CHECKLIST,
         Capabilities::Fan(_) => FAN,
         Capabilities::Valve(_) => VALVE,
         Capabilities::Siren(_) => SIREN,

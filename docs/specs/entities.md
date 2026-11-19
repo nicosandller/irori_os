@@ -136,9 +136,13 @@ motion sensor are three entities.
 
 **Kinds:** `light`, `switch`, `sensor`, `binary_sensor`, `number`, `select`, `text`, `button`,
 `event`, `cover`, `lock`, `fan`, `valve`, `siren`, `climate`, `water_heater`, `humidifier`,
-`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`, `device_tracker`, `timer`, `schedule`, `camera`.
-That is every Home Assistant kind a device on Irori's protocols reports. Home Assistant's `remote` isn't planned: neither ESPHome nor MQTT discovery
-has one, so nothing could report it. Adding a kind is an
+`media_player`, `update`, `alarm_control_panel`, `date`, `time`, `datetime`, `vacuum`, `lawn_mower`, `scene`, `device_tracker`, `timer`, `schedule`, `camera`,
+`image`, `notify`, `remote`, `weather`, `calendar`, `todo`.
+That is every Home Assistant kind a device on Irori's protocols reports, and the ones the Home
+Assistant extension brings over besides: a picture something keeps, somewhere to send a message,
+a remote control, the weather, a calendar and a to-do list. Home Assistant's voice pipeline
+(`conversation`, `stt`, `tts`, `ai_task`, `wake_word`, `assist_satellite`) is Home Assistant's own,
+not something in the home, and has no kind. Adding a kind is an
 additive change: a file in `crates/irori-types/src/kinds/` with its capabilities, state, service
 data and checks, and a new tag in `Capabilities`, `State` and `Service`.
 
@@ -197,6 +201,12 @@ what automations compare (`on()`, `num()`, `text()`, a state trigger's `to`, [ru
 | `timer` | none | | | Something that counts down. Home Assistant has timers only as helpers; here a device that counts down can be one too |
 | `scene` | none | | | A scene a device keeps (a Hue scene, a Zigbee group's) and can be told to set. Scenes Irori makes itself are flows |
 | `date`, `time`, `datetime` | none | | | A day, a time of day, or a moment that someone sets. Nothing to say about one beyond its kind |
+| `image` | none | | | A picture something keeps and changes now and then (a doorbell's last visitor, a vacuum's map). A page asks for it as for a camera's ([protocols.md](protocols.md) §5.2) |
+| `notify` | `title` | bool | `false` | Somewhere a message can be sent (a phone's notifications, a TV's screen). Can show a title above it |
+| `remote` | `activities` | list of strings | `[]` | A remote control. The activities it can start (`Watch TV`), by name; empty for one with none |
+| `weather` | none | | | The weather where the home is, as a weather service says it is now |
+| `calendar` | none | | | A calendar the home can read |
+| `todo` | `add` | bool | `false` | A to-do or shopping list. Items can be added to it |
 | `valve` | `device_class` | `water` \| `gas` | absent | |
 | | `position`, `stop` | bool | `false` | Opens part of the way; can be stopped |
 | `siren` | `tones` | up to 256 distinct strings | `[]` | The tones it can sound |
@@ -342,6 +352,21 @@ All are tagged with `kind`, e.g. `{ "kind": "light", "on": true, "brightness": 1
 | | `motion_detection` | bool | no | Whether it's watching for motion, for one with `motion_detection` |
 | `schedule` | `on` | bool | yes | Its typed value, for rules (`on()`): within one of its times now |
 | | `next_change` | `Timestamp` | no | When it next turns on or off. Absent for one that never changes |
+| `image` | none | | | No value: `state` is always `null`. Its picture isn't state |
+| `notify` | none | | | No value: `state` is always `null` |
+| `remote` | `on` | bool | yes | Its typed value, for rules (`on()`): what it drives is on |
+| | `activity` | string | no | The activity going, for one with `activities`, while it's on |
+| `weather` | `condition` | Home Assistant's conditions: `clear-night` \| `cloudy` \| `exceptional` \| `fog` \| `hail` \| `lightning` \| `lightning-rainy` \| `partlycloudy` \| `pouring` \| `rainy` \| `snowy` \| `snowy-rainy` \| `sunny` \| `windy` \| `windy-variant` | yes | Its typed value, for rules (`text()`) |
+| | `temperature`, `apparent_temperature`, `dew_point` | °C | no | |
+| | `humidity`, `cloud_coverage` | % | no | |
+| | `pressure` | hPa | no | |
+| | `wind_speed`, `wind_gust_speed` | km/h | no | |
+| | `wind_bearing` | degrees from north, 0–360 | no | Where the wind comes from |
+| | `uv_index` | number | no | |
+| | `visibility` | km | no | Forecasts aren't here yet |
+| `calendar` | `on` | bool | yes | Its typed value, for rules (`on()`): an event is on now |
+| | `event` | `{ summary, start, start_time?, end, end_time?, location?, description? }` | no | The event on now, or the next one, in the home's own time: days (`2026-11-20`) and times of day (`09:00:00`). One with no times lasts all day, and its `end` is the day after its last. Absent when it has none coming |
+| `todo` | `open` | integer, 0 or more | yes | Its typed value, for rules (`num()`): how many items are still to do. Its items aren't here yet |
 | `timer` | `state` | `idle` \| `active` \| `paused` | yes | Its typed value, for rules (`text()`) |
 | | `duration` | seconds, 0 to a year | yes | How long it runs when started without being told |
 | | `finishes_at` | `Timestamp` | while `active` | When it runs out. A running timer says this rather than how long is left, so its state doesn't change every second |
@@ -406,6 +431,9 @@ A field is one of the names in the table above, with its value as on/off, a numb
 | `timer` | `duration`, `remaining`, `finishes_at` |
 | `schedule` | `next_change` |
 | `camera` | `motion_detection` |
+| `remote` | `activity` |
+| `weather` | `temperature`, `apparent_temperature`, `dew_point`, `humidity`, `pressure`, `wind_speed`, `wind_gust_speed`, `wind_bearing`, `cloud_coverage`, `uv_index`, `visibility` |
+| `calendar` | `event`, the event's `summary` |
 
 An entity has the fields its capabilities allow (a light that can't dim has no `brightness`);
 readings nothing announces ahead of time, like a thermostat's `current_temperature`, are listed

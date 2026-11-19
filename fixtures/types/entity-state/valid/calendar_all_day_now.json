@@ -1,0 +1,23 @@
+{
+  "entity_id": "calendar.bins",
+  "availability": "available",
+  "state": {
+    "kind": "calendar",
+    "on": true,
+    "event": {
+      "summary": "Recycling",
+      "start": "2026-11-19",
+      "end": "2026-11-20"
+    }
+  },
+  "last_changed": "2026-11-19T08:04:12Z",
+  "last_updated": "2026-11-19T08:04:12Z",
+  "last_reported": "2026-11-19T08:04:12Z",
+  "context": {
+    "id": "01K5B2Q7M0N1P2Q3R4S5T6V7W8",
+    "origin": {
+      "type": "device",
+      "protocol": "homeassistant"
+    }
+  }
+}

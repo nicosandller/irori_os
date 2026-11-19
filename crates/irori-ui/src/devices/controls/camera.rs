@@ -104,6 +104,8 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
     }
     let id = entity.id.clone();
     let name = entity.name.to_string();
+    // An image is a picture something keeps, not what a camera sees.
+    let image = matches!(entity.capabilities, Capabilities::Image(_));
     let frame = RwSignal::new(0u64);
     let failed = RwSignal::new(false);
     let alive = RwSignal::new(true);
@@ -131,7 +133,7 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
         <figure class="camera-view" class:failed=move || failed.get()>
             <img
                 src=src
-                alt=format!("What {name} sees now")
+                alt=if image { name.clone() } else { format!("What {name} sees now") }
                 decoding="async"
                 on:load=move |_| failed.set(false)
                 on:error=move |_| failed.set(true)
@@ -139,6 +141,8 @@ pub(crate) fn camera_picture(entity: &Entity, open: Signal<bool>) -> AnyView {
             <figcaption class="muted small">
                 {move || if failed.get() {
                     "It didn't send a picture. Trying again in a moment."
+                } else if image {
+                    "Its latest picture"
                 } else {
                     "Live, a new picture every few seconds"
                 }}

@@ -23,9 +23,10 @@ mod updates;
 use self::builder::{HELPER_KINDS, HelperBuilder, HelperKind};
 pub(crate) use self::controls::moment::when as controls_when;
 pub(crate) use self::controls::{
-    alarm_words, camera_picture, camera_words, climate_words, fan_words, fill, humidifier_words,
-    lock_words, media_player_words, mower_words, number, opening_words, schedule_words,
-    timer_words, unit_of, update_words, vacuum_words, water_heater_words, wording,
+    alarm_words, calendar_words, camera_picture, camera_words, climate_words, fan_words, fill,
+    humidifier_words, lock_words, media_player_words, mower_words, number, opening_words,
+    remote_words, schedule_words, timer_words, todo_words, unit_of, update_words, vacuum_words,
+    water_heater_words, weather_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
 
@@ -2006,7 +2007,10 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::BinarySensor(_)
         | Capabilities::Event(_)
         | Capabilities::DeviceTracker(_)
-        | Capabilities::Schedule(_) => view! {
+        | Capabilities::Schedule(_)
+        | Capabilities::Image(_)
+        | Capabilities::Weather(_)
+        | Capabilities::Calendar(_) => view! {
             <button
                 type="button"
                 class="unroll reading-unroll"
@@ -2053,6 +2057,9 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::Humidifier(_)
         | Capabilities::MediaPlayer(_)
         | Capabilities::Camera(_)
+        | Capabilities::Notify(_)
+        | Capabilities::Remote(_)
+        | Capabilities::Todo(_)
         | Capabilities::Update(_) => view! {
             {control}
             <button
