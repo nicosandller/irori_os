@@ -17,6 +17,9 @@ irori-types.workspace = true
 irori-protocol.workspace = true
 irori-cloud.workspace = true
 
+# Home Assistant gzips its HLS playlists whatever the request asks (`http.rs`). The irori binary
+# already links it.
+flate2.workspace = true
 futures-util.workspace = true
 schemars.workspace = true
 serde.workspace = true

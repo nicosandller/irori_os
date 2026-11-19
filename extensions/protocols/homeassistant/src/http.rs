@@ -82,6 +82,7 @@ async fn fetch(base: &str, path: &str, token: &str, limit: usize) -> Result<Answ
     let mut content_type = None;
     let mut length = None;
     let mut chunked = false;
+    let mut gzipped = false;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -96,13 +97,14 @@ async fn fetch(base: &str, path: &str, token: &str, limit: usize) -> Result<Answ
             }
             "content-length" => length = value.parse::<usize>().ok(),
             "transfer-encoding" => chunked = value.to_ascii_lowercase().contains("chunked"),
+            "content-encoding" => gzipped = value.eq_ignore_ascii_case("gzip"),
             _ => {}
         }
     }
     match status {
         200 => {}
         401 | 403 => return Err("Home Assistant refused the token for this".into()),
-        404 => return Err("Home Assistant has no such camera".into()),
+        404 => return Err("Home Assistant has nothing at that address".into()),
         other => return Err(format!("Home Assistant answered {other}")),
     }
     if length.is_some_and(|length| length > limit) {
@@ -134,6 +136,9 @@ async fn fetch(base: &str, path: &str, token: &str, limit: usize) -> Result<Answ
     if chunked {
         body = unchunk(&body)?;
     }
+    if gzipped {
+        body = gunzip(&body, limit)?;
+    }
     if body.len() > limit {
         return Err(format!(
             "the picture is bigger than {} MB",
@@ -160,6 +165,17 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+/// A gzipped body, at most `limit` bytes once unzipped (one more says it's too big).
+fn gunzip(body: &[u8], limit: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut out = Vec::new();
+    flate2::read::GzDecoder::new(body)
+        .take(limit as u64 + 1)
+        .read_to_end(&mut out)
+        .map_err(|_| "Home Assistant's answer isn't readable".to_owned())?;
+    Ok(out)
 }
 
 /// A `Transfer-Encoding: chunked` body, put back together.
@@ -245,6 +261,25 @@ mod tests {
             .await
             .expect("a picture");
         assert_eq!(answer.body, b"PNG");
+    }
+
+    #[tokio::test]
+    async fn a_gzipped_answer_is_unzipped() {
+        use std::io::Write as _;
+        let mut zipped = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        zipped.write_all(b"#EXTM3U\n").expect("zip");
+        let zipped = zipped.finish().expect("zipped");
+        let mut answer = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nContent-Encoding: gzip\r\nContent-Length: {}\r\n\r\n",
+            zipped.len()
+        )
+        .into_bytes();
+        answer.extend_from_slice(&zipped);
+        let (base, _) = serve(answer).await;
+        let answer = get(&base, "/", "t", 1000, Duration::from_secs(5))
+            .await
+            .expect("a playlist");
+        assert_eq!(answer.body, b"#EXTM3U\n");
     }
 
     #[tokio::test]
