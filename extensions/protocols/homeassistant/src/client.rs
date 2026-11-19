@@ -2,7 +2,8 @@
 //! answer are matched by `id`; events arrive on the subscription's `id`.
 //!
 //! **This extension never changes Home Assistant** (rule 5 of milestone 11). Everything it sends
-//! is an [`Outgoing`], a closed list: signing in, the reads, subscribing and unsubscribing, and
+//! is an [`Outgoing`], a closed list: signing in, the reads, subscribing and unsubscribing,
+//! asking for a camera's stream to watch (`camera/stream`, which reads and changes nothing), and
 //! `call_service`, which [`crate`] sends only in answer to a command someone gave in Irori. There
 //! is no way to send a registry, area or automation write, and [`Client::request`] checks
 //! every message's type against [`ALLOWED`] once more before it leaves.
@@ -33,6 +34,7 @@ pub const ALLOWED: &[&str] = &[
     "subscribe_entities",
     "subscribe_events",
     "unsubscribe_events",
+    "camera/stream",
     "call_service",
 ];
 
@@ -76,6 +78,10 @@ pub enum Outgoing {
     Unsubscribe {
         subscription: u64,
     },
+    /// Where to watch a camera: an HLS playlist of fragmented MP4, for as long as it's read.
+    CameraStream {
+        entity_id: String,
+    },
     /// Only ever built by [`crate::model::command`], from a command someone gave in Irori.
     CallService {
         domain: String,
@@ -98,6 +104,7 @@ impl Outgoing {
             Self::SubscribeEntities { .. } => "subscribe_entities",
             Self::SubscribeEvents { .. } => "subscribe_events",
             Self::Unsubscribe { .. } => "unsubscribe_events",
+            Self::CameraStream { .. } => "camera/stream",
             Self::CallService { .. } => "call_service",
         }
     }
@@ -108,6 +115,10 @@ impl Outgoing {
             Self::SubscribeEntities { entity_ids } => body["entity_ids"] = json!(entity_ids),
             Self::SubscribeEvents { event_type } => body["event_type"] = json!(event_type),
             Self::Unsubscribe { subscription } => body["subscription"] = json!(subscription),
+            Self::CameraStream { entity_id } => {
+                body["entity_id"] = json!(entity_id);
+                body["format"] = json!("hls");
+            }
             Self::CallService {
                 domain,
                 service,
@@ -526,6 +537,9 @@ mod tests {
                 event_type: REGISTRY_EVENTS[0],
             },
             Outgoing::Unsubscribe { subscription: 3 },
+            Outgoing::CameraStream {
+                entity_id: "camera.front".into(),
+            },
             Outgoing::CallService {
                 domain: "light".into(),
                 service: "turn_on".into(),
@@ -551,6 +565,7 @@ mod tests {
                 | Outgoing::SubscribeEntities { .. }
                 | Outgoing::SubscribeEvents { .. }
                 | Outgoing::Unsubscribe { .. }
+                | Outgoing::CameraStream { .. }
                 | Outgoing::CallService { .. } => {}
             }
             assert!(allowed(message.kind()), "{} isn't allowed", message.kind());
@@ -566,8 +581,10 @@ mod tests {
         for kind in ALLOWED {
             let reads = kind.ends_with("/list") || kind.starts_with("get_");
             let subscribes = kind.starts_with("subscribe_") || kind.starts_with("unsubscribe_");
+            // Where to watch a camera: an address to read, nothing changed.
+            let watches = *kind == "camera/stream";
             assert!(
-                reads || subscribes || *kind == "auth" || *kind == "call_service",
+                reads || subscribes || watches || *kind == "auth" || *kind == "call_service",
                 "{kind} isn't a read, a subscription or a service call"
             );
         }

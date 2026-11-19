@@ -14,6 +14,7 @@
 
 pub mod client;
 pub mod http;
+pub mod live;
 pub mod model;
 pub mod settings;
 pub mod throttle;
@@ -28,8 +29,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use irori_protocol::{
-    AvailabilityTarget, Health, Incoming, IncomingCall, IncomingPicture, Picture, Protocol,
-    ProtocolContext, ProtocolError, ServiceError,
+    AvailabilityTarget, Health, Incoming, IncomingCall, IncomingLive, IncomingPicture, Picture,
+    Protocol, ProtocolContext, ProtocolError, ServiceError,
 };
 use irori_types::{
     Availability, Capabilities, ContextId, DeviceDescription, EntityDescription, SecretRequest,
@@ -112,7 +113,7 @@ const PICTURE_WITHIN: Duration = Duration::from_millis(4500);
 /// The picture types Irori takes.
 const PICTURE_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/svg+xml"];
 
-/// Answers what this extension doesn't do: actions, unpairing, live video and talking.
+/// Answers what this extension doesn't do: actions, unpairing and talking.
 fn turn_away(incoming: Incoming) {
     match incoming {
         Incoming::Action(action) => action.reply(Err("Home Assistant has no actions here".into())),
@@ -121,13 +122,10 @@ fn turn_away(incoming: Incoming) {
                 "remove it in Home Assistant; it leaves Irori too".into()
             ));
         }
-        Incoming::Live(live) => live.feed.end(Some(
-            "this camera can't be watched live through Home Assistant yet".into(),
-        )),
         Incoming::Talk(talk) => talk.line.end(Some(
             "you can't talk through a camera in Home Assistant from Irori".into(),
         )),
-        Incoming::Call(_) | Incoming::Picture(_) => {}
+        Incoming::Call(_) | Incoming::Picture(_) | Incoming::Live(_) => {}
     }
 }
 
@@ -202,6 +200,7 @@ async fn while_waiting<T>(ctx: &mut ProtocolContext, future: impl Future<Output 
                     NOT_CONNECTED,
                 ))),
                 Some(Incoming::Picture(picture)) => picture.reply(Err(NOT_CONNECTED.into())),
+                Some(Incoming::Live(live)) => live.feed.end(Some(NOT_CONNECTED.into())),
                 Some(other) => turn_away(other),
                 None => return None,
             },
@@ -476,6 +475,7 @@ async fn session(
             incoming = ctx.next() => match incoming {
                 Some(Incoming::Call(call)) => session.call(call, &done_tx),
                 Some(Incoming::Picture(picture)) => session.picture(picture, settings),
+                Some(Incoming::Live(live)) => session.live(live, settings),
                 Some(other) => turn_away(other),
                 None => return Ended::Stopped,
             },
@@ -874,6 +874,30 @@ impl Session<'_> {
                 }
             }));
         });
+    }
+
+    /// A camera watched live, through Home Assistant's own stream of it.
+    fn live(&self, live: IncomingLive, settings: &Settings) {
+        let camera = self
+            .by_unique_id
+            .get(&live.unique_id)
+            .map(|&index| &self.entities[index])
+            .filter(|bridged| {
+                matches!(&bridged.description.capabilities, Capabilities::Camera(camera) if camera.live)
+            });
+        let Some(camera) = camera else {
+            live.feed.end(Some(
+                "that isn't one of Home Assistant's cameras that stream".into(),
+            ));
+            return;
+        };
+        tokio::spawn(live::watch(
+            self.client.clone(),
+            settings.url.clone(),
+            settings.token.expose().to_owned(),
+            camera.entity_id.clone(),
+            live,
+        ));
     }
 
     /// A command was carried out. Its change may already have arrived, before the answer did:

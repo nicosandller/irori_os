@@ -51,7 +51,7 @@ async fn fetch(base: &str, path: &str, token: &str, limit: usize) -> Result<Answ
         .map_err(|why| format!("couldn't reach Home Assistant: {why}"))?;
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\n\
-         Accept: image/*\r\nConnection: close\r\n\r\n"
+         Accept: */*\r\nConnection: close\r\n\r\n"
     );
     stream
         .write_all(request.as_bytes())
