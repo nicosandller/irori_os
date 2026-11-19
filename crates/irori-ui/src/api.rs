@@ -631,12 +631,17 @@ pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), 
     checked(response).await
 }
 
-/// Adds every device `extension` has found and is holding, in one request ("Add all"). Answers
-/// how many joined the home.
-pub async fn add_found_devices(extension: &ExtensionId) -> Result<usize, String> {
+/// Adds every device `extension` has found and is holding ("Add all"), or only `chosen` of them
+/// ("Add selected"), in one request. Answers how many joined the home.
+pub async fn add_found_devices(
+    extension: &ExtensionId,
+    chosen: Option<&[DeviceId]>,
+) -> Result<usize, String> {
     #[derive(Serialize)]
     struct AddFound<'a> {
         protocol: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        devices: Option<&'a [DeviceId]>,
     }
     #[derive(Deserialize)]
     struct Added {
@@ -645,6 +650,7 @@ pub async fn add_found_devices(extension: &ExtensionId) -> Result<usize, String>
     let response = post("/api/devices/add")
         .json(&AddFound {
             protocol: extension.as_str(),
+            devices: chosen,
         })
         .map_err(|e| e.to_string())?
         .send()

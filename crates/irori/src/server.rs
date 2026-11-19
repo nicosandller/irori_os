@@ -1136,8 +1136,12 @@ async fn edit_device(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AddFound {
-    /// The extension whose found devices all join the home.
+    /// The extension whose found devices join the home.
     protocol: irori_types::ProtocolId,
+    /// Which of its found devices ("Add selected"). Left out, every one ("Add all"). One that
+    /// isn't among what the extension is holding (added a moment ago, or gone) is passed over.
+    #[serde(default)]
+    devices: Option<Vec<DeviceId>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1146,8 +1150,9 @@ struct AddedFound {
     added: usize,
 }
 
-/// Adds every device one extension has found and is holding, as "+ Add device" would one at a
-/// time, in a single edit of `devices.toml` ("Add all"). A home with hundreds of found devices
+/// Adds every device one extension has found and is holding ("Add all"), or the ones chosen of
+/// them ("Add selected"), as "+ Add device" would one at a time, in a single edit of
+/// `devices.toml`. A home with hundreds of found devices
 /// (a bridge to another system) would otherwise take one request, and one rewrite of the file,
 /// per device. They join the core a few at a time, so the events they bring never pile up past
 /// what a listener can fall behind by ([`Config::add_devices`]). Devices of other extensions are
@@ -1165,6 +1170,12 @@ async fn add_found_devices(
         .held_devices()
         .into_iter()
         .filter(|device| device.protocol == protocol)
+        .filter(|device| {
+            request
+                .devices
+                .as_ref()
+                .is_none_or(|chosen| chosen.contains(&device.id))
+        })
         .map(|device| (device.id, device.provides.values().sum()))
         .collect();
     if found.is_empty() {
@@ -6547,6 +6558,79 @@ mod tests {
     /// "Add all" takes in every device one extension is holding, in one edit, and touches no
     /// other extension's. Asked again there's nothing left and nothing is written; an extension
     /// that isn't there is a 404.
+    /// "Add selected": the chosen ones of an extension's found devices join in one request, and
+    /// the rest stay found. A chosen device that is another extension's, or isn't found at all,
+    /// is passed over rather than added.
+    #[tokio::test]
+    async fn the_chosen_found_devices_of_one_extension_are_added_at_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Mesh>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let held = |protocol: &str| {
+            let mut ids = core
+                .held_devices()
+                .into_iter()
+                .filter(|device| device.protocol.as_str() == protocol)
+                .map(|device| device.id.to_string())
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        for _ in 0..500 {
+            if held("mesh").len() == 4 && !held("demo").is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mesh = held("mesh");
+        let demo = held("demo");
+        assert_eq!(mesh.len(), 4, "{mesh:?}");
+        let (chosen, left) = mesh.split_at(2);
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({
+                    "protocol": "mesh",
+                    "devices": [chosen[0], chosen[1], demo[0], "no_such_device"],
+                }),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 2, "{body}");
+        assert_eq!(held("mesh"), left, "the ones not chosen are still found");
+        assert_eq!(held("demo"), demo, "another extension's device isn't added");
+        let mut in_home: Vec<String> = core.devices().iter().map(|d| d.id.to_string()).collect();
+        in_home.sort();
+        assert_eq!(in_home, chosen);
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert_eq!(devices.matches("added = true").count(), 2, "{devices}");
+
+        // Nothing chosen is nothing added.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "mesh", "devices": []}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 0, "{body}");
+        assert_eq!(held("mesh"), left);
+        host.shutdown().await;
+        Ok(())
+    }
+
     #[tokio::test]
     async fn every_found_device_of_one_extension_is_added_at_once() -> anyhow::Result<()> {
         let core = core();
