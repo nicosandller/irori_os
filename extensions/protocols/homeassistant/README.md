@@ -10,7 +10,8 @@ in Irori. Nothing about your Home Assistant changes.
 - **Signs in** to Home Assistant's WebSocket API (`/api/websocket`) with a long-lived access
   token of an administrator, at its local `http://` address (`ws://`). Not `https://`: a
   certificate is only trusted when a public authority issued it for the name used, and none is
-  ever issued for a local name or a private address. The token never leaves the local network.
+  ever issued for a local name or a private address. So the token travels unencrypted on the
+  local network, as anything signing in to Home Assistant over `http://` does.
 - **Reads** the floor, area, device and entity registries and every entity's state, and follows
   them: entities' changes through `subscribe_entities` (only the entities it brought over), and
   the four registries' `*_registry_updated` events. A registry change is read again two seconds
@@ -21,6 +22,9 @@ in Irori. Nothing about your Home Assistant changes.
   also reaches (an ESPHome board, a Zigbee bulb) is recognised and not listed twice.
 - **Brings over entities** keyed by their entity registry entry's id, which stays the same when
   an entity is renamed. Each keeps its name and its entity id after the `.`.
+- **Removes what no longer comes over**: removed or disabled in Home Assistant, or left out in
+  this extension's settings, also while Irori wasn't running. It keeps the ids it brought over in
+  its own store for that. An entity Home Assistant lists but hasn't loaded yet stays.
 - **Proposes Home Assistant's floors and rooms**, by name, for the owner to bring over in one
   step from the extension's page. Devices land in their rooms once those exist.
 - **Lists what it doesn't bring over** on the extension's page: an entity Irori couldn't take
@@ -82,8 +86,9 @@ case.
 Every extension shares the core's event broadcast, its history queue and the home's write lock.
 A big Home Assistant must not crowd out a home's own devices, so this extension holds itself to:
 
-- **At most 2,000 entities.** Past that the same 2,000 are always taken (in the order of their
-  registry ids), and the extension's page says how many more qualified and how to narrow it.
+- **At most 2,000 entities.** Past that, those already in the home are kept and the rest wait
+  (new ones in the order of their registry ids), and the extension's page says how many more
+  qualified and how to narrow it.
 - **A sensor reports at most once a second**, the newest value winning.
 - **About 150 reports a second in all**, in batches of 15 every 100 ms, the longest waiting first.
   What answers a command goes first.
@@ -93,7 +98,7 @@ A big Home Assistant must not crowd out a home's own devices, so this extension 
 
 `dev/ha-load` checks this holds against a fake Home Assistant of 2,000 and 5,000 entities.
 
-## Never writes to Home Assistant
+## Never changes Home Assistant's setup
 
 What this extension can send is a closed list, checked again before anything leaves: signing in,
 `get_config`, the four registries' `list`, `get_states`, `subscribe_entities`,
@@ -139,5 +144,3 @@ extension then says so on its page and asks for another token there.
 - History from Home Assistant's recorder (#167), a welcome step for trying Irori this way (#166),
   showing which side runs what (#169), handing a device over from Home Assistant to a native
   extension (#168), and packaging for Home Assistant OS (#170, #171).
-- A device removed in Home Assistant while this extension isn't running stays in Irori until it's
-  removed there.

@@ -25,7 +25,7 @@ pub mod fake;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::Future;
 use std::time::Duration;
 
@@ -137,6 +137,7 @@ pub async fn drive(
     timing: Timing,
 ) -> Result<(), ProtocolError> {
     let mut bridge = Bridge::default();
+    bridge.recall(&ctx).await;
     let mut retry = timing.first_retry;
     loop {
         let url = settings.websocket_url();
@@ -232,9 +233,95 @@ struct Bridge {
     /// What the last plan brought over, by `entity_id`: kept while Home Assistant has no state
     /// for one (see [`model::plan_keeping`]).
     brought: HashMap<String, Bridged>,
+    /// What an earlier run brought over and this one hasn't yet: removed from the home once Home
+    /// Assistant is read, unless it still comes over (or is still loading there).
+    earlier_entities: BTreeSet<UniqueId>,
+    earlier_devices: BTreeSet<UniqueId>,
+    /// What's kept in the store, as last written.
+    stored_entities: Vec<UniqueId>,
+    stored_devices: Vec<UniqueId>,
+}
+
+/// Where the `unique_id`s brought over are kept across restarts: `<key>.0`, `<key>.1`, ….
+const STORED_ENTITIES: &str = "brought.entities";
+const STORED_DEVICES: &str = "brought.devices";
+/// How much of [`irori_protocol::MAX_STORED_VALUE`] one part may use.
+const STORED_PART: usize = 48 * 1024;
+/// The most parts read back: far more than 2,000 ids need.
+const MOST_PARTS: usize = 16;
+
+/// Reads the ids kept under `key`.
+async fn load_ids(ctx: &ProtocolContext, key: &str) -> (Vec<UniqueId>, usize) {
+    let mut ids = Vec::new();
+    let mut parts = 0;
+    while parts < MOST_PARTS {
+        match ctx.load(&format!("{key}.{parts}")).await {
+            Ok(Some(value)) => {
+                let part: Vec<String> = serde_json::from_value(value).unwrap_or_default();
+                ids.extend(
+                    part.iter()
+                        .filter_map(|id| UniqueId::try_from(id.as_str()).ok()),
+                );
+                parts += 1;
+            }
+            Ok(None) => break,
+            Err(why) => {
+                tracing::warn!(key, %why, "couldn't read what was brought over before");
+                break;
+            }
+        }
+    }
+    (ids, parts)
+}
+
+/// Keeps `ids` under `key`, in parts small enough for the store, and forgets parts left over
+/// from a longer list.
+async fn store_ids(ctx: &ProtocolContext, key: &str, ids: &[UniqueId]) {
+    let mut parts: Vec<Vec<&str>> = vec![Vec::new()];
+    let mut size = 2;
+    for id in ids {
+        let more = id.as_str().len() + 3;
+        if size + more > STORED_PART {
+            parts.push(Vec::new());
+            size = 2;
+        }
+        size += more;
+        parts.last_mut().expect("a part").push(id.as_str());
+    }
+    for (index, part) in parts.iter().enumerate() {
+        if let Err(why) = ctx
+            .store(&format!("{key}.{index}"), serde_json::json!(part))
+            .await
+        {
+            tracing::warn!(key, %why, "couldn't keep what was brought over");
+            return;
+        }
+    }
+    for index in parts.len()..MOST_PARTS {
+        let _ = ctx.forget(&format!("{key}.{index}")).await;
+    }
 }
 
 impl Bridge {
+    /// Reads what an earlier run brought over.
+    async fn recall(&mut self, ctx: &ProtocolContext) {
+        let (entities, _) = load_ids(ctx, STORED_ENTITIES).await;
+        let (devices, _) = load_ids(ctx, STORED_DEVICES).await;
+        self.earlier_entities = entities.iter().cloned().collect();
+        self.earlier_devices = devices.iter().cloned().collect();
+        self.stored_entities = entities;
+        self.stored_devices = devices;
+    }
+
+    /// The `unique_id`s of the entities brought over, in this run or an earlier one.
+    fn before(&self) -> BTreeSet<String> {
+        self.entities
+            .keys()
+            .chain(&self.earlier_entities)
+            .map(|id| id.as_str().to_owned())
+            .collect()
+    }
+
     /// Tells the core what changed since it was last told.
     async fn apply(&mut self, ctx: &ProtocolContext, plan: &Plan) {
         for device in &plan.devices {
@@ -269,10 +356,12 @@ impl Bridge {
             .iter()
             .map(|b| &b.description.unique_id)
             .collect();
-        let gone: Vec<UniqueId> = self
+        // What an earlier run brought over goes too, unless it's still loading in Home Assistant.
+        let gone: BTreeSet<UniqueId> = self
             .entities
             .keys()
-            .filter(|id| !keep.contains(id))
+            .chain(&self.earlier_entities)
+            .filter(|id| !keep.contains(id) && !plan.unloaded_entities.contains(*id))
             .cloned()
             .collect();
         for id in gone {
@@ -280,18 +369,28 @@ impl Bridge {
             self.entities.remove(&id);
             self.told.remove(&id);
         }
+        self.earlier_entities = std::mem::take(&mut self.earlier_entities)
+            .into_iter()
+            .filter(|id| plan.unloaded_entities.contains(id))
+            .collect();
         let keep: std::collections::HashSet<&UniqueId> =
             plan.devices.iter().map(|d| &d.unique_id).collect();
-        let gone: Vec<UniqueId> = self
+        let gone: BTreeSet<UniqueId> = self
             .devices
             .keys()
-            .filter(|id| !keep.contains(id))
+            .chain(&self.earlier_devices)
+            .filter(|id| !keep.contains(id) && !plan.unloaded_devices.contains(*id))
             .cloned()
             .collect();
         for id in gone {
             let _ = ctx.remove_device(id.clone()).await;
             self.devices.remove(&id);
         }
+        self.earlier_devices = std::mem::take(&mut self.earlier_devices)
+            .into_iter()
+            .filter(|id| plan.unloaded_devices.contains(id))
+            .collect();
+        self.remember(ctx).await;
         if self.unmodeled.as_ref() != Some(&plan.unmodeled) {
             ctx.set_unmodeled(plan.unmodeled.clone()).await;
             self.unmodeled = Some(plan.unmodeled.clone());
@@ -304,6 +403,34 @@ impl Bridge {
         if self.network.as_ref() != Some(&plan.network) {
             ctx.set_networks(vec![plan.network.clone()]).await;
             self.network = Some(plan.network.clone());
+        }
+    }
+
+    /// Keeps what's in the home from here, for the next run to tidy up after.
+    async fn remember(&mut self, ctx: &ProtocolContext) {
+        let entities: Vec<UniqueId> = self
+            .entities
+            .keys()
+            .chain(&self.earlier_entities)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if entities != self.stored_entities {
+            store_ids(ctx, STORED_ENTITIES, &entities).await;
+            self.stored_entities = entities;
+        }
+        let devices: Vec<UniqueId> = self
+            .devices
+            .keys()
+            .chain(&self.earlier_devices)
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        if devices != self.stored_devices {
+            store_ids(ctx, STORED_DEVICES, &devices).await;
+            self.stored_devices = devices;
         }
     }
 
@@ -589,7 +716,8 @@ impl Session<'_> {
         registry: &Registry,
         settings: &Settings,
     ) -> Result<(), HaError> {
-        let plan = model::plan_keeping(registry, settings, &self.bridge.brought);
+        let before = self.bridge.before();
+        let plan = model::plan_keeping(registry, settings, &self.bridge.brought, &before);
         self.bridge.apply(ctx, &plan).await;
         self.bridge.brought = plan
             .entities
@@ -626,6 +754,8 @@ impl Session<'_> {
         // A capability that changed (a new color mode) can change how a value reads.
         self.reported
             .retain(|id, _| self.by_unique_id.contains_key(id));
+        self.cache
+            .retain(|entity_id, _| self.by_entity_id.contains_key(entity_id));
         if !resubscribe {
             return Ok(());
         }
@@ -838,6 +968,10 @@ impl Session<'_> {
                     }
                     call.reply(Ok(()));
                 }
+                // No answer isn't a no: Home Assistant may still carry it out.
+                Err(why) if why.code.is_none() => call.reply(Err(ServiceError::failed(format!(
+                    "no answer from Home Assistant ({why}); it may still happen"
+                )))),
                 Err(why) => call.reply(Err(ServiceError::failed(format!(
                     "Home Assistant didn't do it: {why}"
                 )))),

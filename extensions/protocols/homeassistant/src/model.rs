@@ -269,6 +269,10 @@ pub struct Plan {
     pub absent: Vec<UniqueId>,
     /// The map of the devices that come over.
     pub network: Network,
+    /// Entities brought over in an earlier run (`before`) that Home Assistant still lists but
+    /// has no state for yet, and their devices: not brought over now, but not gone either.
+    pub unloaded_entities: BTreeSet<UniqueId>,
+    pub unloaded_devices: BTreeSet<UniqueId>,
 }
 
 pub fn domain(entity_id: &str) -> &str {
@@ -291,17 +295,22 @@ fn same(a: &str, b: &str) -> bool {
 
 /// Works out what comes over.
 pub fn plan(registry: &Registry, settings: &Settings) -> Plan {
-    plan_keeping(registry, settings, &HashMap::new())
+    plan_keeping(registry, settings, &HashMap::new(), &BTreeSet::new())
 }
 
 /// [`plan`], keeping the entities in `known` (by `entity_id`, as last brought over) that Home
 /// Assistant still lists but has no state for right now. An integration reloading drops its
 /// states for a moment; read then, they'd seem gone, and be removed from the home with the room
 /// and name they were given there.
+///
+/// `before` holds the `unique_id`s of the entities brought over before, in this run or an
+/// earlier one. Past [`MAX_ENTITIES`] they're taken first, so an entity added in Home Assistant
+/// never pushes one already in the home out of it.
 pub fn plan_keeping(
     registry: &Registry,
     settings: &Settings,
     known: &HashMap<String, Bridged>,
+    before: &BTreeSet<String>,
 ) -> Plan {
     let areas: HashMap<&str, &HaArea> = registry
         .areas
@@ -318,6 +327,8 @@ pub fn plan_keeping(
 
     let mut taken: Vec<(&HaEntity, Option<&HaDevice>, Capabilities)> = Vec::new();
     let mut unmodeled: Vec<(Option<&HaDevice>, Unmodeled)> = Vec::new();
+    let mut unloaded_entities = BTreeSet::new();
+    let mut unloaded_devices = BTreeSet::new();
     for entity in &registry.entities {
         if entity.disabled_by.is_some() {
             continue;
@@ -362,8 +373,15 @@ pub fn plan_keeping(
         let Some(state) = registry.states.get(&entity.entity_id) else {
             // Not loaded in Home Assistant right now: nothing to tell its kind or abilities by,
             // unless it was brought over before.
-            if let Some(before) = known.get(&entity.entity_id) {
-                taken.push((entity, device, before.description.capabilities.clone()));
+            if let Some(earlier) = known.get(&entity.entity_id) {
+                taken.push((entity, device, earlier.description.capabilities.clone()));
+            } else if before.contains(&entity.id)
+                && let Ok(unique_id) = UniqueId::try_from(entity.id.as_str())
+            {
+                // Brought over in an earlier run: it waits in the home for its state.
+                unloaded_entities.insert(unique_id);
+                unloaded_devices
+                    .extend(device.and_then(|d| UniqueId::try_from(d.id.as_str()).ok()));
             }
             continue;
         };
@@ -387,10 +405,15 @@ pub fn plan_keeping(
         }
     }
 
-    // The same ones every time, whatever order Home Assistant lists them in.
-    taken.sort_by(|a, b| a.0.id.cmp(&b.0.id));
+    // The same ones every time, whatever order Home Assistant lists them in: those already in
+    // the home first, so a new one waits rather than taking an old one's place.
+    taken.sort_by(|a, b| {
+        let new = |id: &String| !before.contains(id);
+        (new(&a.0.id), &a.0.id).cmp(&(new(&b.0.id), &b.0.id))
+    });
     let over = taken.len().saturating_sub(MAX_ENTITIES);
     taken.truncate(MAX_ENTITIES);
+    taken.sort_by(|a, b| a.0.id.cmp(&b.0.id));
 
     // Devices with something taken, and the devices they're reached through, parents first.
     let mut wanted: BTreeSet<&str> = taken
@@ -509,6 +532,8 @@ pub fn plan_keeping(
         waiting,
         layout: layout(&registry.floors, &registry.areas),
         absent,
+        unloaded_entities,
+        unloaded_devices,
     }
 }
 
@@ -1822,6 +1847,37 @@ mod tests {
             "{}",
             plan.waiting[0].reason
         );
+    }
+
+    #[test]
+    fn past_the_limit_a_new_entity_waits_behind_those_already_in_the_home() {
+        let mut registry = registry();
+        registry.entities.clear();
+        let add = |registry: &mut Registry, id: &str| {
+            let entity_id = format!("switch.{id}");
+            registry.entities.push(entity(id, &entity_id, Some("d1")));
+            registry.states.insert(
+                entity_id,
+                HaState {
+                    state: "on".into(),
+                    attributes: Map::new(),
+                },
+            );
+        };
+        for n in 1..=MAX_ENTITIES {
+            add(&mut registry, &format!("id{n:05}"));
+        }
+        let first = plan(&registry, &settings());
+        let before: BTreeSet<String> = first
+            .entities
+            .iter()
+            .map(|b| b.description.unique_id.as_str().to_owned())
+            .collect();
+        // Added in Home Assistant, with an id that sorts ahead of all of them.
+        add(&mut registry, "id00000");
+        let next = plan_keeping(&registry, &settings(), &HashMap::new(), &before);
+        assert_eq!(next.entities, first.entities);
+        assert!(next.waiting[0].reason.starts_with("1 more"));
     }
 
     #[test]
