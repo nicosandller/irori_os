@@ -200,11 +200,13 @@ fn page(
     let areas = shape.areas.clone();
     // A camera's picture gets a card of its own, open, between what the device is and the rest
     // of what it has.
-    let (cameras, entities): (Vec<Entity>, Vec<Entity>) = shape
-        .entities
-        .iter()
-        .cloned()
-        .partition(|entity| matches!(entity.capabilities, Capabilities::Camera(_)));
+    let (cameras, entities): (Vec<Entity>, Vec<Entity>) =
+        shape.entities.iter().cloned().partition(|entity| {
+            matches!(
+                entity.capabilities,
+                Capabilities::Camera(_) | Capabilities::Image(_)
+            )
+        });
     let has_camera = !cameras.is_empty();
     let also_has = also_has(&shape.unmodeled);
     let subtitle = [device.manufacturer.clone(), device.model.clone()]
@@ -632,23 +634,38 @@ fn also_has(unmodeled: &[irori_types::Unmodeled]) -> Option<String> {
         return None;
     }
     let mut by_platform: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
-    let mut refused = Vec::new();
+    // Entities refused for the same reason are named together and the reason said once: a
+    // camera with two streams is one sentence, not the same sentence twice.
+    let mut refused: Vec<(&str, &str, Vec<&str>)> = Vec::new();
     for entry in unmodeled {
         let platform = entry.platform.as_str();
         let name = entry.name.as_ref().map(irori_types::Name::as_str);
         match &entry.reason {
-            Some(why) => refused.push(match name {
-                Some(name) => format!("{name} ({}): {why}", platform.replace('_', " ")),
-                None => format!("a {}: {why}", platform.replace('_', " ")),
-            }),
+            Some(why) => {
+                match refused
+                    .iter_mut()
+                    .find(|(p, w, _)| *p == platform && *w == why.as_str())
+                {
+                    Some((_, _, names)) => names.extend(name),
+                    None => refused.push((platform, why.as_str(), name.into_iter().collect())),
+                }
+            }
             None => by_platform.entry(platform).or_default().extend(name),
         }
     }
+    let named = |platform: &str, names: &[&str]| match names {
+        [] => platform.replace('_', " "),
+        names => format!("{} ({})", names.join(", "), platform.replace('_', " ")),
+    };
     let items: Vec<String> = by_platform
         .into_iter()
-        .map(|(platform, names)| match names.as_slice() {
-            [] => platform.replace('_', " "),
-            names => format!("{} ({})", names.join(", "), platform.replace('_', " ")),
+        .map(|(platform, names)| named(platform, &names))
+        .collect();
+    let refused: Vec<String> = refused
+        .into_iter()
+        .map(|(platform, why, names)| match names.as_slice() {
+            [] => format!("a {}: {why}", platform.replace('_', " ")),
+            names => format!("{}: {why}", named(platform, names)),
         })
         .collect();
     let mut said = Vec::new();
@@ -796,7 +813,7 @@ fn EntityRow(
                 view! {
                     <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
                         <div class="drawer-inner">
-                            {matches!(entity.capabilities, Capabilities::Camera(_))
+                            {matches!(entity.capabilities, Capabilities::Camera(_) | Capabilities::Image(_))
                                 .then(|| devices::camera_picture(&entity, open))}
                             {history_panel(entity.clone(), history.clone(), state.into())}
                         </div>
@@ -1066,7 +1083,7 @@ pub(crate) fn drawn_day(
 ) -> AnyView {
     if matches!(
         entity.capabilities,
-        Capabilities::Button(_) | Capabilities::Scene(_)
+        Capabilities::Button(_) | Capabilities::Scene(_) | Capabilities::Notify(_)
     ) {
         return presses(&states);
     }
@@ -1381,7 +1398,18 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             flag_word(&entity.capabilities, switch.on).to_owned()
         }
-        (Capabilities::Button(_) | Capabilities::Scene(_), _) => "—".to_owned(),
+        (Capabilities::Button(_) | Capabilities::Scene(_) | Capabilities::Notify(_), _) => {
+            "—".to_owned()
+        }
+        (Capabilities::Image(_), _) => "Picture".to_owned(),
+        (Capabilities::Remote(_), Some(State::Remote(remote))) => devices::remote_words(remote),
+        (Capabilities::Weather(_), Some(State::Weather(weather))) => {
+            devices::weather_words(weather)
+        }
+        (Capabilities::Calendar(_), Some(State::Calendar(calendar))) => {
+            devices::calendar_words(calendar)
+        }
+        (Capabilities::Todo(_), Some(State::Todo(todo))) => devices::todo_words(todo.open),
         (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
         (Capabilities::Cover(_), Some(State::Cover(cover))) => {
             devices::opening_words(cover.opening())
@@ -1605,6 +1633,14 @@ mod tests {
                 "Also has Ceiling fan (fan); Timeout, Sensitivity (number); water heater, \
                  which Irori doesn't support yet."
             )
+        );
+        let not_yet = |name: &str| irori_types::Unmodeled {
+            reason: Some("not brought over yet".into()),
+            ..entry("camera", Some(name))
+        };
+        assert_eq!(
+            also_has(&[not_yet("Clear"), not_yet("Fluent")]).as_deref(),
+            Some("Couldn't use Clear, Fluent (camera): not brought over yet.")
         );
     }
 

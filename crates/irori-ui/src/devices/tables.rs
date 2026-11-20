@@ -376,7 +376,10 @@ fn entity_row(
     let drawer = unroll.map(|unroll| {
         let open = unroll.open;
         let panel = crate::device::history_panel(entity.clone(), histories.day(&id), state.into());
-        let picture = matches!(entity.capabilities, irori_types::Capabilities::Camera(_))
+        let picture = matches!(
+            entity.capabilities,
+            irori_types::Capabilities::Camera(_) | irori_types::Capabilities::Image(_)
+        )
             .then(|| super::camera_picture(&entity, open));
         view! {
             <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>

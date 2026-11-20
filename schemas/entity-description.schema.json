@@ -1198,6 +1198,104 @@
           "required": [
             "kind"
           ]
+        },
+        {
+          "description": "What an image can do: be looked at. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "image"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "notify"
+            },
+            "title": {
+              "description": "A message can have a title.",
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activities": {
+              "description": "The activities it can start, by name. Empty for one that has none.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "kind": {
+              "type": "string",
+              "const": "remote"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a weather entity can do: say the weather. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "weather"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "description": "What a calendar can do: say its events. Nothing to say yet.",
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "calendar"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "add": {
+              "description": "Items can be added to it.",
+              "type": "boolean",
+              "default": false
+            },
+            "kind": {
+              "type": "string",
+              "const": "todo"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ]
         }
       ]
     },

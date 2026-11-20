@@ -2085,6 +2085,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-protocol-homeassistant"
+version = "0.0.0"
+dependencies = [
+ "flate2",
+ "futures-util",
+ "irori-cloud",
+ "irori-protocol",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "irori-protocol-matter"
 version = "0.0.0"
 dependencies = [
@@ -5262,6 +5280,7 @@ dependencies = [
  "irori-flow-types",
  "irori-protocol",
  "irori-protocol-cast",
+ "irori-protocol-homeassistant",
  "irori-protocol-matter",
  "irori-protocol-mqtt",
  "irori-protocol-onvif",

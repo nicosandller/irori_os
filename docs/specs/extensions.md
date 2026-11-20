@@ -172,6 +172,7 @@ which format it reads, and Irori converts down (`irori_types::format`):
 | 25 | `schedule` |
 | 26 | `camera` |
 | 27 | Cameras' `live`, `qualities`, `pan_tilt`, `zoom` and `presets`, and their state's `presets` (an older reader gets cameras without them) |
+| 28 | `image`, `notify`, `remote`, `weather`, `calendar`, `todo` |
 
 A reader of an older format isn't sent entities of newer kinds at all (nor their states, history
 or changes), and is sent the others without the newer fields or values. Every change to what an
