@@ -185,6 +185,9 @@ pub enum FromExt {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_id: Option<ContextId>,
     },
+    /// The answer to a `ping`, and, sent once after a `hello` that offers pings, word that this
+    /// extension answers them. The core pings only an extension that has said so.
+    Pong {},
     /// The answer to an `app_request` from the extension's page.
     AppAnswer {
         id: u64,
@@ -208,7 +211,15 @@ pub type WireCommand = String;
 pub enum ToExt {
     Hello {
         settings: serde_json::Value,
+        /// The core will ping this extension if it answers `pong`. Absent from a core that
+        /// doesn't ping, and ignored by an extension that doesn't answer, so neither side has
+        /// to be the newer one.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        pings: bool,
     },
+    /// Are you still there? Answered with `pong`. Sent only to an extension that said, after
+    /// `hello`, that it answers.
+    Ping {},
     Reply {
         id: u64,
         #[serde(default)]
@@ -430,13 +441,17 @@ pub async fn serve<I: Protocol>() -> Result<(), ProtocolError> {
         .await
         .map_err(|e| ProtocolError::new(format!("reading hello failed: {e}")))?
         .map_err(|_| ProtocolError::new("the host closed the connection before hello"))?;
-    let ToExt::Hello { settings } = hello else {
+    let ToExt::Hello { settings, pings } = hello else {
         return Err(ProtocolError::new(
             "first message from the host must be hello",
         ));
     };
     let config: I::Config = serde_json::from_value(settings)
         .map_err(|e| ProtocolError::new(crate::invalid_settings(e)))?;
+    if pings {
+        // Tells the core this extension answers pings, so it may start sending them.
+        let _ = send_line(&out_tx, &FromExt::Pong {}).await;
+    }
 
     let pending_out = Arc::clone(&pending);
     let outgoing = tokio::spawn(async move {
@@ -815,6 +830,14 @@ fn handle_host_line(
         }
         ToExt::TalkAudio { stream, data } => pending.talk_audio(stream, &data),
         ToExt::TalkStop { stream } => pending.stop_talk(stream),
+        ToExt::Ping {} => {
+            // Answered from a task on the protocol's runtime, not from this thread: the answer
+            // then says the runtime still runs tasks, which a deadlocked extension's doesn't.
+            let out = out.clone();
+            runtime.spawn(async move {
+                let _ = send_line(&out, &FromExt::Pong {}).await;
+            });
+        }
         ToExt::Stop => return ReadControl::Stop,
         // Engine traffic is read by `engine::run`, not by a protocol extension's `serve`.
         // A line that arrives here is consumed so the reader stays up; the same messages
@@ -1459,11 +1482,44 @@ mod tests {
     fn hello_round_trips() {
         let msg = ToExt::Hello {
             settings: serde_json::json!({"sensor_interval_secs": 3}),
+            pings: false,
         };
         let json = serde_json::to_string(&msg).expect("ser");
         let back: ToExt = serde_json::from_str(&json).expect("de");
-        assert!(matches!(back, ToExt::Hello { .. }));
+        assert!(matches!(back, ToExt::Hello { pings: false, .. }));
         assert!(json.contains("\"type\":\"hello\""));
+        // A hello that doesn't offer pings reads exactly as one from a core without them.
+        assert!(!json.contains("pings"), "{json}");
+        let offered: ToExt =
+            serde_json::from_str(r#"{"type":"hello","settings":{},"pings":true}"#).expect("de");
+        assert!(matches!(offered, ToExt::Hello { pings: true, .. }));
+    }
+
+    /// A ping is answered by a task on the protocol's runtime, so the answer says that runtime
+    /// still runs tasks (issue #98).
+    #[tokio::test]
+    async fn a_ping_is_answered_with_a_pong() {
+        let pending = Pending::default();
+        let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
+        let (actions, _actions_rx) = tokio::sync::mpsc::channel(1);
+        let (out_tx, mut out_rx) = mpsc::channel(STDOUT_QUEUE);
+        let runtime = tokio::runtime::Handle::current();
+
+        let control = handle_host_line(
+            r#"{"type":"ping"}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(
+            control,
+            ReadControl::Continue,
+            "a ping doesn't end the reader"
+        );
+        let line = out_rx.recv().await.expect("an answer");
+        assert_eq!(line, "{\"type\":\"pong\"}\n");
     }
 
     /// The failure this guards: a `reply` was sitting unread in stdin while `describe_*` waited

@@ -1312,6 +1312,7 @@ async fn a_settings_change_during_retry_restarts_without_waiting_out_the_delay()
             max_retry: Duration::from_secs(300),
             healthy_after: Duration::from_secs(600),
             stop_grace: Duration::from_secs(1),
+            ..Timing::default()
         },
     )
     .expect("unique ids");
@@ -2049,6 +2050,128 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
         status(&core, "lamp")
     );
     assert!(arrived(), "the long message arrived whole");
+
+    host.shutdown().await;
+}
+
+/// Pings fast enough for a test: a process that says nothing for 400 ms is hung.
+fn quick_pings() -> Timing {
+    Timing {
+        ping_every: Duration::from_millis(100),
+        quiet_for: Duration::from_millis(400),
+        ..Timing::default()
+    }
+}
+
+/// A process that said it answers pings and then stops answering is ended, reported and
+/// restarted, not left "running" with stale values (issue #98).
+#[tokio::test]
+async fn a_process_that_stops_answering_pings_is_restarted() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    let starts = dir.join("starts");
+    // Says it answers pings, then hangs: it neither reads nor writes again.
+    script_package(
+        dir,
+        "hangs",
+        &format!(
+            "#!/bin/sh
+echo started >> '{}'
+read hello
+echo '{{\"type\":\"pong\"}}'
+sleep 1000
+",
+            starts.display()
+        ),
+    );
+    let host = ExtensionHost::start_with_packages(&core, vec![], quick_pings(), dir.to_path_buf())
+        .expect("starts");
+
+    eventually("it's reported as stopped answering", || {
+        matches!(
+            status(&core, "hangs"),
+            Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("stopped answering")
+        )
+    })
+    .await;
+    eventually("it's restarted", || pids_in(&starts).len() >= 2).await;
+
+    host.shutdown().await;
+}
+
+/// An extension that never said it answers pings, one built before them or written without
+/// them, is never pinged and never taken for hung, however quiet it is.
+#[tokio::test]
+async fn a_process_that_never_said_it_answers_pings_is_left_alone() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    let heard = dir.join("heard");
+    script_package(
+        dir,
+        "quiet",
+        &format!(
+            "#!/bin/sh
+while read line; do echo \"$line\" >> '{}'; done
+",
+            heard.display()
+        ),
+    );
+    let host = ExtensionHost::start_with_packages(&core, vec![], quick_pings(), dir.to_path_buf())
+        .expect("starts");
+
+    eventually("it's running", || {
+        status(&core, "quiet") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(status(&core, "quiet"), Some(ExtensionStatus::Running));
+    let heard = pids_in(&heard);
+    assert_eq!(heard.len(), 1, "only its hello: {heard:?}");
+    assert!(heard[0].contains("\"pings\":true"), "it was offered pings");
+
+    host.shutdown().await;
+}
+
+/// An extension that answers its pings stays up, and is pinged while it's quiet.
+#[tokio::test]
+async fn a_process_that_answers_pings_stays_up() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    let pings = dir.join("pings");
+    let starts = dir.join("starts");
+    script_package(
+        dir,
+        "answers",
+        &format!(
+            "#!/bin/sh
+echo $$ >> '{}'
+read hello
+echo '{{\"type\":\"pong\"}}'
+\
+             while read line; do case \"$line\" in *'\"ping\"'*) \
+             echo ping >> '{}'; echo '{{\"type\":\"pong\"}}';; esac; done
+",
+            starts.display(),
+            pings.display()
+        ),
+    );
+    let timing = quick_pings();
+    let host = ExtensionHost::start_with_packages(&core, vec![], timing, dir.to_path_buf())
+        .expect("starts");
+
+    eventually("it's running", || {
+        status(&core, "answers") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    // Wait for pings, not a fixed time: enough of them to span more than one quiet window,
+    // so a host that ended a process that answers would have done it by now.
+    let enough = (timing.quiet_for.as_millis() / timing.ping_every.as_millis()) as usize + 2;
+    eventually("pinged while quiet", || pids_in(&pings).len() >= enough).await;
+    assert_eq!(status(&core, "answers"), Some(ExtensionStatus::Running));
+    assert_eq!(pids_in(&starts).len(), 1, "started once, never restarted");
 
     host.shutdown().await;
 }
