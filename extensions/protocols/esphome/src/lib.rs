@@ -945,6 +945,7 @@ mod tests {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         };
         let device_id = device.unique_id.clone();
         let arrived = |connection| node::Event::Arrived {
@@ -1064,6 +1065,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 }),
                 entities: Vec::new(),
                 unmodeled: Vec::new(),
@@ -1182,6 +1184,7 @@ mod tests {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             }),
             entities: Vec::new(),
             unmodeled: Vec::new(),

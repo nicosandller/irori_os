@@ -195,6 +195,88 @@ pub struct DeviceDescription {
     /// The `unique_id` of the bridge or hub this device is reached through.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via_device_unique_id: Option<UniqueId>,
+    /// Hardware addresses and serial numbers the device is known by, for an extension that
+    /// reaches devices another extension may reach too, such as a bridge to another hub. The
+    /// core uses them only to recognise the same device found twice (`docs/specs/protocols.md`
+    /// §6.1); an extension that talks to its devices directly leaves this empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub connections: Vec<Connection>,
+}
+
+/// What kind of identifier a [`Connection`] is.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionKind {
+    /// A MAC address (EUI-48), e.g. a Wi-Fi, Ethernet or Bluetooth address.
+    Mac,
+    /// An IEEE address (EUI-64), e.g. a Zigbee or Thread device's.
+    Ieee,
+    /// The serial number the maker gave it.
+    Serial,
+}
+
+/// One identifier a device is known by beyond its protocol's `unique_id`. Its value is kept
+/// normalized, so two spellings of one address are equal: a MAC or IEEE address in lowercase
+/// with no separators or `0x` (`AA:BB:CC:DD:EE:FF` is `aabbccddeeff`), a serial number trimmed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Connection {
+    pub kind: ConnectionKind,
+    #[schemars(length(min = 1))]
+    value: String,
+}
+
+impl Connection {
+    /// A connection of `kind`, its value normalized. An empty value, or one that is only
+    /// separators, is refused.
+    pub fn new(kind: ConnectionKind, value: &str) -> Result<Self, InvariantError> {
+        let value = match kind {
+            ConnectionKind::Mac | ConnectionKind::Ieee => normalized_address(value),
+            ConnectionKind::Serial => value.trim().to_owned(),
+        };
+        if value.is_empty() {
+            return Err(InvariantError(format!(
+                "a `{}` connection needs a value",
+                match kind {
+                    ConnectionKind::Mac => "mac",
+                    ConnectionKind::Ieee => "ieee",
+                    ConnectionKind::Serial => "serial",
+                }
+            )));
+        }
+        Ok(Self { kind, value })
+    }
+
+    /// The normalized value.
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+}
+
+/// A hardware address as one spelling: lowercase, without `:`, `-`, `.`, spaces or a leading
+/// `0x`. `AA:BB:CC:DD:EE:FF`, `aa-bb-cc-dd-ee-ff` and `0xAABBCCDDEEFF` are all `aabbccddeeff`.
+pub fn normalized_address(text: &str) -> String {
+    let lower = text.trim().to_ascii_lowercase();
+    let rest = lower.strip_prefix("0x").unwrap_or(&lower);
+    rest.chars()
+        .filter(|c| !matches!(c, ':' | '-' | '.') && !c.is_whitespace())
+        .collect()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawConnection {
+    kind: ConnectionKind,
+    value: String,
+}
+
+impl<'de> Deserialize<'de> for Connection {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = RawConnection::deserialize(deserializer)?;
+        Connection::new(raw.kind, &raw.value).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Deserialize)]
@@ -216,6 +298,8 @@ struct RawDeviceDescription {
     suggested_area: Option<Name>,
     #[serde(default)]
     via_device_unique_id: Option<UniqueId>,
+    #[serde(default)]
+    connections: Vec<Connection>,
 }
 
 impl<'de> Deserialize<'de> for DeviceDescription {
@@ -231,6 +315,7 @@ impl<'de> Deserialize<'de> for DeviceDescription {
             serial_number: raw.serial_number,
             suggested_area: raw.suggested_area,
             via_device_unique_id: raw.via_device_unique_id,
+            connections: raw.connections,
         };
         device.validate().map_err(serde::de::Error::custom)?;
         Ok(device)
@@ -1362,5 +1447,77 @@ mod secret_request_tests {
             "label": "Key"
         }));
         assert!(err.is_err(), "{err:?}");
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+
+    fn value(kind: &str, value: &str) -> Result<String, serde_json::Error> {
+        serde_json::from_value::<Connection>(serde_json::json!({"kind": kind, "value": value}))
+            .map(|connection| connection.value().to_owned())
+    }
+
+    #[test]
+    fn every_spelling_of_an_address_is_one_value() {
+        for spelling in [
+            "AA:BB:CC:DD:EE:FF",
+            "aa-bb-cc-dd-ee-ff",
+            "aabb.ccdd.eeff",
+            "0xAABBCCDDEEFF",
+            " AA BB CC DD EE FF ",
+        ] {
+            assert_eq!(
+                value("mac", spelling).expect("valid"),
+                "aabbccddeeff",
+                "{spelling}"
+            );
+        }
+        assert_eq!(
+            value("ieee", "0x00124b0022AABBCC").expect("valid"),
+            "00124b0022aabbcc"
+        );
+        assert_eq!(
+            value("ieee", "00:12:4b:00:22:aa:bb:cc").expect("valid"),
+            "00124b0022aabbcc"
+        );
+    }
+
+    #[test]
+    fn a_serial_is_only_trimmed() {
+        assert_eq!(value("serial", "  Ab-12:34 ").expect("valid"), "Ab-12:34");
+    }
+
+    #[test]
+    fn an_empty_connection_is_refused() {
+        assert!(value("mac", "").is_err());
+        assert!(value("mac", " : - ").is_err());
+        assert!(value("ieee", "0x").is_err());
+        assert!(value("serial", "   ").is_err());
+        assert!(value("bluetooth", "aa:bb").is_err(), "an unknown kind");
+    }
+
+    /// An extension that names no connections says what it always said.
+    #[test]
+    fn a_device_without_connections_is_written_as_before() {
+        let device: DeviceDescription =
+            serde_json::from_value(serde_json::json!({"unique_id": "plug", "name": "Plug"}))
+                .expect("valid");
+        assert!(device.connections.is_empty());
+        assert_eq!(
+            serde_json::to_value(&device).expect("valid"),
+            serde_json::json!({"unique_id": "plug", "name": "Plug"})
+        );
+        let bridged: DeviceDescription = serde_json::from_value(serde_json::json!({
+            "unique_id": "plug",
+            "name": "Plug",
+            "connections": [{"kind": "mac", "value": "AA:BB:CC:DD:EE:FF"}],
+        }))
+        .expect("valid");
+        assert_eq!(
+            serde_json::to_value(&bridged).expect("valid")["connections"],
+            serde_json::json!([{"kind": "mac", "value": "aabbccddeeff"}])
+        );
     }
 }

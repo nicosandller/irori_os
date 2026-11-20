@@ -492,6 +492,8 @@ mod tests {
             area_id: area.map(|area| area.parse().expect("valid")),
             suggested_area: None,
             via_device_id: None,
+            duplicate_of: None,
+            also_through: Vec::new(),
         }
     }
 

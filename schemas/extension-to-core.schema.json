@@ -2041,6 +2041,44 @@
         "max"
       ]
     },
+    "Connection": {
+      "description": "One identifier a device is known by beyond its protocol's `unique_id`. Its value is kept\nnormalized, so two spellings of one address are equal: a MAC or IEEE address in lowercase\nwith no separators or `0x` (`AA:BB:CC:DD:EE:FF` is `aabbccddeeff`), a serial number trimmed.",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/ConnectionKind"
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "value"
+      ]
+    },
+    "ConnectionKind": {
+      "description": "What kind of identifier a [`Connection`] is.",
+      "oneOf": [
+        {
+          "description": "A MAC address (EUI-48), e.g. a Wi-Fi, Ethernet or Bluetooth address.",
+          "type": "string",
+          "const": "mac"
+        },
+        {
+          "description": "An IEEE address (EUI-64), e.g. a Zigbee or Thread device's.",
+          "type": "string",
+          "const": "ieee"
+        },
+        {
+          "description": "The serial number the maker gave it.",
+          "type": "string",
+          "const": "serial"
+        }
+      ]
+    },
     "ContextId": {
       "description": "A ULID: 26 characters, uppercase Crockford base32.",
       "type": "string",
@@ -2066,6 +2104,13 @@
       "description": "A device as a protocol describes it. The core adds it to the registry, or updates the\nentry with the same `unique_id`.",
       "type": "object",
       "properties": {
+        "connections": {
+          "description": "Hardware addresses and serial numbers the device is known by, for an extension that\nreaches devices another extension may reach too, such as a bridge to another hub. The\ncore uses them only to recognise the same device found twice (`docs/specs/protocols.md`\n§6.1); an extension that talks to its devices directly leaves this empty.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Connection"
+          }
+        },
         "hw_version": {
           "type": [
             "string",
