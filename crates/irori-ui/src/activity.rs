@@ -68,6 +68,11 @@ pub fn what(entry: &AuditEntry) -> String {
         "device_removed" => named("removed the device"),
         "entity_changed" => named("changed"),
         "extension_secret_given" => named("gave a secret to"),
+        "layout_brought_over" if detail.is_empty() => named("brought over the rooms and floors of"),
+        "layout_brought_over" => format!(
+            "{} ({detail})",
+            named("brought over the rooms and floors of")
+        ),
         "extension_settings_changed" => named("changed the settings of"),
         "extension_action_started" => named("started an action of"),
         "extension_action_stopped" => named("stopped an action of"),

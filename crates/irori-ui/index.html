@@ -3078,6 +3078,14 @@
                               animation: rise var(--dur-base) var(--ease-out) backwards; }
     .found .waiting-list li:last-child { border-bottom: 1px dashed var(--ember); }
 
+    /* An extension's floors and rooms, to bring over in one step. */
+    .layout-offer { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap;
+                    padding: .7rem .8rem; margin-bottom: .6rem; background: var(--card);
+                    border: 1px dashed var(--ember); border-radius: .5rem; }
+    .layout-offer-text { flex: 1 1 16rem; min-width: 0; }
+    .layout-offer-text p { margin: 0; }
+    .layout-offer-text p + p { margin-top: .25rem; }
+
     /* What's already in the home: the same card, pointing to the device's page. */
     .home-card .device-card-inner:hover { border-color: var(--ember); }
     .home-card .home-chevron { flex: none; width: 1rem; height: 1rem; color: var(--muted);

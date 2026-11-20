@@ -39,6 +39,14 @@ impl Settings {
         self.areas.iter().find(|area| &area.id == id)
     }
 
+    /// The floor with this name, ignoring case and surrounding space, as [`Settings::area_named`]
+    /// finds a room.
+    pub fn floor_named(&self, name: &Name) -> Option<&Floor> {
+        self.floors
+            .iter()
+            .find(|floor| crate::same_name(&floor.name, name))
+    }
+
     /// The area with this name, ignoring case and surrounding space — how a `suggested_area`
     /// finds its room (`docs/specs/config.md` §5).
     pub fn area_named(&self, name: &Name) -> Option<&Area> {
