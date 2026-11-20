@@ -385,9 +385,17 @@
       ]
     },
     {
-      "description": "An entity or device was added, changed or removed (after `subscribe { registry: true }`).\nAsk again with `get_registry`.",
+      "description": "An entity or device was added, changed or removed (after `subscribe { registry: true }`).\nAsk again with `get_registry`. Also sent when the engine fell behind the home's events:\nthen `missed` says how many it wasn't sent, and it should read the states again too.",
       "type": "object",
       "properties": {
+        "missed": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
         "type": {
           "type": "string",
           "const": "registry_changed"

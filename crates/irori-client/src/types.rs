@@ -19,6 +19,16 @@ pub struct Health {
     pub uptime_ms: u64,
     pub features: Vec<String>,
     pub sqlite: SqliteHealth,
+    /// Absent from an Irori before the count was added.
+    #[serde(default)]
+    pub history: HistoryHealth,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HistoryHealth {
+    /// State changes left out of history since that start because the recorder fell behind.
+    #[serde(default)]
+    pub dropped_changes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

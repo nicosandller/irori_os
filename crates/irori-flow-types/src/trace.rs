@@ -59,6 +59,9 @@ pub enum AbortReason {
     Removed,
     Cancelled,
     Shutdown,
+    /// Irori or the extension stopped without the chance to say so (a crash, a kill, the power
+    /// going): found still in progress at the next start (issue #93).
+    Interrupted,
 }
 
 /// Where a path ended: the node, and the port it left by (none for a `stop`, or a path that
@@ -153,6 +156,9 @@ pub enum NearMissKind {
     Unavailable,
     /// Reported again with the value it already had.
     SameValue,
+    /// Irori fell behind and the engine wasn't sent some of the home's events, so the flow's
+    /// triggers may have missed a change. One per flow each time (issue #97).
+    Missed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

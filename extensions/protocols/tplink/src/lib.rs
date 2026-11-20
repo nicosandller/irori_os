@@ -42,6 +42,7 @@ pub struct Tplink;
 impl Protocol for Tplink {
     type Config = Settings;
     const MANIFEST: &'static str = include_str!("../irori-extension.toml");
+    const ICON: Option<&'static str> = Some(include_str!("../icon.svg"));
 
     async fn run(settings: Settings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         let (found, incoming) = mpsc::channel(32);

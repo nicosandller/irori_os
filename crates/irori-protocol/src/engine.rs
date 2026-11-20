@@ -12,7 +12,7 @@
 //!     match message {
 //!         Incoming::StateChanged { .. } => {}
 //!         Incoming::App(request) => request.answer(Ok(serde_json::json!({}))),
-//!         Incoming::RegistryChanged | Incoming::Stop => {}
+//!         Incoming::RegistryChanged | Incoming::Missed { .. } | Incoming::Stop => {}
 //!     }
 //! }
 //! ```
@@ -157,6 +157,12 @@ pub enum Incoming {
         new_state: Box<EntityState>,
     },
     RegistryChanged,
+    /// The engine fell behind and wasn't sent this many of the home's events. A
+    /// [`Incoming::RegistryChanged`] follows, to read the home again. What changed in between
+    /// is gone: a trigger that needed one of those changes didn't fire.
+    Missed {
+        events: u64,
+    },
     App(AppRequest),
     /// The core asked it to stop, or went away.
     Stop,
@@ -381,7 +387,14 @@ where
                     old_state,
                     new_state,
                 },
-                ToExt::RegistryChanged {} => Incoming::RegistryChanged,
+                ToExt::RegistryChanged { missed } => {
+                    if let Some(events) = missed
+                        && in_tx.send(Incoming::Missed { events }).is_err()
+                    {
+                        return;
+                    }
+                    Incoming::RegistryChanged
+                }
                 ToExt::AppRequest {
                     id,
                     method,
@@ -431,8 +444,6 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-    /// The client's requests go out as the spec's messages, and answers find their way back to
-    /// the request that asked.
     /// Offered pings, an engine says it answers them, then answers each (issue #98). Not
     /// offered, it says nothing: `a_request_is_answered_by_its_own_id` reads its first line.
     #[tokio::test]
@@ -459,6 +470,42 @@ mod tests {
         assert_eq!(line, r#"{"type":"pong"}"#, "it answers one");
     }
 
+    /// A nudge after falling behind says how much was missed, before the nudge itself; an
+    /// ordinary one doesn't (issue #97).
+    #[tokio::test]
+    async fn a_nudge_after_falling_behind_says_how_much_was_missed() {
+        let (core_side, engine_side) = tokio::io::duplex(64 * 1024);
+        let (engine_read, engine_write) = tokio::io::split(engine_side);
+        let (_core_read, mut core_write) = tokio::io::split(core_side);
+
+        core_write
+            .write_all(b"{\"type\":\"hello\",\"settings\":{}}\n")
+            .await
+            .expect("write hello");
+        let (_settings, _client, mut incoming) =
+            connect(engine_read, engine_write).await.expect("connects");
+        core_write
+            .write_all(
+                b"{\"type\":\"registry_changed\",\"missed\":12}\n{\"type\":\"registry_changed\"}\n",
+            )
+            .await
+            .expect("write");
+        assert!(matches!(
+            incoming.recv().await,
+            Some(Incoming::Missed { events: 12 })
+        ));
+        assert!(matches!(
+            incoming.recv().await,
+            Some(Incoming::RegistryChanged)
+        ));
+        assert!(matches!(
+            incoming.recv().await,
+            Some(Incoming::RegistryChanged)
+        ));
+    }
+
+    /// The client's requests go out as the spec's messages, and answers find their way back to
+    /// the request that asked.
     #[tokio::test]
     async fn a_request_is_answered_by_its_own_id() {
         let (core_side, engine_side) = tokio::io::duplex(64 * 1024);
