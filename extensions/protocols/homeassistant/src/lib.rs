@@ -724,7 +724,8 @@ impl Session<'_> {
             .iter()
             .map(|b| (b.entity_id.clone(), b.clone()))
             .collect();
-        for id in &plan.absent {
+        // Still loading in Home Assistant: in the home, but with no state to show yet.
+        for id in plan.absent.iter().chain(&plan.unloaded_entities) {
             self.tell(id.clone(), Availability::Unavailable);
         }
         let before: Vec<&str> = self.entities.iter().map(|b| b.entity_id.as_str()).collect();
