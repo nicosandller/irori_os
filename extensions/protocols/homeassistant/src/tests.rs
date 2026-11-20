@@ -721,6 +721,17 @@ async fn what_a_new_run_leaves_out_is_removed_and_what_is_still_loading_stays() 
             .all(|id| id.as_str() != "e-light" && id.as_str() != "bulb"),
         "{removed:?}"
     );
+    world
+        .until("the light unavailable", |log| {
+            log.availability
+                .iter()
+                .any(|(target, availability)| {
+                    *availability == Availability::Unavailable
+                        && matches!(target, AvailabilityTarget::Entities(ids) if ids.iter().any(|id| id.as_str() == "e-light"))
+                })
+                .then_some(())
+        })
+        .await;
     world.stop().await;
 
     // Kept for the next run, which removes the light once Home Assistant has it no more.
