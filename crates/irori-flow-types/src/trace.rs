@@ -59,6 +59,9 @@ pub enum AbortReason {
     Removed,
     Cancelled,
     Shutdown,
+    /// Irori or the extension stopped without the chance to say so (a crash, a kill, the power
+    /// going): found still in progress at the next start (issue #93).
+    Interrupted,
 }
 
 /// Where a path ended: the node, and the port it left by (none for a `stop`, or a path that
