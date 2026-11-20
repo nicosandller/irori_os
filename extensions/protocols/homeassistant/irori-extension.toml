@@ -1,7 +1,7 @@
 [extension]
 id = "homeassistant"
 name = "Home Assistant"
-version = "0.3.2"
+version = "0.3.3"
 irori = ">=1.7.0"
 # 1.7.0 is the first core that takes rooms and floors an extension proposes (`suggest_layout`) and
 # a device's `connections`, and the first with images, notify targets, remotes, weather, calendars

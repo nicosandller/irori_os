@@ -90,7 +90,14 @@ async fn world(fake: &FakeHa) -> Running {
     world_with(settings(fake)).await
 }
 
+/// What the extension keeps (`ProtocolContext::store`), outliving one run of it.
+type Store = Arc<Mutex<BTreeMap<String, serde_json::Value>>>;
+
 async fn world_with(settings: Settings) -> Running {
+    world_keeping(settings, Store::default()).await
+}
+
+async fn world_keeping(settings: Settings, store: Store) -> Running {
     let (ctx, host) = host::connect();
     let log = Arc::new(Mutex::new(Log::default()));
     let recorded = Arc::clone(&log);
@@ -122,10 +129,15 @@ async fn world_with(settings: Settings) -> Running {
                 host::Op::SetNetworks(_)
                 | host::Op::SetActionOpen(_, _)
                 | host::Op::SetAvailableActions(_) => {}
-                host::Op::Load(_, reply) => {
-                    let _ = reply.send(Ok(None));
+                host::Op::Load(key, reply) => {
+                    let _ = reply.send(Ok(store.lock().expect("store").get(&key).cloned()));
                 }
-                host::Op::Store(_, _, reply) => {
+                host::Op::Store(key, value, reply) => {
+                    let mut store = store.lock().expect("store");
+                    match value {
+                        Some(value) => store.insert(key, value),
+                        None => store.remove(&key),
+                    };
                     let _ = reply.send(Ok(()));
                 }
             }
@@ -662,6 +674,64 @@ async fn nothing_there_is_retried_with_a_growing_wait() {
                 .filter(|h| matches!(h, Health::Degraded(_)))
                 .count()
                 >= 2)
+                .then_some(())
+        })
+        .await;
+    world.stop().await;
+}
+
+#[tokio::test]
+async fn what_a_new_run_leaves_out_is_removed_and_what_is_still_loading_stays() {
+    let fake = FakeHa::start(home()).await.expect("a fake");
+    let store = Store::default();
+    let world = world_keeping(settings(&fake), store.clone()).await;
+    world.running().await;
+    world
+        .until("both entities", |log| {
+            (log.entities.len() >= 2).then_some(())
+        })
+        .await;
+    world.stop().await;
+
+    // Irori restarts with the temperature sensor left out by its owner, while the light's
+    // integration is still loading in Home Assistant (listed, with no state yet).
+    let mut left_out = settings(&fake);
+    left_out.exclude_integrations = vec!["sensor-maker".into()];
+    fake.with_world(|w| {
+        w.states.remove("light.kitchen");
+        for entity in &mut w.entities {
+            if entity["entity_id"] == "sensor.kitchen_temperature" {
+                entity["platform"] = json!("sensor-maker");
+            }
+        }
+    });
+    let world = world_keeping(left_out, store.clone()).await;
+    world.running().await;
+    let removed = world
+        .until("the sensor removed", |log| {
+            log.removed
+                .iter()
+                .any(|id| id.as_str() == "e-temp")
+                .then(|| log.removed.clone())
+        })
+        .await;
+    assert!(
+        removed
+            .iter()
+            .all(|id| id.as_str() != "e-light" && id.as_str() != "bulb"),
+        "{removed:?}"
+    );
+    world.stop().await;
+
+    // Kept for the next run, which removes the light once Home Assistant has it no more.
+    fake.with_world(|w| w.entities.retain(|e| e["entity_id"] != "light.kitchen"));
+    let world = world_keeping(settings(&fake), store).await;
+    world.running().await;
+    world
+        .until("the light removed", |log| {
+            log.removed
+                .iter()
+                .any(|id| id.as_str() == "e-light")
                 .then_some(())
         })
         .await;
