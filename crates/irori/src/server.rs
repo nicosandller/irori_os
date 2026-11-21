@@ -1212,13 +1212,15 @@ struct LayoutMade {
 
 /// Makes the floors and rooms an extension proposes (`docs/specs/protocols.md` §6.9) that the
 /// home doesn't have by those names yet, in one edit of the config, each room on the floor it
-/// was proposed on. A floor or room that's there already is left exactly as it is: nothing is
+/// was proposed on. Only those the owner was shown, which the request carries: the extension
+/// can change its proposal between the page drawing it and the click. A floor or room that's there already is left exactly as it is: nothing is
 /// renamed, moved or removed. Devices whose `suggested_area` names a new room land in it, as
 /// they would in a room made by hand.
 async fn accept_layout(
     State(state): State<AppState>,
     Extension(trail): Extension<trail::Trail>,
     Path(id): Path<ExtensionId>,
+    Json(shown): Json<irori_types::SuggestedLayout>,
 ) -> Response {
     let core = &state.0.core;
     let Some(proposed) = core.missing_layout(&id) else {
@@ -1227,6 +1229,7 @@ async fn accept_layout(
             format!("there's no extension `{id}`"),
         );
     };
+    let proposed = proposed.only_shown(&shown);
     if proposed.is_empty() {
         // Nothing new, and nothing written.
         return Json(LayoutMade {
@@ -6797,12 +6800,9 @@ mod tests {
             "{home}"
         );
 
+        let shown = home["extensions"]["rooms"]["suggested_layout"].clone();
         let (status, made) = server
-            .json(
-                "POST",
-                "/api/extensions/rooms/layout",
-                serde_json::json!(null),
-            )
+            .json("POST", "/api/extensions/rooms/layout", shown.clone())
             .await?;
         assert_eq!(status, StatusCode::OK, "{made}");
         assert_eq!(made["floors"].as_array().map(Vec::len), Some(2), "{made}");
@@ -6852,11 +6852,7 @@ mod tests {
         );
         let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
         let (status, made) = server
-            .json(
-                "POST",
-                "/api/extensions/rooms/layout",
-                serde_json::json!(null),
-            )
+            .json("POST", "/api/extensions/rooms/layout", shown)
             .await?;
         assert_eq!(status, StatusCode::OK, "{made}");
         assert_eq!(made, serde_json::json!({"floors": [], "areas": []}));
@@ -6870,7 +6866,7 @@ mod tests {
             .json(
                 "POST",
                 "/api/extensions/nowhere/layout",
-                serde_json::json!(null),
+                serde_json::json!({}),
             )
             .await?;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -6896,6 +6892,66 @@ mod tests {
         // And gone once it stops.
         host.shutdown().await;
         assert_eq!(proposed(&core), None);
+        Ok(())
+    }
+
+    /// Accepting makes what the owner was shown and the extension still proposes, and nothing
+    /// else: not a room added since, nor one that has moved to another floor since.
+    #[tokio::test]
+    async fn accepting_makes_only_what_the_owner_was_shown() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Rooms>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let id: ExtensionId = "rooms".parse()?;
+        for _ in 0..500 {
+            if core
+                .extensions()
+                .get(&id)
+                .is_some_and(|overview| overview.suggested_layout.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core.clone())?;
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/extensions/rooms/layout",
+                serde_json::json!({
+                    "floors": [
+                        {"name": "Ground", "level": 0},
+                        {"name": "Upstairs", "level": 7},
+                        {"name": "Attic"},
+                    ],
+                    "areas": [
+                        {"name": "Kitchen", "floor": "Ground"},
+                        {"name": "Bedroom", "floor": "Ground"},
+                        {"name": "Cellar"},
+                    ],
+                }),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let names = |list: &serde_json::Value| -> Vec<String> {
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item["name"].as_str().map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(names(&made["floors"]), ["Ground"], "{made}");
+        assert_eq!(names(&made["areas"]), ["Kitchen"], "{made}");
+        // What wasn't made is still on offer.
+        let home = server.read("/api/home").await?;
+        let left = &home["extensions"]["rooms"]["suggested_layout"];
+        assert_eq!(names(&left["floors"]), ["Upstairs"], "{home}");
+        assert_eq!(names(&left["areas"]), ["Bedroom", "hall"], "{home}");
+        host.shutdown().await;
         Ok(())
     }
 
@@ -12498,21 +12554,32 @@ mod tests {
     const LAMP: &str = "demo_living_room_lamp";
 
     async fn house_with_a_vault() -> anyhow::Result<House> {
+        house_of(false).await
+    }
+
+    /// The same house, with `proposing` adding an extension that proposes one room.
+    async fn house_of(proposing: bool) -> anyhow::Result<House> {
         let core = core();
-        let host = irori_core::ExtensionHost::start(
-            &core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_demo::Demo>()
-                    .map_err(anyhow::Error::msg)?,
-                irori_protocol::builtin::<crate::system_device::IroriDevice>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
-            irori_core::Timing::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
+        let mut protocols = vec![
+            irori_protocol::builtin::<irori_protocol_demo::Demo>().map_err(anyhow::Error::msg)?,
+            irori_protocol::builtin::<crate::system_device::IroriDevice>()
+                .map_err(anyhow::Error::msg)?,
+        ];
+        if proposing {
+            protocols.push(irori_protocol::builtin::<OneRoom>().map_err(anyhow::Error::msg)?);
+        }
+        let host =
+            irori_core::ExtensionHost::start(&core, protocols, irori_core::Timing::default())
+                .map_err(anyhow::Error::msg)?;
+        let oneroom: ExtensionId = "oneroom".parse()?;
         for _ in 0..500 {
             let has = |id: &str| core.entities().iter().any(|e| e.id.to_string() == id);
-            if has("update.irori") && has("camera.garden_camera_1") {
+            let proposed = !proposing
+                || core
+                    .extensions()
+                    .get(&oneroom)
+                    .is_some_and(|overview| overview.suggested_layout.is_some());
+            if has("update.irori") && has("camera.garden_camera_1") && proposed {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -12665,9 +12732,42 @@ mod tests {
         })
     }
 
+    /// Proposes one room, and has no devices.
+    struct OneRoom;
+
+    impl irori_protocol::Protocol for OneRoom {
+        type Config = RoomsSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "oneroom"
+            name = "One room"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: RoomsSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            ctx.suggest_layout(irori_types::SuggestedLayout {
+                floors: Vec::new(),
+                areas: vec![irori_types::SuggestedArea {
+                    name: "Zqattic".parse()?,
+                    floor: None,
+                }],
+            })
+            .await;
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
     /// Bringing an extension's rooms over changes how the home is divided: the owner's to do.
-    /// A person with the whole home is refused as surely as one with some rooms, and nothing
-    /// is made.
+    /// A person with the whole home is refused as surely as one with some rooms, and the room
+    /// on offer isn't made until the owner accepts it.
     #[tokio::test]
     async fn only_the_owner_brings_an_extensions_rooms_over() -> anyhow::Result<()> {
         let House {
@@ -12678,33 +12778,41 @@ mod tests {
             leo,
             mia,
             ..
-        } = house_with_a_vault().await?;
-        let before = server.core.areas();
+        } = house_of(true).await?;
+        let shown = serde_json::json!({"areas": [{"name": "Zqattic"}]});
+        let attics = |server: &Server| {
+            server
+                .core
+                .areas()
+                .iter()
+                .filter(|area| area.name.as_str() == "Zqattic")
+                .count()
+        };
         for cookie in [&leo, &mia] {
             let (status, got, _) = ask(
                 &app,
                 "POST",
-                "/api/extensions/demo/layout",
-                None,
+                "/api/extensions/oneroom/layout",
+                Some(shown.clone()),
                 Some(cookie),
                 true,
             )
             .await?;
             assert_eq!(status, StatusCode::FORBIDDEN, "{got}");
+            assert_eq!(attics(&server), 0);
         }
-        assert_eq!(server.core.areas(), before);
-        // The owner may: the demo proposes nothing, so nothing is made.
         let (status, got, _) = ask(
             &app,
             "POST",
-            "/api/extensions/demo/layout",
-            None,
+            "/api/extensions/oneroom/layout",
+            Some(shown),
             Some(&owner),
             true,
         )
         .await?;
         assert_eq!(status, StatusCode::OK, "{got}");
-        assert_eq!(got, serde_json::json!({"floors": [], "areas": []}));
+        assert_eq!(got["areas"][0]["name"], "Zqattic", "{got}");
+        assert_eq!(attics(&server), 1);
         Ok(())
     }
 

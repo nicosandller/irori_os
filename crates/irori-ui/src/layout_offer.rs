@@ -25,6 +25,9 @@ pub fn counted(layout: &SuggestedLayout) -> String {
     .join(" and ")
 }
 
+/// How many names the prompt spells out before it says how many more there are.
+const MOST_NAMED: usize = 20;
+
 /// What it would make, named: rooms first, each with its floor.
 fn named(layout: &SuggestedLayout) -> String {
     let rooms = layout.areas.iter().map(|area| match &area.floor {
@@ -42,7 +45,14 @@ fn named(layout: &SuggestedLayout) -> String {
             })
         })
         .map(|floor| floor.name.to_string());
-    rooms.chain(floors).collect::<Vec<_>>().join(", ")
+    let all: Vec<String> = rooms.chain(floors).collect();
+    let rest = all.len().saturating_sub(MOST_NAMED);
+    let some = all[..all.len() - rest].join(", ");
+    if rest == 0 {
+        some
+    } else {
+        format!("{some} and {rest} more")
+    }
 }
 
 #[component]
@@ -63,13 +73,15 @@ pub fn LayoutOffer(extension: ExtensionId) -> impl IntoView {
     let trouble = RwSignal::new(None::<String>);
     let accept = {
         let extension = extension.clone();
-        move |_| {
+        move |shown: SuggestedLayout| {
             let extension = extension.clone();
             busy.set(true);
             trouble.set(None);
             spawn_local(async move {
-                match crate::api::accept_layout(&extension).await {
-                    Ok(()) => crate::refresh(live),
+                match crate::api::accept_layout(&extension, &shown).await {
+                    // Busy until the page has the new home, so the old prompt can't be clicked
+                    // again.
+                    Ok(()) => crate::reload(live).await,
                     Err(why) => trouble.set(Some(format!("Couldn't bring them over: {why}"))),
                 }
                 busy.set(false);
@@ -82,6 +94,7 @@ pub fn LayoutOffer(extension: ExtensionId) -> impl IntoView {
             return ().into_any();
         };
         let accept = accept.clone();
+        let shown = layout.clone();
         view! {
             <div class="layout-offer">
                 <div class="layout-offer-text">
@@ -99,7 +112,7 @@ pub fn LayoutOffer(extension: ExtensionId) -> impl IntoView {
                     type="button"
                     class="primary"
                     disabled=move || busy.get()
-                    on:click=accept
+                    on:click=move |_| accept(shown.clone())
                 >
                     "Bring them over"
                 </button>
@@ -149,5 +162,11 @@ mod tests {
         // A floor its rooms name in another case is still named once.
         let cased = layout(&["Ground"], &[("Kitchen", Some("ground"))]);
         assert_eq!(named(&cased), "Kitchen (ground)");
+        // A long list says how many it left out.
+        let names: Vec<String> = (0..25).map(|n| format!("Room{n}")).collect();
+        let rooms: Vec<(&str, Option<&str>)> = names.iter().map(|n| (n.as_str(), None)).collect();
+        let long = named(&layout(&[], &rooms));
+        assert!(long.starts_with("Room0, Room1,"), "{long}");
+        assert!(long.ends_with("Room19 and 5 more"), "{long}");
     }
 }

@@ -123,8 +123,11 @@ case). Like the rest of `extensions`, it is shown only to someone who sees the w
 only the owner can accept it. It is left out when there's nothing to bring over, so a home whose
 extensions propose nothing reads as it always did.
 
-`POST /api/extensions/<id>/layout`, with no body, is the owner accepting it: it makes the missing
-floors, then the missing rooms, each on the floor it was proposed on, in one edit of `areas.toml`
+`POST /api/extensions/<id>/layout`, with the `suggested_layout` the owner was shown as its body, is
+the owner accepting it. Only what is both in that body and still proposed counts (the same floor at
+the same level, the same room on the same floor), so an extension that changes its proposal after
+the page drew it can't add to what the owner agreed to. It makes those missing
+floors, then those missing rooms, each on the floor it was proposed on, in one edit of `areas.toml`
 ([config.md](config.md) §5), and answers `{ "floors": [Floor…], "areas": [Area…] }` with what it
 made. A floor or room that's there already is left exactly as it is. With nothing missing it
 answers both lists empty and writes nothing; an extension that isn't installed is `404`. Devices

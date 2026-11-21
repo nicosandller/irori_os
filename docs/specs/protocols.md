@@ -484,8 +484,9 @@ matched as a `suggested_area` is (trimmed, ignoring case; [config.md](config.md)
 has them all the field is gone, so an extension that never proposes anything looks exactly as it
 did. A room the owner removes later is proposed again while the protocol still names it.
 
-Accepting (`POST /api/extensions/{id}/layout`) makes the missing floors and rooms in one edit of
-`areas.toml`, each room on the floor it was proposed on. Devices whose `suggested_area` names one
+Accepting (`POST /api/extensions/{id}/layout`) carries what the owner was shown, and makes the
+missing floors and rooms that are both in it and still proposed, in one edit of `areas.toml`, each
+room on the floor it was proposed on. One added or changed after the page drew it stays on offer. Devices whose `suggested_area` names one
 of the new rooms land in it at once, unless a person has said where they are (config.md §5).
 
 A core from before `suggest_layout` doesn't know the message, and an unknown message ends the

@@ -5,6 +5,8 @@
 //! proposal while it runs, and the owner can bring the floors and rooms Irori doesn't have yet
 //! over in one step. Nothing is made until they do.
 
+use std::collections::HashSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -60,24 +62,28 @@ impl SuggestedLayout {
     }
 
     /// The proposal as the core keeps it: a name said twice is kept once (the first time it is
-    /// said), and the lists stop at [`MAX_LAYOUT_FLOORS`] and [`MAX_LAYOUT_AREAS`].
+    /// said), and the lists stop at [`MAX_LAYOUT_FLOORS`] and [`MAX_LAYOUT_AREAS`]. One pass over
+    /// each list: a message can repeat a name hundreds of thousands of times, and this runs on
+    /// one of the core's worker threads.
     #[must_use]
     pub fn tidied(self) -> SuggestedLayout {
-        let mut floors: Vec<SuggestedFloor> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut floors = Vec::new();
         for floor in self.floors {
             if floors.len() == MAX_LAYOUT_FLOORS {
                 break;
             }
-            if !floors.iter().any(|kept| same_name(&kept.name, &floor.name)) {
+            if seen.insert(key(&floor.name)) {
                 floors.push(floor);
             }
         }
-        let mut areas: Vec<SuggestedArea> = Vec::new();
+        let mut seen = HashSet::new();
+        let mut areas = Vec::new();
         for area in self.areas {
             if areas.len() == MAX_LAYOUT_AREAS {
                 break;
             }
-            if !areas.iter().any(|kept| same_name(&kept.name, &area.name)) {
+            if seen.insert(key(&area.name)) {
                 areas.push(area);
             }
         }
@@ -88,21 +94,54 @@ impl SuggestedLayout {
     /// keeps the name of its floor whether or not that floor is new.
     #[must_use]
     pub fn missing_from(&self, settings: &Settings) -> SuggestedLayout {
+        let floors: HashSet<String> = settings.floors.iter().map(|f| key(&f.name)).collect();
+        let areas: HashSet<String> = settings.areas.iter().map(|a| key(&a.name)).collect();
         SuggestedLayout {
             floors: self
                 .floors
                 .iter()
-                .filter(|floor| settings.floor_named(&floor.name).is_none())
+                .filter(|floor| !floors.contains(&key(&floor.name)))
                 .cloned()
                 .collect(),
             areas: self
                 .areas
                 .iter()
-                .filter(|area| settings.area_named(&area.name).is_none())
+                .filter(|area| !areas.contains(&key(&area.name)))
                 .cloned()
                 .collect(),
         }
     }
+
+    /// Only what is also in `shown`, the proposal the owner was looking at when they accepted:
+    /// the same floor at the same level, the same room on the same floor. Anything the extension
+    /// added or changed since then waits until the owner has seen it.
+    #[must_use]
+    pub fn only_shown(&self, shown: &SuggestedLayout) -> SuggestedLayout {
+        let floors: HashSet<_> = shown.floors.iter().map(floor_key).collect();
+        let areas: HashSet<_> = shown.areas.iter().map(area_key).collect();
+        SuggestedLayout {
+            floors: self
+                .floors
+                .iter()
+                .filter(|floor| floors.contains(&floor_key(floor)))
+                .cloned()
+                .collect(),
+            areas: self
+                .areas
+                .iter()
+                .filter(|area| areas.contains(&area_key(area)))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
+fn floor_key(floor: &SuggestedFloor) -> (String, i8) {
+    (key(&floor.name), floor.level.unwrap_or(0))
+}
+
+fn area_key(area: &SuggestedArea) -> (String, Option<String>) {
+    (key(&area.name), area.floor.as_ref().map(key))
 }
 
 #[cfg(test)]
@@ -191,6 +230,64 @@ mod tests {
                 .missing_from(&settings)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_list_of_repeats_is_read_to_its_end_and_kept_once() {
+        let layout = SuggestedLayout {
+            floors: Vec::new(),
+            areas: (0..50_000)
+                .map(|n| area(if n % 2 == 0 { "Hall" } else { "HALL" }, None))
+                .chain([area("Office", None)])
+                .collect(),
+        }
+        .tidied();
+        assert_eq!(layout.areas, vec![area("Hall", None), area("Office", None)]);
+    }
+
+    #[test]
+    fn only_what_the_owner_was_shown_is_kept() {
+        let now = SuggestedLayout {
+            floors: vec![
+                SuggestedFloor {
+                    name: name("Ground"),
+                    level: None,
+                },
+                SuggestedFloor {
+                    name: name("Upstairs"),
+                    level: Some(1),
+                },
+            ],
+            areas: vec![
+                area("Kitchen", Some("Ground")),
+                area("Bedroom", Some("Upstairs")),
+                area("Added since", None),
+            ],
+        };
+        let shown = SuggestedLayout {
+            floors: vec![
+                // Left out is level 0, and case doesn't matter.
+                SuggestedFloor {
+                    name: name("GROUND"),
+                    level: Some(0),
+                },
+                // It has moved since.
+                SuggestedFloor {
+                    name: name("Upstairs"),
+                    level: Some(2),
+                },
+                floor("Gone since"),
+            ],
+            areas: vec![
+                area("kitchen", Some("ground")),
+                // On another floor when they saw it.
+                area("Bedroom", Some("Ground")),
+            ],
+        };
+        let kept = now.only_shown(&shown);
+        assert_eq!(kept.floors, vec![now.floors[0].clone()]);
+        assert_eq!(kept.areas, vec![area("Kitchen", Some("Ground"))]);
+        assert!(now.only_shown(&SuggestedLayout::default()).is_empty());
     }
 
     #[test]

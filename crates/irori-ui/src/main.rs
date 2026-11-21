@@ -750,17 +750,20 @@ async fn notice_session(session: RwSignal<Option<api::Session>>) {
 /// after one of those the whole picture is refetched rather than patched.
 ///
 pub fn refresh(live: Live) {
-    spawn_local(async move {
-        match api::fetch_home().await {
-            Ok(fetched) => {
-                if fetched != live.home.get_untracked() {
-                    live.home.set(fetched);
-                }
-                live.trouble.set(None);
+    spawn_local(reload(live));
+}
+
+/// [`refresh`], for a caller that has to wait until the page shows the new home.
+pub async fn reload(live: Live) {
+    match api::fetch_home().await {
+        Ok(fetched) => {
+            if fetched != live.home.get_untracked() {
+                live.home.set(fetched);
             }
-            Err(why) => live.trouble.set(Some(why)),
+            live.trouble.set(None);
         }
-    });
+        Err(why) => live.trouble.set(Some(why)),
+    }
 }
 
 /// Sends a command, then puts the entity's new state on the page without waiting for the next

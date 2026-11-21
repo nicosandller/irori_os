@@ -1198,9 +1198,15 @@ pub async fn set_extension_settings(
     checked(response).await
 }
 
-/// Makes the floors and rooms `extension` proposes that the home doesn't have yet.
-pub async fn accept_layout(extension: &ExtensionId) -> Result<(), String> {
+/// Makes the floors and rooms `extension` proposes that the home doesn't have yet, of those in
+/// `shown`: what the owner was looking at when they said yes.
+pub async fn accept_layout(
+    extension: &ExtensionId,
+    shown: &irori_types::SuggestedLayout,
+) -> Result<(), String> {
     let response = post(&format!("/api/extensions/{extension}/layout"))
+        .json(shown)
+        .map_err(|e| e.to_string())?
         .send()
         .await
         .map_err(unreachable)?;
