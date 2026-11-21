@@ -44,6 +44,9 @@ struct Shape {
     /// The device this one is a copy of: its name, and its page while it's in the home. Part
     /// of the shape so the line follows the twin being added, renamed or gone.
     twin: Option<(String, Option<String>)>,
+    /// The other extensions that reach this same device, by their own names where the page
+    /// knows them (`docs/specs/protocols.md` §6.1). In the shape for the same reason.
+    also_through: Vec<String>,
 }
 
 #[component]
@@ -118,6 +121,23 @@ fn shape_of(home: &Home, id: &str) -> Shape {
         .as_ref()
         .and_then(|device| device.duplicate_of.as_ref())
         .map(|twin| twin_of(home, twin));
+    let also_through = device
+        .as_ref()
+        .map(|device| {
+            device
+                .also_through
+                .iter()
+                .map(|protocol| {
+                    home.extensions
+                        .iter()
+                        .find(|(id, _)| id.as_str() == protocol.as_str())
+                        .map(|(_, extension)| extension.name.clone())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| protocol.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Shape {
         device,
         areas: home.areas.clone(),
@@ -125,6 +145,7 @@ fn shape_of(home: &Home, id: &str) -> Shape {
         unmodeled,
         any_devices: !home.devices.is_empty(),
         twin,
+        also_through,
     }
 }
 
@@ -136,7 +157,8 @@ fn twin_of(home: &Home, twin: &irori_types::DeviceId) -> (String, Option<String>
     } else if let Some(held) = home.held.iter().find(|other| &other.id == twin) {
         (format!("{} (waiting to be added)", held.name), None)
     } else {
-        (twin.to_string(), None)
+        // Itself a hidden copy, or gone: there's nothing to show of it but an id.
+        ("another device".to_owned(), None)
     }
 }
 
@@ -301,22 +323,7 @@ fn page(
             .map(|(_, extension)| (extension.name.clone(), extension.unpairs))
             .unwrap_or_default()
     });
-    // The other extensions that reach this same device, by their own names where the page
-    // knows them (`docs/specs/protocols.md` §6.1).
-    let also_through = live.home.with_untracked(|home| {
-        device
-            .also_through
-            .iter()
-            .map(|protocol| {
-                home.extensions
-                    .iter()
-                    .find(|(id, _)| id.as_str() == protocol.as_str())
-                    .map(|(_, extension)| extension.name.clone())
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or_else(|| protocol.to_string())
-            })
-            .collect::<Vec<_>>()
-    });
+    let also_through = shape.also_through.clone();
     let twin = shape.twin.clone();
     let what = device.name.to_string();
     let name = device.name.to_string();
@@ -1720,6 +1727,26 @@ mod tests {
             shape_of(&added, "bridge_radar").twin,
             Some(("Radar".to_owned(), Some("/devices/radar".to_owned())))
         );
+        let unknown = Home {
+            devices: vec![added.devices[0].clone()],
+            ..Home::default()
+        };
+        assert_eq!(
+            shape_of(&unknown, "bridge_radar").twin,
+            Some(("another device".to_owned(), None))
+        );
+    }
+
+    /// "Also reachable through" redraws with the home, like the rest of what the page shows.
+    #[test]
+    fn who_else_reaches_a_device_is_part_of_the_shape() {
+        let reading = reading("2026-09-16T10:00:00Z", false);
+        let before = shape_of(&home(reading.clone()), "radar");
+        let mut reached = home(reading);
+        reached.devices[0].also_through = vec!["homeassistant".parse().expect("a protocol id")];
+        let after = shape_of(&reached, "radar");
+        assert_ne!(before, after);
+        assert_eq!(after.also_through, ["homeassistant"]);
     }
 
     /// A rename does change it, or the new name would never appear.

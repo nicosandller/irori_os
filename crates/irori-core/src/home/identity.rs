@@ -27,15 +27,40 @@ pub(crate) struct Entry {
     protocol: ProtocolId,
     /// Whether its extension named its connections: the copy, when it matches one that didn't.
     carrier: bool,
+    /// Who made it, in one spelling. A serial number is only unique within one maker.
+    maker: Option<String>,
+    /// Whether a person has it in the home: between two that name connections, the one to keep.
+    in_home: bool,
     keys: BTreeSet<Key>,
 }
 
 impl Entry {
-    pub fn of(protocol: &ProtocolId, description: &DeviceDescription) -> Self {
+    pub fn of(protocol: &ProtocolId, description: &DeviceDescription, in_home: bool) -> Self {
         Self {
             protocol: protocol.clone(),
             carrier: !description.connections.is_empty(),
+            maker: description
+                .manufacturer
+                .as_deref()
+                .map(|maker| maker.trim().to_lowercase())
+                .filter(|maker| !maker.is_empty()),
+            in_home,
             keys: keys_of(description),
+        }
+    }
+
+    /// The same device, now in the home or not.
+    pub fn in_home(mut self, in_home: bool) -> Self {
+        self.in_home = in_home;
+        self
+    }
+
+    /// Whether a serial number they share can mean they're one device: the same maker, or one
+    /// of them doesn't say.
+    fn same_maker(&self, other: &Self) -> bool {
+        match (&self.maker, &other.maker) {
+            (Some(mine), Some(theirs)) => mine == theirs,
+            _ => true,
         }
     }
 }
@@ -79,26 +104,40 @@ pub(crate) fn keys_of(description: &DeviceDescription) -> BTreeSet<Key> {
     keys
 }
 
-/// Whether a serial number can tell one device from another. A placeholder (`unknown`, `0`,
-/// `N/A`) or one so short two makers could both use it can't: two extensions that each have
-/// one device saying `unknown` would otherwise hide one of them. The ambiguity rule only
+/// Whether a serial number can tell one device from another. A placeholder (`unknown`,
+/// `TEST_SN`, `N/A`), a single character repeated (`0000`), a run of counting digits
+/// (`123456789`) or one so short two makers could both use it can't: two extensions that each
+/// have one device saying `unknown` would otherwise hide one of them. The ambiguity rule only
 /// catches a placeholder once one extension uses it twice.
 fn says_which(serial: &str) -> bool {
-    const PLACEHOLDERS: [&str; 8] = [
+    const PLACEHOLDERS: [&str; 10] = [
         "unknown",
         "none",
         "null",
-        "n/a",
         "na",
         "default",
         "serial",
-        "not available",
+        "serialnumber",
+        "notavailable",
+        "test",
+        "testsn",
     ];
-    serial.chars().filter(char::is_ascii_alphanumeric).count() >= 4
-        && !PLACEHOLDERS.contains(&serial.to_ascii_lowercase().as_str())
-        && !serial
-            .chars()
-            .all(|c| c == '0' || !c.is_ascii_alphanumeric())
+    let plain: Vec<u8> = serial
+        .bytes()
+        .filter(u8::is_ascii_alphanumeric)
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect();
+    let repeated = plain.windows(2).all(|pair| pair[0] == pair[1]);
+    let counting = plain.iter().all(u8::is_ascii_digit)
+        && plain
+            .windows(2)
+            .all(|pair| pair[1] == pair[0] + 1 || (pair[0] == b'9' && pair[1] == b'0'));
+    plain.len() >= 4
+        && !repeated
+        && !counting
+        && !PLACEHOLDERS
+            .iter()
+            .any(|placeholder| placeholder.as_bytes() == plain)
 }
 
 /// Every device's identifiers, in the home or only found, and which devices are copies.
@@ -108,6 +147,9 @@ pub(crate) struct Identities {
     by_key: HashMap<Key, BTreeSet<DeviceId>>,
     /// What each device was last worked out to be a copy of, so a change can be told apart.
     duplicates: HashMap<DeviceId, DeviceId>,
+    /// In what order each device was first seen, for keeping the one that was there first.
+    arrived: HashMap<DeviceId, u64>,
+    next_arrival: u64,
 }
 
 impl Identities {
@@ -132,6 +174,10 @@ impl Identities {
             }
         }
         if let Some(entry) = entry {
+            if !self.arrived.contains_key(id) {
+                self.arrived.insert(id.clone(), self.next_arrival);
+                self.next_arrival += 1;
+            }
             for key in &entry.keys {
                 self.by_key
                     .entry(key.clone())
@@ -139,6 +185,8 @@ impl Identities {
                     .insert(id.clone());
             }
             self.entries.insert(id.clone(), entry);
+        } else {
+            self.arrived.remove(id);
         }
         touched.extend(self.sharing(id));
         // A copy's standing decides its twin's `also_through`, and the twin's other copies'.
@@ -185,23 +233,34 @@ impl Identities {
             .keys
             .iter()
             .filter(|key| !self.ambiguous(key))
-            .filter_map(|key| self.by_key.get(key))
-            .flatten()
-            .filter(|other| {
+            .filter_map(|key| Some((key, self.by_key.get(key)?)))
+            .flat_map(|(key, ids)| ids.iter().map(move |other| (key, other)))
+            .filter(|(key, other)| {
                 *other != id
-                    && self
-                        .entries
-                        .get(*other)
-                        .is_some_and(|them| them.protocol != entry.protocol)
+                    && self.entries.get(*other).is_some_and(|them| {
+                        them.protocol != entry.protocol
+                            && (!matches!(key, Key::Serial(_)) || entry.same_maker(them))
+                    })
             })
-            .cloned()
+            .map(|(_, other)| other.clone())
             .collect()
+    }
+
+    /// Which of two devices that both name connections is kept, lowest first: the one in the
+    /// home, then the one seen first, then by id. A total order, so two never point at each
+    /// other, and installing another bridge can't push aside what a person already chose.
+    fn standing<'a>(&self, id: &'a DeviceId) -> (bool, u64, &'a DeviceId) {
+        (
+            !self.entries.get(id).is_some_and(|entry| entry.in_home),
+            self.arrived.get(id).copied().unwrap_or(u64::MAX),
+            id,
+        )
     }
 
     /// Which device this one is a copy of. Only a device that names its connections is ever a
     /// copy: of a matching device that doesn't, the first in id order; else, when every match
-    /// names connections too, of the first whose id comes before its own, so two copies never
-    /// point at each other.
+    /// names connections too, of the one with the best `standing`, if that's better than its
+    /// own.
     pub fn duplicate_of(&self, id: &DeviceId) -> Option<DeviceId> {
         if !self.entries.get(id)?.carrier {
             return None;
@@ -210,7 +269,12 @@ impl Identities {
         matches
             .iter()
             .find(|other| !self.entries[*other].carrier)
-            .or_else(|| matches.iter().find(|other| *other < id))
+            .or_else(|| {
+                matches
+                    .iter()
+                    .filter(|other| self.standing(other) < self.standing(id))
+                    .min_by_key(|other| self.standing(other))
+            })
             .cloned()
     }
 
@@ -300,7 +364,19 @@ mod tests {
 
     #[test]
     fn a_placeholder_serial_is_no_key() {
-        for serial in ["unknown", "N/A", "0", "0000-0000", "123", "Default"] {
+        for serial in [
+            "unknown",
+            "N/A",
+            "0",
+            "0000-0000",
+            "123",
+            "Default",
+            "TEST_SN",
+            "test-sn",
+            "123456789",
+            "1234567890",
+            "FFFF-FFFF",
+        ] {
             assert!(
                 keys_of(&described("8a9b2c4d", Some(serial))).is_empty(),
                 "{serial}"

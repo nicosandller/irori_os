@@ -298,15 +298,19 @@ says what the device is, and the core recognises it:
   digits is a MAC (ESPHome, TP-Link, SwitchBot), 16 an IEEE address (Zigbee: `0x…`, and
   Zigbee2MQTT's `zigbee2mqtt_0x…`). A serial number only ever matches a serial number. A
   `unique_id` that isn't an address, like Matter's fabric and node or a Cast or ONVIF uuid,
-  matches by serial number alone.
+  matches by serial number alone. A serial number is only unique within one maker, so two
+  devices match on it only when their `manufacturer` is the same, ignoring case, or one of them
+  doesn't name one.
 - An identifier one extension gives to more than one of its devices (a maker's placeholder
   serial number, say) tells nothing apart and matches nothing. Nor does a serial number that
-  is a placeholder on its face: fewer than four letters or digits, only zeros, or one of
-  `unknown`, `none`, `null`, `n/a`, `na`, `default`, `serial` or `not available`.
+  is a placeholder on its face: fewer than four letters or digits, one character repeated,
+  counting digits (`123456789`), or, ignoring case and punctuation, one of `unknown`, `none`,
+  `null`, `n/a`, `default`, `serial`, `serial number`, `not available`, `test` or `test_sn`.
 - On a match, the device that named connections is the copy: its `duplicate_of` is the other
   device's id ([entities.md](entities.md) §4.3). Of several matches, it is a copy of the first in
-  id order that named no connections; when every match named some, of the first whose id comes
-  before its own, so two copies never point at each other.
+  id order that named no connections. When every match named some, the one to keep is the one
+  in the home, then the one seen first in this run, then the first by id; the others are its
+  copies, so two copies never point at each other.
 - A copy that isn't in the home isn't held or offered: it is left out of the found list, and "Add
   all" passes it over. The device it copies lists the copy's extension in `also_through`.
 - A copy that was added before its twin was found stays in the home, and both carry the flags.
