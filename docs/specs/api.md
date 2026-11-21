@@ -108,8 +108,9 @@ extension's held devices is passed over), as `PATCH /api/devices/<id>
 ([config.md](config.md) §3.2). The devices join the home a few hundred events' worth at a time,
 each step waiting for the listeners on the event stream to catch up, so none of them (the history,
 the websocket, an automation engine) falls far enough behind to miss events. A listener that has
-stopped reading altogether is waited for once, for half a second, and then the remaining steps go
-without waiting; it misses events, as it would anyway. The answer comes once all of them have
+stopped reading altogether is waited for once, for half a second; the remaining steps then go a
+short pause apart instead of waiting on it. That listener misses events, as it would anyway; the
+ones that are reading still miss none. The answer comes once all of them have
 joined. The answer is `{ "added": <how many> }`. Devices of other
 extensions are left as they are. An extension that holds nothing answers `{ "added": 0 }` and
 writes nothing; one that isn't installed is `404`. It is written in the activity log as

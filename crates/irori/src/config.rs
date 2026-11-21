@@ -29,6 +29,11 @@ const ADD_STEP_EVENTS: usize = Core::event_buffer() / 4;
 /// How long a listener may go without reading before adding devices stops waiting for it.
 const STALLED: Duration = Duration::from_millis(500);
 
+/// The pause between steps once a listener has stopped reading, when how far behind the others
+/// are can no longer be told. A step is a few hundred events, and this gives a listener that
+/// reads, on a small machine too, the time to take them.
+const PAUSE_ONCE_STALLED: Duration = Duration::from_millis(50);
+
 /// Waits until the listeners have read all but a step's worth of what has been published, or
 /// until none of them has read anything for [`STALLED`]. Answers whether they kept up.
 async fn drained(core: &Core) -> bool {
@@ -163,7 +168,11 @@ impl Config {
     /// listener (the history, the event log, an automation engine) can fall behind by before it
     /// misses some. So each step is a few hundred events, and the next waits until the listeners
     /// have read most of the last. A listener that has stopped reading altogether doesn't hold
-    /// the rest up for long: after a moment without progress, the rest go without waiting.
+    /// the rest up for long: after a moment without progress, the rest go a short pause apart
+    /// instead of waiting on it, so the listeners that do read still keep up.
+    ///
+    /// A step is cut between devices, never inside one, so a single device that brings more
+    /// than about 380 entities is told in one go and can still outrun a listener by itself.
     ///
     /// The lock is held throughout, so the watch loop doesn't hand the core the whole file at
     /// once in the middle of it.
@@ -188,7 +197,8 @@ impl Config {
         let mut step = before;
         let mut events = 0;
         // Once a listener has stopped reading, waiting for it again at every step would only
-        // keep the lock (and the person) waiting half a second a step.
+        // keep the lock (and the person) waiting half a second a step. The steps still go a
+        // short pause apart, for the listeners that do read.
         let mut keeping_up = true;
         for (at, (id, entities)) in devices.iter().enumerate() {
             step.devices.entry(id.clone()).or_default().added = true;
@@ -199,6 +209,8 @@ impl Config {
                 events = 0;
                 if keeping_up {
                     keeping_up = drained(core).await;
+                } else {
+                    tokio::time::sleep(PAUSE_ONCE_STALLED).await;
                 }
             }
         }

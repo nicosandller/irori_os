@@ -4142,7 +4142,10 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("src/server/native_snapshot.json");
         if std::env::var_os("IRORI_RECORD_NATIVE_SNAPSHOT").is_some() {
+            // The copy compiled in below is the old one until the next build, so recording
+            // doesn't compare.
             std::fs::write(&path, serde_json::to_string_pretty(&served)? + "\n")?;
+            return Ok(());
         }
         let recorded: serde_json::Value =
             serde_json::from_str(include_str!("server/native_snapshot.json"))?;
@@ -6923,8 +6926,9 @@ mod tests {
         }
         assert_eq!(core.held_devices().len(), devices, "the crowd was found");
 
-        // Subscribed, and never read.
+        // Subscribed, and never read; and beside it one that reads, as the history does.
         let stuck = core.subscribe();
+        let listener = reading_listener(&core);
         let started = tokio::time::Instant::now();
         let (status, body) = server
             .json(
@@ -6939,9 +6943,53 @@ mod tests {
         assert_eq!(core.entities().len(), devices * entities);
         // One wait of half a second, not one at each of the dozen or so steps.
         assert!(took < Duration::from_secs(3), "took {took:?}");
+        // The one that reads missed nothing for the one that doesn't.
         drop(stuck);
+        let missed = listener_missed(&core, listener).await?;
         host.shutdown().await;
+        anyhow::ensure!(missed == 0, "a listener that reads missed {missed} events");
         Ok(())
+    }
+
+    /// A listener that takes each event as it comes, yielding between them as one that writes
+    /// somewhere does. It ends with how many events it missed.
+    fn reading_listener(core: &Core) -> tokio::task::JoinHandle<u64> {
+        let mut events = core.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        return missed;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return 0,
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+    }
+
+    /// Gives a [`reading_listener`] the last of what was published, then stops it and answers
+    /// how many events it missed.
+    async fn listener_missed(
+        core: &Core,
+        listener: tokio::task::JoinHandle<u64>,
+    ) -> anyhow::Result<u64> {
+        for _ in 0..500 {
+            if listener.is_finished() || core.events_waiting() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if listener.is_finished() {
+            return Ok(listener.await?);
+        }
+        listener.abort();
+        match listener.await {
+            Err(e) if e.is_cancelled() => Ok(0),
+            Ok(missed) => Ok(missed),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// A found device joins the home when "+ Add device" adds it, with its entities, and it's
