@@ -14,6 +14,7 @@ use irori_protocol::IncomingLive;
 
 use crate::client::{Client, Outgoing};
 use crate::http;
+use crate::transport::Transport;
 
 /// How long asking for the stream, and fetching a playlist, may take.
 const ASK_WITHIN: Duration = Duration::from_secs(10);
@@ -130,20 +131,20 @@ fn families(codecs: &str) -> Vec<String> {
 /// Streams `entity_id` to `live` until nobody watches, Home Assistant stops, or it fails.
 pub async fn watch(
     client: Client,
-    base: String,
+    transport: Transport,
     token: String,
     entity_id: String,
     live: IncomingLive,
 ) {
     let IncomingLive { accepts, feed, .. } = live;
     let mut feed = feed;
-    let ended = stream(&client, &base, &token, &entity_id, &accepts, &mut feed).await;
+    let ended = stream(&client, &transport, &token, &entity_id, &accepts, &mut feed).await;
     feed.end(ended.err());
 }
 
 async fn stream(
     client: &Client,
-    base: &str,
+    transport: &Transport,
     token: &str,
     entity_id: &str,
     accepts: &[String],
@@ -164,7 +165,7 @@ async fn stream(
         .ok_or("Home Assistant didn't say where its stream is")?
         .to_owned();
     let text = |path: String, within: Duration| async move {
-        let answer = http::get(base, &path, token, 1 << 20, within).await?;
+        let answer = http::get(transport, &path, token, 1 << 20, within).await?;
         let kind = answer.content_type.clone();
         String::from_utf8(answer.body).map_err(|bad| {
             let head: Vec<u8> = bad.as_bytes().iter().take(16).copied().collect();
@@ -216,7 +217,7 @@ async fn stream(
                 .as_deref()
                 .ok_or("Home Assistant's stream has no init segment")?;
             let init = http::get(
-                base,
+                transport,
                 &resolve(&playlist, init),
                 token,
                 INIT_MOST,
@@ -239,7 +240,7 @@ async fn stream(
                 continue;
             }
             match http::get(
-                base,
+                transport,
                 &resolve(&playlist, uri),
                 token,
                 FRAGMENT_MOST,

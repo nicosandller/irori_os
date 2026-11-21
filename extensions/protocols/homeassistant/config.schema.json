@@ -3,6 +3,19 @@
   "title": "Settings",
   "type": "object",
   "properties": {
+    "certificate": {
+      "title": "Trust this certificate",
+      "description": "For a certificate no public authority issued, like Home Assistant's self-signed one: its\nSHA-256 fingerprint, or your certificate or CA certificate as PEM. Enter `none` to stop\ntrusting it.",
+      "type": "string",
+      "default": "",
+      "x-irori-group": "Secure connection"
+    },
+    "commands": {
+      "title": "Let Irori control devices",
+      "description": "Off, Irori only reads Home Assistant and answers every command \"read-only\". On, Irori can\nswitch, unlock, disarm and send commands through Home Assistant, and Automations flows\ncan do the same.",
+      "type": "boolean",
+      "default": false
+    },
     "exclude_areas": {
       "title": "Leave out these areas",
       "description": "Never bring over entities in these areas (by name).",
@@ -43,15 +56,27 @@
       },
       "x-irori-group": "What comes over"
     },
+    "resolves_locally": {
+      "title": "This name resolves locally",
+      "description": "Turn on if this `https://` address is a public name that your network's DNS points at\nHome Assistant's local address. Irori then connects only if it resolves to a local one.",
+      "type": "boolean",
+      "default": false,
+      "x-irori-group": "Secure connection"
+    },
     "token": {
       "title": "Access token",
       "description": "A long-lived access token of an administrator: in Home Assistant, your profile →\nSecurity → Long-lived access tokens → Create token. An administrator's, because only\nthey can read Home Assistant's devices, areas and entities.",
-      "$ref": "#/$defs/Secret"
+      "$ref": "#/$defs/Secret",
+      "x-irori-secret-for": "url"
     },
     "url": {
       "title": "Home Assistant address",
-      "description": "Home Assistant's local address, as you open it in a browser on this network:\n`http://homeassistant.local:8123`, or `http://` and its IP address.",
-      "type": "string"
+      "description": "Home Assistant's local address, as you open it in a browser on this network:\n`https://homeassistant.local:8123`, or `http://` if it doesn't use a certificate.",
+      "type": "string",
+      "x-irori-warn": {
+        "starts_with": "http://",
+        "text": "Not encrypted: your Home Assistant administrator's access token travels unencrypted on your local network. Use https:// if your Home Assistant has a certificate."
+      }
     }
   },
   "required": [

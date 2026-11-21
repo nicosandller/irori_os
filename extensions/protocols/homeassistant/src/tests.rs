@@ -79,7 +79,8 @@ fn home() -> World {
 }
 
 fn settings(fake: &FakeHa) -> Settings {
-    serde_json::from_value(json!({ "url": fake.url, "token": TOKEN })).expect("settings")
+    serde_json::from_value(json!({ "url": fake.url, "token": TOKEN, "commands": true }))
+        .expect("settings")
 }
 
 fn context(n: u8) -> ContextId {
@@ -747,4 +748,174 @@ async fn what_a_new_run_leaves_out_is_removed_and_what_is_still_loading_stays() 
         })
         .await;
     world.stop().await;
+}
+
+#[tokio::test]
+async fn with_commands_off_every_command_is_answered_read_only_and_nothing_is_sent() {
+    let fake = FakeHa::start(home()).await.expect("a fake");
+    let read_only: Settings =
+        serde_json::from_value(json!({ "url": fake.url, "token": TOKEN })).expect("settings");
+    let mut world = world_with(read_only).await;
+    world.running().await;
+    world.report("e-light", |r| on(r) == Some(false)).await;
+    let answer = world.ask("e-light", Service::LightTurnOff, 1).await;
+    let why = answer.expect_err("refused");
+    assert!(format!("{why:?}").contains("read-only"), "{why:?}");
+    assert!(fake.calls().is_empty());
+    world.stop().await;
+}
+
+/// A certificate for 127.0.0.1, with its key, its DER and its SHA-256 fingerprint in hex.
+fn certificate() -> (
+    rustls::pki_types::CertificateDer<'static>,
+    rustls::pki_types::PrivateKeyDer<'static>,
+    String,
+    String,
+) {
+    let made =
+        rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_owned()]).expect("a certificate");
+    let der = made.cert.der().clone();
+    let hex: String = crate::transport::fingerprint(&der)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let pem = made.cert.pem();
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(made.key_pair.serialize_der().into());
+    (der, key, hex, pem)
+}
+
+fn over_tls(fake: &FakeHa, certificate: &str) -> Settings {
+    serde_json::from_value(
+        json!({ "url": fake.url, "token": TOKEN, "commands": true, "certificate": certificate }),
+    )
+    .expect("settings")
+}
+
+#[tokio::test]
+async fn the_right_certificate_connects_by_fingerprint_or_as_pem() {
+    for pinned_as_pem in [false, true] {
+        let (der, key, hex, pem) = certificate();
+        let fake = FakeHa::start_tls(home(), der, key).await.expect("a fake");
+        let trust = if pinned_as_pem { pem } else { hex };
+        let mut world = world_with(over_tls(&fake, &trust)).await;
+        world.running().await;
+        world.report("e-light", |r| on(r) == Some(false)).await;
+        assert_eq!(
+            world
+                .ask(
+                    "e-light",
+                    Service::LightTurnOn(LightTurnOn {
+                        brightness: None,
+                        color_temp_kelvin: None,
+                        rgb: None,
+                    }),
+                    1
+                )
+                .await,
+            Ok(())
+        );
+        assert_eq!(fake.calls().len(), 1);
+        world.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn a_certificate_chaining_to_the_owners_ca_connects_and_a_wrong_name_does_not() {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, KeyPair};
+    let ca_key = KeyPair::generate().expect("a key");
+    let mut ca = CertificateParams::new(Vec::new()).expect("params");
+    ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    let ca = ca.self_signed(&ca_key).expect("a CA");
+    for (name, connects) in [("127.0.0.1", true), ("10.9.9.9", false)] {
+        let key = KeyPair::generate().expect("a key");
+        let leaf = CertificateParams::new(vec![name.to_owned()])
+            .expect("params")
+            .signed_by(&key, &ca, &ca_key)
+            .expect("a certificate");
+        let der = leaf.der().clone();
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(key.serialize_der().into());
+        let fake = FakeHa::start_tls(home(), der, key).await.expect("a fake");
+        let world = world_with(over_tls(&fake, &ca.pem())).await;
+        if connects {
+            world.running().await;
+        } else {
+            world
+                .until("the certificate refused", |log| {
+                    log.health
+                        .iter()
+                        .any(|h| matches!(h, Health::Degraded(why) if why.contains("certificate")))
+                        .then_some(())
+                })
+                .await;
+            assert!(fake.received().is_empty(), "something was sent");
+        }
+        world.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn a_wrong_or_unknown_certificate_never_hears_the_token() {
+    let (_, _, other_fingerprint, _) = certificate();
+    for trust in [other_fingerprint.as_str(), ""] {
+        let (der, key, _, _) = certificate();
+        let fake = FakeHa::start_tls(home(), der, key).await.expect("a fake");
+        let world = world_with(over_tls(&fake, trust)).await;
+        world
+            .until("the certificate refused", |log| {
+                log.health
+                    .iter()
+                    .any(|h| matches!(h, Health::Degraded(why) if why.contains("certificate")))
+                    .then_some(())
+            })
+            .await;
+        assert!(fake.received().is_empty(), "something was sent");
+        world.stop().await;
+    }
+}
+
+#[tokio::test]
+async fn a_picture_comes_over_the_same_checked_connection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let (der, key, hex, _) = certificate();
+    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .expect("versions")
+    .with_no_client_auth()
+    .with_single_cert(vec![der], key)
+    .expect("a config");
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a port");
+    let address = listener.local_addr().expect("an address");
+    tokio::spawn(async move {
+        let (tcp, _) = listener.accept().await.expect("a connection");
+        let mut tls = acceptor.accept(tcp).await.expect("a handshake");
+        let mut request = [0u8; 1024];
+        let _ = tls.read(&mut request).await;
+        let _ = tls
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 4\r\n\r\njpeg",
+            )
+            .await;
+        let _ = tls.shutdown().await;
+    });
+    let settings: Settings = serde_json::from_value(json!({
+        "url": format!("https://{address}"), "token": TOKEN, "certificate": hex,
+    }))
+    .expect("settings");
+    let transport = crate::transport::Transport::of(&settings).expect("a transport");
+    let answer = crate::http::get(
+        &transport,
+        "/api/camera_proxy/camera.x",
+        TOKEN,
+        1024,
+        Duration::from_secs(5),
+    )
+    .await
+    .expect("a picture");
+    assert_eq!(answer.content_type, "image/jpeg");
+    assert_eq!(answer.body, b"jpeg");
 }

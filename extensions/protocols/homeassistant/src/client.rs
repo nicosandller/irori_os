@@ -16,11 +16,12 @@ use std::time::Duration;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
+use tokio_tungstenite::WebSocketStream;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+use crate::transport::{OpenError, Stream, Transport};
 
 /// Every message type this extension can send Home Assistant. Nothing else ever leaves.
 pub const ALLOWED: &[&str] = &[
@@ -214,7 +215,7 @@ pub struct Event {
     pub event: Value,
 }
 
-type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+type Socket = WebSocketStream<Stream>;
 type Answer = oneshot::Sender<Result<Value, HaError>>;
 
 /// A signed-in connection. Clones share it.
@@ -246,21 +247,33 @@ pub struct Connection {
 }
 
 /// Connects and signs in with `token`.
-pub async fn connect(url: &str, token: &str) -> Result<Connection, ConnectError> {
-    tokio::time::timeout(CONNECT_TIMEOUT, connect_now(url, token))
+pub async fn connect(transport: &Transport, token: &str) -> Result<Connection, ConnectError> {
+    tokio::time::timeout(CONNECT_TIMEOUT, connect_now(transport, token))
         .await
         .map_err(|_| {
-            ConnectError::Unreachable(format!("Home Assistant at {url} didn't answer in time"))
+            ConnectError::Unreachable(format!(
+                "Home Assistant at {} didn't answer in time",
+                transport.authority()
+            ))
         })?
 }
 
-async fn connect_now(url: &str, token: &str) -> Result<Connection, ConnectError> {
+async fn connect_now(transport: &Transport, token: &str) -> Result<Connection, ConnectError> {
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(MAX_MESSAGE))
         .max_frame_size(Some(MAX_MESSAGE));
-    let (socket, _) = tokio_tungstenite::connect_async_with_config(url, Some(config), false)
-        .await
-        .map_err(|e| ConnectError::Unreachable(format!("couldn't reach Home Assistant: {e}")))?;
+    // A certificate that can't be trusted ends it here, before the token is anywhere near it.
+    let stream = transport.open().await.map_err(|why| match why {
+        OpenError::Untrusted(why) => ConnectError::Refused(why),
+        OpenError::Unreachable(why) => ConnectError::Unreachable(why),
+    })?;
+    let (socket, _) = tokio_tungstenite::client_async_with_config(
+        transport.websocket_url(),
+        stream,
+        Some(config),
+    )
+    .await
+    .map_err(|e| ConnectError::Unreachable(format!("couldn't reach Home Assistant: {e}")))?;
     let (mut sink, mut stream) = socket.split();
     let mut next = async || -> Result<Value, ConnectError> {
         loop {

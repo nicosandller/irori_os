@@ -19,6 +19,7 @@ pub mod model;
 pub mod network;
 pub mod settings;
 pub mod throttle;
+pub mod transport;
 
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
@@ -45,6 +46,7 @@ use crate::client::{Client, ConnectError, Connection, Event, HaError, Outgoing, 
 use crate::model::{Bridged, HaState, Plan, Reading, Registry};
 use crate::settings::Settings;
 use crate::throttle::Throttle;
+use crate::transport::Transport;
 
 /// The extension, for [`irori_protocol::serve`].
 #[derive(Debug)]
@@ -138,18 +140,37 @@ pub async fn drive(
 ) -> Result<(), ProtocolError> {
     let mut bridge = Bridge::default();
     bridge.recall(&ctx).await;
+    let transport = match Transport::of(&settings) {
+        Ok(transport) => transport,
+        Err(why) => {
+            ctx.set_health(Health::Degraded(why)).await;
+            while_waiting(&mut ctx, std::future::pending::<()>()).await;
+            return Ok(());
+        }
+    };
     let mut retry = timing.first_retry;
     loop {
-        let url = settings.websocket_url();
-        let Some(connected) =
-            while_waiting(&mut ctx, client::connect(&url, settings.token.expose())).await
+        let Some(connected) = while_waiting(
+            &mut ctx,
+            client::connect(&transport, settings.token.expose()),
+        )
+        .await
         else {
             return Ok(());
         };
         let wait = match connected {
             Ok(connection) => {
                 let started = Instant::now();
-                match session(&settings, &mut ctx, &mut bridge, connection, timing).await {
+                match session(
+                    &settings,
+                    &transport,
+                    &mut ctx,
+                    &mut bridge,
+                    connection,
+                    timing,
+                )
+                .await
+                {
                     Ended::Stopped => return Ok(()),
                     Ended::NotAdmin => timing.refused_retry,
                     Ended::Lost(why) => {
@@ -241,6 +262,9 @@ struct Bridge {
     stored_entities: Vec<UniqueId>,
     stored_devices: Vec<UniqueId>,
 }
+
+/// The answer to every command while "Let Irori control devices" is off.
+const READ_ONLY: &str = "read-only: turn on \"Let Irori control devices\" in the Home Assistant extension's settings to control this from Irori";
 
 /// Where the `unique_id`s brought over are kept across restarts: `<key>.0`, `<key>.1`, ….
 const STORED_ENTITIES: &str = "brought.entities";
@@ -476,6 +500,9 @@ struct Done {
 /// One connection's worth of following Home Assistant.
 struct Session<'a> {
     client: Client,
+    transport: Transport,
+    /// Whether commands are passed on to Home Assistant: off until the owner turns them on.
+    commands: bool,
     bridge: &'a mut Bridge,
     entities: Vec<Bridged>,
     by_entity_id: BTreeMap<String, usize>,
@@ -497,6 +524,7 @@ struct Session<'a> {
 
 async fn session(
     settings: &Settings,
+    transport: &Transport,
     ctx: &mut ProtocolContext,
     bridge: &mut Bridge,
     connection: Connection,
@@ -561,6 +589,8 @@ async fn session(
     };
     let mut session = Session {
         client,
+        transport: transport.clone(),
+        commands: settings.commands,
         bridge,
         entities: Vec::new(),
         by_entity_id: BTreeMap::new(),
@@ -933,6 +963,10 @@ impl Session<'_> {
 
     /// A command from Irori: carried out by Home Assistant, answered here once it has been.
     fn call(&mut self, call: IncomingCall, done: &mpsc::Sender<Done>) {
+        if !self.commands {
+            call.reply(Err(ServiceError::failed(READ_ONLY)));
+            return;
+        }
         let Some(&index) = self.by_unique_id.get(&call.call.unique_id) else {
             call.reply(Err(ServiceError::unavailable(
                 "Home Assistant no longer has this entity",
@@ -1000,10 +1034,10 @@ impl Session<'_> {
         };
         let Some(bridged) = bridged else { return };
         let path = format!("/api/{proxy}/{}", bridged.entity_id);
-        let base = settings.url.clone();
+        let transport = self.transport.clone();
         let token = settings.token.expose().to_owned();
         tokio::spawn(async move {
-            let answer = http::get(&base, &path, &token, PICTURE_MOST, PICTURE_WITHIN).await;
+            let answer = http::get(&transport, &path, &token, PICTURE_MOST, PICTURE_WITHIN).await;
             picture.reply(answer.and_then(|answer| {
                 if PICTURE_TYPES.contains(&answer.content_type.as_str()) {
                     Ok(Picture {
@@ -1041,7 +1075,7 @@ impl Session<'_> {
         };
         tokio::spawn(live::watch(
             self.client.clone(),
-            settings.url.clone(),
+            self.transport.clone(),
             settings.token.expose().to_owned(),
             camera.entity_id.clone(),
             live,

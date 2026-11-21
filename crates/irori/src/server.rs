@@ -2104,7 +2104,20 @@ async fn save_extension_settings(
     // the extension in between, and Zigbee2MQTT would generate a network key in that gap,
     // before the key from the form arrived. A form with only one of the two is already a
     // single write.
-    let saved = if !non_secret.is_empty() && !secrets_to_set.is_empty() {
+    let ties = tied_secrets(properties, schema, &non_secret);
+    let saved = if !ties.is_empty() {
+        state
+            .0
+            .config
+            .edit_extension_clearing_tied_secrets(
+                core,
+                id,
+                |file| write_non_secrets(file, &non_secret),
+                &secrets_to_set,
+                &ties,
+            )
+            .await
+    } else if !non_secret.is_empty() && !secrets_to_set.is_empty() {
         state
             .0
             .config
@@ -2144,6 +2157,27 @@ async fn save_extension_settings(
         Ok(())
     };
     saved.map_err(|e| Box::new(edit_failed(e)))
+}
+
+/// The `(secret, setting)` pairs this save could affect: a `writeOnly` field whose own schema names
+/// an ordinary setting with `x-irori-secret-for`, when that setting is being saved. Empty for
+/// every extension that doesn't declare one, which then saves exactly as it always has.
+fn tied_secrets(
+    properties: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Value,
+    saving: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(String, String)> {
+    properties
+        .iter()
+        .filter(|(_, field)| is_write_only(field, schema))
+        .filter_map(|(secret, field)| {
+            let setting = field.get("x-irori-secret-for")?.as_str()?;
+            let ordinary = properties
+                .get(setting)
+                .is_some_and(|tied| !is_write_only(tied, schema));
+            (ordinary && saving.contains_key(setting)).then(|| (secret.clone(), setting.to_owned()))
+        })
+        .collect()
 }
 
 /// Puts the non-secret half of a settings form into the extension's file.
@@ -5570,6 +5604,179 @@ mod tests {
             }
             Ok(())
         }
+    }
+
+    /// A protocol whose token belongs to the address it was entered for.
+    struct Tied;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    #[expect(dead_code)]
+    struct TiedSettings {
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+        #[serde(default)]
+        #[schemars(extend("x-irori-secret-for" = "url"))]
+        token: Option<TestSecret>,
+        /// A secret of the same extension that isn't tied to anything.
+        #[serde(default)]
+        other: Option<TestSecret>,
+    }
+
+    impl irori_protocol::Protocol for Tied {
+        type Config = TiedSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "tied"
+            name = "Tied"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: TiedSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            while ctx.next_action().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    async fn tied_server() -> anyhow::Result<(Server, irori_core::ExtensionHost)> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Tied>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let tied = ExtensionId::try_from("tied")?;
+        for _ in 0..500 {
+            if core.extensions().contains_key(&tied) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok((Server::new(core)?, host))
+    }
+
+    async fn save_tied(server: &Server, body: serde_json::Value) -> anyhow::Result<()> {
+        let (status, answer) = server
+            .json("POST", "/api/extensions/tied/settings", body)
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answer}");
+        Ok(())
+    }
+
+    fn tied_secrets_file(server: &Server) -> String {
+        std::fs::read_to_string(server.config_dir().join("secrets.toml")).unwrap_or_default()
+    }
+
+    /// A new address alone takes the token away, and only the token tied to it.
+    #[tokio::test]
+    async fn a_new_address_clears_the_token_tied_to_it() -> anyhow::Result<()> {
+        let (server, host) = tied_server().await?;
+        save_tied(
+            &server,
+            serde_json::json!({"url": "http://a.local", "token": "first", "other": "kept"}),
+        )
+        .await?;
+        save_tied(&server, serde_json::json!({"url": "http://b.local"})).await?;
+        let secrets = tied_secrets_file(&server);
+        assert!(!secrets.contains("first"), "{secrets}");
+        assert!(secrets.contains("kept"), "{secrets}");
+        let file = std::fs::read_to_string(server.config_dir().join("extensions/tied.toml"))?;
+        assert!(file.contains("http://b.local"), "{file}");
+        host.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_new_address_with_a_new_token_keeps_the_new_token() -> anyhow::Result<()> {
+        let (server, host) = tied_server().await?;
+        save_tied(
+            &server,
+            serde_json::json!({"url": "http://a.local", "token": "first"}),
+        )
+        .await?;
+        save_tied(
+            &server,
+            serde_json::json!({"url": "http://b.local", "token": "second"}),
+        )
+        .await?;
+        let secrets = tied_secrets_file(&server);
+        assert!(
+            secrets.contains("second") && !secrets.contains("first"),
+            "{secrets}"
+        );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The same address, another setting, or a first address: the stored token stays.
+    #[tokio::test]
+    async fn anything_but_a_changed_address_keeps_the_token() -> anyhow::Result<()> {
+        let (server, host) = tied_server().await?;
+        // Given before there was any address: it was never meant for another one.
+        save_tied(&server, serde_json::json!({"token": "first"})).await?;
+        save_tied(&server, serde_json::json!({"url": "http://a.local"})).await?;
+        assert!(tied_secrets_file(&server).contains("first"));
+        save_tied(&server, serde_json::json!({"url": "http://a.local"})).await?;
+        assert!(tied_secrets_file(&server).contains("first"));
+        save_tied(&server, serde_json::json!({"note": "changed"})).await?;
+        assert!(tied_secrets_file(&server).contains("first"));
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Without `x-irori-secret-for`, a changed setting leaves every secret alone.
+    #[tokio::test]
+    async fn an_extension_that_ties_nothing_saves_as_before() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+        for body in [
+            serde_json::json!({"label": "one", "key": "shh"}),
+            serde_json::json!({"label": "two"}),
+        ] {
+            let (status, answer) = server
+                .json("POST", "/api/extensions/safe/settings", body)
+                .await?;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{answer}");
+        }
+        assert!(tied_secrets_file(&server).contains("shh"));
+        host.shutdown().await;
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_secret_naming_an_ordinary_setting_being_saved_is_tied() {
+        let schema = serde_json::json!({
+            "properties": {
+                "url": {"type": "string"},
+                "name": {"type": "string"},
+                "token": {"type": "string", "writeOnly": true, "x-irori-secret-for": "url"},
+                "plain": {"type": "string", "x-irori-secret-for": "url"},
+                "to_secret": {"type": "string", "writeOnly": true, "x-irori-secret-for": "token"},
+                "nowhere": {"type": "string", "writeOnly": true, "x-irori-secret-for": "gone"},
+            },
+        });
+        let properties = schema["properties"].as_object().expect("properties");
+        let saving = |key: &str| {
+            let mut map = serde_json::Map::new();
+            map.insert(key.to_owned(), serde_json::json!("x"));
+            map
+        };
+        assert_eq!(
+            tied_secrets(properties, &schema, &saving("url")),
+            [("token".to_owned(), "url".to_owned())]
+        );
+        assert!(tied_secrets(properties, &schema, &saving("name")).is_empty());
+        assert!(tied_secrets(properties, &schema, &saving("token")).is_empty());
     }
 
     /// A protocol with a network of its own, like Zigbee's: a device is paired to it, a timed

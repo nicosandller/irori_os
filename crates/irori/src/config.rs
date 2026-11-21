@@ -591,6 +591,48 @@ impl Config {
         Ok(made)
     }
 
+    /// [`Self::edit_extension_with_secrets`] for a save that touches a setting a secret is tied
+    /// to (`x-irori-secret-for`). `ties` is each `(secret, setting)`. A secret whose setting had
+    /// a value and now has another is removed, unless this same save gives it a new value, so it
+    /// is never handed to whatever the setting now points at. Compared under the lock, against
+    /// what's on disk.
+    pub async fn edit_extension_clearing_tied_secrets(
+        &self,
+        core: &Core,
+        extension: &irori_types::ExtensionId,
+        change_file: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+        secrets_to_set: &[(String, String)],
+        ties: &[(String, String)],
+    ) -> Result<(), EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut file = store.extension_file(extension);
+        let before = file.clone();
+        change_file(&mut file);
+        let mut secrets = store.secrets();
+        for (secret, setting) in ties {
+            let changed = before.contains_key(setting) && before.get(setting) != file.get(setting);
+            if changed && !secrets_to_set.iter().any(|(key, _)| key == secret) {
+                secrets.remove(extension, std::slice::from_ref(secret));
+            }
+        }
+        for (key, text) in secrets_to_set {
+            secrets
+                .set(extension, std::slice::from_ref(key), text.clone())
+                .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
+        }
+        store
+            .save_extension_and_secrets(extension, &file, &secrets)
+            .map_err(EditError::Io)?;
+        tracing::info!(
+            files = %format!("extensions/{extension}.toml, secrets.toml"),
+            "config written"
+        );
+        core.apply_extension_settings(store.extension_settings());
+        Ok(())
+    }
+
     /// Picks up edits made outside Irori. Runs until the process ends. A change to `[recorder]`
     /// is applied to `history` here; `[server]` still waits for a restart.
     /// Forgets each device its protocol removed for good, as `forget_device` does for one a

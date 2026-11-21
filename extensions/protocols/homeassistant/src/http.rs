@@ -1,14 +1,15 @@
 //! One plain `GET` to Home Assistant's HTTP API, for what its WebSocket API doesn't carry: a
 //! camera's picture (`/api/camera_proxy/<entity_id>`).
 //!
-//! The address is Home Assistant's local `http://` one (see `settings.rs`), so this is a few lines
-//! of HTTP/1.1 over a TCP connection rather than a client library in the binary: one request per
-//! connection, the token in `Authorization`, the answer read up to a limit, within a time limit.
+//! A few lines of HTTP/1.1 over a connection from `transport.rs` (TCP, or TLS with its certificate
+//! checked) rather than a client library in the binary: one request per connection, the token in
+//! `Authorization`, the answer read up to a limit, within a time limit.
 
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+
+use crate::transport::{Stream, Transport};
 
 /// What Home Assistant answered: its `Content-Type` (without parameters) and the body.
 #[derive(Debug, PartialEq)]
@@ -19,36 +20,25 @@ pub struct Answer {
 
 /// `GET {base}{path}` with `token`, the body at most `limit` bytes, all within `within`.
 pub async fn get(
-    base: &str,
+    transport: &Transport,
     path: &str,
     token: &str,
     limit: usize,
     within: Duration,
 ) -> Result<Answer, String> {
-    tokio::time::timeout(within, fetch(base, path, token, limit))
+    tokio::time::timeout(within, fetch(transport, path, token, limit))
         .await
         .map_err(|_| "Home Assistant didn't answer in time".to_owned())?
 }
 
-async fn fetch(base: &str, path: &str, token: &str, limit: usize) -> Result<Answer, String> {
-    let authority = base
-        .strip_prefix("http://")
-        .ok_or("Home Assistant's address isn't an http:// one")?
-        .trim_end_matches('/');
-    let address = if authority.starts_with('[') {
-        if authority.contains("]:") {
-            authority.to_owned()
-        } else {
-            format!("{authority}:80")
-        }
-    } else if authority.contains(':') {
-        authority.to_owned()
-    } else {
-        format!("{authority}:80")
-    };
-    let mut stream = TcpStream::connect(&address)
-        .await
-        .map_err(|why| format!("couldn't reach Home Assistant: {why}"))?;
+async fn fetch(
+    transport: &Transport,
+    path: &str,
+    token: &str,
+    limit: usize,
+) -> Result<Answer, String> {
+    let authority = transport.authority();
+    let mut stream = transport.open().await.map_err(|why| why.to_string())?;
     let request = format!(
         "GET {path} HTTP/1.1\r\nHost: {authority}\r\nAuthorization: Bearer {token}\r\n\
          Accept: */*\r\nConnection: close\r\n\r\n"
@@ -151,12 +141,14 @@ async fn fetch(base: &str, path: &str, token: &str, limit: usize) -> Result<Answ
     })
 }
 
-async fn read_some(stream: &mut TcpStream, into: &mut Vec<u8>) -> Result<usize, String> {
+async fn read_some(stream: &mut Stream, into: &mut Vec<u8>) -> Result<usize, String> {
     let mut buffer = [0u8; 16 * 1024];
-    let read = stream
-        .read(&mut buffer)
-        .await
-        .map_err(|why| format!("lost Home Assistant's answer: {why}"))?;
+    let read = match stream.read(&mut buffer).await {
+        Ok(read) => read,
+        // A TLS peer closing without saying so. A body with a length is still checked for it.
+        Err(why) if why.kind() == std::io::ErrorKind::UnexpectedEof => 0,
+        Err(why) => return Err(format!("lost Home Assistant's answer: {why}")),
+    };
     into.extend_from_slice(&buffer[..read]);
     Ok(read)
 }
@@ -205,7 +197,7 @@ mod tests {
     use tokio::net::TcpListener;
 
     /// A server that answers one request with `answer`, and hands back what it was asked.
-    async fn serve(answer: Vec<u8>) -> (String, tokio::task::JoinHandle<String>) {
+    async fn serve(answer: Vec<u8>) -> (Transport, tokio::task::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("a port");
         let base = format!("http://{}", listener.local_addr().expect("an address"));
         let asked = tokio::spawn(async move {
@@ -219,7 +211,10 @@ mod tests {
             stream.write_all(&answer).await.expect("the answer");
             String::from_utf8_lossy(&request).into_owned()
         });
-        (base, asked)
+        let settings: crate::settings::Settings =
+            serde_json::from_value(serde_json::json!({ "url": base, "token": "t" }))
+                .expect("settings");
+        (Transport::of(&settings).expect("a transport"), asked)
     }
 
     #[tokio::test]

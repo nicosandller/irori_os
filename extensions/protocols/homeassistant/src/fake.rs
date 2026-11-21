@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Map, Value, json};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
 use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -226,6 +226,51 @@ impl FakeHa {
         })
     }
 
+    /// Serves `world` over TLS on a free local port, with this certificate and key.
+    pub async fn start_tls(
+        world: World,
+        certificate: rustls::pki_types::CertificateDer<'static>,
+        key: rustls::pki_types::PrivateKeyDer<'static>,
+    ) -> std::io::Result<Self> {
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
+        .with_no_client_auth()
+        .with_single_cert(vec![certificate], key)
+        .map_err(std::io::Error::other)?;
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let url = format!("https://{}", listener.local_addr()?);
+        let shared = Arc::new(Shared {
+            world: Mutex::new(world),
+            ..Shared::default()
+        });
+        let (close, closing) = watch::channel(0);
+        let task = tokio::spawn({
+            let shared = Arc::clone(&shared);
+            async move {
+                while let Ok((stream, _)) = listener.accept().await {
+                    let acceptor = acceptor.clone();
+                    let shared = Arc::clone(&shared);
+                    let closing = closing.clone();
+                    tokio::spawn(async move {
+                        if let Ok(stream) = acceptor.accept(stream).await {
+                            serve(stream, shared, closing).await;
+                        }
+                    });
+                }
+            }
+        });
+        Ok(Self {
+            url,
+            shared,
+            close,
+            task,
+        })
+    }
+
     /// Changes the world; nothing is sent.
     pub fn with_world<T>(&self, change: impl FnOnce(&mut World) -> T) -> T {
         change(&mut self.shared.lock_world())
@@ -317,7 +362,10 @@ impl FakeHa {
     }
 }
 
-async fn serve(stream: TcpStream, shared: Arc<Shared>, mut closing: watch::Receiver<u64>) {
+async fn serve<S>(stream: S, shared: Arc<Shared>, mut closing: watch::Receiver<u64>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
     closing.mark_unchanged();
     let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
         return;
