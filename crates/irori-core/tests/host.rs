@@ -2134,6 +2134,129 @@ while read line; do echo \"$line\" >> '{}'; done
     host.shutdown().await;
 }
 
+/// An engine that said it answers pings, subscribed to state changes and then hung, is still
+/// restarted while the changes keep coming. Once its pipe is full, the next change written to it
+/// would wait for good, and the ping that would notice the hang would never get its turn.
+#[tokio::test]
+async fn a_hung_engine_with_a_full_pipe_is_restarted() {
+    use irori_protocol::FromExt;
+    use irori_protocol::types::AttributeKey;
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    let line = |message: &FromExt| serde_json::to_string(message).expect("serializes") + "\n";
+
+    // A lamp that reports, as fast as the shell can, a state that flips each time: every report
+    // is a change for the engine to hear about.
+    let head = line(&FromExt::DescribeDevice {
+        id: 1,
+        device: DeviceDescription {
+            unique_id: uid("lamp"),
+            name: Name::try_from("Lamp").expect("valid"),
+            manufacturer: None,
+            model: None,
+            sw_version: None,
+            hw_version: None,
+            serial_number: None,
+            suggested_area: None,
+            via_device_unique_id: None,
+        },
+    }) + &line(&FromExt::DescribeEntity {
+        id: 2,
+        entity: EntityDescription {
+            unique_id: uid("lamp-light"),
+            name: None,
+            device_unique_id: Some(uid("lamp")),
+            suggested_object_id: None,
+            capabilities: Capabilities::Light(LightCapabilities {
+                brightness: true,
+                color_temp_kelvin: None,
+                rgb: false,
+            }),
+            entity_category: None,
+        },
+    });
+    let report = |on: bool| {
+        let mut report = light(on, Some(100), None);
+        report.attributes.insert(
+            AttributeKey::try_from("padding").expect("valid"),
+            serde_json::Value::String("x".repeat(1_000)),
+        );
+        line(&FromExt::StateReport { report })
+    };
+    std::fs::write(dir.join("head.jsonl"), head).expect("wrote");
+    std::fs::write(dir.join("on.jsonl"), report(true)).expect("wrote");
+    std::fs::write(dir.join("off.jsonl"), report(false)).expect("wrote");
+    script_package(
+        dir,
+        "lamp",
+        &format!(
+            "#!/bin/sh
+read hello
+cat '{dir}/head.jsonl'
+while true; do cat '{dir}/on.jsonl' '{dir}/off.jsonl'; done
+",
+            dir = dir.display()
+        ),
+    );
+
+    // The engine: says it answers pings, subscribes to state changes, then hangs. It never
+    // reads or writes again.
+    let subscribe = line(&FromExt::Subscribe {
+        id: 1,
+        states: true,
+        registry: false,
+    });
+    std::fs::write(dir.join("subscribe.jsonl"), subscribe).expect("wrote");
+    let starts = dir.join("starts");
+    let package = dir.join("engine");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "engine"
+            name = "Engine"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.automation]]
+            run = { command = "bin/prog" }
+
+            [permissions]
+            api = ["events:read"]
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    std::fs::write(
+        &program,
+        format!(
+            "#!/bin/sh
+echo started >> '{starts}'
+read hello
+echo '{{\"type\":\"pong\"}}'
+cat '{dir}/subscribe.jsonl'
+sleep 1000
+",
+            starts = starts.display(),
+            dir = dir.display()
+        ),
+    )
+    .expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(&core, vec![], quick_pings(), dir.to_path_buf())
+        .expect("starts");
+
+    eventually("the engine is restarted", || pids_in(&starts).len() >= 2).await;
+
+    host.shutdown().await;
+}
+
 /// An extension that answers its pings stays up, and is pinged while it's quiet.
 #[tokio::test]
 async fn a_process_that_answers_pings_stays_up() {

@@ -58,6 +58,8 @@ the user-facing ids, timestamps, contexts, history, and checking that what it's 
    10 minutes of running. A process that answers pings and says nothing at all, pongs
    included, for **90 seconds** counts as crashed too: it's killed, its entities become
    `unavailable`, and it's restarted the same way. It's pinged once it has said nothing for 30 seconds.
+   One that stops reading counts the same: a message to it that can't be written before those
+   90 seconds are up ends it too.
 5. **Restart.** A restarted protocol describes its devices and entities again. The registry
    keeps them in between, matched by `unique_id`, so ids, areas, and names the user set survive.
    Nothing is removed unless the protocol removes it (§5).

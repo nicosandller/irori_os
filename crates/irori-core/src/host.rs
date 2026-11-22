@@ -1880,6 +1880,70 @@ impl Outgoing {
     }
 }
 
+/// Writes `message` to the extension from `drive`, waiting at most `within` when it's set.
+///
+/// A process that has stopped reading fills its pipe, and a write with no deadline would then
+/// wait for good: `drive` would hear nothing more and never get to the ping that notices the
+/// hang (issue #98). A write that waits out its deadline ends the process as hung.
+async fn send(
+    outgoing: &mut Outgoing,
+    group: &mut Option<ProcessGroup>,
+    child: &mut Option<Child>,
+    message: ToExt,
+    within: Option<Duration>,
+) -> Result<(), Outcome> {
+    let Some(within) = within else {
+        return outgoing.deliver(message).await.map_err(Outcome::Ended);
+    };
+    match tokio::time::timeout(within, outgoing.deliver(message)).await {
+        Ok(sent) => sent.map_err(Outcome::Ended),
+        Err(_) => Err(end_hung(
+            group,
+            child,
+            format!(
+                "the extension stopped reading: a message to it waited {} s",
+                within.as_secs()
+            ),
+        )),
+    }
+}
+
+/// Ends a process taken for hung, at once. Asking it to stop would go down the same stuck
+/// pipe. Its entities go unavailable and it restarts, as after a crash.
+fn end_hung(
+    group: &mut Option<ProcessGroup>,
+    child: &mut Option<Child>,
+    reason: String,
+) -> Outcome {
+    if let Some(group) = group.as_mut() {
+        group.kill();
+    }
+    if let Some(child) = child.as_mut() {
+        let _ = child.start_kill();
+    }
+    Outcome::Ended(reason)
+}
+
+/// How long one write to the extension may wait before the process is taken for hung, or
+/// `None` to wait as long as it takes.
+///
+/// `timing` is `None` for a program that dialed in, which has the websocket's own pings.
+/// `answers_pings` is false for an extension that never said it answers them: one built before
+/// pings, or in another language without them. `heard_at` is when it last said anything.
+fn write_deadline(
+    timing: Option<Timing>,
+    answers_pings: bool,
+    heard_at: Instant,
+) -> Option<Duration> {
+    // Only for one that said it answers pings: the others behave as before.
+    let timing = timing.filter(|_| answers_pings)?;
+    // What's left of its quiet window: the loop hears nothing while a write waits, so this is
+    // the same "nothing from it for `quiet_for`" the ping checks. Once that's spent, zero: a
+    // write that goes straight through still goes (the timeout tries it first), one that would
+    // wait ends the process.
+    Some(timing.quiet_for.saturating_sub(heard_at.elapsed()))
+}
+
 impl Incoming {
     async fn take(&mut self) -> Result<FromExt, String> {
         match self {
@@ -2114,8 +2178,10 @@ async fn drive(
                 next_call += 1;
                 let call = incoming.call.clone();
                 pending_calls.insert(id, incoming);
-                if let Err(reason) = link.outgoing.deliver(ToExt::ServiceCall { id, call }).await {
-                    return Outcome::Ended(reason);
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, ToExt::ServiceCall { id, call }, write_deadline(timing, answers_pings, heard_at),
+                ).await {
+                    return outcome;
                 }
             }
             Some(incoming) = actions.recv() => {
@@ -2144,8 +2210,10 @@ async fn drive(
                     pending_actions.insert(id, incoming);
                     message
                 };
-                if let Err(reason) = link.outgoing.deliver(message).await {
-                    return Outcome::Ended(reason);
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, message, write_deadline(timing, answers_pings, heard_at),
+                ).await {
+                    return outcome;
                 }
             }
             _ = sweep.tick(), if !live_feeds.is_empty() => {
@@ -2156,8 +2224,10 @@ async fn drive(
                     .collect();
                 for stream in unwatched {
                     live_feeds.remove(&stream);
-                    if let Err(reason) = link.outgoing.deliver(ToExt::LiveStop { stream }).await {
-                        return Outcome::Ended(reason);
+                    if let Err(outcome) = send(
+                        &mut link.outgoing, &mut link.group, child, ToExt::LiveStop { stream }, write_deadline(timing, answers_pings, heard_at),
+                    ).await {
+                        return outcome;
                     }
                 }
             }
@@ -2165,15 +2235,19 @@ async fn drive(
                 if let ToExt::TalkStop { stream } = &message {
                     talk_lines.remove(stream);
                 }
-                if let Err(reason) = link.outgoing.deliver(message).await {
-                    return Outcome::Ended(reason);
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, message, write_deadline(timing, answers_pings, heard_at),
+                ).await {
+                    return outcome;
                 }
             }
             message = engine.next_outgoing(core) => {
                 if let Some(message) = message
-                    && let Err(reason) = link.outgoing.deliver(message).await
+                    && let Err(outcome) = send(
+                        &mut link.outgoing, &mut link.group, child, message, write_deadline(timing, answers_pings, heard_at),
+                    ).await
                 {
-                    return Outcome::Ended(reason);
+                    return outcome;
                 }
             }
             _ = ping.tick(), if answers_pings => {
@@ -2195,15 +2269,7 @@ async fn drive(
                     Ok(Ok(())) if quiet < timing.quiet_for => {}
                     Ok(Err(reason)) => return Outcome::Ended(reason),
                     Ok(Ok(())) | Err(_) => {
-                        // Asking it to stop would go down the same stuck pipe: end it now. Its
-                        // entities go unavailable and it restarts, as after a crash.
-                        if let Some(group) = link.group.as_mut() {
-                            group.kill();
-                        }
-                        if let Some(child) = child.as_mut() {
-                            let _ = child.start_kill();
-                        }
-                        return Outcome::Ended(format!(
+                        return end_hung(&mut link.group, child, format!(
                             "the extension stopped answering: nothing from it for {} s",
                             timing.quiet_for.as_secs()
                         ));
@@ -2227,8 +2293,10 @@ async fn drive(
                             &mut pending_actions, &mut live_feeds, &mut talk_lines,
                         ).await {
                             Ok(Some(reply)) => {
-                                if let Err(reason) = link.outgoing.deliver(reply).await {
-                                    return Outcome::Ended(reason);
+                                if let Err(outcome) = send(
+                                    &mut link.outgoing, &mut link.group, child, reply, write_deadline(timing, answers_pings, heard_at),
+                                ).await {
+                                    return outcome;
                                 }
                             }
                             Ok(None) => {}
