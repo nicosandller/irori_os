@@ -14,7 +14,7 @@
 //! The token is tied to the address (`x-irori-secret-for`): the core clears it when the address
 //! changes, so it's never sent to a host it wasn't entered for.
 //!
-//! Commands are off until the owner turns them on, so a first try only reads.
+//! Commands are on unless the owner turns them off for a read-only try.
 
 use std::net::IpAddr;
 
@@ -39,10 +39,10 @@ pub struct Settings {
     /// they can read Home Assistant's devices, areas and entities.
     #[schemars(title = "Access token", extend("x-irori-secret-for" = "url"))]
     pub token: Secret,
-    /// Off, Irori only reads Home Assistant and answers every command "read-only". On, Irori can
-    /// switch, unlock, disarm and send commands through Home Assistant, and Automations flows
-    /// can do the same.
-    #[schemars(title = "Let Irori control devices", default = "off")]
+    /// On by default: Irori can switch, unlock, disarm and send commands through Home Assistant,
+    /// and Automations flows can do the same. Turn it off for a read-only try: Irori then only
+    /// reads Home Assistant and answers every command "read-only".
+    #[schemars(title = "Let Irori control devices", default = "on")]
     pub commands: bool,
     /// For a certificate no public authority issued, like Home Assistant's self-signed one: its
     /// SHA-256 fingerprint, or your certificate or CA certificate as PEM. Enter `none` to stop
@@ -99,6 +99,10 @@ fn nothing() -> Vec<String> {
 
 fn off() -> bool {
     false
+}
+
+fn on() -> bool {
+    true
 }
 
 fn no_text() -> String {
@@ -215,7 +219,7 @@ impl Settings {
 struct Raw {
     url: String,
     token: Secret,
-    #[serde(default)]
+    #[serde(default = "on")]
     commands: bool,
     #[serde(default)]
     certificate: String,
@@ -522,15 +526,20 @@ mod tests {
     }
 
     #[test]
-    fn commands_are_off_until_turned_on() {
-        let off = load(serde_json::json!({ "url": "http://127.0.0.1:8123", "token": "t" }))
+    fn commands_are_on_until_turned_off() {
+        let by_default = load(serde_json::json!({ "url": "http://127.0.0.1:8123", "token": "t" }))
             .expect("valid");
-        assert!(!off.commands);
-        let on = load(serde_json::json!({
-            "url": "http://127.0.0.1:8123", "token": "t", "commands": true,
+        assert!(by_default.commands);
+        let schema = serde_json::to_value(schemars::schema_for!(Settings)).expect("a schema");
+        assert_eq!(
+            schema["properties"]["commands"]["default"],
+            serde_json::json!(true)
+        );
+        let off = load(serde_json::json!({
+            "url": "http://127.0.0.1:8123", "token": "t", "commands": false,
         }))
         .expect("valid");
-        assert!(on.commands);
+        assert!(!off.commands);
     }
 
     #[test]

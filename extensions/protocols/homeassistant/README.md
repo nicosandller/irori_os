@@ -2,9 +2,9 @@
 
 Try Irori on the home your Home Assistant already runs. This extension brings Home Assistant's
 devices, entities, rooms and floors into Irori while Home Assistant keeps running them: it reads
-Home Assistant over its WebSocket API and follows its changes. It starts **read-only**: turn on
-"Let Irori control devices" to pass on the commands you give in Irori. Nothing about your Home
-Assistant's setup changes.
+Home Assistant over its WebSocket API and follows its changes. It passes on the commands you give in
+Irori **by default**; turn off "Let Irori control devices" for a read-only try. Nothing about your
+Home Assistant's setup changes.
 
 > **Use an `https://` address if you can.** Over `http://`, your Home Assistant administrator's
 > access token travels unencrypted on your local network, where another device on it could read
@@ -110,10 +110,10 @@ What this extension can send is a closed list, checked again before anything lea
 and `call_service`. It never touches Home Assistant's registries, areas or automations, and it
 can't unpair anything. A test fails if anything else can be sent.
 
-`call_service` does act on your home, so it is **off until you turn it on**. While "Let Irori
-control devices" is off, every command is answered "read-only" and no service call is sent. On,
-a command someone gives in Irori goes to that entity, with a service of its own kind: Irori can
-switch, unlock, disarm and send commands, and Automations flows can do the same.
+`call_service` does act on your home, and it is **on by default**: a command someone gives in
+Irori goes to that entity, with a service of its own kind. So Irori can switch, unlock, disarm and
+send commands, and Automations flows can do the same. For a read-only try, turn off "Let Irori
+control devices": every command is then answered "read-only" and no service call is sent.
 
 ## Settings
 
@@ -125,8 +125,8 @@ url = "https://homeassistant.local:8123"
 # In Home Assistant, as an administrator: your profile → Security → Long-lived access tokens →
 # Create token. A secret: kept in secrets.toml and never shown again.
 token = "…"
-# Pass Irori's commands on to Home Assistant. Off: read-only.
-commands = false
+# Pass Irori's commands on to Home Assistant: on by default. Off: a read-only try.
+commands = true
 # Optional, for a certificate no public authority issued: its SHA-256 fingerprint, or your
 # certificate or CA certificate as PEM. `none` goes back to public authorities only.
 certificate = ""

@@ -280,7 +280,7 @@ PY
 
   if ((entities > 0)); then
     api POST /api/extensions/homeassistant/settings \
-      "{\"url\":\"$fake_url\",\"token\":\"load-gate-token\",\"commands\":true}" >/dev/null
+      "{\"url\":\"$fake_url\",\"token\":\"load-gate-token\"}" >/dev/null
     wait_for 120 "Home Assistant's devices to be found" python3 - "$base" <<'PY'
 import json, sys, urllib.request
 home = json.load(urllib.request.urlopen(sys.argv[1] + "/api/home"))

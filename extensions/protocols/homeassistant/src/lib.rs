@@ -501,7 +501,7 @@ struct Done {
 struct Session<'a> {
     client: Client,
     transport: Transport,
-    /// Whether commands are passed on to Home Assistant: off until the owner turns them on.
+    /// Whether commands are passed on to Home Assistant: on unless the owner turned them off.
     commands: bool,
     bridge: &'a mut Bridge,
     entities: Vec<Bridged>,

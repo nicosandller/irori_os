@@ -79,8 +79,7 @@ fn home() -> World {
 }
 
 fn settings(fake: &FakeHa) -> Settings {
-    serde_json::from_value(json!({ "url": fake.url, "token": TOKEN, "commands": true }))
-        .expect("settings")
+    serde_json::from_value(json!({ "url": fake.url, "token": TOKEN })).expect("settings")
 }
 
 fn context(n: u8) -> ContextId {
@@ -751,10 +750,24 @@ async fn what_a_new_run_leaves_out_is_removed_and_what_is_still_loading_stays() 
 }
 
 #[tokio::test]
+async fn with_nothing_said_about_commands_a_command_goes_through() {
+    let fake = FakeHa::start(home()).await.expect("a fake");
+    let by_default: Settings =
+        serde_json::from_value(json!({ "url": fake.url, "token": TOKEN })).expect("settings");
+    let mut world = world_with(by_default).await;
+    world.running().await;
+    world.report("e-light", |r| on(r) == Some(false)).await;
+    assert_eq!(world.ask("e-light", Service::LightTurnOff, 1).await, Ok(()));
+    assert_eq!(fake.calls().len(), 1);
+    world.stop().await;
+}
+
+#[tokio::test]
 async fn with_commands_off_every_command_is_answered_read_only_and_nothing_is_sent() {
     let fake = FakeHa::start(home()).await.expect("a fake");
     let read_only: Settings =
-        serde_json::from_value(json!({ "url": fake.url, "token": TOKEN })).expect("settings");
+        serde_json::from_value(json!({ "url": fake.url, "token": TOKEN, "commands": false }))
+            .expect("settings");
     let mut world = world_with(read_only).await;
     world.running().await;
     world.report("e-light", |r| on(r) == Some(false)).await;
@@ -785,10 +798,8 @@ fn certificate() -> (
 }
 
 fn over_tls(fake: &FakeHa, certificate: &str) -> Settings {
-    serde_json::from_value(
-        json!({ "url": fake.url, "token": TOKEN, "commands": true, "certificate": certificate }),
-    )
-    .expect("settings")
+    serde_json::from_value(json!({ "url": fake.url, "token": TOKEN, "certificate": certificate }))
+        .expect("settings")
 }
 
 #[tokio::test]
