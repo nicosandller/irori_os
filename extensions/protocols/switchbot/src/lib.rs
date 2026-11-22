@@ -131,6 +131,23 @@ const DEVICES_KEY: &str = "devices";
 /// The home keeps a device someone added; it's just unavailable until heard again.
 const FORGET_UNHEARD_AFTER: u64 = 86_400;
 
+/// The most devices kept that only Bluetooth knows. Adverts aren't signed, so anything in range
+/// can announce as many "devices" as it likes; a home has a few dozen at most.
+const MAX_HEARD: usize = 256;
+
+/// The most devices remembered only so that something is said about each once.
+const MAX_NOTED: usize = 4096;
+
+/// Notes `mac` in a set kept so a device is spoken of once, and answers whether it is new there.
+/// A full set starts again, as the radio's own memory of addresses does: the cost is a line
+/// logged twice, not a set that grows for as long as the extension runs.
+fn noted(set: &mut BTreeSet<String>, mac: &str) -> bool {
+    if set.len() >= MAX_NOTED {
+        set.clear();
+    }
+    set.insert(mac.to_owned())
+}
+
 /// A device as the last run knew it: enough to describe it and report its states before
 /// SwitchBot answers, which on a day whose calls are spent is after midnight UTC.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -275,6 +292,8 @@ struct World {
     strangers: std::collections::BTreeSet<String>,
     /// Devices whose MAC came in an advert from another address, each logged once.
     impostors: BTreeSet<String>,
+    /// Said once: more devices were heard than are kept.
+    full_said: bool,
     done: mpsc::Sender<Done>,
 }
 
@@ -324,6 +343,7 @@ pub(crate) async fn drive(
         map_dirty: false,
         strangers: std::collections::BTreeSet::new(),
         impostors: BTreeSet::new(),
+        full_said: false,
         done,
     };
     world.restore(saved).await;
@@ -590,6 +610,22 @@ impl World {
         }
     }
 
+    /// Whether one more device that only Bluetooth knows may be kept, [`MAX_HEARD`] being the
+    /// most. Called for an advert from a device not seen before, when there is no account.
+    ///
+    /// Full, a new one is left out rather than an old one dropped to make room: the extension
+    /// can't tell a device someone added from one merely heard, and a stream of made-up
+    /// addresses mustn't be able to push a real device out. Room comes back as devices that
+    /// have gone quiet are forgotten.
+    fn room_for_heard(&self) -> bool {
+        let heard = self
+            .devices
+            .values()
+            .filter(|known| !known.from_cloud)
+            .count();
+        heard < MAX_HEARD
+    }
+
     /// Takes in a Bluetooth advert: a device the account lists, or with no account, any
     /// SwitchBot device nearby (the core keeps a new one aside until someone adds it).
     async fn hear(&mut self, advert: &ble::Advert) {
@@ -597,7 +633,7 @@ impl World {
             return;
         };
         if advert.claims_another_address() {
-            if self.impostors.insert(mac.clone()) {
+            if noted(&mut self.impostors, &mac) {
                 tracing::warn!(
                     "heard an advert naming SwitchBot device {mac} from a different Bluetooth address; ignoring adverts like it"
                 );
@@ -616,7 +652,7 @@ impl World {
             // With an account, only its devices: a neighbour's SwitchBot is the neighbour's. Said
             // once per device, so one whose Bluetooth address isn't its cloud id can be spotted.
             if self.cloud.is_some() {
-                if self.strangers.insert(mac.clone()) {
+                if noted(&mut self.strangers, &mac) {
                     tracing::info!(
                         "heard a SwitchBot {} ({mac}) over Bluetooth that the account doesn't list; leaving it be",
                         crate::model::readable(heard.device_type)
@@ -627,6 +663,15 @@ impl World {
             let Some(family) = Family::of(heard.device_type) else {
                 return;
             };
+            if !self.room_for_heard() {
+                if !self.full_said {
+                    self.full_said = true;
+                    tracing::warn!(
+                        "heard more than {MAX_HEARD} SwitchBot devices over Bluetooth; leaving the rest be"
+                    );
+                }
+                return;
+            }
             let listed = Listed {
                 name: format!(
                     "{} {}",

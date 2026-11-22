@@ -721,6 +721,46 @@ async fn without_an_account_bluetooth_alone_finds_and_reads_devices() {
     world.shutdown().await;
 }
 
+/// Adverts aren't signed, so anything in range can announce any number of devices. The list
+/// of devices only Bluetooth knows stops at `MAX_HEARD`, and the first ones heard are kept.
+#[tokio::test]
+async fn devices_heard_over_bluetooth_stop_at_the_most_that_are_kept() {
+    let (radio, heard) = mpsc::channel(8);
+    let world = world_hearing(None, BTreeMap::new(), FAST, Some(heard)).await;
+    for n in 0..crate::MAX_HEARD + 20 {
+        radio
+            .send(crate::ble::Radio::Advert(meter_advert(&format!(
+                "AABBCC{n:06X}"
+            ))))
+            .await
+            .expect("listening");
+    }
+    // Handled in order, so once this is reported every advert before it has been taken in.
+    radio
+        .send(crate::ble::Radio::Failed("stopped for the test".into()))
+        .await
+        .expect("listening");
+    world
+        .health("Bluetooth isn't working (stopped for the test)")
+        .await;
+    let described: std::collections::BTreeSet<String> = world
+        .until("devices described", |log| {
+            Some(
+                log.devices
+                    .iter()
+                    .map(|device| device.unique_id.as_str().to_owned())
+                    .collect(),
+            )
+        })
+        .await;
+    assert_eq!(described.len(), crate::MAX_HEARD);
+    assert!(
+        described.contains("AABBCC000000"),
+        "the first heard is kept"
+    );
+    world.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_device_only_bluetooth_knew_is_forgotten_after_a_day_unheard() {
     let now = noon();
