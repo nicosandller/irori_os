@@ -213,9 +213,11 @@ For each running extension with an `app` contribution, the core:
 What the core promises about the static files:
 
 - `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src
-  'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'`, with
-  the server's own address (from the request's `Host`) added beside each `'self'`: in the
-  sandboxed frame Safari and Firefox match `'self'` against the opaque origin, i.e. nothing.
+  'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self';
+  sandbox allow-scripts`, with the server's own address (from the request's `Host`) added beside
+  each `'self'`: in the sandboxed frame Safari and Firefox match `'self'` against the opaque
+  origin, i.e. nothing. `sandbox allow-scripts` repeats the frame's own sandbox, so the page has
+  an origin of its own however it was opened.
 - `Access-Control-Allow-Origin: *` **on these files only** — the page runs in a sandboxed frame
   with an opaque origin, so its own script, wasm and stylesheet fetches are cross-origin. Never
   on `/api/…`. The API is not open to other websites (`docs/specs/api.md`).
