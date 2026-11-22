@@ -749,7 +749,7 @@ answered with the same `id`. Sample conversations are in
 | → core | `note` | `action`, `target`, `detail` | Something the engine did, for the activity log. Not answered. |
 | core → | `answer` | `id`, `value`?, `error`? | The answer to the operations above. |
 | core → | `state_changed` | `entity_id`, `old_state`?, `new_state` | A state changed (after `subscribe` with `states`). |
-| core → | `registry_changed` | — | Something was added, changed or removed (after `subscribe` with `registry`). Ask again. |
+| core → | `registry_changed` | `missed`? | Something was added, changed or removed (after `subscribe` with `registry`). Ask again. With `missed`, the engine fell behind and wasn't sent that many events: read the states again too. |
 
 **The extension's page**
 

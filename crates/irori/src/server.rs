@@ -476,6 +476,10 @@ struct HistoryView {
     /// own name, and "someone" for the rest.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     by: BTreeMap<ContextId, String>,
+    /// The day had more changes than one answer holds, and the oldest were left out: `states`
+    /// doesn't start at the start of the day. Absent when nothing was left out.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
 }
 
 /// How many calls one answer looks up the sender of.
@@ -494,7 +498,7 @@ async fn entity_history(
             format!("there's no entity `{entity_id}`"),
         );
     }
-    let states = state.0.history.for_entity(&entity_id);
+    let irori_recorder::Changes { states, truncated } = state.0.history.last_day(&entity_id);
     // The calls the changes answered, found in the activity log. At most as many as there are
     // changes in a day worth drawing.
     let calls: Vec<ContextId> = states
@@ -526,6 +530,7 @@ async fn entity_history(
         entity: entity_id.clone(),
         states,
         by,
+        truncated,
     })
     .into_response()
 }
@@ -2933,6 +2938,14 @@ struct Health<'a> {
     uptime_ms: u128,
     features: &'a [&'static str],
     sqlite: SqliteHealth<'a>,
+    history: HistoryHealth,
+}
+
+#[derive(Debug, Serialize)]
+struct HistoryHealth {
+    /// State changes left out of history since this start because the recorder fell behind.
+    /// They are missing for good: a chart or a replay over that time is incomplete (issue #97).
+    dropped_changes: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -2960,6 +2973,9 @@ async fn health(State(state): State<AppState>) -> Response {
             version: inner.build.sqlite_version,
             journal_mode: &inner.db.journal_mode,
             ok: inner.history.check(),
+        },
+        history: HistoryHealth {
+            dropped_changes: inner.history.dropped(),
         },
     })
     .into_response()
@@ -3397,6 +3413,15 @@ mod tests {
         let headers = res.headers().clone();
         let body = res.into_body().collect().await?.to_bytes().to_vec();
         Ok((status, headers, body))
+    }
+
+    #[tokio::test]
+    async fn health_counts_history_dropped_since_the_start() -> anyhow::Result<()> {
+        let (status, _, body) = get("/api/health").await?;
+        assert_eq!(status, StatusCode::OK);
+        let json: serde_json::Value = serde_json::from_slice(&body)?;
+        assert_eq!(json["history"]["dropped_changes"], 0, "{json}");
+        Ok(())
     }
 
     #[tokio::test]

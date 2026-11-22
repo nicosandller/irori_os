@@ -269,6 +269,60 @@ impl Engine {
         self.drive(now);
     }
 
+    /// The engine wasn't sent `events` of the home's events. An armed flow whose triggers watch
+    /// entities may have missed a change and can't tell: it gets one near-miss saying so, at its
+    /// first such trigger and naming every entity they watch, so "why didn't it fire?" has an
+    /// answer without crowding out the near-misses that came before. Call [`Engine::resync`]
+    /// after, with the fresh states.
+    pub fn missed(&mut self, events: u64, now: Timestamp) {
+        let watching: Vec<(RuleId, NodeId, Vec<EntityId>)> = self
+            .flows
+            .iter()
+            .filter(|(_, loaded)| loaded.armed == Armed::Armed)
+            .filter_map(|(id, loaded)| {
+                let triggers: Vec<(&NodeId, &EntityId)> = loaded
+                    .flow
+                    .nodes
+                    .iter()
+                    .filter_map(|(node, n)| match n {
+                        Node::Trigger { trigger } => trigger_entity(trigger).map(|e| (node, e)),
+                        _ => None,
+                    })
+                    .collect();
+                let (first, _) = triggers.first()?;
+                let entities: BTreeSet<EntityId> = triggers
+                    .iter()
+                    .map(|(_, entity)| (*entity).clone())
+                    .collect();
+                Some((id.clone(), (*first).clone(), entities.into_iter().collect()))
+            })
+            .collect();
+        let missed = if events == 1 {
+            "1 event".to_owned()
+        } else {
+            format!("{events} events")
+        };
+        for (flow, node, entities) in watching {
+            let reads = entities
+                .iter()
+                .map(|entity| to_read(eval::Read::of_field(entity, None, &self.states)))
+                .collect();
+            let names: Vec<String> = entities.iter().map(ToString::to_string).collect();
+            self.near_miss(
+                &flow,
+                &node,
+                NearMissKind::Missed,
+                format!(
+                    "Irori fell behind and {missed} in the home weren't passed on; \
+                     a change to {} may have been missed",
+                    names.join(" or ")
+                ),
+                reads,
+                now,
+            );
+        }
+    }
+
     /// Everything the engine knows of the home.
     pub fn states(&self) -> Vec<EntityState> {
         self.states.values().cloned().collect()
@@ -499,6 +553,11 @@ impl Engine {
         );
         self.drive(now);
         found
+    }
+
+    /// The records of the runs in progress, as far as each has got.
+    pub fn in_progress(&self) -> Vec<RunRecord> {
+        self.runs.values().map(|run| run.record.clone()).collect()
     }
 
     /// Stops everything: the engine is going away.

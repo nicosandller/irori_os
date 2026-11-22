@@ -146,7 +146,9 @@ without a speaker. Once open:
 
 A token needs `services:call`, as for a command.
 
-`GET /api/history/<entity_id>` is `{ "entity", "states", "by"? }`. `by` maps the context of a
+`GET /api/history/<entity_id>` is `{ "entity", "states", "by"?, "truncated"? }`: the last day's
+changes, oldest first, at most 2,000. When the day had more, the oldest are left out and
+`truncated` is `true`, so a chart or a replay knows its start is missing. `by` maps the context of a
 command (the `parent_id` of a state change that answered it) to who sent it, when the activity
 log has the command: the owner and a person with the whole home are told the name, a person with
 some rooms is told their own and "someone" for the rest (`docs/specs/access.md` §3.1).
