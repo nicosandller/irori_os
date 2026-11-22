@@ -10,7 +10,7 @@ pub mod people;
 pub mod rpc;
 pub mod store;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -61,6 +61,9 @@ pub struct Service {
     /// Whether the flows have been armed once already: before that, what each flow was doing is
     /// not known, and a change made while Irori was stopped is the one to find.
     started: bool,
+    /// What the turned-on flows missing part of the home watch. A change to one of these can't
+    /// be taken on an old reading of the home: what is missing may just have arrived.
+    waiting: BTreeSet<irori_types::EntityId>,
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
     /// The runs in progress when they were last kept on disk.
     kept_running: BTreeSet<ContextId>,
@@ -221,6 +224,7 @@ impl Service {
             home_was: 0,
             people: BTreeMap::new(),
             started: false,
+            waiting: BTreeSet::new(),
             calls,
             kept_running: BTreeSet::new(),
         };
@@ -341,6 +345,19 @@ impl Service {
             .collect();
         self.engine.set_flows(arms, now());
         self.apply_effects();
+        // Every change to the flows or the home comes through here, so this is never behind.
+        self.waiting = self
+            .store
+            .flows()
+            .filter(|flow| flow.enabled)
+            .map(|flow| validate::watched(flow, &self.registry))
+            .filter(|watched| {
+                watched
+                    .iter()
+                    .any(|entity| !self.registry.entities.contains_key(entity))
+            })
+            .flatten()
+            .collect();
     }
 
     /// Turns off the flows of people that are on and can't be, for want of what their owner
@@ -475,7 +492,7 @@ impl Service {
 
     /// Reads the registry, the people and the states again, and arms the flows on what it
     /// finds: what a `RegistryChanged` asks for. [`serve`] folds a burst of them into one.
-    pub async fn read_again(&mut self) {
+    async fn read_again(&mut self) {
         // The registry changed, or this engine missed events: read both again.
         match self.client.get_registry().await {
             Ok(registry) => {
@@ -501,14 +518,10 @@ impl Service {
         }
     }
 
-    /// Whether a flow watches `entity` and the home, as last read, doesn't have it: a change
-    /// to it is one the flows can't take until the home is read again.
-    pub fn waits_for(&self, entity: &irori_types::EntityId) -> bool {
-        !self.registry.entities.contains_key(entity)
-            && self
-                .store
-                .flows()
-                .any(|flow| validate::watched(flow, &self.registry).contains(entity))
+    /// Whether a change to `entity` matters to a flow that is missing part of the home: read
+    /// the home first, or that flow, not armed yet, would lose the change.
+    fn waits_for(&self, entity: &irori_types::EntityId) -> bool {
+        self.waiting.contains(entity)
     }
 
     /// The saved flow `id`, or the draft sent along with a request.
@@ -572,6 +585,11 @@ pub const SETTLE: Duration = Duration::from_millis(250);
 /// that was just added arms even while another extension is still describing its own.
 pub const SETTLE_AT_MOST: Duration = Duration::from_secs(1);
 
+/// The least time between two readings of the home when one is asked for early. A flow that
+/// names a device gone for good is always "waiting", so its busy sensor can't turn a burst back
+/// into a reading per change.
+const READ_EARLY_EVERY: Duration = Duration::from_millis(100);
+
 /// A registry change not read yet: when the first and the last of them came.
 #[derive(Debug, Clone, Copy)]
 struct Unread {
@@ -585,49 +603,98 @@ impl Unread {
     }
 }
 
+/// What [`serve`] keeps about reading the home again.
+#[derive(Debug, Default)]
+struct Reading {
+    unread: Option<Unread>,
+    /// Messages taken off the queue ahead of a reading, still to handle, in order.
+    held: VecDeque<Incoming>,
+    last: Option<tokio::time::Instant>,
+}
+
+impl Reading {
+    /// The next message, those held back first. Cancel-safe.
+    async fn next(&mut self, incoming: &mut mpsc::UnboundedReceiver<Incoming>) -> Option<Incoming> {
+        match self.held.pop_front() {
+            Some(message) => Some(message),
+            None => incoming.recv().await,
+        }
+    }
+
+    /// Reads the home now. Registry changes already queued are answered by this reading, so
+    /// they are dropped; everything else stays queued, in order.
+    async fn read(
+        &mut self,
+        service: &mut Service,
+        incoming: &mut mpsc::UnboundedReceiver<Incoming>,
+    ) {
+        if let Some(last) = self.last {
+            tokio::time::sleep_until(last + READ_EARLY_EVERY).await;
+        }
+        self.unread = None;
+        self.held
+            .retain(|message| !matches!(message, Incoming::RegistryChanged));
+        for _ in 0..incoming.len() {
+            match incoming.try_recv() {
+                Ok(Incoming::RegistryChanged) => {}
+                Ok(message) => self.held.push_back(message),
+                Err(_) => break,
+            }
+        }
+        self.last = Some(tokio::time::Instant::now());
+        service.read_again().await;
+    }
+}
+
 /// Serves what the core sends until it says stop, then stops the runs.
 ///
 /// State changes, the page's questions, call answers and timers are taken as they come, in
 /// order. Registry changes are not read one by one: each re-read is the whole home, so a burst
-/// of them is read once, [`SETTLE`] after the last or [`SETTLE_AT_MOST`] after the first. A
-/// page's question is answered on the home as it is, so it reads first what is still unread;
-/// so does the first state of an entity a flow waits on, so the flow takes it.
+/// of them is read once, [`SETTLE`] after the last or [`SETTLE_AT_MOST`] after the first.
+///
+/// The home is read at once when an old reading would give a wrong answer: for a page's
+/// question, for a state a flow missing part of the home watches, and after events were missed,
+/// since what flows would read is then known to be out of date.
 pub async fn serve(
     mut service: Service,
     mut incoming: mpsc::UnboundedReceiver<Incoming>,
     mut answers: mpsc::UnboundedReceiver<(u64, Result<(), String>)>,
 ) {
     let mut poll = tokio::time::interval(POLL);
-    let mut unread: Option<Unread> = None;
+    let mut reading = Reading::default();
     loop {
         let wake = service.engine.next_deadline().map(|at| {
             let wait = at.as_jiff().duration_since(now().as_jiff());
             tokio::time::Instant::now() + Duration::try_from(wait).unwrap_or(Duration::ZERO)
         });
+        let due = reading.unread.map(Unread::due);
         tokio::select! {
-            message = incoming.recv() => {
+            message = reading.next(&mut incoming) => {
                 let Some(message) = message else { break };
                 match message {
                     Incoming::RegistryChanged => {
                         let at = tokio::time::Instant::now();
-                        unread = Some(match unread {
+                        reading.unread = Some(match reading.unread {
                             Some(unread) => Unread { last: at, ..unread },
                             None => Unread { first: at, last: at },
                         });
                     }
+                    // Said first, as ever: the triggers that may have missed a change.
+                    message @ Incoming::Missed { .. } => {
+                        service.incoming(message).await;
+                        reading.read(&mut service, &mut incoming).await;
+                    }
                     message => {
-                        // Read first what is unread when it matters to what came: a page's
-                        // question, or a state a flow waits on from an entity the home
-                        // doesn't know yet (it was just added, and this is its first state).
-                        let first = match &message {
-                            Incoming::App(_) => true,
-                            Incoming::StateChanged { entity_id, .. } => {
-                                unread.is_some() && service.waits_for(entity_id)
-                            }
-                            _ => false,
-                        };
-                        if first && unread.take().is_some() {
-                            service.read_again().await;
+                        let first = reading.unread.is_some()
+                            && match &message {
+                                Incoming::App(_) => true,
+                                Incoming::StateChanged { entity_id, .. } => {
+                                    service.waits_for(entity_id)
+                                }
+                                _ => false,
+                            };
+                        if first {
+                            reading.read(&mut service, &mut incoming).await;
                         }
                         if !service.incoming(message).await {
                             break;
@@ -643,9 +710,8 @@ pub async fn serve(
                 service.engine.advance(now());
                 service.apply_effects();
             }
-            () = sleep_until(unread.map(Unread::due)) => {
-                unread = None;
-                service.read_again().await;
+            () = sleep_until(due) => {
+                reading.read(&mut service, &mut incoming).await;
             }
             _ = poll.tick() => {
                 if service.store.poll() {

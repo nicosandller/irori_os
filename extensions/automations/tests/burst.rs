@@ -338,7 +338,7 @@ async fn a_burst_of_registry_changes_is_read_a_handful_of_times_locally() {
     }
 
     // While changes keep coming the home is read at most once a second, and once more as
-    // they settle: about three times here, more only if this machine stretched the burst.
+    // they settle: two or three times here, more only if this machine stretched the burst.
     let lasted = began.elapsed();
     tokio::time::sleep(Duration::from_millis(1_500)).await;
     let reads = running.home.reads() - at_start;
@@ -453,7 +453,8 @@ async fn the_first_state_of_a_just_added_entity_reaches_its_flow_locally() {
         .expect("push");
     running.push.send(changed(LATE, true, 1)).expect("push");
     assert!(
-        call_within(&mut running.calls, Duration::from_millis(200)).await,
+        // Any call at all shows it was read first: on the old reading the state is dropped.
+        call_within(&mut running.calls, Duration::from_millis(1_500)).await,
         "the flow on the entity just added missed its first state"
     );
     running
@@ -464,4 +465,136 @@ async fn the_first_state_of_a_just_added_entity_reaches_its_flow_locally() {
         .await
         .expect("stops in time")
         .expect("joins");
+}
+
+async fn stopped(running: Running) {
+    running
+        .push
+        .send(r#"{"type":"stop"}"#.to_owned())
+        .expect("push");
+    tokio::time::timeout(Duration::from_secs(5), running.served)
+        .await
+        .expect("stops in time")
+        .expect("joins");
+}
+
+/// A flow that can't arm because its light has only just arrived takes the motion right behind
+/// that news, though the motion sensor itself was always known.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_known_trigger_reaches_a_flow_whose_light_just_arrived() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let home = Home::hallway();
+            home.entities
+                .lock()
+                .expect("entities")
+                .retain(|e| e.id != id(LIGHT));
+            home.states
+                .lock()
+                .expect("states")
+                .retain(|s| s.entity_id != id(LIGHT));
+            let mut running = started(dir.path(), home).await;
+            running.home.add(
+                LIGHT,
+                Capabilities::Light(LightCapabilities {
+                    brightness: true,
+                    color_temp_kelvin: None,
+                    rgb: false,
+                }),
+                State::Light(LightState {
+                    on: false,
+                    brightness: None,
+                    color_mode: None,
+                    color_temp_kelvin: None,
+                    rgb: None,
+                }),
+            );
+            running
+                .push
+                .send(REGISTRY_CHANGED.to_owned())
+                .expect("push");
+            running.push.send(changed(MOTION, true, 1)).expect("push");
+            let fired = call_within(&mut running.calls, Duration::from_millis(1_500)).await;
+            stopped(running).await;
+            assert!(
+                fired,
+                "motion right after the light arrived didn't turn it on"
+            );
+        })
+        .await;
+}
+
+/// After missed events the home is read before the next state is judged: the light stays off
+/// in a hallway that got bright while the change was lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn after_missed_events_a_gate_reads_the_home_as_it_is() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let mut running = started(dir.path(), Home::hallway()).await;
+            for s in running.home.states.lock().expect("states").iter_mut() {
+                if s.entity_id == id(LUX) {
+                    s.state = Some(State::Sensor(SensorState {
+                        value: SensorValue::Number(500.0),
+                    }));
+                }
+            }
+            running
+                .push
+                .send(r#"{"type":"registry_changed","missed":5}"#.to_owned())
+                .expect("push");
+            running.push.send(changed(MOTION, true, 1)).expect("push");
+            let fired = call_within(&mut running.calls, Duration::from_millis(1_500)).await;
+            stopped(running).await;
+            assert!(
+                !fired,
+                "the gate read the illuminance from before the missed events"
+            );
+        })
+        .await;
+}
+
+/// A flow naming a device that never comes is always waiting. Its busy trigger, in the middle
+/// of a burst, must not bring back a reading per change, and must not hold up other flows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flow_on_a_missing_device_does_not_bring_back_a_read_per_change() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let home = Home::hallway();
+            home.entities
+                .lock()
+                .expect("entities")
+                .retain(|e| e.id != id(OCCUPANCY));
+            let running = started(dir.path(), home).await;
+            let at_start = running.home.reads();
+            let began = Instant::now();
+            // The hallway flow waits on occupancy, which never comes; its motion sensor chatters.
+            for n in 0..BURST {
+                running
+                    .push
+                    .send(REGISTRY_CHANGED.to_owned())
+                    .expect("push");
+                let at = i64::try_from(n).expect("small") + 1;
+                running
+                    .push
+                    .send(changed(MOTION, n % 2 == 0, at))
+                    .expect("push");
+                if n % 100 == 99 {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            let lasted = began.elapsed();
+            let reads = running.home.reads() - at_start;
+            let allowed = usize::try_from(lasted.as_millis() / 100).unwrap_or(usize::MAX) + 2;
+            eprintln!("{BURST} changes with a busy waiting trigger: {reads} reads in {lasted:?}");
+            stopped(running).await;
+            assert!(
+                reads <= allowed,
+                "{reads} reads in {lasted:?}, more than {allowed}"
+            );
+        })
+        .await;
 }
