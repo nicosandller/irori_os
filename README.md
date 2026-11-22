@@ -81,8 +81,8 @@ irori help run                             # every option, its environment varia
 
 `run` and `serve` are the same command. Every option is also an environment variable
 (`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_BIND_FALLBACK`, `IRORI_LOG_LEVEL`,
-`IRORI_ALLOW_UNAUTHENTICATED_LAN`), or a setting in `irori.toml` in the config directory. A flag
-wins over the file:
+`IRORI_ALLOW_UNAUTHENTICATED_LAN`), and most can also go in `irori.toml` in the config directory
+([config §3.5](docs/specs/config.md)). A flag wins over the file:
 
 ```toml
 [server]
@@ -94,8 +94,8 @@ log_level = "info"
 disabled = ["demo"]          # applies while Irori runs; [server] needs a restart
 ```
 
-If the port is taken, Irori uses `bind_fallback`, or else the next free port above it, and logs
-where. A deployment with a fixed, health-checked port (such as a container) should set
+If the port is taken, Irori uses `--bind-fallback` (`bind_fallback`), or else the next free port
+above it, and logs where. A deployment with a fixed, health-checked port (such as a container) should set
 `IRORI_BIND_FALLBACK` equal to `IRORI_BIND`, so a taken port fails loudly instead.
 
 **Command line.** The same binary talks to a running Irori. `irori status` is the quick check,
