@@ -175,7 +175,7 @@ pub fn Dashboard() -> impl IntoView {
     view! {
         <section class="card" aria-labelledby="dashboard-title">
             <h2 id="dashboard-title">"Other apps on the account"</h2>
-            <p>"Tesla doesn't tell an app what the account has spent, and every app on it (Home Assistant's Tesla, say) spends from the same credit. Now and then, read "
+            <p>"Tesla doesn't tell an app what the account has spent, and every app on it spends from the same credit. Now and then, read "
                <b>"Spent so far this month"</b>
                " off Tesla's developer dashboard and enter it here: Irori works out what the other apps spend a day and leaves room for them."</p>
             <p class="muted small">{checked}</p>

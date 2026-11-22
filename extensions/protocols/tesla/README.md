@@ -12,22 +12,32 @@ the car or the Powerwall on the home network.
 
 ## Setting it up
 
-The extension signs in as a developer app on [developer.tesla.com](https://developer.tesla.com).
-If Home Assistant's Tesla Fleet integration is set up, reuse everything it has: the app, its
-domain and `tesla_fleet.key`. The car already has that key, so nothing has to be paired again.
+You need a Tesla account with a car or an energy site, and a website you control that can serve
+one file over HTTPS (any static host will do). Tesla reads Irori's public key from it.
+
+**1. Make a developer app** at [developer.tesla.com](https://developer.tesla.com):
+
+- **Allowed Origin:** `https://tesla.example.com`, your website.
+- **Allowed Redirect URI:** `https://tesla.example.com/irori/tesla`. The page doesn't have to exist.
+- **Access:** vehicle data, location, commands and charging commands, and energy data and commands.
+- Set up billing if Tesla asks. Each account gets a monthly credit ($10 in the US).
+
+**2. Install Tesla** from Extensions, press **Set it up**, and fill in the Client ID, secret and
+domain. Leave the private key blank and Irori makes one. The form repeats these steps.
 
 ```toml
 [tesla]
 client_id = "…"
 client_secret = "…"          # a secret: kept in secrets.toml, never shown again
 domain = "tesla.example.com" # the app's Allowed Origin, where Tesla finds the public key
-private_key = "…"            # tesla_fleet.key from Home Assistant; blank to make a new one
+# private_key = "…"          # only if this developer app already has a key
 # redirect_uri = "https://tesla.example.com/irori/tesla"   # Advanced; must be an Allowed Redirect URI
 ```
 
-Then the integration's card walks through what's left, one step at a time:
+**3. Open Devices, then + Add device, then Tesla.** Irori lists what's left there, one step at a
+time, each saying where to go, what to do and what to expect:
 
-1. **The public key on the website.** With a new key, the card shows it to copy to
+1. **The public key on the website.** The card shows it to copy to
    `https://{domain}/.well-known/appspecific/com.tesla.3p.public-key.pem`. **Check the key
    again** registers with Tesla and compares.
 2. **Registering** the app with Tesla, in North America and Europe. Done on its own.
@@ -36,6 +46,10 @@ Then the integration's card walks through what's left, one step at a time:
 4. **The key on each car.** For a car without Irori's key, the card links to
    `tesla.com/_ak/{domain}`: open it on the phone with the Tesla app, approve, then tap the key
    card on the console. Until then the car is read but not commanded.
+
+**Already have a developer app?** If another program uses one, you can share it: enter its
+Client ID, secret and domain, add the redirect address above, and paste its private key. The
+website and the car already have that key, so steps 1 and 4 are skipped.
 
 Setup never waits on a car: a sleeping car is listed, shown as asleep, and read when it wakes.
 
@@ -46,14 +60,12 @@ Setup never waits on a car: a sleeping car is listed, shown as asleep, and read 
   otherwise every few hours, so it can fall back asleep.
 - **A sleeping car is never read, and never woken to be read.** A read would be billed and
   answer "asleep"; a wake costs ten times a read and drains the battery. What it said last stays
-  on show. Home Assistant shows trunks as open while asleep (#136011); Irori keeps the last
-  value.
-- **What a car said last is kept** between runs, so the entities have values at start (Home
-  Assistant left them unknown until the car woke, #146030).
+  on show.
+- **What a car said last is kept** between runs, so the entities have values at start.
 - **Energy sites**: power flows on the plan's gap, the day's totals every few of those, settings when the account is listed. A site with no battery and no
   solar (a Wall Connector alone) is skipped.
 - **One car Tesla refuses** (a car that doesn't allow it, say) gets its own line in the health,
-  and the others carry on (#189753 took Home Assistant's whole setup down).
+  and the others carry on.
 - **Refresh** on a car reads it now, and its name says what that costs ("Refresh (≈$0.002)").
   On a sleeping car it shows what Tesla last heard instead, and wakes nothing.
 - **Wake** wakes it (≈$0.02), then reads it once it's up.
@@ -84,15 +96,15 @@ defrost, sentry mode, steering wheel and seat heaters, honk and flash.
   it lands, which costs a command's price a try. Every command waiting for the same car shares
   the wake, and a car slow to wake isn't woken again while the command is still trying. A command may take up to 80 seconds this way, inside the 90 the core waits.
 - **A command is sent again only when the car surely didn't act on it**: it was asleep, or turned
-  the message away unread. Honk and flash are never sent twice. When Tesla doesn't answer, the
+  the message away unread. Commands that would undo themselves or repeat (opening the trunk or frunk, honk, flash) are never sent twice. When Tesla doesn't answer, the
   error says the command may or may not have reached the car.
 - **No read follows a command.** The entity shows the new state at once, credited to the call
   that asked, and the next read puts it right if the car disagrees.
-- **The trunk opens with a toggle** (as in Tesla's own library), so it's sent only to a trunk
+- **The trunk and frunk open with a toggle** (as in Tesla's own library), so it's sent only to one
   known to be shut by a reading from the last two minutes. Otherwise the car is read first
-  (≈$0.002, once it's awake for the command anyway): Home Assistant, the Tesla app or a hand may
-  have opened the trunk since. When Tesla doesn't answer a trunk command, Irori forgets whether
-  the trunk is open, so the next one looks first.
+  (≈$0.002, once it's awake for the command anyway): another app or a hand may have opened it
+  since. When such a command fails or Tesla doesn't answer, Irori forgets whether it's open, so
+  the next one looks first.
 
 Commands are signed (HMAC, not encrypted: Tesla's servers read them to check them against the
 sign-in). Irori keeps a session with each of the car's two computers. The car's key is trusted
@@ -124,7 +136,7 @@ Prices default to Tesla's in US dollars; the settings' **Billing** group takes a
 and Tesla's rates for it. Which endpoints are billed as what follows Tesla's docs where they
 could be read; the rest are counted as reads, so the meter errs high.
 
-### Sharing the credit with Home Assistant
+### Sharing the credit with other apps
 
 Every app on the developer account spends from the same monthly credit, and Tesla tells no app
 what the others spent. Now and then, read **Spent so far this month** off Tesla's developer
@@ -132,13 +144,12 @@ dashboard and enter it on the page (or **Update from Tesla's dashboard** on the 
 Irori takes what's beyond its own count as the other apps', works out what they spend a day,
 and leaves room for them to the month's end. The page says how long ago the figure was entered.
 
-The allowance is for the whole account, Home Assistant included. Commands share Home Assistant's
-key too: when Home Assistant's commands move the car's counter, the car turns Irori's next one
+The allowance is for the whole account, every app on it included. If another program signs
+commands with the same key, its commands move the car's counter: the car turns Irori's next one
 away with a fresh session, which Irori checks and takes, and sends the command again.
 
 When Tesla suspends the API because the billing limit is reached, the health says so, where to
-raise the limit, and when readings resume: it's never shown as a sign-in problem (Home
-Assistant's #146212).
+raise the limit, and when readings resume: it's never shown as a sign-in problem.
 
 ## Not yet
 

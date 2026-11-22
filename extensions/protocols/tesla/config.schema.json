@@ -1,11 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Settings",
+  "description": "Irori reaches your Tesla through Tesla's official API. You need your Tesla account and a website you control that can serve one file over HTTPS (any static host works). Tesla bills API use to your developer account against a monthly credit ($10 in the US), and Irori paces itself to stay inside an allowance you set.\n\n1. Go to <https://developer.tesla.com>, sign in and create an app. Tesla may ask for billing details.\n\n2. In the app, set Allowed Origin to your website, such as https://tesla.example.com, and Allowed Redirect URI to the same address followed by /irori/tesla. That page doesn't have to exist.\n\n3. Give the app all of its access: vehicle information, location, commands and charging, and energy information and commands.\n\n4. Copy the app's Client ID and Client Secret below, enter your website's domain, and save. Leave Private key blank: Irori makes one.\n\nWhat happens next: open Devices, then + Add device, then Tesla. Irori lists what's left there, one step at a time: put a key on your website, sign in to Tesla, and approve the key on your car.",
   "type": "object",
   "properties": {
     "client_id": {
       "title": "Client ID",
-      "description": "The Client ID of your app on developer.tesla.com. Home Assistant's Tesla Fleet setup\nalready has one: reuse it.",
+      "description": "The Client ID of your app on developer.tesla.com.",
       "type": "string"
     },
     "client_secret": {
@@ -57,7 +58,7 @@
     },
     "private_key": {
       "title": "Private key",
-      "description": "The private key Tesla already knows, to reuse it: the contents of tesla_fleet.key in\nHome Assistant's config folder. Leave blank and Irori makes a key of its own, which then\nhas to go on your website and on the car.",
+      "description": "Leave blank and Irori makes a key, then shows you what to put on your website and how to\nadd it to the car. Only if this developer app already has a key: paste its private key\nhere, and the website and the car stay as they are.",
       "anyOf": [
         {
           "$ref": "#/$defs/Secret"

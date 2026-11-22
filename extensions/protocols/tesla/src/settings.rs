@@ -2,8 +2,8 @@
 //! its public key on, and what Tesla charges for the API.
 //!
 //! The client secret and the private key are secrets (`writeOnly`): kept in `secrets.toml`, never
-//! sent back to a page, never printed. Home Assistant's Tesla Fleet setup made all of these
-//! already; reusing its app, domain and key means the car already trusts Irori.
+//! sent back to a page, never printed. Irori makes its own key unless it's given one, so a new
+//! developer app needs only its ID, secret and domain.
 //!
 //! How often to read the cars and how much a month to spend aren't settings: they're controls
 //! on the Tesla account device and the usage page, so an automation can change them too.
@@ -12,10 +12,32 @@ use irori_cloud::Secret;
 use schemars::JsonSchema;
 use serde::{Deserialize, Deserializer};
 
+/// Shown at the top of the settings form, so someone new knows where to start.
+const GUIDE: &str = "Irori reaches your Tesla through Tesla's official API. You need your Tesla \
+account and a website you control that can serve one file over HTTPS (any static host works). \
+Tesla bills API use to your developer account against a monthly credit ($10 in the US), and \
+Irori paces itself to stay inside an allowance you set.
+
+1. Go to <https://developer.tesla.com>, sign in and create an app. Tesla may ask for billing \
+details.
+
+2. In the app, set Allowed Origin to your website, such as https://tesla.example.com, and \
+Allowed Redirect URI to the same address followed by /irori/tesla. That page doesn't have to \
+exist.
+
+3. Give the app all of its access: vehicle information, location, commands and charging, and \
+energy information and commands.
+
+4. Copy the app's Client ID and Client Secret below, enter your website's domain, and save. \
+Leave Private key blank: Irori makes one.
+
+What happens next: open Devices, then + Add device, then Tesla. Irori lists what's left there, \
+one step at a time: put a key on your website, sign in to Tesla, and approve the key on your car.";
+
 #[derive(Debug, Clone, PartialEq, JsonSchema)]
+#[schemars(description = GUIDE)]
 pub struct Settings {
-    /// The Client ID of your app on developer.tesla.com. Home Assistant's Tesla Fleet setup
-    /// already has one: reuse it.
+    /// The Client ID of your app on developer.tesla.com.
     #[schemars(title = "Client ID")]
     pub client_id: String,
     /// The Client Secret shown beside it.
@@ -25,9 +47,9 @@ pub struct Settings {
     /// e.g. tesla.example.com.
     #[schemars(title = "Domain")]
     pub domain: String,
-    /// The private key Tesla already knows, to reuse it: the contents of tesla_fleet.key in
-    /// Home Assistant's config folder. Leave blank and Irori makes a key of its own, which then
-    /// has to go on your website and on the car.
+    /// Leave blank and Irori makes a key, then shows you what to put on your website and how to
+    /// add it to the car. Only if this developer app already has a key: paste its private key
+    /// here, and the website and the car stay as they are.
     #[schemars(title = "Private key")]
     pub private_key: Option<Secret>,
     /// Where Tesla sends you after signing in. It has to be one of the app's Allowed Redirect

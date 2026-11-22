@@ -759,7 +759,9 @@ impl World {
         {
             steps.push(setup::key_step(&self.settings.domain, key, why));
         }
-        if !self.signed_in {
+        // One thing at a time: Tesla answers nothing until the app is registered, so signing in
+        // waits for the key.
+        if !self.signed_in && steps.is_empty() {
             let state = match &self.sign_in_state {
                 Some(state) => state.clone(),
                 None => {
@@ -792,8 +794,8 @@ impl World {
     fn health(&self) -> Health {
         if let Err(why) = &self.key {
             return Health::Degraded(format!(
-                "The private key in the settings can't be used: {why}. Paste all of \
-                 tesla_fleet.key, or clear it and Irori makes its own."
+                "The private key in the settings can't be used: {why}. Paste the whole \
+                 key, or clear it and Irori makes its own."
             ));
         }
         match &self.trouble {

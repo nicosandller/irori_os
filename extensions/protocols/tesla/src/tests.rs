@@ -620,7 +620,7 @@ mod protocol {
             (log.actions == ["sign_in", "update_spend"]).then_some(())
         })
         .await;
-        assert!(home.step("Tesla has a different").is_none());
+        assert!(home.step("Put Irori's public key").is_none());
         assert!(
             !home
                 .log
@@ -640,10 +640,14 @@ mod protocol {
             .until("the key step", |log| {
                 log.waiting
                     .iter()
-                    .find(|step| step.reason.starts_with("Tesla has a different"))
+                    .find(|step| step.reason.starts_with("Put Irori's public key"))
                     .cloned()
             })
             .await;
+        assert!(
+            home.step("Sign in to Tesla").is_none(),
+            "signing in waits for the key"
+        );
         let kept = home
             .until("Irori's own key kept", |log| {
                 log.stored
@@ -673,8 +677,15 @@ mod protocol {
             (!log
                 .waiting
                 .iter()
-                .any(|step| step.reason.starts_with("Tesla has a different")))
+                .any(|step| step.reason.starts_with("Put Irori's public key")))
             .then_some(())
+        })
+        .await;
+        home.until("signing in comes next", |log| {
+            log.waiting
+                .iter()
+                .any(|step| step.reason.starts_with("Sign in to Tesla"))
+                .then_some(())
         })
         .await;
     }

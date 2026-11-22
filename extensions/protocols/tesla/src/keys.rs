@@ -2,9 +2,9 @@
 //! (Tesla fetches it from there when the app registers) and onto each car (the "virtual key"),
 //! and its private half signs the commands a car checks.
 //!
-//! Home Assistant's Tesla Fleet setup made one already (`tesla_fleet.key`). Pasting it into the
-//! settings reuses it: the website and the car already have its public half, so nothing has to
-//! be paired again. Without one, Irori makes its own and keeps it in its store.
+//! Irori makes its own and keeps it in its store. A developer app that already has a key can
+//! paste it into the settings instead: the website and the car already have its public half, so
+//! nothing has to be paired again.
 
 use base64::Engine as _;
 use p256::pkcs8::{DecodePrivateKey, EncodePrivateKey, EncodePublicKey, LineEnding};

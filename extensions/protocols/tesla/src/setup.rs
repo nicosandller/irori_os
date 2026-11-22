@@ -88,23 +88,30 @@ fn account_step(reason: String) -> Waiting {
     }
 }
 
-/// The step that puts the public key on the website.
+/// The step that puts the public key on the website. A brand-new app lands here too, since
+/// Tesla can't register it until the key is there, so it reads as the next thing to do.
 pub fn key_step(domain: &str, key: &Key, why: &Registered) -> Waiting {
     let address = key_address(domain);
-    let reason = match why {
+    let trouble = match why {
         Registered::Yes => String::new(),
         Registered::KeyDiffers => format!(
-            "Tesla has a different public key for {domain}. Put this one at {address} (replacing \
-             what's there), then Check the key again. If Home Assistant set this app up, paste \
-             its tesla_fleet.key into the settings instead: then nothing changes on the website \
-             or the car."
+            "\nTesla has a different key for {domain} right now. If another program already uses \
+             this developer app, paste its private key into Tesla's settings instead: then \
+             nothing changes on the website or the car."
         ),
         Registered::Refused(words) => format!(
-            "Tesla wouldn't register the app for {domain}: {words}. Tesla reads the public key \
-             from {address}: put this file there, check the domain is the app's Allowed Origin \
-             on developer.tesla.com, then Check the key again."
+            "\nTesla's last answer: {words}. If the key is already there, check that {domain} is \
+             the app's Allowed Origin on developer.tesla.com."
         ),
     };
+    let reason = format!(
+        "Put Irori's public key on your website.\n\
+         Where: {address}\n\
+         What to do: save the key below as a file at exactly that address. Open the link to \
+         check it shows the key, then press Check the key again on this page.\n\
+         What to expect: Tesla reads the file and registers your app. This step goes away and \
+         signing in comes next.{trouble}"
+    );
     Waiting {
         link: Some(WaitingLink {
             label: "Open the key's address".into(),
@@ -120,19 +127,25 @@ pub fn key_step(domain: &str, key: &Key, why: &Registered) -> Waiting {
 
 /// The step that signs in, with the link to Tesla's sign-in page.
 pub fn sign_in_step(url: String, again: bool) -> Waiting {
-    let reason = if again {
-        "Tesla signed Irori out. Sign in again, then paste the address you land on into Finish \
-         signing in."
+    let first = if again {
+        "Tesla signed Irori out, so sign in again."
     } else {
-        "Sign in to Tesla and allow Irori. Tesla then sends you to an address that may not load: \
-         copy it from the address bar into Finish signing in."
+        "Sign in to Tesla."
     };
+    let reason = format!(
+        "{first}\n\
+         What to do: open the link below, sign in, and allow everything Irori asks for.\n\
+         What to expect: Tesla sends you to an address on your website, which may show a \
+         \"not found\" page. That's fine. Copy the whole address from the browser's address bar \
+         and paste it into Finish signing in on this page. Your cars and energy sites then \
+         appear here, ready to add."
+    );
     Waiting {
         link: Some(WaitingLink {
             label: "Sign in to Tesla".into(),
             url,
         }),
-        ..account_step(reason.into())
+        ..account_step(reason)
     }
 }
 
@@ -143,9 +156,11 @@ pub fn virtual_key_step(domain: &str, vin: &str, name: &str) -> Option<Waiting> 
         name: Name::try_from(name.trim())
             .or_else(|_| Name::try_from(vin))
             .ok()?,
-        reason: "Irori can read this car, but it takes commands only with Irori's key on it. \
-                 Open the link on your phone, where the Tesla app is, and approve it; then tap \
-                 the card key on the console."
+        reason: "Add Irori's key to this car so it can take commands. Reading already works.\n\
+                 Where: on your phone, with the Tesla app installed.\n\
+                 What to do: open the link below and approve it, then tap your key card on the \
+                 console when the car asks.\n\
+                 What to expect: this step goes away once Tesla reports the key on the car."
             .into(),
         secret: None,
         link: Some(WaitingLink {
