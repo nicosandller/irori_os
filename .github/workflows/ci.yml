@@ -144,11 +144,11 @@ jobs:
             features: ""
           - label: Linux on ARM, such as a Raspberry Pi (full build)
             target: aarch64-unknown-linux-musl
-            runner: qemu-aarch64-static
+            runner: qemu-aarch64
             features: ""
           - label: Linux on ARM, such as a Raspberry Pi (minimal build)
             target: aarch64-unknown-linux-musl
-            runner: qemu-aarch64-static
+            runner: qemu-aarch64
             features: --no-default-features
     steps:
       - uses: actions/checkout@v5
@@ -174,7 +174,7 @@ jobs:
           path: crates/irori/ui
       - name: Install the ARM emulator (to run the ARM build on this machine)
         if: matrix.runner != ''
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+        run: sudo apt-get update && sudo apt-get install -y qemu-user
 
       - name: Build the program
         run: |
