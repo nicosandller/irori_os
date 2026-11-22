@@ -1553,6 +1553,33 @@ mod commands {
         }
     }
 
+    /// The usage page needs the core to route its questions here, which it does only for a
+    /// manifest asking for a release that can answer them.
+    #[test]
+    fn the_manifest_asks_for_a_core_that_routes_its_page() {
+        use irori_protocol::Protocol as _;
+        let manifest = irori_protocol::parse_manifest(crate::Tesla::MANIFEST).expect("valid");
+        assert!(manifest.answers_its_page());
+    }
+
+    /// Two presses inside one round trip to Tesla: the second sees the first on its way.
+    #[tokio::test]
+    async fn two_wake_presses_at_once_pay_for_one_wake() {
+        let home = with_a_car("asleep", |_| {}).await;
+        home.fake.answer(
+            &format!("POST /na/api/1/vehicles/{VIN}/wake_up"),
+            vec![Answer::ok(json!({ "vin": VIN, "state": "asleep" }))],
+        );
+        let wake = format!("{VIN}:wake");
+        let (first, second) = tokio::join!(
+            home.call(&wake, Service::ButtonPress),
+            home.call(&wake, Service::ButtonPress)
+        );
+        first.expect("woken");
+        second.expect("already waking");
+        assert_eq!(home.fake.sent("/wake_up").len(), 1);
+    }
+
     /// Opening the trunk of a sleeping car: one wake, then only the cheap "which cars are
     /// awake" check until it's up, then one full read, then the toggle.
     #[tokio::test]

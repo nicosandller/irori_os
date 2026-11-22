@@ -194,18 +194,20 @@ impl CarCommand {
         }
     }
 
-    /// What to do before sending it, given what's known of the car. The trunk opens with a
-    /// toggle, so sending it to an open trunk shuts it: it goes only to a trunk known to be shut
-    /// by a reading from the last [`FRESH`] seconds, and otherwise the car is read first. Home
-    /// Assistant, the Tesla app or a hand may have opened it since an older reading.
+    /// What to do before sending it, given what's known of the car. The trunk and the frunk
+    /// open with a toggle, so sending it to an open one can shut it: it goes only to one known
+    /// to be shut by a reading from the last [`FRESH`] seconds, and otherwise the car is read
+    /// first. Home Assistant, the Tesla app or a hand may have opened it since an older reading.
     pub fn check(&self, reading: &crate::vehicle::CarReading, now: u64) -> Check {
-        if !matches!(self, CarCommand::Trunk { open: true }) {
-            return Check::Send;
-        }
+        let field = match self {
+            CarCommand::Trunk { open: true } => TRUNK_FIELD,
+            CarCommand::Frunk => FRUNK_FIELD,
+            _ => return Check::Send,
+        };
         let fresh = reading
             .read_at
             .is_some_and(|at| now.saturating_sub(at) <= FRESH);
-        match reading.fields.get(TRUNK_FIELD).and_then(Value::as_f64) {
+        match reading.fields.get(field).and_then(Value::as_f64) {
             Some(open) if fresh && open != 0.0 => Check::AlreadyDone,
             Some(_) if fresh => Check::Send,
             _ => Check::LookFirst,
@@ -215,7 +217,11 @@ impl CarCommand {
     /// What Irori should forget about the car when this command fails, so the next one looks
     /// before it acts: a failed command may still have moved it.
     pub fn failure_forgets(&self) -> Option<&'static str> {
-        matches!(self, CarCommand::Trunk { .. }).then_some(TRUNK_FIELD)
+        match self {
+            CarCommand::Trunk { .. } => Some(TRUNK_FIELD),
+            CarCommand::Frunk => Some(FRUNK_FIELD),
+            _ => None,
+        }
     }
 
     /// Whether sending it twice does no harm. One that isn't is sent again only when the car
@@ -410,6 +416,9 @@ pub const FRESH: u64 = 120;
 /// Where a reading says whether the trunk is open.
 const TRUNK_FIELD: &str = "vehicle_state.rt";
 
+/// Where a reading says whether the frunk is open.
+const FRUNK_FIELD: &str = "vehicle_state.ft";
+
 /// A command to an energy site: plain REST, no signing.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SiteCommand {
@@ -556,6 +565,18 @@ mod tests {
         );
         assert_eq!(open.failure_forgets(), Some("vehicle_state.rt"));
         assert_eq!(CarCommand::Lock(true).failure_forgets(), None);
+
+        // The frunk is the same toggle, read from its own field.
+        let frunk = CarCommand::Frunk;
+        let mut reading = crate::vehicle::CarReading::default();
+        assert_eq!(frunk.check(&reading, now), Check::LookFirst);
+        reading.read_at = Some(now);
+        reading.fields.insert("vehicle_state.rt".into(), json!(1));
+        reading.fields.insert("vehicle_state.ft".into(), json!(0));
+        assert_eq!(frunk.check(&reading, now), Check::Send);
+        reading.fields.insert("vehicle_state.ft".into(), json!(1));
+        assert_eq!(frunk.check(&reading, now), Check::AlreadyDone);
+        assert_eq!(frunk.failure_forgets(), Some("vehicle_state.ft"));
         assert!(
             !open.repeatable() && !CarCommand::Frunk.repeatable(),
             "toggles go once"

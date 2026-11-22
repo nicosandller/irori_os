@@ -113,7 +113,7 @@ impl ExtensionManifest {
     /// there's nobody to ask, rather than waiting out every question.
     pub fn answers_its_page(&self) -> bool {
         self.app().is_some()
-            && (self.is_engine() || self.extension.irori.requires_at_least((1, 7, 0)))
+            && (self.is_engine() || self.extension.irori.requires_at_least(PROTOCOL_PAGES_SINCE))
     }
 
     /// Its page in the sidebar, if it has one.
@@ -742,6 +742,10 @@ impl Version {
 }
 
 type Release = (u32, u32, u32);
+
+/// The first release whose toolkit hands a protocol its page's questions. If this release moves,
+/// so must the `irori` line of every protocol with a page (Tesla's test holds it to this).
+const PROTOCOL_PAGES_SINCE: Release = (1, 7, 0);
 
 fn parse_version(value: &str) -> Result<(Release, Option<&str>), IdError> {
     const WHAT: &str = "version";

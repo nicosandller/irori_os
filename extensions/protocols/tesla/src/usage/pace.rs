@@ -377,7 +377,10 @@ pub fn plan(outlook: &Outlook, mode: Mode, prices: Prices, reading: Reading) -> 
                     car_floor,
                 )
             })
-            .flatten(),
+            .flatten()
+            // The idle reads may have taken the cars' whole share while money is left: read
+            // rarely rather than not at all. Only a month with nothing left stops the cars.
+            .or((reading.cars > 0 && !starved).then_some(LONGEST_GAP)),
         site: (reading.sites > 0)
             .then(|| gap(share(site_weight), site_price, 1.0, floors.site))
             .flatten()
@@ -559,6 +562,32 @@ mod tests {
         };
         let (one, two) = (gap(1), gap(2));
         assert!(two > one * 1.8, "one car every {one} s, two every {two} s");
+    }
+
+    /// Cars that sit awake a lot, late in a tight month: the idle reads budgeted can take the
+    /// cars' whole share. With money still left they're read rarely, not dropped.
+    #[test]
+    fn cars_are_still_read_when_idle_reads_take_their_whole_share() {
+        let mut usage = usage();
+        for _ in 0..3_500 {
+            usage.record(NOV_10, "VIN1", Endpoint::VehicleData, 200, Why::Schedule);
+        }
+        let outlook = usage.outlook(NOV_10);
+        let plan = plan(
+            &outlook,
+            Mode::Balanced,
+            usage.prices,
+            Reading {
+                cars: 3,
+                sites: 0,
+                shares: Some(Shares {
+                    busy: 0.1,
+                    idle: 0.9,
+                }),
+            },
+        );
+        assert!(!plan.starved, "there's money left");
+        assert_eq!(plan.car, Some(LONGEST_GAP));
     }
 
     #[test]

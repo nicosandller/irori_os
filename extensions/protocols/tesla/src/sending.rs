@@ -83,16 +83,12 @@ impl Link {
     }
 
     /// Whether a wake within `within` still covers the car: the Wake button and commands share
-    /// it, so the car isn't woken (and billed) twice.
+    /// it, so the car isn't woken (and billed) twice. The lock is held across a wake, so a held
+    /// lock means one is on its way.
     pub fn woken_within(&self, within: Duration) -> bool {
         self.woken_at
             .try_lock()
-            .is_ok_and(|at| at.is_some_and(|at| at.elapsed() < within))
-    }
-
-    /// The car was just woken.
-    pub async fn mark_woken(&self) {
-        *self.woken_at.lock().await = Some(Instant::now());
+            .map_or(true, |at| at.is_some_and(|at| at.elapsed() < within))
     }
 
     fn channel(&self, domain: Domain) -> &Mutex<Channel> {
@@ -330,6 +326,24 @@ async fn wake(
     Ok(())
 }
 
+/// Wakes the car for the Wake button, under the same lock as a command's wake, so whichever
+/// comes second sees the first and sends nothing.
+pub(crate) async fn wake_pressed(
+    api: &Api,
+    link: &Link,
+    vin: &str,
+    why: Why,
+    within: Duration,
+) -> Result<String, ApiError> {
+    let mut woken_at = link.woken_at.lock().await;
+    if woken_at.is_some_and(|at| at.elapsed() < within) {
+        return Ok("waking".to_owned());
+    }
+    let state = api.wake_up(vin, why).await?;
+    *woken_at = Some(Instant::now());
+    Ok(state)
+}
+
 /// Changes an energy site's settings.
 pub(crate) async fn site(
     api: &Api,
@@ -356,8 +370,6 @@ pub(crate) enum Command {
 }
 
 impl World {
-    /// Sends a command to a car, unless it surely can't work: those are answered at once, and
-    /// cost nothing.
     /// The car's link, made the first time it's needed.
     pub(crate) fn link(&mut self, vin: &str) -> Result<Arc<Link>, String> {
         if let Some(link) = self.links.get(vin) {
@@ -368,6 +380,8 @@ impl World {
         Ok(link)
     }
 
+    /// Sends a command to a car, unless it surely can't work: those are answered at once, and
+    /// cost nothing.
     pub(crate) fn command_car(&mut self, vin: &str, command: CarCommand, call: IncomingCall) {
         if !self.signed_in {
             call.reply(Err(ServiceError::unavailable("sign in to Tesla first")));

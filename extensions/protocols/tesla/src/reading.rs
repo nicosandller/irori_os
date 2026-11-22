@@ -72,6 +72,8 @@ pub(crate) struct CarSlot {
     refreshes: Vec<IncomingCall>,
     /// Woken by a press, and not yet seen awake.
     woken: Option<Woken>,
+    /// A press's wake is on its way to Tesla.
+    waking: bool,
 }
 
 impl CarSlot {
@@ -87,6 +89,7 @@ impl CarSlot {
             trouble: None,
             refreshes: Vec::new(),
             woken: None,
+            waking: false,
         }
     }
 }
@@ -869,7 +872,7 @@ impl World {
                 .reading
                 .read_at
                 .is_some_and(|at| now.saturating_sub(at) <= AWAKE_FOR);
-        let looking = slot.woken.is_some();
+        let looking = slot.woken.is_some() || slot.waking;
         let link = match self.link(vin) {
             Ok(link) => link,
             Err(why) => {
@@ -886,14 +889,15 @@ impl World {
             what: "Wake".into(),
             by: crate::account::asked_by(&call.call.context.origin),
         };
+        if let Some(slot) = self.cars.get_mut(vin) {
+            slot.waking = true;
+        }
         let api = self.api.clone();
         let done = self.done.clone();
         let vin = vin.to_owned();
+        let within = self.timing.patience.deadline;
         tokio::spawn(async move {
-            let result = api.wake_up(&vin, why).await;
-            if result.is_ok() {
-                link.mark_woken().await;
-            }
+            let result = crate::sending::wake_pressed(&api, &link, &vin, why, within).await;
             let _ = done.send(Done::Woken { vin, result, call }).await;
         });
     }
@@ -904,6 +908,9 @@ impl World {
         result: Result<String, ApiError>,
         call: IncomingCall,
     ) {
+        if let Some(slot) = self.cars.get_mut(&vin) {
+            slot.waking = false;
+        }
         match result {
             Ok(_) => {
                 self.account_worked();
