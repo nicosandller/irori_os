@@ -12,7 +12,7 @@ use std::time::Duration;
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
 use irori_protocol::{
-    ExtProcess, FromExt, IncomingAction, IncomingCall, ProcessGroup, ToExt, spawn,
+    ExtProcess, FromExt, IncomingAction, IncomingCall, MAX_LINE, ProcessGroup, ToExt, spawn,
 };
 
 use crate::engine::EngineLink;
@@ -1828,10 +1828,22 @@ impl Reader {
 const OUTPUT_CLOSED: &str = "the extension closed its output";
 
 /// Reads one line of an extension's stdout as a message, in the host's words when it fails.
-async fn read_message(stdout: &mut BufReader<ChildStdout>) -> Result<FromExt, String> {
+///
+/// No further than [`MAX_LINE`], the same bound the extension's side reads to: a line longer
+/// than any message ends the extension rather than being held whole in the core's memory.
+async fn read_message(
+    stdout: &mut BufReader<impl tokio::io::AsyncRead + Unpin>,
+) -> Result<FromExt, String> {
+    use tokio::io::AsyncReadExt as _;
     let mut line = String::new();
-    match stdout.read_line(&mut line).await {
+    // One byte past the bound, so a line of exactly the bound is told from a longer one.
+    match (&mut *stdout)
+        .take(MAX_LINE as u64 + 1)
+        .read_line(&mut line)
+        .await
+    {
         Ok(0) => Err(OUTPUT_CLOSED.to_owned()),
+        Ok(n) if n > MAX_LINE => Err(format!("a message longer than {MAX_LINE} bytes")),
         Ok(_) => serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}")),
         Err(error) => Err(error.to_string()),
     }
@@ -2511,6 +2523,28 @@ async fn reply_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line longer than any message is refused as too long, not read whole and then found
+    /// not to be a message; what comes before it and the pipe's end read as they did.
+    #[tokio::test]
+    async fn a_line_longer_than_any_message_is_refused_without_being_held() {
+        let mut said = br#"{"type":"remove_device","id":1,"unique_id":"lamp"}"#.to_vec();
+        said.push(b'\n');
+        said.extend(vec![b'x'; MAX_LINE + 10]);
+        let mut stdout = BufReader::new(said.as_slice());
+        assert!(matches!(
+            read_message(&mut stdout).await,
+            Ok(FromExt::RemoveDevice { .. })
+        ));
+        let error = read_message(&mut stdout).await.expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+
+        let mut ended = BufReader::new(&b""[..]);
+        assert_eq!(
+            read_message(&mut ended).await.expect_err("closed"),
+            OUTPUT_CLOSED
+        );
+    }
 
     #[test]
     fn an_extension_line_keeps_its_own_level_and_loses_its_own_timestamp() {
