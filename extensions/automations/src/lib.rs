@@ -61,8 +61,8 @@ pub struct Service {
     /// Whether the flows have been armed once already: before that, what each flow was doing is
     /// not known, and a change made while Irori was stopped is the one to find.
     started: bool,
-    /// What the turned-on flows missing part of the home watch. A change to one of these can't
-    /// be taken on an old reading of the home: what is missing may just have arrived.
+    /// What the turned-on flows that can't arm watch. A change to one of these can't be taken
+    /// on an old reading of the home: what they are missing may just have arrived.
     waiting: BTreeSet<irori_types::EntityId>,
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
     /// The runs in progress when they were last kept on disk.
@@ -346,17 +346,19 @@ impl Service {
         self.engine.set_flows(arms, now());
         self.apply_effects();
         // Every change to the flows or the home comes through here, so this is never behind.
+        // Asked of the engine, not worked out from what a flow names: an expression naming an
+        // entity the home doesn't have can't be read, so that entity isn't among the named.
+        let armed = self.engine.armed();
         self.waiting = self
             .store
             .flows()
-            .filter(|flow| flow.enabled)
-            .map(|flow| validate::watched(flow, &self.registry))
-            .filter(|watched| {
-                watched
-                    .iter()
-                    .any(|entity| !self.registry.entities.contains_key(entity))
+            .filter(|flow| {
+                matches!(
+                    armed.get(&flow.id),
+                    Some((irori_flow_types::api::Armed::Unarmed { .. }, _))
+                )
             })
-            .flatten()
+            .flat_map(|flow| validate::watched(flow, &self.registry))
             .collect();
     }
 
@@ -518,8 +520,8 @@ impl Service {
         }
     }
 
-    /// Whether a change to `entity` matters to a flow that is missing part of the home: read
-    /// the home first, or that flow, not armed yet, would lose the change.
+    /// Whether a change to `entity` matters to a flow that can't arm yet: read the home first,
+    /// or that flow would lose the change.
     fn waits_for(&self, entity: &irori_types::EntityId) -> bool {
         self.waiting.contains(entity)
     }
@@ -653,7 +655,7 @@ impl Reading {
 /// of them is read once, [`SETTLE`] after the last or [`SETTLE_AT_MOST`] after the first.
 ///
 /// The home is read at once when an old reading would give a wrong answer: for a page's
-/// question, for a state a flow missing part of the home watches, and after events were missed,
+/// question, for a state a flow that can't arm yet watches, and after events were missed,
 /// since what flows would read is then known to be out of date.
 pub async fn serve(
     mut service: Service,

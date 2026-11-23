@@ -598,3 +598,43 @@ async fn a_flow_on_a_missing_device_does_not_bring_back_a_read_per_change() {
         })
         .await;
 }
+
+/// A flow can't arm for want of an entity named only in an expression (the hallway's "dark"
+/// gate on the lux sensor). It still counts as waiting, so the motion right behind the news
+/// that the sensor arrived isn't lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_flow_whose_missing_entity_is_only_in_an_expression_still_waits() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let home = Home::hallway();
+            home.entities
+                .lock()
+                .expect("entities")
+                .retain(|e| e.id != id(LUX));
+            home.states
+                .lock()
+                .expect("states")
+                .retain(|s| s.entity_id != id(LUX));
+            let mut running = started(dir.path(), home).await;
+            running.home.add(
+                LUX,
+                number(),
+                State::Sensor(SensorState {
+                    value: SensorValue::Number(10.0),
+                }),
+            );
+            running
+                .push
+                .send(REGISTRY_CHANGED.to_owned())
+                .expect("push");
+            running.push.send(changed(MOTION, true, 1)).expect("push");
+            let fired = call_within(&mut running.calls, Duration::from_millis(1_500)).await;
+            stopped(running).await;
+            assert!(
+                fired,
+                "motion right after the lux sensor arrived was dropped"
+            );
+        })
+        .await;
+}
