@@ -247,6 +247,9 @@ async fn drive(
                 Some(Incoming::Picture(asked)) => {
                     asked.reply(Err("Matter devices have no cameras here yet".to_owned()));
                 }
+                Some(Incoming::Page(page)) => {
+                    page.answer(Err("Matter has no page of its own".to_owned()));
+                }
                 Some(Incoming::Live(live)) => {
                     live.feed.end(Some("Matter devices have no cameras here yet".to_owned()));
                 }

@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "description": "Irori reaches your Tesla through Tesla's official API. You need your Tesla account and a website you control that can serve one file over HTTPS (any static host works). Tesla bills API use to your developer account against a monthly credit ($10 in the US), and Irori paces itself to stay inside an allowance you set.\n\n1. Go to <https://developer.tesla.com>, sign in and create an app. Tesla may ask for billing details.\n\n2. In the app, set Allowed Origin to your website, such as https://tesla.example.com, and Allowed Redirect URI to the same address followed by /irori/tesla. That page doesn't have to exist.\n\n3. Give the app all of its access: vehicle information, location, commands and charging, and energy information and commands.\n\n4. Copy the app's Client ID and Client Secret below, enter your website's domain, and save. Leave Private key blank: Irori makes one.\n\nWhat happens next: open Devices, then + Add device, then Tesla. Irori lists what's left there, one step at a time: put a key on your website, sign in to Tesla, and approve the key on your car.",
+  "type": "object",
+  "properties": {
+    "client_id": {
+      "title": "Client ID",
+      "description": "The Client ID of your app on developer.tesla.com.",
+      "type": "string"
+    },
+    "client_secret": {
+      "title": "Client secret",
+      "description": "The Client Secret shown beside it.",
+      "$ref": "#/$defs/Secret"
+    },
+    "commands_per_unit": {
+      "title": "Commands per 1",
+      "description": "How many commands one unit of the currency buys.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 1000,
+      "maximum": 1000000,
+      "minimum": 1,
+      "x-irori-group": "Billing"
+    },
+    "currency": {
+      "title": "Currency",
+      "description": "The currency Tesla bills the account in, as Tesla's dashboard shows it.",
+      "type": "string",
+      "default": "USD",
+      "x-irori-group": "Billing"
+    },
+    "data_per_unit": {
+      "title": "Data requests per 1",
+      "description": "How many requests for a car's data one unit of the currency buys, from Tesla's pricing.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 500,
+      "maximum": 1000000,
+      "minimum": 1,
+      "x-irori-group": "Billing"
+    },
+    "domain": {
+      "title": "Domain",
+      "description": "The website Tesla finds your public key on, without https://: the app's Allowed Origin,\ne.g. tesla.example.com.",
+      "type": "string"
+    },
+    "monthly_credit": {
+      "title": "Monthly credit",
+      "description": "What Tesla takes off each month's bill. Tesla gives every account the same, in its\ncurrency: $10 in the US.",
+      "type": "number",
+      "format": "double",
+      "default": 10.0,
+      "maximum": 10000.0,
+      "minimum": 0.0,
+      "x-irori-group": "Billing"
+    },
+    "private_key": {
+      "title": "Private key",
+      "description": "Leave blank and Irori makes a key, then shows you what to put on your website and how to\nadd it to the car. Only if this developer app already has a key: paste its private key\nhere, and the website and the car stay as they are.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Secret"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "redirect_uri": {
+      "title": "Redirect address",
+      "description": "Where Tesla sends you after signing in. It has to be one of the app's Allowed Redirect\nURIs; the page there doesn't have to exist. Blank: https://{domain}/irori/tesla.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "x-irori-group": "Advanced"
+    },
+    "wakes_per_unit": {
+      "title": "Wakes per 1",
+      "description": "How many wakes one unit of the currency buys.",
+      "type": "integer",
+      "format": "uint32",
+      "default": 50,
+      "maximum": 1000000,
+      "minimum": 1,
+      "x-irori-group": "Billing"
+    }
+  },
+  "required": [
+    "client_id",
+    "client_secret",
+    "domain"
+  ],
+  "$defs": {
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}

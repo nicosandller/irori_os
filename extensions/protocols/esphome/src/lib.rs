@@ -144,6 +144,8 @@ fn needs_key(mac: &Mac, name: &str, why: &str) -> Option<Waiting> {
             hint: Some("`api: encryption: key:` in the device's ESPHome YAML".to_owned()),
             username: None,
         }),
+        link: None,
+        copy: None,
     })
 }
 

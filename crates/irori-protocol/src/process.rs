@@ -779,6 +779,40 @@ fn handle_host_line(
                 ),
             }
         }
+        ToExt::AppRequest {
+            id,
+            method,
+            params,
+            caller,
+        } => {
+            let (incoming, result) = host::incoming_page(
+                method,
+                params,
+                caller.unwrap_or_else(crate::engine::Caller::owner),
+            );
+            match actions.try_send(incoming) {
+                Ok(()) => {
+                    let out = out.clone();
+                    runtime.spawn(async move {
+                        let (value, error) = match result.await {
+                            Ok(Ok(value)) => (Some(value), None),
+                            Ok(Err(error)) => (None, Some(error)),
+                            Err(_) => (None, Some("the extension didn't answer".to_owned())),
+                        };
+                        enqueue_json(&out, &FromExt::AppAnswer { id, value, error });
+                    });
+                }
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => enqueue_json(
+                    out,
+                    &FromExt::AppAnswer {
+                        id,
+                        value: None,
+                        error: Some("the extension is busy; try again".into()),
+                    },
+                ),
+            }
+        }
         ToExt::LiveStart {
             stream,
             unique_id,
@@ -822,8 +856,7 @@ fn handle_host_line(
         ToExt::Hello { .. }
         | ToExt::Answer { .. }
         | ToExt::StateChanged { .. }
-        | ToExt::RegistryChanged { .. }
-        | ToExt::AppRequest { .. } => {}
+        | ToExt::RegistryChanged { .. } => {}
     }
     ReadControl::Continue
 }
@@ -1396,6 +1429,57 @@ mod tests {
             assert!(matches!(msg, FromExt::CallService { .. }));
             assert_eq!(serde_json::to_value(&msg).expect("ser"), old);
         }
+    }
+
+    /// A protocol's own page asking it something: the question reaches the protocol with who
+    /// asked, and its answer goes back on the pipe under the same id. A protocol that only reads
+    /// actions turns it down rather than leaving the page waiting.
+    #[tokio::test]
+    async fn a_page_question_reaches_the_protocol_and_its_answer_comes_back() {
+        let pending = Pending::default();
+        let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
+        let (actions, mut actions_rx) = tokio::sync::mpsc::channel(1);
+        let (out_tx, mut out_rx) = mpsc::channel(STDOUT_QUEUE);
+        let runtime = tokio::runtime::Handle::current();
+
+        let control = handle_host_line(
+            r#"{"type":"app_request","id":4,"method":"usage.summary","params":{"month":"2026-11"},"caller":{"owner":false}}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        let crate::Incoming::Page(asked) = actions_rx.try_recv().expect("queued").sorted() else {
+            panic!("a page's question arrives as one");
+        };
+        assert_eq!(asked.method, "usage.summary");
+        assert_eq!(asked.params, serde_json::json!({ "month": "2026-11" }));
+        assert!(!asked.caller.owner, "who asked comes with it");
+        asked.answer(Ok(serde_json::json!({ "spent": 1.25 })));
+
+        let line = tokio::task::spawn_blocking(move || out_rx.blocking_recv())
+            .await
+            .expect("joined")
+            .expect("an answer");
+        let FromExt::AppAnswer { id, value, error } =
+            serde_json::from_str(line.trim()).expect("an app answer")
+        else {
+            panic!("expected an app answer, got {line}");
+        };
+        assert_eq!(id, 4);
+        assert_eq!(value, Some(serde_json::json!({ "spent": 1.25 })));
+        assert_eq!(error, None);
+
+        // A question its process can't take is answered, not dropped.
+        let (incoming, result) = host::incoming_page(
+            "usage.summary".into(),
+            serde_json::Value::Null,
+            crate::engine::Caller::owner(),
+        );
+        incoming.reply(Err("not here".into()));
+        assert_eq!(result.await.expect("answered"), Err("not here".to_owned()));
     }
 
     /// A page asking a process for a camera's picture: the request reaches the protocol as one,

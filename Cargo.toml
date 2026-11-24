@@ -23,6 +23,7 @@ members = [
     "extensions/protocols/matter",
     "extensions/protocols/mqtt",
     "extensions/protocols/switchbot",
+    "extensions/protocols/tesla",
     "extensions/protocols/tplink",
     "extensions/protocols/zigbee",
     "extras/irori-assist",
@@ -31,7 +32,12 @@ members = [
 default-members = ["crates/irori"]
 # The UI is a wasm crate with its own dependency tree, built with `trunk` (`cargo xtask ui`),
 # not by workspace commands. Keeping it out means a plain `cargo build` needs no wasm toolchain.
-exclude = ["crates/irori-ui", "crates/irori-ui-kit", "extensions/automations/app"]
+exclude = [
+    "crates/irori-ui",
+    "crates/irori-ui-kit",
+    "extensions/automations/app",
+    "extensions/protocols/tesla/app",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -66,6 +72,7 @@ irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
 irori-protocol-tplink = { path = "extensions/protocols/tplink" }
 irori-protocol-matter = { path = "extensions/protocols/matter" }
 irori-protocol-switchbot = { path = "extensions/protocols/switchbot" }
+irori-protocol-tesla = { path = "extensions/protocols/tesla" }
 irori-assist = { path = "extras/irori-assist" }
 
 # External crates
@@ -93,6 +100,13 @@ btleplug = "0.13.5"
 dbus = { version = "0.9.12", features = ["vendored"] }
 getrandom = "0.4.3"
 hmac = "0.13.0"
+# Tesla: the P-256 key Tesla knows Irori by (the one Home Assistant made can be reused), and the
+# key agreement and signatures of its vehicle command protocol. `ring` (already here through
+# rustls) only agrees keys with throwaway ones, and a car needs the stored key.
+p256 = { version = "0.13.2", features = ["ecdh", "ecdsa", "pkcs8", "pem"] }
+# Tesla's vehicle command protocol speaks protobuf. The few messages Irori sends and reads are
+# written out by hand (`extensions/protocols/tesla/src/signed/proto.rs`), so there's no protoc.
+prost = { version = "0.14.4", default-features = false, features = ["derive", "std"] }
 # The MQTT client: broker connection, TLS, and the wire protocol. `mqtt` and `zigbee` (its own
 # embedded broker's client side) both depend on it directly; xtask/src/deps.rs keeps it out of
 # every crate that isn't a protocol.
@@ -103,6 +117,8 @@ rumqttc = "0.25.1"
 rumqttd = { version = "0.20.0", default-features = false }
 # Verifying the downloaded Node.js archive against nodejs.org's own published SHA-256 sums.
 sha2 = "0.11.0"
+# Tesla's vehicle command protocol shortens its shared secret with SHA-1, by its own design.
+sha1 = "0.10.7"
 jiff = { version = "0.2.37", default-features = false, features = ["std", "serde"] }
 jsonschema = { version = "0.56.0", default-features = false }
 mime_guess = { version = "2.0.5", default-features = false }

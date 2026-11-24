@@ -290,6 +290,66 @@ fn help_text(field_schema: &serde_json::Value) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
+/// A piece of the guide at the top of a form.
+#[derive(Debug, Clone, PartialEq)]
+enum GuidePiece {
+    Text(String),
+    /// Written `<https://…>` in the schema. Nothing else becomes a link, so an example address
+    /// in the prose stays an example.
+    Link(String),
+}
+
+/// The schema's own top-level `description`, as paragraphs: what someone new has to do before
+/// they can fill the form in. A blank line separates paragraphs; other wrapping means nothing.
+fn guide_from_schema(schema: &serde_json::Value) -> Vec<Vec<GuidePiece>> {
+    let Some(text) = schema.get("description").and_then(|text| text.as_str()) else {
+        return Vec::new();
+    };
+    text.split("\n\n")
+        .map(|paragraph| paragraph.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|paragraph| !paragraph.is_empty())
+        .map(|paragraph| {
+            let mut pieces = Vec::new();
+            let mut rest = paragraph.as_str();
+            while let Some(start) = rest.find("<https://")
+                && let Some(length) = rest[start..].find('>')
+            {
+                if start > 0 {
+                    pieces.push(GuidePiece::Text(rest[..start].to_owned()));
+                }
+                pieces.push(GuidePiece::Link(rest[start + 1..start + length].to_owned()));
+                rest = &rest[start + length + 1..];
+            }
+            if !rest.is_empty() {
+                pieces.push(GuidePiece::Text(rest.to_owned()));
+            }
+            pieces
+        })
+        .collect()
+}
+
+fn guide_view(paragraphs: Vec<Vec<GuidePiece>>) -> impl IntoView {
+    (!paragraphs.is_empty()).then(|| {
+        let paragraphs = paragraphs
+            .into_iter()
+            .map(|pieces| {
+                let pieces = pieces
+                    .into_iter()
+                    .map(|piece| match piece {
+                        GuidePiece::Text(text) => text.into_any(),
+                        GuidePiece::Link(url) => view! {
+                            <a href=url.clone() target="_blank" rel="noopener noreferrer">{url.clone()}</a>
+                        }
+                        .into_any(),
+                    })
+                    .collect_view();
+                view! { <p>{pieces}</p> }
+            })
+            .collect_view();
+        view! { <div class="settings-intro">{paragraphs}</div> }
+    })
+}
+
 fn label_from_key(key: &str) -> String {
     let mut label = key.replace('_', " ");
     if let Some(first) = label.get_mut(0..1) {
@@ -420,6 +480,13 @@ fn default_value(field_schema: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// Whether a required field would be saved empty. A secret always opens blank, and blank keeps
+/// the one already saved, so a saved secret counts as filled: re-saving a vendor's other settings
+/// never asks for its client secret again.
+fn left_unfilled(field: &Field, text: &str, saved: bool) -> bool {
+    field.required && text.trim().is_empty() && !(field.kind == FieldKind::Secret && saved)
+}
+
 /// One saved setting as the form's own text, or `None` when it isn't set.
 ///
 /// A secret is never here — the server doesn't send them back — so a password field stays blank
@@ -537,6 +604,7 @@ pub fn SettingsForm(
     secrets_set: Vec<String>,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
+    let guide = guide_from_schema(&schema);
     let rows: Vec<Row> = fields_from_schema(&schema)
         .into_iter()
         .map(|field| Row::new(field, &current, &secrets_set))
@@ -551,8 +619,14 @@ pub fn SettingsForm(
             // Checked before anything is sent, and regardless of `touched`: a required field
             // left blank must refuse the save, not silently omit the key and report success —
             // the extension would stay unconfigured with no sign anything went wrong.
-            for Row { field, value, .. } in &rows {
-                if field.required && value.get_untracked().trim().is_empty() {
+            for Row {
+                field,
+                value,
+                saved,
+                ..
+            } in &rows
+            {
+                if left_unfilled(field, &value.get_untracked(), saved.get_untracked()) {
                     trouble.set(Some(format!("\"{}\" is required", field.label)));
                     return;
                 }
@@ -604,6 +678,7 @@ pub fn SettingsForm(
 
     view! {
         <form class="settings-form" on:submit=submit>
+            {guide_view(guide)}
             {move || trouble.get().map(|why| view! { <p class="banner">{why}</p> })}
             {rows_view(&plain, Opening::Folded)}
             // Settings the extension is happy to decide for itself, out of the way of the ones
@@ -876,6 +951,25 @@ fn SerialPortField(
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_schemas_description_is_the_forms_guide_and_only_marked_addresses_are_links() {
+        let schema = serde_json::json!({
+            "description": "Go to <https://example.com/start>, then\nsign in.\n\nUse https://tesla.example.com."
+        });
+        assert_eq!(
+            guide_from_schema(&schema),
+            vec![
+                vec![
+                    GuidePiece::Text("Go to ".into()),
+                    GuidePiece::Link("https://example.com/start".into()),
+                    GuidePiece::Text(", then sign in.".into()),
+                ],
+                vec![GuidePiece::Text("Use https://tesla.example.com.".into())],
+            ]
+        );
+        assert!(guide_from_schema(&serde_json::json!({})).is_empty());
+    }
+
     /// The regression this guards: with a required field the form couldn't show, every later
     /// edit was refused for leaving it blank — changing only the adapter meant retyping the
     /// serial port from memory.
@@ -1060,6 +1154,40 @@ mod tests {
     fn a_blank_or_non_numeric_field_is_a_named_error() {
         assert!(parse_field(&FieldKind::Integer, "abc").is_err());
         assert!(parse_field(&FieldKind::Number, "abc").is_err());
+    }
+
+    #[test]
+    fn a_saved_secret_counts_as_filled_when_required() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["client_id", "client_secret"],
+            "properties": {
+                "client_id": { "type": "string" },
+                "client_secret": { "$ref": "#/$defs/Secret" }
+            },
+            "$defs": { "Secret": { "type": "string", "writeOnly": true } }
+        });
+        let fields = fields_from_schema(&schema);
+        let field = |key: &str| {
+            fields
+                .iter()
+                .find(|field| field.key == key)
+                .expect("a field")
+        };
+        let secret = field("client_secret");
+        assert_eq!(secret.kind, FieldKind::Secret);
+        assert!(secret.required);
+        assert!(left_unfilled(secret, "", false), "nothing saved yet");
+        assert!(
+            !left_unfilled(secret, "", true),
+            "blank keeps the saved one"
+        );
+        assert!(!left_unfilled(secret, "new", false));
+        let id = field("client_id");
+        assert!(
+            left_unfilled(id, " ", true),
+            "only a secret is kept by leaving it blank"
+        );
     }
 
     #[test]

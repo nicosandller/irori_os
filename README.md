@@ -249,7 +249,7 @@ crates/        irori-types, irori-core, irori-protocol, irori-rules, irori-recor
                irori (the binary), and irori-ui
                (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
 extensions/    first-party extensions: automations, demo, and protocols/{cast, esphome,
-               matter, mqtt, switchbot, tplink, zigbee}
+               matter, mqtt, switchbot, tesla, tplink, zigbee}
 extras/        irori-assist (providers and prompts; the control plane is in the default build, weights are not)
 xtask/         repository automation (`cargo xtask …`)
 ```

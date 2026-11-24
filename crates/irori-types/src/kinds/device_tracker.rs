@@ -55,7 +55,38 @@ pub struct TrackerState {
     pub accuracy: Option<f64>,
 }
 
+/// How near the home's own point a tracker counts as home, before its accuracy: a driveway or
+/// a garage across the street is home, the end of the road isn't.
+pub const HOME_RADIUS_METRES: f64 = 100.0;
+
+/// The most of a tracker's own accuracy that widens the home circle. A position a kilometre out
+/// says nothing about whether it's home.
+pub const MOST_ACCURACY_METRES: f64 = 200.0;
+
+/// The distance between two points on the earth, in metres (haversine, on a round earth: close
+/// enough for "is it home").
+pub fn distance_metres(from: (f64, f64), to: (f64, f64)) -> f64 {
+    const EARTH_RADIUS_METRES: f64 = 6_371_000.0;
+    let (lat1, lon1) = (from.0.to_radians(), from.1.to_radians());
+    let (lat2, lon2) = (to.0.to_radians(), to.1.to_radians());
+    let a = ((lat2 - lat1) / 2.0).sin().powi(2)
+        + lat1.cos() * lat2.cos() * ((lon2 - lon1) / 2.0).sin().powi(2);
+    2.0 * EARTH_RADIUS_METRES * a.sqrt().min(1.0).asin()
+}
+
 impl TrackerState {
+    /// Whether a tracker that says where it is is at a home whose point is `home`: within
+    /// [`HOME_RADIUS_METRES`], widened by its accuracy (up to [`MOST_ACCURACY_METRES`]).
+    /// `None` when it doesn't say where it is.
+    pub fn is_at(&self, home: (f64, f64)) -> Option<bool> {
+        let here = (self.latitude?, self.longitude?);
+        let slack = self
+            .accuracy
+            .unwrap_or(0.0)
+            .clamp(0.0, MOST_ACCURACY_METRES);
+        Some(distance_metres(here, home) <= HOME_RADIUS_METRES + slack)
+    }
+
     /// A tracker that says only whether it's home.
     pub fn at_home(home: bool) -> Self {
         Self {
@@ -173,5 +204,35 @@ mod tests {
         };
         assert!(vague.validate().is_err());
         assert!(TrackerState::at_home(true).validate().is_ok());
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    fn at(latitude: f64, longitude: f64, accuracy: Option<f64>) -> TrackerState {
+        TrackerState {
+            home: false,
+            latitude: Some(latitude),
+            longitude: Some(longitude),
+            accuracy,
+        }
+    }
+
+    #[test]
+    fn a_position_near_the_home_is_home() {
+        let home = (51.0, 4.0);
+        // About 55 m north.
+        assert_eq!(at(51.0005, 4.0, None).is_at(home), Some(true));
+        // About 550 m north.
+        assert_eq!(at(51.005, 4.0, None).is_at(home), Some(false));
+        // About 220 m north: home only if the fix could be that far off.
+        assert_eq!(at(51.002, 4.0, Some(150.0)).is_at(home), Some(true));
+        assert_eq!(at(51.002, 4.0, Some(5_000.0)).is_at(home), Some(true));
+        assert_eq!(at(51.004, 4.0, Some(5_000.0)).is_at(home), Some(false));
+        assert_eq!(TrackerState::at_home(true).is_at(home), None);
+        let km = distance_metres((51.0, 4.0), (51.009, 4.0));
+        assert!((km - 1_000.0).abs() < 10.0, "{km}");
     }
 }

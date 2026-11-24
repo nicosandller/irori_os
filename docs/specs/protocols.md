@@ -119,6 +119,7 @@ core's process.
 | Handle actions | receives an action id, and whether to start it or stop it early; replies with a result | §5.1 |
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
 | Send a picture | receives a camera entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` entities. §5.2 |
+| Answer its page | receives a method, its params and who asked; replies with a JSON value or why not | Only with an `app` in its manifest. The same `app_request`/`app_answer` an engine gets ([automations.md](automations.md) §B3). E.g. Tesla's usage page asking for the month's spend |
 | Send live video | receives a camera entity's `unique_id`, a quality and the codecs the page plays; sends an init segment, then video, until told to stop | Only for its own `camera` entities that say `live`. §5.3 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
@@ -353,10 +354,17 @@ stopped protocol is out of date.
 | `name` | `Name` | yes | What it announced itself as |
 | `reason` | string | yes | What's needed, in a sentence: `it wants an encryption key`, `the encryption key doesn't match` |
 | `secret` | `{ path, label, hint? }` | no | Where a secret that would unlock it goes |
+| `link` | `{ label, url }` | no | A page to open for the step, when it's done somewhere else: signing in to a vendor, adding a key to a car in its app. `https://` only, up to 2048 characters; opened in a new tab |
+| `copy` | `{ label, text }` | no | Text the person puts somewhere else, shown with a Copy button and its line breaks kept: a public key for their website. Up to 4 KB |
 
 Waiting items are **not** devices in the registry. Nothing is known about them beyond what they
 announced, and a device with no entities that can't do anything is worse to show than a clear
 "found, needs a key".
+
+**Account steps.** A cloud protocol's setup (sign in, put a key on a website, pair a car) is a
+waiting item too, keyed by the account rather than a device, with `link` and `copy` for the
+parts done elsewhere. Every vendor's setup then looks the same, beside its actions on the
+"+ Add device" step, instead of a page of its own per vendor.
 
 **Secrets.** `secret.path` is a list of table keys inside the protocol's own table in
 `secrets.toml`, e.g. `["keys", "00:11:22:33:44:55"]`. The UI can take a secret for any
@@ -592,7 +600,9 @@ new state is confirmed; that comes as a state report):
   - `unavailable`: the device can't be reached right now;
   - `failed`: the device or service refused or failed, e.g. the cloud API returned an error.
 
-The core adds `timeout` when there's no reply within 10 seconds. Errors go back to whoever made
+The core adds `timeout` when there's no reply within 10 seconds, or within the protocol's
+`answer_within_seconds` (1–120) when its manifest sets one: Tesla's car has to wake before it
+hears a command, which takes up to a minute. Errors go back to whoever made
 the call (the UI, the CLI, a rule's trace).
 
 ## 8. What the core checks

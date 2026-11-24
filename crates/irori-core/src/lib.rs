@@ -194,6 +194,13 @@ pub struct ExtensionInfo {
     /// Whether it's an automation engine.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub engine: bool,
+    /// Whether its process answers its page ([`irori_types::ExtensionManifest::answers_its_page`]).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub answers_page: bool,
+    /// How long its protocol's service calls may take, from the manifest; `None` for the usual
+    /// [`SERVICE_CALL_TIMEOUT`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answer_within_seconds: Option<u32>,
 }
 
 /// An extension's page, as the shell lists it.
@@ -686,7 +693,14 @@ impl Core {
             }
             *place = home.clone();
         }
-        self.publish(vec![Event::PlaceChanged { home }]);
+        let mut events = Vec::new();
+        if let Some(location) = &home.location {
+            let stamp = self.stamp();
+            events =
+                write(&self.0.home).place_trackers((location.latitude, location.longitude), &stamp);
+        }
+        events.insert(0, Event::PlaceChanged { home });
+        self.publish(events);
     }
 
     /// Where the home is and its time zone, as last said.
@@ -799,8 +813,9 @@ impl Core {
         context: Context,
         its_turn: bool,
     ) -> Result<(), CallError> {
-        // The whole call, queueing included, fits in SERVICE_CALL_TIMEOUT.
-        let deadline = tokio::time::Instant::now() + SERVICE_CALL_TIMEOUT;
+        // The whole call, queueing included, fits in SERVICE_CALL_TIMEOUT, or what its
+        // protocol's manifest asks for.
+        let deadline = tokio::time::Instant::now() + self.call_wait(entity_id);
 
         // One call at a time per entity: two toggles arriving together must not both read the
         // same "off" and both turn it on. Held until the protocol answers, so the second
@@ -1215,6 +1230,27 @@ impl Core {
         self.ask(extension, asked, wait).await
     }
 
+    /// How long a call to this entity may take: what its protocol's manifest says, or the usual.
+    fn call_wait(&self, entity_id: &EntityId) -> Duration {
+        let Some(protocol) = read(&self.0.home)
+            .entity(entity_id)
+            .map(|entity| entity.protocol.clone())
+        else {
+            return SERVICE_CALL_TIMEOUT;
+        };
+        let Ok(extension) = ExtensionId::try_from(protocol.as_str()) else {
+            return SERVICE_CALL_TIMEOUT;
+        };
+        read(&self.0.extensions)
+            .get(&extension)
+            .and_then(|overview| overview.info.as_ref())
+            .and_then(|info| info.answer_within_seconds)
+            .map(|seconds| {
+                Duration::from_secs(u64::from(seconds.min(irori_types::MAX_CALL_ANSWER_SECONDS)))
+            })
+            .unwrap_or(SERVICE_CALL_TIMEOUT)
+    }
+
     /// How long to wait for an action's answer: what its manifest says, or the usual.
     fn action_wait(&self, extension: &ExtensionId, action_id: &str) -> Duration {
         read(&self.0.extensions)
@@ -1609,7 +1645,19 @@ impl Core {
             );
         }
         let mut rejected_count = 0;
-        for report in reports {
+        let home_point = read(&self.0.place)
+            .location
+            .as_ref()
+            .map(|location| (location.latitude, location.longitude));
+        for mut report in reports {
+            // A tracker that says where it is is home by where the home is, which only the core
+            // knows: the protocol's own guess stands only when the home has no location.
+            if let (Some(point), Some(irori_types::State::DeviceTracker(tracker))) =
+                (home_point, report.state.as_mut())
+                && let Some(home) = tracker.is_at(point)
+            {
+                tracker.home = home;
+            }
             if let Err(rejected) =
                 self.change(|home, stamp| home.report_state(protocol, report, stamp))
             {

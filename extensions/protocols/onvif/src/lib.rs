@@ -984,6 +984,7 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
         }
         Incoming::Action(action) => action.reply(Err("this extension has no actions".into())),
         Incoming::Unpair(unpair) => unpair.reply(Err("cameras aren't paired".into())),
+        Incoming::Page(page) => page.answer(Err("this extension has no page of its own".into())),
         Incoming::Picture(picture) => {
             let ready = ready_for(cams, picture.unique_id.as_str());
             let (id, ready) = match ready {
@@ -1353,6 +1354,8 @@ fn waiting(cams: &BTreeMap<String, Cam>) -> Vec<Waiting> {
                         placeholder: Some("admin".to_owned()),
                     }),
                 }),
+                link: None,
+                copy: None,
             })
         })
         .collect()
@@ -1394,5 +1397,7 @@ fn moved_here(cam: &Cam, doubt: &Doubt) -> Waiting {
             )),
             username: None,
         }),
+        link: None,
+        copy: None,
     }
 }

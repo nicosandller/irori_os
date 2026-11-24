@@ -1,0 +1,54 @@
+[extension]
+id = "tesla"
+name = "Tesla"
+version = "0.1.0"
+irori = ">=1.7.0"
+# 1.7.0 is the first core that waits longer than 10 seconds for a protocol that asks (a car has
+# to wake before it hears a command), lets a protocol answer its own page, works out whether a
+# GPS tracker is home, and shows a waiting step's link and text to copy.
+description = "Tesla cars and Powerwall sites, through Tesla's Fleet API, with what the API costs this month in view."
+config_schema = "config.schema.json"
+icon = "icon.svg"
+
+# Readings and commands go through Tesla's servers. Tesla bills every call to the developer
+# account; the extension counts what it spends, paces itself to a monthly allowance, and shows
+# where the money went on its page.
+[[contributes.protocol]]
+iot_class = "cloud_polling"
+entity_kinds = ["sensor", "binary_sensor", "lock", "switch", "button", "number", "select", "climate", "cover", "device_tracker"]
+run = { command = "bin/irori-ext-tesla" }
+# Waking a sleeping car takes up to a minute before it hears the command.
+answer_within_seconds = 90
+
+# Setting it up: the person signs in on Tesla's site and pastes back the address they land on.
+[[contributes.protocol.actions]]
+id = "sign_in"
+label = "Finish signing in"
+
+[[contributes.protocol.actions.ways]]
+id = "landed"
+label = "I signed in"
+fields = [{ id = "address", label = "The address you landed on", placeholder = "https://…?code=…&state=…" }]
+
+# After the public key is on the website: register with Tesla again and compare keys.
+[[contributes.protocol.actions]]
+id = "check_key"
+label = "Check the key again"
+answer_within_seconds = 30
+
+# What Tesla's dashboard says the account spent this month, so other apps' share is known.
+[[contributes.protocol.actions]]
+id = "update_spend"
+label = "Update from Tesla's dashboard"
+
+[[contributes.protocol.actions.ways]]
+id = "dashboard"
+label = "Spent so far this month"
+fields = [{ id = "spent", label = "Spent so far this month", hint = "Tesla's developer dashboard, Billing and usage", placeholder = "3.42" }]
+
+[[contributes.app]]
+label = "Tesla usage"
+entry = "app/index.html"
+
+[permissions]
+network = ["*.vn.cloud.tesla.com"]

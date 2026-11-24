@@ -1044,6 +1044,8 @@ impl Protocol for Keyed {
                     hint: None,
                     username: None,
                 }),
+                link: None,
+                copy: None,
             }])
             .await;
         }

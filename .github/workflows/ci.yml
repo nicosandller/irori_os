@@ -72,6 +72,7 @@ jobs:
             .
             crates/irori-ui
             extensions/automations/app
+            extensions/protocols/tesla/app
       - uses: taiki-e/install-action@v2
         with:
           tool: trunk
@@ -83,16 +84,21 @@ jobs:
           cargo fmt --manifest-path crates/irori-ui/Cargo.toml --all --check
           cargo fmt --manifest-path crates/irori-ui-kit/Cargo.toml --all --check
           cargo fmt --manifest-path extensions/automations/app/Cargo.toml --all --check
+          cargo fmt --manifest-path extensions/protocols/tesla/app/Cargo.toml --all --check
       - name: Check the web page code for common mistakes
         run: |
           cargo clippy --locked --manifest-path crates/irori-ui/Cargo.toml \
             --target wasm32-unknown-unknown --all-targets -- -D warnings
           cargo clippy --locked --manifest-path extensions/automations/app/Cargo.toml \
             --target wasm32-unknown-unknown --all-targets -- -D warnings
+          cargo clippy --locked --manifest-path extensions/protocols/tesla/app/Cargo.toml \
+            --target wasm32-unknown-unknown --all-targets -- -D warnings
       # The page's own logic (what to show, and which of two states is newer) is plain Rust and
       # runs on the host; the browser is not needed to check it.
       - name: Run the web page tests
-        run: cargo test --locked --manifest-path crates/irori-ui/Cargo.toml
+        run: |
+          cargo test --locked --manifest-path crates/irori-ui/Cargo.toml
+          cargo test --locked --manifest-path extensions/protocols/tesla/app/Cargo.toml
       - name: Build the web page
         run: cargo xtask ui
 
@@ -103,7 +109,9 @@ jobs:
           total=0
           for file in crates/irori/ui/*.wasm crates/irori/ui/*.js crates/irori/ui/*.html \
                       extensions/automations/app/dist/*.wasm extensions/automations/app/dist/*.js \
-                      extensions/automations/app/dist/*.html; do
+                      extensions/automations/app/dist/*.html \
+                      extensions/protocols/tesla/app/dist/*.wasm extensions/protocols/tesla/app/dist/*.js \
+                      extensions/protocols/tesla/app/dist/*.html; do
             size=$(brotli -q 11 -c "$file" | wc -c)
             echo "$(basename "$file"): $size bytes brotli"
             total=$((total + size))
@@ -136,11 +144,11 @@ jobs:
             features: ""
           - label: Linux on ARM, such as a Raspberry Pi (full build)
             target: aarch64-unknown-linux-musl
-            runner: qemu-aarch64-static
+            runner: qemu-aarch64
             features: ""
           - label: Linux on ARM, such as a Raspberry Pi (minimal build)
             target: aarch64-unknown-linux-musl
-            runner: qemu-aarch64-static
+            runner: qemu-aarch64
             features: --no-default-features
     steps:
       - uses: actions/checkout@v5
@@ -166,7 +174,7 @@ jobs:
           path: crates/irori/ui
       - name: Install the ARM emulator (to run the ARM build on this machine)
         if: matrix.runner != ''
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+        run: sudo apt-get update && sudo apt-get install -y qemu-user
 
       - name: Build the program
         run: |
