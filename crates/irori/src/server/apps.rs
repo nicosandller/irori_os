@@ -274,6 +274,11 @@ fn serve(
 /// whose origin is opaque, and while Chrome still takes `'self'` to mean the address the page
 /// came from, Safari and Firefox take it to match nothing there — and the page can't even load
 /// its own script, a blank frame.
+///
+/// `sandbox allow-scripts` is what the shell's frame already puts on the page. Said here too, the
+/// page is sandboxed however it was opened, and not only when the browser says it is opening a
+/// tab ([`opened_on_its_own`]): with an origin of its own, it is sent no cookie and can't ask
+/// the API for anything as the person signed in.
 fn page_csp(request: &HeaderMap) -> String {
     let own = request
         .get(header::HOST)
@@ -289,7 +294,7 @@ fn page_csp(request: &HeaderMap) -> String {
     format!(
         "default-src 'self'{own}; script-src 'self'{own} 'wasm-unsafe-eval'; \
          style-src 'self'{own} 'unsafe-inline'; img-src 'self'{own} data:; \
-         connect-src 'self'{own}; frame-ancestors 'self'"
+         connect-src 'self'{own}; frame-ancestors 'self'; sandbox allow-scripts"
     )
 }
 
@@ -349,6 +354,13 @@ mod tests {
         let policy = page_csp(&request);
         assert!(
             policy.contains("script-src 'self' http://192.168.1.20:8480 'wasm-unsafe-eval'"),
+            "{policy}"
+        );
+        // The same sandbox as the shell's frame, whoever opens the page and however.
+        assert!(
+            policy
+                .split(';')
+                .any(|part| part.trim() == "sandbox allow-scripts"),
             "{policy}"
         );
         request.insert(header::HOST, HeaderValue::from_static("evil; script-src *"));
