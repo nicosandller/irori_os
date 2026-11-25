@@ -326,6 +326,9 @@ fn page(
             .unwrap_or_default()
     });
     let also_through = shape.also_through.clone();
+    let side = live
+        .home
+        .with_untracked(|home| crate::side::of(home, device.protocol.as_str()));
     let twin = shape.twin.clone();
     let what = device.name.to_string();
     let name = device.name.to_string();
@@ -450,6 +453,11 @@ fn page(
                 <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
                 <dd>{device.protocol.to_string()}</dd>
+                // Who runs it, said only in a home that has Home Assistant.
+                {side.map(|side| view! {
+                    <dt>"Run by"</dt>
+                    <dd>{side.words()}</dd>
+                })}
                 // The same hardware, found by another extension too: one line, until handing it
                 // over from one to the other is something this page offers.
                 {(!also_through.is_empty()).then(|| view! {

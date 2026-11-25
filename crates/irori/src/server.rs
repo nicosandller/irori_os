@@ -7573,6 +7573,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 })
                 .await?;
                 for entity in 0..entities {

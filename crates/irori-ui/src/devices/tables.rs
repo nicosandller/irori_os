@@ -156,6 +156,10 @@ fn device_row(line: DeviceLine, by: DevicesBy, travels: bool) -> AnyView {
         entities,
     } = line;
     let id = device.id.to_string();
+    // Said only in a home that has Home Assistant, so a native home's rows are as they were.
+    let side = live
+        .home
+        .with_untracked(|home| crate::side::of(home, device.protocol.as_str()));
     // The one thing on the row that is a reading, watched on its own.
     let battery = {
         let id = device.id.clone();
@@ -180,6 +184,11 @@ fn device_row(line: DeviceLine, by: DevicesBy, travels: bool) -> AnyView {
                 >
                     {device.name.to_string()}
                 </A>
+                {side.map(|side| view! {
+                    <span class=format!("side {}", side_class(side)) title="Who runs this device">
+                        {side.words()}
+                    </span>
+                })}
                 {device.description.as_ref().map(|description| view! {
                     <span class="description">{description.to_string()}</span>
                 })}
@@ -561,4 +570,12 @@ fn regroup(change: impl FnOnce() + 'static) {
 /// only turns into a `view-transition-name` while a regrouping is under way.
 fn travelling_row(id: &str, travels: bool) -> Option<String> {
     travels.then(|| format!("--vt: row-{}", crate::transition::ident(id)))
+}
+
+/// The class that colours a side's label.
+fn side_class(side: crate::side::Side) -> &'static str {
+    match side {
+        crate::side::Side::Irori => "irori",
+        crate::side::Side::HomeAssistant => "ha",
+    }
 }

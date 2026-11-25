@@ -43,6 +43,7 @@ mod rich;
 mod segmented;
 mod settings;
 mod settings_form;
+mod side;
 mod start;
 mod timeline;
 mod transition;
