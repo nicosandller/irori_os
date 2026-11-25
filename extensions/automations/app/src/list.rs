@@ -65,6 +65,12 @@ pub fn List() -> impl IntoView {
                     let problems = found.file_problems.clone();
                     let beside_home_assistant = found.home_assistant;
                     view! {
+                        {beside_home_assistant.then(|| view! {
+                            <p class="muted">
+                                "These flows are run by Irori. Home Assistant's own automations can't "
+                                "be listed here yet; bringing them over is planned."
+                            </p>
+                        })}
                         {(!problems.is_empty()).then(|| view! {
                             <div class="problems-box">
                                 <strong>"Some flow files can't be read. "</strong>
