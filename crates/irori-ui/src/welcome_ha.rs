@@ -156,9 +156,12 @@ pub fn ConnectHomeAssistant(
         waiting_for.set(None);
         spawn_local(async move {
             let still_here = move || attempt.try_get_untracked() == Some(this);
-            let stop = |why: String| {
-                let _ = trouble.try_set(Some(why));
-                let _ = working.try_set(None);
+            // A try that was stopped says nothing more: the form belongs to the next one.
+            let stop = move |why: String| {
+                if still_here() {
+                    let _ = trouble.try_set(Some(why));
+                    let _ = working.try_set(None);
+                }
             };
             let _ = working.try_set(Some("Looking at your home…".to_owned()));
             let installed = match api::fetch_home().await {
