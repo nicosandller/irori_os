@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+# Third-party actions are pinned to immutable commit SHAs (the comment names the version), the
+# same ones `release.yml` uses: these jobs write the caches on main.
+
 # Least privilege: these jobs only read the repo.
 permissions:
   contents: read
@@ -22,14 +25,14 @@ jobs:
     name: Code quality and tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Build scripts and tests from the PR run in this job; don't leave a token on disk.
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Check code formatting
         run: cargo fmt --all --check
@@ -56,23 +59,23 @@ jobs:
     name: Web page builds and stays small to download
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Build scripts and tests from the PR run in this job; don't leave a token on disk.
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: wasm32-unknown-unknown
           # This job runs its own fmt and clippy; don't rely on the runner image carrying them.
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           # The UI is outside the workspace and has its own target dir.
           workspaces: |
             .
             crates/irori-ui
             extensions/automations/app
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
         with:
           tool: trunk
 
@@ -116,7 +119,7 @@ jobs:
 
       # The binaries built below embed this, so a release carries the real UI, not the
       # placeholder page a UI-less `cargo build` leaves behind.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ui
           path: crates/irori/ui
@@ -143,24 +146,24 @@ jobs:
             runner: qemu-aarch64-static
             features: --no-default-features
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           # Build scripts and tests from the PR run in this job; don't leave a token on disk.
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: ${{ matrix.target }}${{ matrix.features }}
-      - uses: mlugg/setup-zig@v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.14.1
-      - uses: taiki-e/install-action@v2
+      - uses: taiki-e/install-action@76c2e6406e52637deed7160d77bded76bd83e06e # v2
         with:
           tool: cargo-zigbuild
       # Embedded by the build below (the `ui` feature); ignored by the barebones build.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ui
           path: crates/irori/ui
@@ -209,7 +212,7 @@ jobs:
           size=$(stat -c %s target/${{ matrix.target }}/release/irori)
           echo "| ${{ matrix.target }} ${{ matrix.features }} | $(numfmt --to=iec-i --suffix=B $size) ($size bytes) |" >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: irori-${{ matrix.target }}${{ matrix.features == '--no-default-features' && '-barebones' || '' }}
           path: target/${{ matrix.target }}/release/irori
