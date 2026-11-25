@@ -76,6 +76,7 @@ COPY crates/irori-node-runtime crates/irori-node-runtime
 COPY extensions/protocols/cast extensions/protocols/cast
 COPY extensions/protocols/matter extensions/protocols/matter
 COPY extensions/protocols/switchbot extensions/protocols/switchbot
+COPY extensions/protocols/homeassistant extensions/protocols/homeassistant
 COPY extensions/protocols/mqtt extensions/protocols/mqtt
 COPY extensions/protocols/zigbee extensions/protocols/zigbee
 COPY crates/irori-ui crates/irori-ui

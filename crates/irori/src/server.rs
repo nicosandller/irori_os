@@ -226,6 +226,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/floors/{id}", patch(edit_floor).delete(remove_floor))
         .route("/api/areas/{id}", patch(edit_area).delete(remove_area))
         .route("/api/floorplan", get(floorplan).put(save_floorplan))
+        .route("/api/devices/add", post(add_found_devices))
         .route(
             "/api/devices/{id}",
             patch(edit_device).delete(remove_device),
@@ -235,6 +236,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/entities/{id}/live", get(live::camera))
         .route("/api/entities/{id}/talk", get(live::talk))
         .route("/api/extensions/{id}/secrets", put(give_secret))
+        .route("/api/extensions/{id}/layout", post(accept_layout))
         .route(
             "/api/extensions/{id}/settings",
             post(set_extension_settings),
@@ -1132,6 +1134,171 @@ async fn edit_device(
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AddFound {
+    /// The extension whose found devices join the home.
+    protocol: irori_types::ProtocolId,
+    /// Which of its found devices ("Add selected"). Left out, every one ("Add all"). One that
+    /// isn't among what the extension is holding (added a moment ago, or gone) is passed over.
+    #[serde(default)]
+    devices: Option<Vec<DeviceId>>,
+}
+
+#[derive(Debug, Serialize)]
+struct AddedFound {
+    /// How many devices joined the home.
+    added: usize,
+}
+
+/// Adds every device one extension has found and is holding ("Add all"), or the ones chosen of
+/// them ("Add selected"), as "+ Add device" would one at a time, in a single edit of
+/// `devices.toml`. A home with hundreds of found devices
+/// (a bridge to another system) would otherwise take one request, and one rewrite of the file,
+/// per device. They join the core a few at a time, so the events they bring never pile up past
+/// what a listener can fall behind by ([`Config::add_devices`]). Devices of other extensions are
+/// left where they are.
+async fn add_found_devices(
+    State(state): State<AppState>,
+    Extension(trail): Extension<trail::Trail>,
+    Json(request): Json<AddFound>,
+) -> Response {
+    let core = &state.0.core;
+    let protocol = request.protocol;
+    trail.target(protocol.as_str());
+    // Each with how many entities it brings, for adding them a few at a time.
+    let found: Vec<(DeviceId, usize)> = core
+        .held_devices()
+        .into_iter()
+        .filter(|device| device.protocol == protocol)
+        .filter(|device| {
+            request
+                .devices
+                .as_ref()
+                .is_none_or(|chosen| chosen.contains(&device.id))
+        })
+        .map(|device| (device.id, device.provides.values().sum()))
+        .collect();
+    if found.is_empty() {
+        let known = core
+            .extensions()
+            .keys()
+            .any(|id| id.as_str() == protocol.as_str());
+        return if known {
+            // Nothing to add, and nothing written.
+            Json(AddedFound { added: 0 }).into_response()
+        } else {
+            refused(
+                StatusCode::NOT_FOUND,
+                format!("there's no extension `{protocol}`"),
+            )
+        };
+    }
+    match state.0.config.add_devices(core, &found).await {
+        Ok(()) => {
+            trail.detail(found.len().to_string());
+            Json(AddedFound { added: found.len() }).into_response()
+        }
+        Err(e) => edit_failed(e),
+    }
+}
+
+/// What accepting an extension's floors and rooms made.
+#[derive(Debug, Serialize)]
+struct LayoutMade {
+    floors: Vec<Floor>,
+    areas: Vec<Area>,
+}
+
+/// Makes the floors and rooms an extension proposes (`docs/specs/protocols.md` §6.9) that the
+/// home doesn't have by those names yet, in one edit of the config, each room on the floor it
+/// was proposed on. Only those the owner was shown, which the request carries: the extension
+/// can change its proposal between the page drawing it and the click. A floor or room that's there already is left exactly as it is: nothing is
+/// renamed, moved or removed. Devices whose `suggested_area` names a new room land in it, as
+/// they would in a room made by hand.
+async fn accept_layout(
+    State(state): State<AppState>,
+    Extension(trail): Extension<trail::Trail>,
+    Path(id): Path<ExtensionId>,
+    Json(shown): Json<irori_types::SuggestedLayout>,
+) -> Response {
+    let core = &state.0.core;
+    let Some(proposed) = core.missing_layout(&id) else {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("there's no extension `{id}`"),
+        );
+    };
+    let proposed = proposed.only_shown(&shown);
+    if proposed.is_empty() {
+        // Nothing new, and nothing written.
+        return Json(LayoutMade {
+            floors: Vec::new(),
+            areas: Vec::new(),
+        })
+        .into_response();
+    }
+    let edited = state
+        .0
+        .config
+        .edit(core, |settings| {
+            // Again, against the files as they are now: somebody may have made one meanwhile.
+            let missing = proposed.missing_from(settings);
+            let mut floors = Vec::new();
+            for suggested in missing.floors {
+                let floor = Floor {
+                    id: irori_core::new_floor_id(&suggested.name, &settings.floors),
+                    name: suggested.name,
+                    level: suggested.level.unwrap_or(0),
+                };
+                // Before the next id is worked out, so two names with one slug get two ids.
+                settings.floors.push(floor.clone());
+                floors.push(floor);
+            }
+            let mut areas = Vec::new();
+            for suggested in missing.areas {
+                let floor_id = suggested
+                    .floor
+                    .as_ref()
+                    .and_then(|name| settings.floor_named(name))
+                    .map(|floor| floor.id.clone());
+                let area = Area {
+                    id: irori_core::new_area_id(&suggested.name, &settings.areas),
+                    name: suggested.name,
+                    floor_id,
+                };
+                settings.areas.push(area.clone());
+                areas.push(area);
+            }
+            settings.floors.sort_by(|a, b| a.id.cmp(&b.id));
+            settings.areas.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(LayoutMade { floors, areas })
+        })
+        .await;
+    match edited {
+        Ok(made) => {
+            // "2 rooms, 1 floor", leaving out what it made none of.
+            let counted = |n: usize, one: &str, many: &str| match n {
+                0 => None,
+                1 => Some(format!("1 {one}")),
+                n => Some(format!("{n} {many}")),
+            };
+            trail.detail(
+                [
+                    counted(made.areas.len(), "room", "rooms"),
+                    counted(made.floors.len(), "floor", "floors"),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(", "),
+            );
+            Json(made).into_response()
+        }
+        Err(e) => edit_failed(e),
+    }
+}
+
 /// How many seconds after an unpair went unanswered to keep watching for it happening anyway.
 /// As long as the Zigbee extension keeps an unanswered unpair itself.
 const LATE_UNPAIR_CHECKS: u32 = 120;
@@ -1731,18 +1898,25 @@ async fn extension_icon(State(state): State<AppState>, Path(id): Path<ExtensionI
     }
 }
 
-/// What a camera sees now, as its protocol draws it (`docs/specs/api.md`). Never cached, and
+/// What a camera sees now, or the picture an image keeps, as its protocol draws it
+/// (`docs/specs/api.md`). Never cached, and
 /// served so that opening it on its own can't run anything: a protocol may send an SVG.
 async fn camera_picture(
     State(state): State<AppState>,
     Extension(reach): Extension<Reach>,
     Path(id): Path<EntityId>,
 ) -> Response {
-    if id.kind() != irori_types::EntityKind::Camera {
-        return refused(StatusCode::NOT_FOUND, format!("`{id}` isn't a camera"));
+    if !matches!(
+        id.kind(),
+        irori_types::EntityKind::Camera | irori_types::EntityKind::Image
+    ) {
+        return refused(
+            StatusCode::NOT_FOUND,
+            format!("`{id}` isn't a camera or an image"),
+        );
     }
     if state.0.core.seen(&reach).state(&id).is_none() {
-        return refused(StatusCode::NOT_FOUND, format!("there's no camera `{id}`"));
+        return refused(StatusCode::NOT_FOUND, format!("there's no `{id}`"));
     }
     match state.0.core.camera_picture(&id).await {
         Ok(picture) => (
@@ -1930,7 +2104,20 @@ async fn save_extension_settings(
     // the extension in between, and Zigbee2MQTT would generate a network key in that gap,
     // before the key from the form arrived. A form with only one of the two is already a
     // single write.
-    let saved = if !non_secret.is_empty() && !secrets_to_set.is_empty() {
+    let ties = tied_secrets(properties, schema, &non_secret);
+    let saved = if !ties.is_empty() {
+        state
+            .0
+            .config
+            .edit_extension_clearing_tied_secrets(
+                core,
+                id,
+                |file| write_non_secrets(file, &non_secret),
+                &secrets_to_set,
+                &ties,
+            )
+            .await
+    } else if !non_secret.is_empty() && !secrets_to_set.is_empty() {
         state
             .0
             .config
@@ -1970,6 +2157,27 @@ async fn save_extension_settings(
         Ok(())
     };
     saved.map_err(|e| Box::new(edit_failed(e)))
+}
+
+/// The `(secret, setting)` pairs this save could affect: a `writeOnly` field whose own schema names
+/// an ordinary setting with `x-irori-secret-for`, when that setting is being saved. Empty for
+/// every extension that doesn't declare one, which then saves exactly as it always has.
+fn tied_secrets(
+    properties: &serde_json::Map<String, serde_json::Value>,
+    schema: &serde_json::Value,
+    saving: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<(String, String)> {
+    properties
+        .iter()
+        .filter(|(_, field)| is_write_only(field, schema))
+        .filter_map(|(secret, field)| {
+            let setting = field.get("x-irori-secret-for")?.as_str()?;
+            let ordinary = properties
+                .get(setting)
+                .is_some_and(|tied| !is_write_only(tied, schema));
+            (ordinary && saving.contains_key(setting)).then(|| (secret.clone(), setting.to_owned()))
+        })
+        .collect()
 }
 
 /// Puts the non-secret half of a settings form into the extension's file.
@@ -3986,6 +4194,134 @@ mod tests {
         Server::new(core)?.json("POST", path, body).await
     }
 
+    /// What a home on a native protocol is served, recorded once and held still: `/api/home`,
+    /// `/api/session`, the found ("held") list and one device's page, for a demo home with one
+    /// device added and the rest found. Work for bridged homes (milestone 11) adds to the core,
+    /// and this is how it shows that a home without a bridge is answered exactly as before.
+    ///
+    /// The device page has no address of its own: it is that device's record, its entities and
+    /// their states, as the page reads them. Times and context ids differ on every run and are
+    /// blanked; everything else has to match the recording. A change that is meant to move what
+    /// a native home is served re-records it with `IRORI_RECORD_NATIVE_SNAPSHOT=1`, and the diff
+    /// of `server/native_snapshot.json` shows what moved.
+    #[tokio::test]
+    async fn a_native_home_is_served_as_it_was_recorded() -> anyhow::Result<()> {
+        let (core, host) = demo().await?;
+        // Ready means the demo has said everything it says at the start: every device found, and
+        // the action it offers (said after its first states, which is all `demo` waits for).
+        let mut ready = false;
+        for _ in 0..500 {
+            let found = core.held_devices().len() + core.devices().len();
+            ready = found > 2
+                && core
+                    .extensions()
+                    .values()
+                    .any(|overview| !overview.available_actions.is_empty());
+            if ready {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // A slow machine that didn't get the demo started would otherwise fail below as a
+        // confusing difference from the recording.
+        anyhow::ensure!(ready, "the demo didn't finish starting within 5 s");
+        let server = Server::new(core.clone())?;
+        std::fs::write(
+            server.config_dir().join("devices.toml"),
+            "[devices.demo_living_room_lamp]\nadded = true\n",
+        )?;
+        server
+            .config
+            .edit(&core, |_| Ok(()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+
+        let home = server.read("/api/home").await?;
+        let session = server.read("/api/session").await?;
+        let lamp = "demo_living_room_lamp";
+        let device = server
+            .read("/api/devices")
+            .await?
+            .as_array()
+            .and_then(|all| all.iter().find(|d| d["id"] == lamp).cloned())
+            .unwrap_or_default();
+        let entities: Vec<serde_json::Value> = server
+            .read("/api/entities")
+            .await?
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter(|e| e["device_id"] == lamp)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let ids: Vec<&serde_json::Value> = entities.iter().map(|e| &e["id"]).collect();
+        let states: Vec<serde_json::Value> = server
+            .read("/api/states")
+            .await?
+            .as_array()
+            .map(|all| {
+                all.iter()
+                    .filter(|s| ids.contains(&&s["entity_id"]))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut served = serde_json::json!({
+            "home": home,
+            "session": session,
+            "held": home["held"],
+            "device_page": {"device": device, "entities": entities, "states": states},
+        });
+        blank_what_moves(&mut served);
+        host.shutdown().await;
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/server/native_snapshot.json");
+        if std::env::var_os("IRORI_RECORD_NATIVE_SNAPSHOT").is_some() {
+            // The copy compiled in below is the old one until the next build, so recording
+            // doesn't compare.
+            std::fs::write(&path, serde_json::to_string_pretty(&served)? + "\n")?;
+            return Ok(());
+        }
+        let recorded: serde_json::Value =
+            serde_json::from_str(include_str!("server/native_snapshot.json"))?;
+        assert!(
+            served == recorded,
+            "a native home is served differently from the recording in {}.\n\
+             If that is meant, re-record with IRORI_RECORD_NATIVE_SNAPSHOT=1.\n\
+             served:\n{}",
+            path.display(),
+            serde_json::to_string_pretty(&served)?
+        );
+        Ok(())
+    }
+
+    /// Blanks what differs on every run: when a state changed, and the id of what changed it.
+    fn blank_what_moves(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(map) => {
+                for (key, inner) in map.iter_mut() {
+                    match key.as_str() {
+                        "last_changed" | "last_reported" | "last_updated" => {
+                            *inner = "<time>".into();
+                        }
+                        "context" => {
+                            if let Some(id) = inner.get_mut("id") {
+                                *id = "<id>".into();
+                            }
+                            blank_what_moves(inner);
+                        }
+                        _ => blank_what_moves(inner),
+                    }
+                }
+            }
+            serde_json::Value::Array(all) => all.iter_mut().for_each(blank_what_moves),
+            _ => {}
+        }
+    }
+
     /// Everything the Devices page needs arrives in one response.
     #[tokio::test]
     async fn dev_home_describes_the_whole_home() -> anyhow::Result<()> {
@@ -5270,6 +5606,179 @@ mod tests {
         }
     }
 
+    /// A protocol whose token belongs to the address it was entered for.
+    struct Tied;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    #[expect(dead_code)]
+    struct TiedSettings {
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        note: Option<String>,
+        #[serde(default)]
+        #[schemars(extend("x-irori-secret-for" = "url"))]
+        token: Option<TestSecret>,
+        /// A secret of the same extension that isn't tied to anything.
+        #[serde(default)]
+        other: Option<TestSecret>,
+    }
+
+    impl irori_protocol::Protocol for Tied {
+        type Config = TiedSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "tied"
+            name = "Tied"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: TiedSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            while ctx.next_action().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    async fn tied_server() -> anyhow::Result<(Server, irori_core::ExtensionHost)> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Tied>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let tied = ExtensionId::try_from("tied")?;
+        for _ in 0..500 {
+            if core.extensions().contains_key(&tied) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok((Server::new(core)?, host))
+    }
+
+    async fn save_tied(server: &Server, body: serde_json::Value) -> anyhow::Result<()> {
+        let (status, answer) = server
+            .json("POST", "/api/extensions/tied/settings", body)
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{answer}");
+        Ok(())
+    }
+
+    fn tied_secrets_file(server: &Server) -> String {
+        std::fs::read_to_string(server.config_dir().join("secrets.toml")).unwrap_or_default()
+    }
+
+    /// A new address alone takes the token away, and only the token tied to it.
+    #[tokio::test]
+    async fn a_new_address_clears_the_token_tied_to_it() -> anyhow::Result<()> {
+        let (server, host) = tied_server().await?;
+        save_tied(
+            &server,
+            serde_json::json!({"url": "http://a.local", "token": "first", "other": "kept"}),
+        )
+        .await?;
+        save_tied(&server, serde_json::json!({"url": "http://b.local"})).await?;
+        let secrets = tied_secrets_file(&server);
+        assert!(!secrets.contains("first"), "{secrets}");
+        assert!(secrets.contains("kept"), "{secrets}");
+        let file = std::fs::read_to_string(server.config_dir().join("extensions/tied.toml"))?;
+        assert!(file.contains("http://b.local"), "{file}");
+        host.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_new_address_with_a_new_token_keeps_the_new_token() -> anyhow::Result<()> {
+        let (server, host) = tied_server().await?;
+        save_tied(
+            &server,
+            serde_json::json!({"url": "http://a.local", "token": "first"}),
+        )
+        .await?;
+        save_tied(
+            &server,
+            serde_json::json!({"url": "http://b.local", "token": "second"}),
+        )
+        .await?;
+        let secrets = tied_secrets_file(&server);
+        assert!(
+            secrets.contains("second") && !secrets.contains("first"),
+            "{secrets}"
+        );
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// The same address, another setting, or a first address: the stored token stays.
+    #[tokio::test]
+    async fn anything_but_a_changed_address_keeps_the_token() -> anyhow::Result<()> {
+        let (server, host) = tied_server().await?;
+        // Given before there was any address: it was never meant for another one.
+        save_tied(&server, serde_json::json!({"token": "first"})).await?;
+        save_tied(&server, serde_json::json!({"url": "http://a.local"})).await?;
+        assert!(tied_secrets_file(&server).contains("first"));
+        save_tied(&server, serde_json::json!({"url": "http://a.local"})).await?;
+        assert!(tied_secrets_file(&server).contains("first"));
+        save_tied(&server, serde_json::json!({"note": "changed"})).await?;
+        assert!(tied_secrets_file(&server).contains("first"));
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// Without `x-irori-secret-for`, a changed setting leaves every secret alone.
+    #[tokio::test]
+    async fn an_extension_that_ties_nothing_saves_as_before() -> anyhow::Result<()> {
+        let (core, host) = safe().await?;
+        let server = Server::new(core.clone())?;
+        for body in [
+            serde_json::json!({"label": "one", "key": "shh"}),
+            serde_json::json!({"label": "two"}),
+        ] {
+            let (status, answer) = server
+                .json("POST", "/api/extensions/safe/settings", body)
+                .await?;
+            assert_eq!(status, StatusCode::NO_CONTENT, "{answer}");
+        }
+        assert!(tied_secrets_file(&server).contains("shh"));
+        host.shutdown().await;
+        Ok(())
+    }
+
+    #[test]
+    fn only_a_secret_naming_an_ordinary_setting_being_saved_is_tied() {
+        let schema = serde_json::json!({
+            "properties": {
+                "url": {"type": "string"},
+                "name": {"type": "string"},
+                "token": {"type": "string", "writeOnly": true, "x-irori-secret-for": "url"},
+                "plain": {"type": "string", "x-irori-secret-for": "url"},
+                "to_secret": {"type": "string", "writeOnly": true, "x-irori-secret-for": "token"},
+                "nowhere": {"type": "string", "writeOnly": true, "x-irori-secret-for": "gone"},
+            },
+        });
+        let properties = schema["properties"].as_object().expect("properties");
+        let saving = |key: &str| {
+            let mut map = serde_json::Map::new();
+            map.insert(key.to_owned(), serde_json::json!("x"));
+            map
+        };
+        assert_eq!(
+            tied_secrets(properties, &schema, &saving("url")),
+            [("token".to_owned(), "url".to_owned())]
+        );
+        assert!(tied_secrets(properties, &schema, &saving("name")).is_empty());
+        assert!(tied_secrets(properties, &schema, &saving("token")).is_empty());
+    }
+
     /// A protocol with a network of its own, like Zigbee's: a device is paired to it, a timed
     /// action opens it to new ones, and removing a device has to unpair it.
     #[derive(Debug)]
@@ -5313,6 +5822,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 })
                 .await?;
                 ctx.describe_entity(irori_types::EntityDescription {
@@ -5489,6 +5999,7 @@ mod tests {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             })
             .await?;
             ctx.describe_entity(irori_types::EntityDescription {
@@ -6358,6 +6869,911 @@ mod tests {
 
         host.shutdown().await;
         Ok(())
+    }
+
+    /// Two extensions that reach the same plug: `Native` by its MAC, `Bridge` through another
+    /// hub that names the plug's connections. The bridge also reaches a lamp nothing else does.
+    struct Native;
+    struct Bridge;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct NoSettings {}
+
+    fn plain(unique_id: &str, name: &str) -> anyhow::Result<irori_types::DeviceDescription> {
+        Ok(irori_types::DeviceDescription {
+            unique_id: unique_id.parse()?,
+            name: name.parse()?,
+            manufacturer: None,
+            model: None,
+            sw_version: None,
+            hw_version: None,
+            serial_number: None,
+            suggested_area: None,
+            via_device_unique_id: None,
+            connections: Vec::new(),
+        })
+    }
+
+    impl irori_protocol::Protocol for Native {
+        type Config = NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "native"
+            name = "Native"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let plug = plain("AA:BB:CC:DD:EE:FF", "Plug")
+                .map_err(|e| irori_protocol::ProtocolError::new(e.to_string()))?;
+            ctx.describe_device(plug).await?;
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    impl irori_protocol::Protocol for Bridge {
+        type Config = NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "bridge"
+            name = "Bridge"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let failed = |e: anyhow::Error| irori_protocol::ProtocolError::new(e.to_string());
+            let mut plug = plain("hub-plug", "Plug").map_err(failed)?;
+            plug.connections = vec![
+                irori_types::Connection::new(irori_types::ConnectionKind::Mac, "aa-bb-cc-dd-ee-ff")
+                    .map_err(|e| irori_protocol::ProtocolError::new(e.to_string()))?,
+            ];
+            let mut lamp = plain("hub-lamp", "Lamp").map_err(failed)?;
+            lamp.connections = vec![
+                irori_types::Connection::new(
+                    irori_types::ConnectionKind::Ieee,
+                    "0x00124b0022aabbcc",
+                )
+                .map_err(|e| irori_protocol::ProtocolError::new(e.to_string()))?,
+            ];
+            ctx.describe_device(plug).await?;
+            ctx.describe_device(lamp).await?;
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// A plug two extensions both reach is offered once: the bridged copy isn't held and "Add
+    /// all" passes it over, and the plug's own entry says it's also reached through the bridge.
+    #[tokio::test]
+    async fn a_device_two_extensions_reach_is_offered_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<Native>().map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Bridge>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let held = || {
+            core.held_devices()
+                .into_iter()
+                .map(|device| device.id.to_string())
+                .collect::<Vec<_>>()
+        };
+        // Whichever extension spoke first, the copy ends up not offered.
+        for _ in 0..500 {
+            let now = held();
+            if now.len() == 2
+                && now.contains(&"bridge_hub_lamp".to_owned())
+                && now.iter().any(|id| id.starts_with("native_"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let plug = held()
+            .into_iter()
+            .find(|id| id.starts_with("native_"))
+            .expect("the plug is offered");
+        assert_eq!(held(), ["bridge_hub_lamp".to_owned(), plug.clone()]);
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "bridge"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 1, "only the lamp: {body}");
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert!(!devices.contains("bridge_hub_plug"), "{devices}");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "native"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 1, "{body}");
+        let home = server.read("/api/home").await?;
+        let listed = |id: &str| {
+            home["devices"]
+                .as_array()
+                .and_then(|all| all.iter().find(|d| d["id"] == id))
+                .cloned()
+        };
+        let native = listed(&plug).expect("the plug is in");
+        assert_eq!(
+            native["also_through"],
+            serde_json::json!(["bridge"]),
+            "{native}"
+        );
+        assert!(native.get("duplicate_of").is_none(), "{native}");
+        let lamp = listed("bridge_hub_lamp").expect("the lamp is in");
+        assert!(lamp.get("also_through").is_none(), "{lamp}");
+        assert!(lamp.get("duplicate_of").is_none(), "{lamp}");
+        assert!(listed("bridge_hub_plug").is_none());
+        assert!(held().is_empty(), "the copy is never offered");
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A bridge that knows how its home is divided: two floors, three rooms (one said twice,
+    /// one Irori has already), and devices that say which room they're in.
+    struct Rooms;
+
+    #[derive(Debug, Deserialize, schemars::JsonSchema)]
+    #[serde(deny_unknown_fields)]
+    struct RoomsSettings {}
+
+    impl irori_protocol::Protocol for Rooms {
+        type Config = RoomsSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "rooms"
+            name = "Rooms"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: RoomsSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let floor = |name: &str, level| -> Result<_, irori_types::IdError> {
+                Ok(irori_types::SuggestedFloor {
+                    name: name.parse()?,
+                    level: Some(level),
+                })
+            };
+            let area = |name: &str, on: &str| -> Result<_, irori_types::IdError> {
+                Ok(irori_types::SuggestedArea {
+                    name: name.parse()?,
+                    floor: Some(on.parse()?),
+                })
+            };
+            ctx.suggest_layout(irori_types::SuggestedLayout {
+                floors: vec![
+                    floor("Ground", 0)?,
+                    floor("Upstairs", 1)?,
+                    floor("ground", 5)?,
+                ],
+                areas: vec![
+                    area("Kitchen", "Ground")?,
+                    area("Bedroom", "Upstairs")?,
+                    area("hall", "Upstairs")?,
+                    area("KITCHEN", "Upstairs")?,
+                ],
+            })
+            .await;
+            for (device, room) in [
+                ("fridge", "kitchen"),
+                ("lamp", "Kitchen"),
+                ("radio", "Bedroom"),
+            ] {
+                ctx.describe_device(irori_types::DeviceDescription {
+                    unique_id: device.parse()?,
+                    name: device.parse()?,
+                    manufacturer: None,
+                    model: None,
+                    sw_version: None,
+                    hw_version: None,
+                    serial_number: None,
+                    suggested_area: Some(room.parse()?),
+                    via_device_unique_id: None,
+                    connections: Vec::new(),
+                })
+                .await?;
+            }
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// An extension proposes floors and rooms; the owner's home shows only the ones it doesn't
+    /// have, accepting makes exactly those in one edit with each room on its floor, and devices
+    /// nobody placed land in the new rooms at once. A device somebody placed, or said is in no
+    /// room, stays where they put it. Asked again, nothing is written; the proposal goes when
+    /// the extension stops.
+    #[tokio::test]
+    async fn an_extensions_rooms_and_floors_are_brought_over_once_accepted() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Rooms>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let proposed = |core: &Core| {
+            core.extensions()
+                .get(&"rooms".parse::<ExtensionId>().expect("an id"))
+                .and_then(|overview| overview.suggested_layout.clone())
+        };
+        for _ in 0..500 {
+            if core.held_devices().len() + core.devices().len() == 3 && proposed(&core).is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Every device added (the harness does that), and a Hall made by hand.
+        let server = Server::new(core.clone())?;
+        let (status, hall) = server
+            .json("POST", "/api/areas", serde_json::json!({"name": "Hall"}))
+            .await?;
+        assert_eq!(status, StatusCode::CREATED, "{hall}");
+        // The lamp is said to be in no room, the radio in the hall.
+        server
+            .config
+            .edit(&core, |settings| {
+                let lamp: DeviceId = "rooms_lamp".parse().expect("an id");
+                let radio: DeviceId = "rooms_radio".parse().expect("an id");
+                settings.devices.entry(lamp).or_default().area = Placement::Nowhere;
+                settings.devices.entry(radio).or_default().area =
+                    Placement::In("hall".parse().expect("an id"));
+                Ok(())
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let area_of = |home: &serde_json::Value, device: &str| {
+            home["devices"]
+                .as_array()
+                .and_then(|all| all.iter().find(|d| d["id"] == device))
+                .map(|d| d["area_id"].clone())
+                .unwrap_or_default()
+        };
+        let home = server.read("/api/home").await?;
+        assert_eq!(
+            area_of(&home, "rooms_fridge"),
+            serde_json::Value::Null,
+            "{home}"
+        );
+
+        // Only what's missing, each name once: the Hall is there already.
+        assert_eq!(
+            home["extensions"]["rooms"]["suggested_layout"],
+            serde_json::json!({
+                "floors": [{"name": "Ground", "level": 0}, {"name": "Upstairs", "level": 1}],
+                "areas": [
+                    {"name": "Kitchen", "floor": "Ground"},
+                    {"name": "Bedroom", "floor": "Upstairs"},
+                ],
+            }),
+            "{home}"
+        );
+
+        let shown = home["extensions"]["rooms"]["suggested_layout"].clone();
+        let (status, made) = server
+            .json("POST", "/api/extensions/rooms/layout", shown.clone())
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        assert_eq!(made["floors"].as_array().map(Vec::len), Some(2), "{made}");
+        assert_eq!(made["areas"].as_array().map(Vec::len), Some(2), "{made}");
+
+        let home = server.read("/api/home").await?;
+        let floor_of = |name: &str| {
+            home["floors"]
+                .as_array()
+                .and_then(|all| all.iter().find(|f| f["name"] == name))
+                .map(|f| f["id"].clone())
+                .unwrap_or_default()
+        };
+        let room = |name: &str| {
+            home["areas"]
+                .as_array()
+                .and_then(|all| all.iter().find(|a| a["name"] == name))
+                .cloned()
+                .unwrap_or_default()
+        };
+        assert_eq!(room("Kitchen")["floor_id"], floor_of("Ground"), "{home}");
+        assert_eq!(room("Bedroom")["floor_id"], floor_of("Upstairs"), "{home}");
+        assert_eq!(home["floors"][0]["level"], 0, "{home}");
+        // The Hall wasn't moved to the floor the extension had it on.
+        assert_eq!(room("Hall")["floor_id"], serde_json::Value::Null, "{home}");
+        assert_eq!(home["areas"].as_array().map(Vec::len), Some(3), "{home}");
+
+        // Placed live, without a restart; what a person said still stands.
+        assert_eq!(
+            area_of(&home, "rooms_fridge"),
+            room("Kitchen")["id"],
+            "{home}"
+        );
+        assert_eq!(
+            area_of(&home, "rooms_lamp"),
+            serde_json::Value::Null,
+            "{home}"
+        );
+        assert_eq!(area_of(&home, "rooms_radio"), "hall", "{home}");
+
+        // Nothing left to propose: the field is gone, and asking again writes nothing.
+        assert!(
+            home["extensions"]["rooms"]
+                .get("suggested_layout")
+                .is_none(),
+            "{home}"
+        );
+        let areas = std::fs::read_to_string(server.config_dir().join("areas.toml"))?;
+        let (status, made) = server
+            .json("POST", "/api/extensions/rooms/layout", shown)
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        assert_eq!(made, serde_json::json!({"floors": [], "areas": []}));
+        assert_eq!(
+            std::fs::read_to_string(server.config_dir().join("areas.toml"))?,
+            areas
+        );
+
+        // An extension that isn't there.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/extensions/nowhere/layout",
+                serde_json::json!({}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+        // Kept as it was said while it runs: a room taken away is proposed again.
+        let bedroom = room("Bedroom")["id"]
+            .as_str()
+            .unwrap_or_default()
+            .to_owned();
+        let (status, body) = server
+            .json(
+                "DELETE",
+                &format!("/api/areas/{bedroom}"),
+                serde_json::json!(null),
+            )
+            .await?;
+        assert!(status.is_success(), "{status}: {body}");
+        let again = proposed(&core).expect("the bedroom again");
+        assert!(again.floors.is_empty(), "{again:?}");
+        assert_eq!(again.areas.len(), 1, "{again:?}");
+        assert_eq!(again.areas[0].name.as_str(), "Bedroom");
+
+        // And gone once it stops.
+        host.shutdown().await;
+        assert_eq!(proposed(&core), None);
+        Ok(())
+    }
+
+    /// Accepting makes what the owner was shown and the extension still proposes, and nothing
+    /// else: not a room added since, nor one that has moved to another floor since.
+    #[tokio::test]
+    async fn accepting_makes_only_what_the_owner_was_shown() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Rooms>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let id: ExtensionId = "rooms".parse()?;
+        for _ in 0..500 {
+            if core
+                .extensions()
+                .get(&id)
+                .is_some_and(|overview| overview.suggested_layout.is_some())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let server = Server::new(core.clone())?;
+        let (status, made) = server
+            .json(
+                "POST",
+                "/api/extensions/rooms/layout",
+                serde_json::json!({
+                    "floors": [
+                        {"name": "Ground", "level": 0},
+                        {"name": "Upstairs", "level": 7},
+                        {"name": "Attic"},
+                    ],
+                    "areas": [
+                        {"name": "Kitchen", "floor": "Ground"},
+                        {"name": "Bedroom", "floor": "Ground"},
+                        {"name": "Cellar"},
+                    ],
+                }),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let names = |list: &serde_json::Value| -> Vec<String> {
+            list.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| item["name"].as_str().map(str::to_owned))
+                .collect()
+        };
+        assert_eq!(names(&made["floors"]), ["Ground"], "{made}");
+        assert_eq!(names(&made["areas"]), ["Kitchen"], "{made}");
+        // What wasn't made is still on offer.
+        let home = server.read("/api/home").await?;
+        let left = &home["extensions"]["rooms"]["suggested_layout"];
+        assert_eq!(names(&left["floors"]), ["Upstairs"], "{home}");
+        assert_eq!(names(&left["areas"]), ["Bedroom", "hall"], "{home}");
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// "Add all" takes in every device one extension is holding, in one edit, and touches no
+    /// other extension's. Asked again there's nothing left and nothing is written; an extension
+    /// that isn't there is a 404.
+    /// "Add selected": the chosen ones of an extension's found devices join in one request, and
+    /// the rest stay found. A chosen device that is another extension's, or isn't found at all,
+    /// is passed over rather than added.
+    #[tokio::test]
+    async fn the_chosen_found_devices_of_one_extension_are_added_at_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Mesh>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let held = |protocol: &str| {
+            let mut ids = core
+                .held_devices()
+                .into_iter()
+                .filter(|device| device.protocol.as_str() == protocol)
+                .map(|device| device.id.to_string())
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        for _ in 0..500 {
+            if held("mesh").len() == 4 && !held("demo").is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let mesh = held("mesh");
+        let demo = held("demo");
+        assert_eq!(mesh.len(), 4, "{mesh:?}");
+        let (chosen, left) = mesh.split_at(2);
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({
+                    "protocol": "mesh",
+                    "devices": [chosen[0], chosen[1], demo[0], "no_such_device"],
+                }),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 2, "{body}");
+        assert_eq!(held("mesh"), left, "the ones not chosen are still found");
+        assert_eq!(held("demo"), demo, "another extension's device isn't added");
+        let mut in_home: Vec<String> = core.devices().iter().map(|d| d.id.to_string()).collect();
+        in_home.sort();
+        assert_eq!(in_home, chosen);
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert_eq!(devices.matches("added = true").count(), 2, "{devices}");
+
+        // Nothing chosen is nothing added.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "mesh", "devices": []}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 0, "{body}");
+        assert_eq!(held("mesh"), left);
+        host.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn every_found_device_of_one_extension_is_added_at_once() -> anyhow::Result<()> {
+        let core = core();
+        // The server first, so nothing the extensions find is already added.
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<irori_protocol_demo::Demo>()
+                    .map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Mesh>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let held = |protocol: &str| {
+            core.held_devices()
+                .into_iter()
+                .filter(|device| device.protocol.as_str() == protocol)
+                .map(|device| device.id.to_string())
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..500 {
+            if held("mesh").len() == 4 && held("demo").len() > 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let demo = held("demo");
+        let mesh = held("mesh");
+        assert_eq!(mesh.len(), 4, "{mesh:?}");
+        assert!(demo.len() > 1, "{demo:?}");
+        assert!(core.devices().is_empty(), "nothing joins on its own");
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "demo"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], demo.len(), "{body}");
+
+        // Out of the found list and into the home, written down.
+        let home = server.read("/api/home").await?;
+        let still_held: Vec<&str> = home["held"]
+            .as_array()
+            .map(|all| all.iter().filter_map(|d| d["id"].as_str()).collect())
+            .unwrap_or_default();
+        assert!(
+            still_held.iter().all(|id| !id.starts_with("demo_")),
+            "{still_held:?}"
+        );
+        let in_home: Vec<&str> = home["devices"]
+            .as_array()
+            .map(|all| all.iter().filter_map(|d| d["id"].as_str()).collect())
+            .unwrap_or_default();
+        for id in &demo {
+            assert!(in_home.contains(&id.as_str()), "{id} in {in_home:?}");
+        }
+        let devices = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        for id in &demo {
+            assert!(devices.contains(&format!("[devices.{id}]")), "{devices}");
+        }
+
+        // The other extension's devices are just as they were: found, held, not written down.
+        assert_eq!(held("mesh"), mesh);
+        for id in &mesh {
+            assert!(!devices.contains(id.as_str()), "{devices}");
+            assert!(!in_home.contains(&id.as_str()), "{id}");
+        }
+
+        // Again: nothing left to add, and the file isn't rewritten.
+        let written = std::fs::metadata(server.config_dir().join("devices.toml"))?.modified()?;
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "demo"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], 0, "{body}");
+        assert_eq!(
+            std::fs::read_to_string(server.config_dir().join("devices.toml"))?,
+            devices
+        );
+        assert_eq!(
+            std::fs::metadata(server.config_dir().join("devices.toml"))?.modified()?,
+            written
+        );
+
+        // An extension nobody has is a 404, and a body that isn't one is refused.
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "nowhere"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert!(
+            body["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("nowhere")),
+            "{body}"
+        );
+        let (status, _) = server
+            .json("POST", "/api/devices/add", serde_json::json!({}))
+            .await?;
+        assert!(status.is_client_error(), "{status}");
+        assert_eq!(held("mesh"), mesh);
+
+        host.shutdown().await;
+        Ok(())
+    }
+
+    /// A protocol that finds a crowd: as many devices and entities as a bridge to another home
+    /// system brings, each entity with a state.
+    #[derive(Debug)]
+    struct Crowd;
+
+    /// How many devices the crowd has, and entities on each: 2,000 entities in all.
+    const CROWD: (usize, usize) = (200, 10);
+
+    impl irori_protocol::Protocol for Crowd {
+        type Config = MeshSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "crowd"
+            name = "Crowd"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: MeshSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let (devices, entities) = CROWD;
+            for device in 0..devices {
+                ctx.describe_device(irori_types::DeviceDescription {
+                    unique_id: format!("d{device}").parse()?,
+                    name: format!("Device {device}").parse()?,
+                    manufacturer: None,
+                    model: None,
+                    sw_version: None,
+                    hw_version: None,
+                    serial_number: None,
+                    suggested_area: None,
+                    via_device_unique_id: None,
+                })
+                .await?;
+                for entity in 0..entities {
+                    let unique_id = format!("d{device}_e{entity}");
+                    ctx.describe_entity(irori_types::EntityDescription {
+                        unique_id: unique_id.parse()?,
+                        name: Some(format!("Switch {entity}").parse()?),
+                        device_unique_id: Some(format!("d{device}").parse()?),
+                        suggested_object_id: None,
+                        capabilities: irori_types::Capabilities::Switch(
+                            irori_types::SwitchCapabilities { device_class: None },
+                        ),
+                        entity_category: None,
+                    })
+                    .await?;
+                    ctx.report_state(irori_types::StateReport {
+                        unique_id: unique_id.parse()?,
+                        state: Some(irori_types::State::Switch(irori_types::SwitchState {
+                            on: entity % 2 == 0,
+                        })),
+                        attributes: Default::default(),
+                        caused_by: None,
+                        replayed: false,
+                    });
+                }
+            }
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// Adding a crowd of found devices at once brings thousands of events, more than a listener
+    /// can fall behind by. "Add all" hands them to the core a few hundred at a time, so a
+    /// listener that reads as the history and the event log do misses none of them.
+    #[tokio::test]
+    async fn adding_a_crowd_of_devices_leaves_no_listener_behind() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Crowd>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let (devices, entities) = CROWD;
+        for _ in 0..1000 {
+            let found = core.held_devices();
+            if found.len() == devices
+                && found
+                    .iter()
+                    .all(|device| device.provides.values().sum::<usize>() == entities)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(core.held_devices().len(), devices, "the crowd was found");
+
+        // A listener that takes each event as it comes, yielding between them as one that
+        // writes somewhere does.
+        let mut events = core.subscribe();
+        let listener = tokio::spawn(async move {
+            let mut read = 0usize;
+            loop {
+                match events.recv().await {
+                    Ok(_) => read += 1,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        return Err(missed);
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(read),
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "crowd"}),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], devices, "{body}");
+        assert!(core.held_devices().is_empty());
+        assert_eq!(core.entities().len(), devices * entities);
+        // Written once, with every one of them.
+        let file = std::fs::read_to_string(server.config_dir().join("devices.toml"))?;
+        assert_eq!(file.matches("added = true").count(), devices, "{file}");
+
+        // Give the listener the last step, then see how it fared.
+        for _ in 0..500 {
+            if core.events_waiting() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // Before the host stops: stopping marks every entity unavailable at once, which is
+        // not what this is about.
+        listener.abort();
+        let heard = listener.await;
+        host.shutdown().await;
+        match heard {
+            Err(e) if e.is_cancelled() => {}
+            Ok(Err(missed)) => anyhow::bail!("a listener missed {missed} events"),
+            Ok(Ok(_)) => {}
+            Err(e) => return Err(e.into()),
+        }
+        Ok(())
+    }
+
+    /// A listener that has stopped reading altogether (a stuck page, an engine that hung) holds
+    /// "Add all" up once, for a moment, and not again at every step.
+    #[tokio::test]
+    async fn a_listener_that_stopped_reading_holds_add_all_up_once() -> anyhow::Result<()> {
+        let core = core();
+        let server = Server::new(core.clone())?;
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![irori_protocol::builtin::<Crowd>().map_err(anyhow::Error::msg)?],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let (devices, entities) = CROWD;
+        for _ in 0..1000 {
+            let found = core.held_devices();
+            if found.len() == devices
+                && found
+                    .iter()
+                    .all(|device| device.provides.values().sum::<usize>() == entities)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(core.held_devices().len(), devices, "the crowd was found");
+
+        // Subscribed, and never read; and beside it one that reads, as the history does.
+        let stuck = core.subscribe();
+        let listener = reading_listener(&core);
+        let started = tokio::time::Instant::now();
+        let (status, body) = server
+            .json(
+                "POST",
+                "/api/devices/add",
+                serde_json::json!({"protocol": "crowd"}),
+            )
+            .await?;
+        let took = started.elapsed();
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["added"], devices, "{body}");
+        assert_eq!(core.entities().len(), devices * entities);
+        // One wait of half a second, not one at each of the dozen or so steps.
+        assert!(took < Duration::from_secs(3), "took {took:?}");
+        // The one that reads missed nothing for the one that doesn't.
+        drop(stuck);
+        let missed = listener_missed(&core, listener).await?;
+        host.shutdown().await;
+        anyhow::ensure!(missed == 0, "a listener that reads missed {missed} events");
+        Ok(())
+    }
+
+    /// A listener that takes each event as it comes, yielding between them as one that writes
+    /// somewhere does. It ends with how many events it missed.
+    fn reading_listener(core: &Core) -> tokio::task::JoinHandle<u64> {
+        let mut events = core.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match events.recv().await {
+                    Ok(_) => {}
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        return missed;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return 0,
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+    }
+
+    /// Gives a [`reading_listener`] the last of what was published, then stops it and answers
+    /// how many events it missed.
+    async fn listener_missed(
+        core: &Core,
+        listener: tokio::task::JoinHandle<u64>,
+    ) -> anyhow::Result<u64> {
+        for _ in 0..500 {
+            if listener.is_finished() || core.events_waiting() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        if listener.is_finished() {
+            return Ok(listener.await?);
+        }
+        listener.abort();
+        match listener.await {
+            Err(e) if e.is_cancelled() => Ok(0),
+            Ok(missed) => Ok(missed),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// A found device joins the home when "+ Add device" adds it, with its entities, and it's
@@ -7303,6 +8719,7 @@ mod tests {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             })
             .await?;
             ctx.describe_entity(EntityDescription {
@@ -9500,6 +10917,11 @@ mod tests {
             ("POST", "/api/restart", serde_json::Value::Null),
             (
                 "POST",
+                "/api/devices/add",
+                serde_json::json!({ "protocol": "demo" }),
+            ),
+            (
+                "POST",
                 "/api/extensions/demo/install",
                 serde_json::json!({}),
             ),
@@ -11355,6 +12777,8 @@ mod tests {
         ("DELETE", "/api/areas/{id}", Run),
         ("GET", "/api/floorplan", Filtered),
         ("PUT", "/api/floorplan", Run),
+        ("POST", "/api/devices/add", Run),
+        ("POST", "/api/extensions/{id}/layout", Run),
         ("PATCH", "/api/devices/{id}", Run),
         ("DELETE", "/api/devices/{id}", Run),
         ("PATCH", "/api/entities/{id}", Run),
@@ -11518,21 +12942,32 @@ mod tests {
     const LAMP: &str = "demo_living_room_lamp";
 
     async fn house_with_a_vault() -> anyhow::Result<House> {
+        house_of(false).await
+    }
+
+    /// The same house, with `proposing` adding an extension that proposes one room.
+    async fn house_of(proposing: bool) -> anyhow::Result<House> {
         let core = core();
-        let host = irori_core::ExtensionHost::start(
-            &core,
-            vec![
-                irori_protocol::builtin::<irori_protocol_demo::Demo>()
-                    .map_err(anyhow::Error::msg)?,
-                irori_protocol::builtin::<crate::system_device::IroriDevice>()
-                    .map_err(anyhow::Error::msg)?,
-            ],
-            irori_core::Timing::default(),
-        )
-        .map_err(anyhow::Error::msg)?;
+        let mut protocols = vec![
+            irori_protocol::builtin::<irori_protocol_demo::Demo>().map_err(anyhow::Error::msg)?,
+            irori_protocol::builtin::<crate::system_device::IroriDevice>()
+                .map_err(anyhow::Error::msg)?,
+        ];
+        if proposing {
+            protocols.push(irori_protocol::builtin::<OneRoom>().map_err(anyhow::Error::msg)?);
+        }
+        let host =
+            irori_core::ExtensionHost::start(&core, protocols, irori_core::Timing::default())
+                .map_err(anyhow::Error::msg)?;
+        let oneroom: ExtensionId = "oneroom".parse()?;
         for _ in 0..500 {
             let has = |id: &str| core.entities().iter().any(|e| e.id.to_string() == id);
-            if has("update.irori") && has("camera.garden_camera_1") {
+            let proposed = !proposing
+                || core
+                    .extensions()
+                    .get(&oneroom)
+                    .is_some_and(|overview| overview.suggested_layout.is_some());
+            if has("update.irori") && has("camera.garden_camera_1") && proposed {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -11683,6 +13118,90 @@ mod tests {
             hidden,
             entities,
         })
+    }
+
+    /// Proposes one room, and has no devices.
+    struct OneRoom;
+
+    impl irori_protocol::Protocol for OneRoom {
+        type Config = RoomsSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "oneroom"
+            name = "One room"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch"]
+        "#;
+        async fn run(
+            _: RoomsSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            ctx.suggest_layout(irori_types::SuggestedLayout {
+                floors: Vec::new(),
+                areas: vec![irori_types::SuggestedArea {
+                    name: "Zqattic".parse()?,
+                    floor: None,
+                }],
+            })
+            .await;
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// Bringing an extension's rooms over changes how the home is divided: the owner's to do.
+    /// A person with the whole home is refused as surely as one with some rooms, and the room
+    /// on offer isn't made until the owner accepts it.
+    #[tokio::test]
+    async fn only_the_owner_brings_an_extensions_rooms_over() -> anyhow::Result<()> {
+        let House {
+            server,
+            _host,
+            app,
+            owner,
+            leo,
+            mia,
+            ..
+        } = house_of(true).await?;
+        let shown = serde_json::json!({"areas": [{"name": "Zqattic"}]});
+        let attics = |server: &Server| {
+            server
+                .core
+                .areas()
+                .iter()
+                .filter(|area| area.name.as_str() == "Zqattic")
+                .count()
+        };
+        for cookie in [&leo, &mia] {
+            let (status, got, _) = ask(
+                &app,
+                "POST",
+                "/api/extensions/oneroom/layout",
+                Some(shown.clone()),
+                Some(cookie),
+                true,
+            )
+            .await?;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{got}");
+            assert_eq!(attics(&server), 0);
+        }
+        let (status, got, _) = ask(
+            &app,
+            "POST",
+            "/api/extensions/oneroom/layout",
+            Some(shown),
+            Some(&owner),
+            true,
+        )
+        .await?;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got["areas"][0]["name"], "Zqattic", "{got}");
+        assert_eq!(attics(&server), 1);
+        Ok(())
     }
 
     /// Whatever isn't in a person's rooms isn't there for them: not in a list, not by its id, not

@@ -548,12 +548,18 @@ pub fn ValueInput(
 }
 
 /// What a trigger can watch: anything with a value, or that reports something happening. That
-/// is every kind but a button, which is only ever pressed from here and has nothing to say.
+/// is every kind but those with nothing to say: a button, only ever pressed from here; a
+/// notifier, only ever told something; and a picture, which has no value.
 pub fn watchable() -> Vec<EntityKind> {
     EntityKind::ALL
         .iter()
         .copied()
-        .filter(|kind| *kind != EntityKind::Button)
+        .filter(|kind| {
+            !matches!(
+                kind,
+                EntityKind::Button | EntityKind::Notify | EntityKind::Image
+            )
+        })
         .collect()
 }
 
@@ -608,6 +614,8 @@ fn starting_data(service: RuleService, entity: Option<&irori_types::Entity>) -> 
                     .and_then(|words| words.first().cloned())
                     .unwrap_or_default()
             ),
+            // Filled in on the form: there's no sensible command to start from.
+            FieldShape::TextList => json!([]),
             FieldShape::Other => continue,
         };
         data.insert(field.name.clone(), value);
@@ -620,6 +628,11 @@ fn own_words(entity: &irori_types::Entity, name: ServiceName) -> Option<Vec<Stri
     match (&entity.capabilities, name) {
         (irori_types::Capabilities::Select(select), ServiceName::SelectSelectOption) => {
             Some(select.options.clone())
+        }
+        (irori_types::Capabilities::Remote(remote), ServiceName::RemoteTurnOn)
+            if !remote.activities.is_empty() =>
+        {
+            Some(remote.activities.clone())
         }
         _ => None,
     }
@@ -828,6 +841,38 @@ fn SettingFields(
                         }
                         .into_any(),
                     }
+                }
+                FieldShape::TextList => {
+                    // One a line: a remote's commands, sent in turn.
+                    let shown = now
+                        .as_array()
+                        .map(|all| {
+                            all.iter()
+                                .filter_map(Value::as_str)
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        })
+                        .unwrap_or_default();
+                    let edit = edit.clone();
+                    view! {
+                        <textarea rows="3" prop:value=shown
+                            placeholder=if optional { "leave as it is" } else { "one a line" }
+                            on:change=move |e| {
+                                let words: Vec<String> = event_target_value(&e)
+                                    .lines()
+                                    .map(str::trim)
+                                    .filter(|line| !line.is_empty())
+                                    .map(str::to_owned)
+                                    .collect();
+                                let value = if words.is_empty() && optional {
+                                    Value::Null
+                                } else {
+                                    json!(words)
+                                };
+                                write(&edit, key.clone(), value);
+                            } />
+                    }
+                    .into_any()
                 }
                 FieldShape::Other => ().into_any(),
             };
@@ -1770,4 +1815,34 @@ fn calculation_read(expr: &str) -> Option<String> {
     name.chars()
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
         .then(|| name.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn what_has_no_value_is_not_watched_and_what_can_be_told_is_called() {
+        let watched = watchable();
+        for quiet in [EntityKind::Button, EntityKind::Notify, EntityKind::Image] {
+            assert!(!watched.contains(&quiet), "{quiet:?}");
+        }
+        for kind in [
+            EntityKind::Weather,
+            EntityKind::Calendar,
+            EntityKind::Todo,
+            EntityKind::Remote,
+        ] {
+            assert!(watched.contains(&kind), "{kind:?}");
+        }
+        let called = callable();
+        for kind in [EntityKind::Notify, EntityKind::Remote, EntityKind::Todo] {
+            assert!(called.contains(&kind), "{kind:?}");
+        }
+        assert!(!called.contains(&EntityKind::Weather));
+        assert_eq!(
+            starting_data(RuleService::Named(ServiceName::RemoteSendCommand), None),
+            Some(json!({ "command": [] }))
+        );
+    }
 }

@@ -10,7 +10,7 @@ pub mod people;
 pub mod rpc;
 pub mod store;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -61,6 +61,9 @@ pub struct Service {
     /// Whether the flows have been armed once already: before that, what each flow was doing is
     /// not known, and a change made while Irori was stopped is the one to find.
     started: bool,
+    /// What the turned-on flows that can't arm watch. A change to one of these can't be taken
+    /// on an old reading of the home: what they are missing may just have arrived.
+    waiting: BTreeSet<irori_types::EntityId>,
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
     /// The runs in progress when they were last kept on disk.
     kept_running: BTreeSet<ContextId>,
@@ -221,6 +224,7 @@ impl Service {
             home_was: 0,
             people: BTreeMap::new(),
             started: false,
+            waiting: BTreeSet::new(),
             calls,
             kept_running: BTreeSet::new(),
         };
@@ -341,6 +345,21 @@ impl Service {
             .collect();
         self.engine.set_flows(arms, now());
         self.apply_effects();
+        // Every change to the flows or the home comes through here, so this is never behind.
+        // Asked of the engine, not worked out from what a flow names: an expression naming an
+        // entity the home doesn't have can't be read, so that entity isn't among the named.
+        let armed = self.engine.armed();
+        self.waiting = self
+            .store
+            .flows()
+            .filter(|flow| {
+                matches!(
+                    armed.get(&flow.id),
+                    Some((irori_flow_types::api::Armed::Unarmed { .. }, _))
+                )
+            })
+            .flat_map(|flow| validate::watched(flow, &self.registry))
+            .collect();
     }
 
     /// Turns off the flows of people that are on and can't be, for want of what their owner
@@ -457,31 +476,7 @@ impl Service {
                 self.engine.missed(events, now());
                 self.apply_effects();
             }
-            Incoming::RegistryChanged => {
-                // The registry changed, or this engine missed events: read both again.
-                match self.client.get_registry().await {
-                    Ok(registry) => {
-                        let (registry, place) = registry_view(registry);
-                        self.registry = registry;
-                        self.home_was += 1;
-                        self.engine.set_place(place, now());
-                        // The people may have changed with the home: their rooms, their role,
-                        // whether they are still here.
-                        self.refresh_people().await;
-                        self.arm();
-                        // A time that was due as the home changed has just fired.
-                        self.apply_effects();
-                    }
-                    Err(error) => tracing::warn!(%error, "couldn't read the registry again"),
-                }
-                match self.client.get_states().await {
-                    Ok(states) => {
-                        self.engine.resync(states, now());
-                        self.apply_effects();
-                    }
-                    Err(error) => tracing::warn!(%error, "couldn't read the states again"),
-                }
-            }
+            Incoming::RegistryChanged => self.read_again().await,
             Incoming::App(request) => {
                 let result = rpc::handle(
                     self,
@@ -495,6 +490,40 @@ impl Service {
             Incoming::Stop => return false,
         }
         true
+    }
+
+    /// Reads the registry, the people and the states again, and arms the flows on what it
+    /// finds: what a `RegistryChanged` asks for. [`serve`] folds a burst of them into one.
+    async fn read_again(&mut self) {
+        // The registry changed, or this engine missed events: read both again.
+        match self.client.get_registry().await {
+            Ok(registry) => {
+                let (registry, place) = registry_view(registry);
+                self.registry = registry;
+                self.home_was += 1;
+                self.engine.set_place(place, now());
+                // The people may have changed with the home: their rooms, their role, whether
+                // they are still here.
+                self.refresh_people().await;
+                self.arm();
+                // A time that was due as the home changed has just fired.
+                self.apply_effects();
+            }
+            Err(error) => tracing::warn!(%error, "couldn't read the registry again"),
+        }
+        match self.client.get_states().await {
+            Ok(states) => {
+                self.engine.resync(states, now());
+                self.apply_effects();
+            }
+            Err(error) => tracing::warn!(%error, "couldn't read the states again"),
+        }
+    }
+
+    /// Whether a change to `entity` matters to a flow that can't arm yet: read the home first,
+    /// or that flow would lose the change.
+    fn waits_for(&self, entity: &irori_types::EntityId) -> bool {
+        self.waiting.contains(entity)
     }
 
     /// The saved flow `id`, or the draft sent along with a request.
@@ -535,7 +564,7 @@ pub fn command(
 
 /// Runs the extension until the core says stop.
 pub async fn run() -> Result<(), String> {
-    let (_settings, client, mut incoming) = irori_protocol::engine::connect_stdio()
+    let (_settings, client, incoming) = irori_protocol::engine::connect_stdio()
         .await
         .map_err(|e| e.to_string())?;
     let (flows, data) = flows_dir();
@@ -543,19 +572,136 @@ pub async fn run() -> Result<(), String> {
     for problem in store.problems() {
         tracing::warn!(file = %problem.file, "{}", problem.reason);
     }
-    let (mut service, mut answers) = Service::start(client, store).await?;
+    let (service, answers) = Service::start(client, store).await?;
     tracing::info!(flows = service.store.flows().count(), "automations started");
+    serve(service, incoming, answers).await;
+    Ok(())
+}
+
+/// How long the home must go without another registry change before it is read again. An
+/// extension describing its devices sends one change per device and per entity, thousands at
+/// once on a big network: they are read as one.
+pub const SETTLE: Duration = Duration::from_millis(250);
+
+/// The longest a registry change waits to be read while more keep coming, so a flow on a device
+/// that was just added arms even while another extension is still describing its own.
+pub const SETTLE_AT_MOST: Duration = Duration::from_secs(1);
+
+/// The least time between two readings of the home when one is asked for early. A flow that
+/// names a device gone for good is always "waiting", so its busy sensor can't turn a burst back
+/// into a reading per change.
+const READ_EARLY_EVERY: Duration = Duration::from_millis(100);
+
+/// A registry change not read yet: when the first and the last of them came.
+#[derive(Debug, Clone, Copy)]
+struct Unread {
+    first: tokio::time::Instant,
+    last: tokio::time::Instant,
+}
+
+impl Unread {
+    fn due(self) -> tokio::time::Instant {
+        (self.last + SETTLE).min(self.first + SETTLE_AT_MOST)
+    }
+}
+
+/// What [`serve`] keeps about reading the home again.
+#[derive(Debug, Default)]
+struct Reading {
+    unread: Option<Unread>,
+    /// Messages taken off the queue ahead of a reading, still to handle, in order.
+    held: VecDeque<Incoming>,
+    last: Option<tokio::time::Instant>,
+}
+
+impl Reading {
+    /// The next message, those held back first. Cancel-safe.
+    async fn next(&mut self, incoming: &mut mpsc::UnboundedReceiver<Incoming>) -> Option<Incoming> {
+        match self.held.pop_front() {
+            Some(message) => Some(message),
+            None => incoming.recv().await,
+        }
+    }
+
+    /// Reads the home now. Registry changes already queued are answered by this reading, so
+    /// they are dropped; everything else stays queued, in order.
+    async fn read(
+        &mut self,
+        service: &mut Service,
+        incoming: &mut mpsc::UnboundedReceiver<Incoming>,
+    ) {
+        if let Some(last) = self.last {
+            tokio::time::sleep_until(last + READ_EARLY_EVERY).await;
+        }
+        self.unread = None;
+        self.held
+            .retain(|message| !matches!(message, Incoming::RegistryChanged));
+        for _ in 0..incoming.len() {
+            match incoming.try_recv() {
+                Ok(Incoming::RegistryChanged) => {}
+                Ok(message) => self.held.push_back(message),
+                Err(_) => break,
+            }
+        }
+        self.last = Some(tokio::time::Instant::now());
+        service.read_again().await;
+    }
+}
+
+/// Serves what the core sends until it says stop, then stops the runs.
+///
+/// State changes, the page's questions, call answers and timers are taken as they come, in
+/// order. Registry changes are not read one by one: each re-read is the whole home, so a burst
+/// of them is read once, [`SETTLE`] after the last or [`SETTLE_AT_MOST`] after the first.
+///
+/// The home is read at once when an old reading would give a wrong answer: for a page's
+/// question, for a state a flow that can't arm yet watches, and after events were missed,
+/// since what flows would read is then known to be out of date.
+pub async fn serve(
+    mut service: Service,
+    mut incoming: mpsc::UnboundedReceiver<Incoming>,
+    mut answers: mpsc::UnboundedReceiver<(u64, Result<(), String>)>,
+) {
     let mut poll = tokio::time::interval(POLL);
+    let mut reading = Reading::default();
     loop {
         let wake = service.engine.next_deadline().map(|at| {
             let wait = at.as_jiff().duration_since(now().as_jiff());
             tokio::time::Instant::now() + Duration::try_from(wait).unwrap_or(Duration::ZERO)
         });
+        let due = reading.unread.map(Unread::due);
         tokio::select! {
-            message = incoming.recv() => {
+            message = reading.next(&mut incoming) => {
                 let Some(message) = message else { break };
-                if !service.incoming(message).await {
-                    break;
+                match message {
+                    Incoming::RegistryChanged => {
+                        let at = tokio::time::Instant::now();
+                        reading.unread = Some(match reading.unread {
+                            Some(unread) => Unread { last: at, ..unread },
+                            None => Unread { first: at, last: at },
+                        });
+                    }
+                    // Said first, as ever: the triggers that may have missed a change.
+                    message @ Incoming::Missed { .. } => {
+                        service.incoming(message).await;
+                        reading.read(&mut service, &mut incoming).await;
+                    }
+                    message => {
+                        let first = reading.unread.is_some()
+                            && match &message {
+                                Incoming::App(_) => true,
+                                Incoming::StateChanged { entity_id, .. } => {
+                                    service.waits_for(entity_id)
+                                }
+                                _ => false,
+                            };
+                        if first {
+                            reading.read(&mut service, &mut incoming).await;
+                        }
+                        if !service.incoming(message).await {
+                            break;
+                        }
+                    }
                 }
             }
             Some((call_id, result)) = answers.recv() => {
@@ -565,6 +711,9 @@ pub async fn run() -> Result<(), String> {
             () = sleep_until(wake) => {
                 service.engine.advance(now());
                 service.apply_effects();
+            }
+            () = sleep_until(due) => {
+                reading.read(&mut service, &mut incoming).await;
             }
             _ = poll.tick() => {
                 if service.store.poll() {
@@ -579,7 +728,6 @@ pub async fn run() -> Result<(), String> {
     }
     service.engine.shutdown(now());
     service.apply_effects();
-    Ok(())
 }
 
 async fn sleep_until(at: Option<tokio::time::Instant>) {

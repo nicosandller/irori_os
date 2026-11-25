@@ -166,7 +166,17 @@ jobs:
           path: crates/irori/ui
       - name: Install the ARM emulator (to run the ARM build on this machine)
         if: matrix.runner != ''
-        run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+        # Newer Ubuntu images folded `qemu-user-static` into `qemu-user` (whose binaries are
+        # static now), leaving the old name a virtual package apt won't install. Take whichever
+        # this image has, and make sure `qemu-aarch64-static`, the name the steps below call, exists.
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static || sudo apt-get install -y qemu-user
+          if ! command -v qemu-aarch64-static >/dev/null; then
+            sudo ln -s "$(command -v qemu-aarch64)" /usr/local/bin/qemu-aarch64-static
+          fi
+          qemu-aarch64-static --version
 
       - name: Build the program
         run: |

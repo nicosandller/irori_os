@@ -2886,6 +2886,9 @@
     /* What a setting is for, in the words its own extension used to describe it. A line under
        the field rather than a `title=` tooltip, which a phone can't show at all. */
     .settings-help { color: var(--muted); font-size: .78rem; line-height: 1.4; }
+    .settings-warning { color: var(--warn); font-size: .78rem; line-height: 1.4; padding: .35rem .55rem;
+                        border-left: 2px solid var(--warn); border-radius: 2px;
+                        background: color-mix(in srgb, var(--warn) 9%, transparent); }
     .settings-required { margin-left: .4rem; color: var(--ember); font: .65rem var(--mono);
                          letter-spacing: .08em; text-transform: uppercase; }
     .settings-field .choices { margin-top: .15rem; }
@@ -2947,6 +2950,8 @@
                              color: var(--muted); }
     .in-home h4 { margin-bottom: .5rem; }
     .found-actions { margin-left: auto; display: flex; gap: .5rem; }
+    .pick-all { display: inline-flex; align-items: center; gap: .4rem; font-size: .8rem;
+                color: var(--muted); cursor: pointer; white-space: nowrap; }
     button.primary { padding: .4rem .85rem; font: inherit; font-size: .85rem; font-weight: 500;
                      color: #fff; background: var(--ember); border: 1px solid var(--ember);
                      border-radius: .4rem; cursor: pointer;
@@ -3075,6 +3080,14 @@
                               border: 1px dashed var(--ember); border-radius: .5rem;
                               animation: rise var(--dur-base) var(--ease-out) backwards; }
     .found .waiting-list li:last-child { border-bottom: 1px dashed var(--ember); }
+
+    /* An extension's floors and rooms, to bring over in one step. */
+    .layout-offer { display: flex; gap: .8rem; align-items: center; flex-wrap: wrap;
+                    padding: .7rem .8rem; margin-bottom: .6rem; background: var(--card);
+                    border: 1px dashed var(--ember); border-radius: .5rem; }
+    .layout-offer-text { flex: 1 1 16rem; min-width: 0; }
+    .layout-offer-text p { margin: 0; }
+    .layout-offer-text p + p { margin-top: .25rem; }
 
     /* What's already in the home: the same card, pointing to the device's page. */
     .home-card .device-card-inner:hover { border-color: var(--ember); }

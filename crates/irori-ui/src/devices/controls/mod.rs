@@ -4,29 +4,36 @@
 
 mod alarm_control_panel;
 mod button;
+mod calendar;
 mod camera;
 mod climate;
 mod event;
 mod fan;
 mod humidifier;
+mod image;
 mod lawn_mower;
 mod light;
 mod lock;
 mod media_player;
 pub(crate) mod moment;
+mod notify;
 mod number;
 mod opening;
+mod remote;
 mod select;
 mod sensor;
 mod siren;
 mod switch;
 mod text;
 mod timer;
+mod todo;
 mod update;
 mod vacuum;
 mod water_heater;
+mod weather;
 
 pub(crate) use self::alarm_control_panel::alarm_words;
+pub(crate) use self::calendar::calendar_words;
 pub(crate) use self::camera::{camera_picture, camera_words};
 pub(crate) use self::climate::climate_words;
 pub(crate) use self::fan::fan_words;
@@ -36,11 +43,14 @@ pub(crate) use self::lock::lock_words;
 pub(crate) use self::media_player::media_player_words;
 pub(crate) use self::number::unit_of;
 pub(crate) use self::opening::opening_words;
+pub(crate) use self::remote::remote_words;
 pub(crate) use self::sensor::wording;
 pub(crate) use self::timer::{schedule_words, timer_words};
+pub(crate) use self::todo::todo_words;
 pub(crate) use self::update::update_words;
 pub(crate) use self::vacuum::vacuum_words;
 pub(crate) use self::water_heater::water_heater_words;
+pub(crate) use self::weather::weather_words;
 
 use irori_types::{Capabilities, CoverState, Entity, EntityState, State};
 use leptos::ev;
@@ -86,6 +96,16 @@ pub(crate) fn control(
         Capabilities::Schedule(_) => timer::schedule_reading(value),
         Capabilities::Camera(capabilities) => {
             camera::camera_control(entity, capabilities, value, offline, controls)
+        }
+        Capabilities::Image(_) => image::image_reading(),
+        Capabilities::Notify(_) => notify::notify_control(entity, offline, controls),
+        Capabilities::Remote(capabilities) => {
+            remote::remote_control(entity, capabilities, value, offline, controls)
+        }
+        Capabilities::Weather(_) => weather::weather_reading(value),
+        Capabilities::Calendar(_) => calendar::calendar_reading(value),
+        Capabilities::Todo(capabilities) => {
+            todo::todo_control(entity, *capabilities, value, offline, controls)
         }
         // These three are drawn once and follow a state that changes (`kept`); here the
         // state is whatever it was when this was called.
@@ -212,6 +232,12 @@ pub(crate) fn kept(
             controls,
         )),
         Capabilities::Camera(_)
+        | Capabilities::Image(_)
+        | Capabilities::Notify(_)
+        | Capabilities::Remote(_)
+        | Capabilities::Weather(_)
+        | Capabilities::Calendar(_)
+        | Capabilities::Todo(_)
         | Capabilities::Light(_)
         | Capabilities::Switch(_)
         | Capabilities::Sensor(_)

@@ -794,6 +794,7 @@ impl World {
                 .hub
                 .as_deref()
                 .and_then(|hub| UniqueId::try_from(hub).ok()),
+            connections: Vec::new(),
         };
         if self.ctx.describe_device(device).await.is_err() {
             tracing::warn!("a SwitchBot device couldn't be added");

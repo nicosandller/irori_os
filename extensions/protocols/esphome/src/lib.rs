@@ -891,6 +891,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SuggestLayout(_)
                     | irori_protocol::host::Op::SetNetworks(_)
                     | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
@@ -944,6 +945,7 @@ mod tests {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         };
         let device_id = device.unique_id.clone();
         let arrived = |connection| node::Event::Arrived {
@@ -1019,6 +1021,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SuggestLayout(_)
                     | irori_protocol::host::Op::SetNetworks(_)
                     | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
@@ -1062,6 +1065,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 }),
                 entities: Vec::new(),
                 unmodeled: Vec::new(),
@@ -1136,6 +1140,7 @@ mod tests {
                     irori_protocol::host::Op::SetHealth(_)
                     | irori_protocol::host::Op::SetWaiting(_)
                     | irori_protocol::host::Op::SetUnmodeled(_)
+                    | irori_protocol::host::Op::SuggestLayout(_)
                     | irori_protocol::host::Op::SetNetworks(_)
                     | irori_protocol::host::Op::SetActionOpen(_, _)
                     | irori_protocol::host::Op::SetAvailableActions(_) => {}
@@ -1179,6 +1184,7 @@ mod tests {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             }),
             entities: Vec::new(),
             unmodeled: Vec::new(),

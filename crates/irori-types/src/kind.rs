@@ -68,6 +68,18 @@ pub enum EntityKind {
     Schedule,
     /// Something that sees: off, idle or recording, and a picture a page can ask for.
     Camera,
+    /// A picture something keeps and changes now and then. It has no value.
+    Image,
+    /// Somewhere a message can be sent: a phone's notifications, a TV's screen. It has no value.
+    Notify,
+    /// A remote control: whether what it drives is on, and commands it can send.
+    Remote,
+    /// The weather where the home is, as a weather service says it is now.
+    Weather,
+    /// A calendar: whether an event is on, and the event that is on or next.
+    Calendar,
+    /// A to-do or shopping list: how many items are left.
+    Todo,
 }
 
 impl EntityKind {
@@ -102,6 +114,12 @@ impl EntityKind {
         Self::Timer,
         Self::Schedule,
         Self::Camera,
+        Self::Image,
+        Self::Notify,
+        Self::Remote,
+        Self::Weather,
+        Self::Calendar,
+        Self::Todo,
     ];
 
     /// The domain string used in entity ids and service names.
@@ -137,6 +155,12 @@ impl EntityKind {
             Self::Timer => "timer",
             Self::Schedule => "schedule",
             Self::Camera => "camera",
+            Self::Image => "image",
+            Self::Notify => "notify",
+            Self::Remote => "remote",
+            Self::Weather => "weather",
+            Self::Calendar => "calendar",
+            Self::Todo => "todo",
         }
     }
 

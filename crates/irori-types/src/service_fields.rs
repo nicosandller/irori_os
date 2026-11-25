@@ -39,6 +39,8 @@ pub enum FieldShape {
     Text,
     /// One of these words.
     Choice(Vec<String>),
+    /// Several pieces of free text, in order: a remote's commands.
+    TextList,
     /// Something with a shape of its own (a colour's three numbers), written as JSON.
     Other,
 }
@@ -199,6 +201,14 @@ fn shape(schema: &Value, defs: &Value) -> FieldShape {
         FieldShape::Bool
     } else if types.contains(&"string") {
         FieldShape::Text
+    } else if types.contains(&"array")
+        && schema
+            .get("items")
+            .map(|items| resolve(items, defs))
+            .and_then(|items| items.get("type").cloned())
+            == Some(Value::String("string".into()))
+    {
+        FieldShape::TextList
     } else {
         FieldShape::Other
     }
@@ -240,6 +250,10 @@ mod tests {
             field(ServiceName::LightTurnOn, "rgb").shape,
             FieldShape::Other
         );
+
+        let command = field(ServiceName::RemoteSendCommand, "command");
+        assert!(command.required);
+        assert_eq!(command.shape, FieldShape::TextList);
 
         let direction = field(ServiceName::FanSetDirection, "direction");
         assert_eq!(

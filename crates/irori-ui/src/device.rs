@@ -41,6 +41,12 @@ struct Shape {
     unmodeled: Vec<irori_types::Unmodeled>,
     /// Whether any device is known at all, for telling "no such device" from "nothing yet".
     any_devices: bool,
+    /// The device this one is a copy of: its name, and its page while it's in the home. Part
+    /// of the shape so the line follows the twin being added, renamed or gone.
+    twin: Option<(String, Option<String>)>,
+    /// The other extensions that reach this same device, by their own names where the page
+    /// knows them (`docs/specs/protocols.md` §6.1). In the shape for the same reason.
+    also_through: Vec<String>,
 }
 
 #[component]
@@ -111,12 +117,48 @@ fn shape_of(home: &Home, id: &str) -> Shape {
                 .collect()
         })
         .unwrap_or_default();
+    let twin = device
+        .as_ref()
+        .and_then(|device| device.duplicate_of.as_ref())
+        .map(|twin| twin_of(home, twin));
+    let also_through = device
+        .as_ref()
+        .map(|device| {
+            device
+                .also_through
+                .iter()
+                .map(|protocol| {
+                    home.extensions
+                        .iter()
+                        .find(|(id, _)| id.as_str() == protocol.as_str())
+                        .map(|(_, extension)| extension.name.clone())
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or_else(|| protocol.to_string())
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Shape {
         device,
         areas: home.areas.clone(),
         entities,
         unmodeled,
         any_devices: !home.devices.is_empty(),
+        twin,
+        also_through,
+    }
+}
+
+/// The device a copy is the same as, by name: a link when it's in the home, and only its name
+/// while it waits to be added, since it has no page of its own yet.
+fn twin_of(home: &Home, twin: &irori_types::DeviceId) -> (String, Option<String>) {
+    if let Some(found) = home.devices.iter().find(|other| &other.id == twin) {
+        (found.name.to_string(), Some(format!("/devices/{twin}")))
+    } else if let Some(held) = home.held.iter().find(|other| &other.id == twin) {
+        (format!("{} (waiting to be added)", held.name), None)
+    } else {
+        // Itself a hidden copy, or gone: there's nothing to show of it but an id.
+        ("another device".to_owned(), None)
     }
 }
 
@@ -180,11 +222,13 @@ fn page(
     let areas = shape.areas.clone();
     // A camera's picture gets a card of its own, open, between what the device is and the rest
     // of what it has.
-    let (cameras, entities): (Vec<Entity>, Vec<Entity>) = shape
-        .entities
-        .iter()
-        .cloned()
-        .partition(|entity| matches!(entity.capabilities, Capabilities::Camera(_)));
+    let (cameras, entities): (Vec<Entity>, Vec<Entity>) =
+        shape.entities.iter().cloned().partition(|entity| {
+            matches!(
+                entity.capabilities,
+                Capabilities::Camera(_) | Capabilities::Image(_)
+            )
+        });
     let has_camera = !cameras.is_empty();
     let also_has = also_has(&shape.unmodeled);
     let subtitle = [device.manufacturer.clone(), device.model.clone()]
@@ -281,6 +325,8 @@ fn page(
             .map(|(_, extension)| (extension.name.clone(), extension.unpairs))
             .unwrap_or_default()
     });
+    let also_through = shape.also_through.clone();
+    let twin = shape.twin.clone();
     let what = device.name.to_string();
     let name = device.name.to_string();
     let description = device
@@ -404,6 +450,19 @@ fn page(
                 <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
                 <dd>{device.protocol.to_string()}</dd>
+                // The same hardware, found by another extension too: one line, until handing it
+                // over from one to the other is something this page offers.
+                {(!also_through.is_empty()).then(|| view! {
+                    <dt>"Also reachable through"</dt>
+                    <dd>{also_through.join(", ")}</dd>
+                })}
+                {twin.map(|(name, href)| view! {
+                    <dt>"Same device as"</dt>
+                    <dd>{match href {
+                        Some(href) => view! { <A href=href attr:class="row-link">{name}</A> }.into_any(),
+                        None => name.into_any(),
+                    }}</dd>
+                })}
                 <dt>"Area"</dt>
                 // The area is a reading until its pencil is pressed, when it becomes the picker
                 // in the same place: the page says where a device is without offering to move
@@ -582,23 +641,38 @@ fn also_has(unmodeled: &[irori_types::Unmodeled]) -> Option<String> {
         return None;
     }
     let mut by_platform: std::collections::BTreeMap<&str, Vec<&str>> = Default::default();
-    let mut refused = Vec::new();
+    // Entities refused for the same reason are named together and the reason said once: a
+    // camera with two streams is one sentence, not the same sentence twice.
+    let mut refused: Vec<(&str, &str, Vec<&str>)> = Vec::new();
     for entry in unmodeled {
         let platform = entry.platform.as_str();
         let name = entry.name.as_ref().map(irori_types::Name::as_str);
         match &entry.reason {
-            Some(why) => refused.push(match name {
-                Some(name) => format!("{name} ({}): {why}", platform.replace('_', " ")),
-                None => format!("a {}: {why}", platform.replace('_', " ")),
-            }),
+            Some(why) => {
+                match refused
+                    .iter_mut()
+                    .find(|(p, w, _)| *p == platform && *w == why.as_str())
+                {
+                    Some((_, _, names)) => names.extend(name),
+                    None => refused.push((platform, why.as_str(), name.into_iter().collect())),
+                }
+            }
             None => by_platform.entry(platform).or_default().extend(name),
         }
     }
+    let named = |platform: &str, names: &[&str]| match names {
+        [] => platform.replace('_', " "),
+        names => format!("{} ({})", names.join(", "), platform.replace('_', " ")),
+    };
     let items: Vec<String> = by_platform
         .into_iter()
-        .map(|(platform, names)| match names.as_slice() {
-            [] => platform.replace('_', " "),
-            names => format!("{} ({})", names.join(", "), platform.replace('_', " ")),
+        .map(|(platform, names)| named(platform, &names))
+        .collect();
+    let refused: Vec<String> = refused
+        .into_iter()
+        .map(|(platform, why, names)| match names.as_slice() {
+            [] => format!("a {}: {why}", platform.replace('_', " ")),
+            names => format!("{}: {why}", named(platform, names)),
         })
         .collect();
     let mut said = Vec::new();
@@ -746,7 +820,7 @@ fn EntityRow(
                 view! {
                     <div class="drawer" class:open=move || open.get() inert=move || (!open.get()).then_some("")>
                         <div class="drawer-inner">
-                            {matches!(entity.capabilities, Capabilities::Camera(_))
+                            {matches!(entity.capabilities, Capabilities::Camera(_) | Capabilities::Image(_))
                                 .then(|| devices::camera_picture(&entity, open))}
                             {history_panel(entity.clone(), history.clone(), state.into())}
                         </div>
@@ -1016,7 +1090,7 @@ pub(crate) fn drawn_day(
 ) -> AnyView {
     if matches!(
         entity.capabilities,
-        Capabilities::Button(_) | Capabilities::Scene(_)
+        Capabilities::Button(_) | Capabilities::Scene(_) | Capabilities::Notify(_)
     ) {
         return presses(&states);
     }
@@ -1331,7 +1405,18 @@ fn reading_of(entity: &Entity, state: &EntityState) -> String {
         (Capabilities::Switch(_), Some(State::Switch(switch))) => {
             flag_word(&entity.capabilities, switch.on).to_owned()
         }
-        (Capabilities::Button(_) | Capabilities::Scene(_), _) => "—".to_owned(),
+        (Capabilities::Button(_) | Capabilities::Scene(_) | Capabilities::Notify(_), _) => {
+            "—".to_owned()
+        }
+        (Capabilities::Image(_), _) => "Picture".to_owned(),
+        (Capabilities::Remote(_), Some(State::Remote(remote))) => devices::remote_words(remote),
+        (Capabilities::Weather(_), Some(State::Weather(weather))) => {
+            devices::weather_words(weather)
+        }
+        (Capabilities::Calendar(_), Some(State::Calendar(calendar))) => {
+            devices::calendar_words(calendar)
+        }
+        (Capabilities::Todo(_), Some(State::Todo(todo))) => devices::todo_words(todo.open),
         (Capabilities::Event(_), Some(State::Event(event))) => event.event_type.clone(),
         (Capabilities::Cover(_), Some(State::Cover(cover))) => {
             devices::opening_words(cover.opening())
@@ -1556,6 +1641,14 @@ mod tests {
                  which Irori doesn't support yet."
             )
         );
+        let not_yet = |name: &str| irori_types::Unmodeled {
+            reason: Some("not brought over yet".into()),
+            ..entry("camera", Some(name))
+        };
+        assert_eq!(
+            also_has(&[not_yet("Clear"), not_yet("Fluent")]).as_deref(),
+            Some("Couldn't use Clear, Fluent (camera): not brought over yet.")
+        );
     }
 
     fn device() -> Device {
@@ -1573,6 +1666,8 @@ mod tests {
             area_id: None,
             suggested_area: None,
             via_device_id: None,
+            duplicate_of: None,
+            also_through: Vec::new(),
         }
     }
 
@@ -1634,6 +1729,60 @@ mod tests {
         let before = shape_of(&home(reading("2026-09-16T10:00:00Z", false)), "radar");
         let after = shape_of(&home(reading("2026-09-16T10:00:01Z", true)), "radar");
         assert_eq!(before, after);
+    }
+
+    /// A copy's "Same device as" line follows its twin: only a name while the twin waits to be
+    /// added, a link to its page once it's in the home.
+    #[test]
+    fn a_copy_names_its_twin_and_links_it_once_added() {
+        let mut copy = device();
+        copy.id = "bridge_radar".parse().expect("a valid device id");
+        copy.duplicate_of = Some("radar".parse().expect("a valid device id"));
+        let held = api::HeldDevice {
+            id: "radar".parse().expect("a valid device id"),
+            protocol: "esphome".to_owned(),
+            name: "Radar".parse().expect("a valid name"),
+            manufacturer: None,
+            model: None,
+            provides: Default::default(),
+        };
+        let waiting = Home {
+            devices: vec![copy.clone()],
+            held: vec![held],
+            ..Home::default()
+        };
+        assert_eq!(
+            shape_of(&waiting, "bridge_radar").twin,
+            Some(("Radar (waiting to be added)".to_owned(), None))
+        );
+        let added = Home {
+            devices: vec![copy, device()],
+            ..Home::default()
+        };
+        assert_eq!(
+            shape_of(&added, "bridge_radar").twin,
+            Some(("Radar".to_owned(), Some("/devices/radar".to_owned())))
+        );
+        let unknown = Home {
+            devices: vec![added.devices[0].clone()],
+            ..Home::default()
+        };
+        assert_eq!(
+            shape_of(&unknown, "bridge_radar").twin,
+            Some(("another device".to_owned(), None))
+        );
+    }
+
+    /// "Also reachable through" redraws with the home, like the rest of what the page shows.
+    #[test]
+    fn who_else_reaches_a_device_is_part_of_the_shape() {
+        let reading = reading("2026-09-16T10:00:00Z", false);
+        let before = shape_of(&home(reading.clone()), "radar");
+        let mut reached = home(reading);
+        reached.devices[0].also_through = vec!["homeassistant".parse().expect("a protocol id")];
+        let after = shape_of(&reached, "radar");
+        assert_ne!(before, after);
+        assert_eq!(after.also_through, ["homeassistant"]);
     }
 
     /// A rename does change it, or the new name would never appear.

@@ -104,6 +104,7 @@ async fn world(settings: Settings, store: &Store) -> World {
                 }
                 host::Op::SetHealth(_)
                 | host::Op::SetUnmodeled(_)
+                | host::Op::SuggestLayout(_)
                 | host::Op::SetNetworks(_)
                 | host::Op::SetActionOpen(_, _)
                 | host::Op::SetAvailableActions(_) => {}
