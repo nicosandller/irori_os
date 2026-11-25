@@ -49,6 +49,7 @@ mod transition;
 mod users;
 mod waiting;
 mod welcome;
+mod welcome_ha;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
