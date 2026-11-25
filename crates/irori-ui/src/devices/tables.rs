@@ -157,9 +157,10 @@ fn device_row(line: DeviceLine, by: DevicesBy, travels: bool) -> AnyView {
     } = line;
     let id = device.id.to_string();
     // Said only in a home that has Home Assistant, so a native home's rows are as they were.
-    let side = live
-        .home
-        .with_untracked(|home| crate::side::of(home, device.protocol.as_str()));
+    let side = {
+        let protocol = device.protocol.to_string();
+        Memo::new(move |_| live.home.with(|home| crate::side::of(home, &protocol)))
+    };
     // The one thing on the row that is a reading, watched on its own.
     let battery = {
         let id = device.id.clone();
@@ -184,7 +185,7 @@ fn device_row(line: DeviceLine, by: DevicesBy, travels: bool) -> AnyView {
                 >
                     {device.name.to_string()}
                 </A>
-                {side.map(|side| view! {
+                {move || side.get().map(|side| view! {
                     <span class=format!("side {}", side_class(side)) title="Who runs this device">
                         {side.words()}
                     </span>
