@@ -761,6 +761,24 @@ async fn devices_heard_over_bluetooth_stop_at_the_most_that_are_kept() {
     world.shutdown().await;
 }
 
+/// A set kept so each device is logged once says yes once per address, and stops at
+/// `MAX_NOTED`: then nothing more is noted or logged, however many addresses come.
+#[test]
+fn the_log_once_sets_stop_at_the_most_they_hold() {
+    let mut set = std::collections::BTreeSet::new();
+    for n in 0..crate::MAX_NOTED {
+        let mac = format!("AABBCC{n:06X}");
+        assert!(crate::noted(&mut set, &mac, "test devices"), "{mac} is new");
+        assert!(!crate::noted(&mut set, &mac, "test devices"), "{mac} again");
+    }
+    assert!(
+        !crate::noted(&mut set, "112233445566", "test devices"),
+        "full"
+    );
+    assert_eq!(set.len(), crate::MAX_NOTED);
+    assert!(set.contains("AABBCC000000"), "the first is still there");
+}
+
 /// `count` devices only Bluetooth knows, as an earlier run saved them, last heard `ago` seconds
 /// before noon: `AABBCC000000` onwards.
 fn heard_devices(count: usize, ago: u64) -> Vec<Value> {

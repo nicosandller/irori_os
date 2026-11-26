@@ -142,14 +142,18 @@ const MAX_LET_BACK: usize = MAX_HEARD;
 /// The most devices remembered only so that something is said about each once.
 const MAX_NOTED: usize = 4096;
 
-/// Notes `mac` in a set kept so a device is spoken of once, and answers whether it is new there.
-/// A full set starts again, as the radio's own memory of addresses does: the cost is a line
-/// logged twice, not a set that grows for as long as the extension runs.
-fn noted(set: &mut BTreeSet<String>, mac: &str) -> bool {
-    if set.len() >= MAX_NOTED {
-        set.clear();
+/// Notes `mac` in a set kept so a device is spoken of once, and answers whether to speak of it:
+/// whether it is new there. A full set takes no more, and that is said once, naming `what` it
+/// holds: past [`MAX_NOTED`], made-up addresses get neither memory nor a line each, and a real
+/// device first heard after them isn't logged.
+fn noted(set: &mut BTreeSet<String>, mac: &str, what: &str) -> bool {
+    if set.len() >= MAX_NOTED || !set.insert(mac.to_owned()) {
+        return false;
     }
-    set.insert(mac.to_owned())
+    if set.len() == MAX_NOTED {
+        tracing::warn!("heard {MAX_NOTED} {what}; no longer logging each");
+    }
+    true
 }
 
 /// A device as the last run knew it: enough to describe it and report its states before
@@ -663,7 +667,11 @@ impl World {
             return;
         };
         if advert.claims_another_address() {
-            if noted(&mut self.impostors, &mac) {
+            if noted(
+                &mut self.impostors,
+                &mac,
+                "SwitchBot devices named in adverts from another address",
+            ) {
                 tracing::warn!(
                     "heard an advert naming SwitchBot device {mac} from a different Bluetooth address; ignoring adverts like it"
                 );
@@ -682,7 +690,11 @@ impl World {
             // With an account, only its devices: a neighbour's SwitchBot is the neighbour's. Said
             // once per device, so one whose Bluetooth address isn't its cloud id can be spotted.
             if self.cloud.is_some() {
-                if noted(&mut self.strangers, &mac) {
+                if noted(
+                    &mut self.strangers,
+                    &mac,
+                    "SwitchBot devices the account doesn't list",
+                ) {
                     tracing::info!(
                         "heard a SwitchBot {} ({mac}) over Bluetooth that the account doesn't list; leaving it be",
                         crate::model::readable(heard.device_type)
