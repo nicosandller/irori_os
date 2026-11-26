@@ -47,6 +47,9 @@ struct Shape {
     /// The other extensions that reach this same device, by their own names where the page
     /// knows them (`docs/specs/protocols.md` §6.1). In the shape for the same reason.
     also_through: Vec<String>,
+    /// Whether it may be handed over to another way of reaching it, or back: it's a copy of a
+    /// device in the home, or another extension reaches it too. The card asks Irori which.
+    may_hand_over: bool,
 }
 
 #[component]
@@ -138,7 +141,15 @@ fn shape_of(home: &Home, id: &str) -> Shape {
                 .collect()
         })
         .unwrap_or_default();
+    let may_hand_over = device.as_ref().is_some_and(|device| {
+        !device.also_through.is_empty()
+            || device
+                .duplicate_of
+                .as_ref()
+                .is_some_and(|twin| home.devices.iter().any(|other| &other.id == twin))
+    });
     Shape {
+        may_hand_over,
         device,
         areas: home.areas.clone(),
         entities,
@@ -327,6 +338,7 @@ fn page(
     });
     let also_through = shape.also_through.clone();
     let twin = shape.twin.clone();
+    let may_hand_over = shape.may_hand_over;
     let what = device.name.to_string();
     let name = device.name.to_string();
     let description = device
@@ -450,8 +462,8 @@ fn page(
                 <dd>{device.id.to_string()}</dd>
                 <dt>"Through"</dt>
                 <dd>{device.protocol.to_string()}</dd>
-                // The same hardware, found by another extension too: one line, until handing it
-                // over from one to the other is something this page offers.
+                // The same hardware, found by another extension too. Handing it over from one to
+                // the other is the card below.
                 {(!also_through.is_empty()).then(|| view! {
                     <dt>"Also reachable through"</dt>
                     <dd>{also_through.join(", ")}</dd>
@@ -567,6 +579,8 @@ fn page(
             }}
             {suggestion.map(|note| view! { <p class="muted small">{note}</p> })}
         </section>
+
+        {may_hand_over.then(|| view! { <crate::handover::HandoverCard device=device.id.clone() /> })}
 
         {cameras.into_iter().map(|camera| view! {
             <section class="card camera-card">

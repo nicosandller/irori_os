@@ -25,6 +25,7 @@ mod floorplan;
 mod fold;
 mod gesture;
 mod glide;
+mod handover;
 mod history;
 mod history_settings;
 mod icons;

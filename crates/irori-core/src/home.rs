@@ -2944,6 +2944,7 @@ mod tests {
         let mut home = Home::default();
         home.settle(Settings {
             ask_before_adding: false,
+            handovers: std::collections::BTreeMap::new(),
             floors: Vec::new(),
             areas: vec![area("study", "Study")],
             floorplan: irori_types::Floorplan::default(),
