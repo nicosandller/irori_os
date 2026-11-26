@@ -112,6 +112,8 @@ for the address. That happens when:
   `https://127.0.0.1:8123`, and under "Trust this certificate" its SHA-256 fingerprint or the
   certificate itself.
 - **Home Assistant uses another port** (`server_port`). Enter `http://127.0.0.1:<port>`.
+- **Home Assistant Core listens on one address only** (`server_host` in its `http:` settings).
+  Enter that address, for example `http://192.168.1.20:8123`.
 - **Home Assistant Container doesn't publish 8123 on the machine.** Home Assistant's own
   instructions run it with `--network=host` (or `network_mode: host` in compose), which does.
   With `-p 8123:8123` it's reachable too.

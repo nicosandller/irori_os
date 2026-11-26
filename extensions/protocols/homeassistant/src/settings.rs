@@ -4,7 +4,8 @@
 //! `token` is required, so until it's given the extension waits in "needs setup" instead of
 //! starting and failing (`missing_required` in the core). `url` left empty means the Home
 //! Assistant on this machine, at [`ON_THIS_MACHINE`]: Irori installed beside it needs no address.
-//! The token is a secret (`writeOnly`): kept in `secrets.toml`, never sent back to a page, never printed.
+//! The token is a secret (`writeOnly`): kept in `secrets.toml`, never sent back to a page, never
+//! printed.
 //!
 //! The manifest asks for `lan` and nothing else, so the address is checked here by what is
 //! written, without looking it up, the way the MQTT extension checks its broker: a private,
