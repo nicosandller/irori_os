@@ -255,6 +255,24 @@ impl EngineClient {
         .await
     }
 
+    /// Asks another extension something it answers this engine: only one whose manifest names
+    /// this extension in `answers` is asked (`docs/specs/protocols.md` §5.5). Send it only to
+    /// one the home has: a core older than 1.7.0 doesn't know the message.
+    pub async fn ask_extension(
+        &self,
+        extension: irori_types::ExtensionId,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, EngineError> {
+        self.ask(|id| FromExt::AskExtension {
+            id,
+            extension,
+            method: method.to_owned(),
+            params,
+        })
+        .await
+    }
+
     /// Where a person stands in the home now. Only an extension that limits what people can do
     /// is answered (`docs/specs/access.md` §4.1).
     pub async fn get_reach(&self, user: UserId) -> Result<PersonReach, EngineError> {
@@ -425,11 +443,13 @@ async fn read_incoming<R>(
                 }
                 Incoming::RegistryChanged
             }
+            // The core asks only protocols on another extension's behalf (`from`).
             ToExt::AppRequest {
                 id,
                 method,
                 params,
                 caller,
+                ..
             } => Incoming::App(AppRequest {
                 method,
                 params,

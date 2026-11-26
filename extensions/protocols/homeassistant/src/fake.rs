@@ -29,6 +29,9 @@ pub struct World {
     pub entities: Vec<Value>,
     /// State and attributes, by `entity_id`.
     pub states: BTreeMap<String, (String, Map<String, Value>)>,
+    /// Automations' setups, by their `id`, as `GET /api/config/automation/config/<id>` gives
+    /// them.
+    pub automation_setups: BTreeMap<String, Value>,
 }
 
 impl World {
@@ -90,6 +93,31 @@ impl World {
         self
     }
 
+    /// An automation: its state (`on` or `off`), and its setup under `id` when it has one (one
+    /// written in YAML without an `id` has none to read).
+    pub fn automation(
+        &mut self,
+        entity_id: &str,
+        name: &str,
+        on: bool,
+        id: Option<&str>,
+        setup: Value,
+    ) -> &mut Self {
+        let mut attributes = json!({ "friendly_name": name, "mode": "single" });
+        if let Some(id) = id {
+            attributes["id"] = json!(id);
+            self.automation_setups.insert(id.to_owned(), setup);
+        }
+        self.states.insert(
+            entity_id.to_owned(),
+            (
+                if on { "on" } else { "off" }.to_owned(),
+                attributes.as_object().cloned().unwrap_or_default(),
+            ),
+        );
+        self
+    }
+
     /// A home of `devices` devices with `per_device` entities each, spread over three areas on
     /// two floors: on each device a light, a motion sensor, then temperature and power sensors.
     /// For the load gate.
@@ -142,6 +170,8 @@ type Open = (mpsc::UnboundedSender<String>, BTreeMap<u64, Subscription>);
 struct Shared {
     world: Mutex<World>,
     received: Mutex<Vec<Value>>,
+    /// Each plain HTTP request's first line (`GET /api/… HTTP/1.1`), in order.
+    http: Mutex<Vec<String>>,
     /// Each open connection's outbox and subscriptions, by connection number.
     connections: Mutex<BTreeMap<u64, Open>>,
     contexts: AtomicU64,
@@ -348,6 +378,15 @@ impl FakeHa {
             .collect()
     }
 
+    /// Each plain HTTP request's first line, in order: `GET /api/… HTTP/1.1`.
+    pub fn http_requests(&self) -> Vec<String> {
+        self.shared
+            .http
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// The `call_service` messages received.
     pub fn calls(&self) -> Vec<Value> {
         self.received()
@@ -362,7 +401,129 @@ impl FakeHa {
     }
 }
 
-async fn serve<S>(stream: S, shared: Arc<Shared>, mut closing: watch::Receiver<u64>)
+/// A stream whose first bytes were already read: they're read again first.
+struct Rewound<S> {
+    head: Vec<u8>,
+    at: usize,
+    inner: S,
+}
+
+impl<S: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Rewound<S> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.at < self.head.len() {
+            let n = buf.remaining().min(self.head.len() - self.at);
+            let at = self.at;
+            buf.put_slice(&self.head[at..at + n]);
+            self.at += n;
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl<S: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for Rewound<S> {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+/// Reads a request's head: a WebSocket upgrade goes on to the WebSocket API, anything else is
+/// answered as a plain HTTP request.
+async fn serve<S>(mut stream: S, shared: Arc<Shared>, closing: watch::Receiver<u64>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncReadExt as _;
+    let mut head = Vec::new();
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") {
+        let mut buffer = [0u8; 4096];
+        match stream.read(&mut buffer).await {
+            Ok(0) | Err(_) => return,
+            Ok(n) => head.extend_from_slice(&buffer[..n]),
+        }
+        if head.len() > 64 * 1024 {
+            return;
+        }
+    }
+    let text = String::from_utf8_lossy(&head).to_ascii_lowercase();
+    if text.contains("upgrade: websocket") {
+        let stream = Rewound {
+            head,
+            at: 0,
+            inner: stream,
+        };
+        serve_websocket(stream, shared, closing).await;
+    } else {
+        serve_http(stream, &head, &shared).await;
+    }
+}
+
+/// One plain HTTP request: an automation's setup, with the token. Nothing else is served.
+async fn serve_http<S>(mut stream: S, head: &[u8], shared: &Shared)
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt as _;
+    let head = String::from_utf8_lossy(head).into_owned();
+    let first = head.lines().next().unwrap_or("").to_owned();
+    shared
+        .http
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(first.clone());
+    let mut words = first.split_whitespace();
+    let (method, path) = (words.next().unwrap_or(""), words.next().unwrap_or(""));
+    let (token, setups) = {
+        let world = shared.lock_world();
+        (world.token.clone(), world.automation_setups.clone())
+    };
+    let authorized = head
+        .lines()
+        .any(|line| line.eq_ignore_ascii_case(&format!("authorization: bearer {token}")));
+    let (status, body) = if !authorized {
+        ("401 Unauthorized", json!({ "message": "Unauthorized" }))
+    } else if method != "GET" {
+        ("405 Method Not Allowed", json!({ "message": "not here" }))
+    } else if let Some(setup) = path
+        .strip_prefix("/api/config/automation/config/")
+        .and_then(|id| setups.get(id))
+    {
+        ("200 OK", setup.clone())
+    } else {
+        ("404 Not Found", json!({ "message": "Resource not found" }))
+    };
+    let body = body.to_string();
+    let answer = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(answer.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+async fn serve_websocket<S>(stream: S, shared: Arc<Shared>, mut closing: watch::Receiver<u64>)
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {

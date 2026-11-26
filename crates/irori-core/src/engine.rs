@@ -78,6 +78,7 @@ impl EngineLink {
                         method: call.method,
                         params: call.params,
                         caller: call.caller,
+                        from: None,
                     });
                 }
                 event = next_event(&mut self.events) => match event {
@@ -277,6 +278,28 @@ impl EngineLink {
                     });
                 });
             }
+            FromExt::AskExtension {
+                id,
+                extension: asked,
+                method,
+                params,
+            } => {
+                // Who may ask is the asked extension's to say (its manifest's `answers`), so no
+                // scope is needed; the core vouches for who is asking.
+                let core = core.clone();
+                let asker = extension.clone();
+                let out = self.out_tx.clone();
+                tokio::spawn(async move {
+                    let (value, error) =
+                        match core.ask_extension(&asker, &asked, method, params).await {
+                            Ok(value) => (Some(value), None),
+                            Err(error) => (None, Some(error)),
+                        };
+                    let _ = out.send(ToExt::Answer { id, value, error });
+                });
+            }
+            // A protocol's answers to another extension's questions go to the protocol path.
+            FromExt::AppAnswer { .. } if self.is_protocol => return Some(from),
             FromExt::AppAnswer { id, value, error } => {
                 if let Some(reply) = self.pending_app.remove(&id) {
                     let _ = reply.send(match error {

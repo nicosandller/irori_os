@@ -72,6 +72,10 @@ pub const UNPAIR_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long a page waits for a camera's picture. Longer than a live view can bear.
 pub const PICTURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// How long an extension asking another waits for the answer: the one asked may have to read
+/// it from the system it bridges (`docs/specs/protocols.md` §5.5).
+pub const ASK_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// How long an extension's page waits for its engine to answer. Longer than a service call: a
 /// backtest replays a day of history (`docs/specs/automations.md` §B3).
 pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -194,6 +198,10 @@ pub struct ExtensionInfo {
     /// Whether it's an automation engine.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub engine: bool,
+    /// The extensions its protocol answers questions from (the manifest's `answers`). Not
+    /// served: it's the core's to check.
+    #[serde(skip)]
+    pub answers: Vec<ExtensionId>,
 }
 
 /// An extension's page, as the shell lists it.
@@ -1216,6 +1224,42 @@ impl Core {
             Ok(Ok(Ok(value))) => Ok(value),
             Ok(Ok(Err(why))) => Err(AppRequestError::Failed(why)),
             Ok(Err(_)) => Err(AppRequestError::NotRunning(extension.clone())),
+        }
+    }
+
+    /// Asks a protocol extension something on another extension's behalf
+    /// (`docs/specs/protocols.md` §5.5), and waits for its answer (at most [`ASK_TIMEOUT`]).
+    /// Only a protocol whose manifest names the asker in `answers` is asked.
+    pub async fn ask_extension(
+        &self,
+        asker: &ExtensionId,
+        extension: &ExtensionId,
+        method: String,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let answers = read(&self.0.extensions)
+            .get(extension)
+            .and_then(|overview| overview.info.as_ref())
+            .is_some_and(|info| info.answers.contains(asker));
+        if !answers {
+            return Err(format!("`{extension}` doesn't answer `{asker}`"));
+        }
+        let sender = read(&self.0.action_links)
+            .get(extension)
+            .cloned()
+            .ok_or_else(|| format!("`{extension}` isn't running"))?;
+        let (incoming, result) =
+            irori_protocol::host::incoming_ask(asker.as_str().to_owned(), method, params);
+        let deadline = tokio::time::Instant::now() + ASK_TIMEOUT;
+        match tokio::time::timeout_at(deadline, sender.send(incoming)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Err(format!("`{extension}` isn't running")),
+            Err(_) => return Err(format!("`{extension}` is too busy to answer")),
+        }
+        match tokio::time::timeout_at(deadline, result).await {
+            Err(_) => Err(format!("`{extension}` didn't answer in time")),
+            Ok(Err(_)) => Err(format!("`{extension}` dropped the question without answering")),
+            Ok(Ok(answer)) => answer,
         }
     }
 

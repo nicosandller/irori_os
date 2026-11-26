@@ -193,7 +193,17 @@ pub enum FromExt {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         parent_id: Option<ContextId>,
     },
-    /// The answer to an `app_request` from the extension's page.
+    /// Ask another extension something it answers this one (its manifest names this one in
+    /// `answers`): a protocol bridging another system, say. Answered with `ToExt::Answer`
+    /// (`docs/specs/protocols.md` §5.5). Needs no scope: the one asked decides.
+    AskExtension {
+        id: u64,
+        extension: irori_types::ExtensionId,
+        method: String,
+        #[serde(default)]
+        params: serde_json::Value,
+    },
+    /// The answer to an `app_request`: from the extension's page, or from another extension.
     AppAnswer {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +330,11 @@ pub enum ToExt {
         /// Who asked, put there by the core. Left out for the home's own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller: Option<crate::engine::Caller>,
+        /// Set when it isn't a page asking but another extension, by its id, put there by the
+        /// core: only sent to a protocol whose manifest names that extension in `answers`
+        /// (`docs/specs/protocols.md` §5.5).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
     },
 }
 
@@ -831,7 +846,39 @@ fn handle_host_line(
         | ToExt::Answer { .. }
         | ToExt::StateChanged { .. }
         | ToExt::RegistryChanged { .. }
-        | ToExt::AppRequest { .. } => {}
+        | ToExt::AppRequest { from: None, .. } => {}
+        // Another extension asking this protocol something its manifest says it answers.
+        ToExt::AppRequest {
+            id,
+            method,
+            params,
+            from: Some(from),
+            ..
+        } => {
+            let (incoming, result) = host::incoming_ask(from, method, params);
+            match actions.try_send(incoming) {
+                Ok(()) => {
+                    let out = out.clone();
+                    runtime.spawn(async move {
+                        let (value, error) = match result.await {
+                            Ok(Ok(value)) => (Some(value), None),
+                            Ok(Err(error)) => (None, Some(error)),
+                            Err(_) => (None, Some("the protocol dropped the question".to_owned())),
+                        };
+                        enqueue_json(&out, &FromExt::AppAnswer { id, value, error });
+                    });
+                }
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => enqueue_json(
+                    out,
+                    &FromExt::AppAnswer {
+                        id,
+                        value: None,
+                        error: Some("the extension is busy and can't take this yet".into()),
+                    },
+                ),
+            }
+        }
     }
     ReadControl::Continue
 }

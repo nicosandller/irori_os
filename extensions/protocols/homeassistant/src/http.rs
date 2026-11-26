@@ -1,9 +1,14 @@
 //! One plain `GET` to Home Assistant's HTTP API, for what its WebSocket API doesn't carry: a
-//! camera's picture (`/api/camera_proxy/<entity_id>`).
+//! camera's picture (`/api/camera_proxy/<entity_id>`), its live stream (`/api/hls/…`), and an
+//! automation's setup (`/api/config/automation/config/<id>`).
 //!
 //! A few lines of HTTP/1.1 over a connection from `transport.rs` (TCP, or TLS with its certificate
 //! checked) rather than a client library in the binary: one request per connection, the token in
 //! `Authorization`, the answer read up to a limit, within a time limit.
+//!
+//! **Only reads** (rule 5 of milestone 11): the request is always a `GET`, and only to an address
+//! under [`READ_PATHS`]. A `POST` to the same automation address would change it; there is no way
+//! to send one.
 
 use std::time::Duration;
 
@@ -18,7 +23,26 @@ pub struct Answer {
     pub body: Vec<u8>,
 }
 
-/// `GET {base}{path}` with `token`, the body at most `limit` bytes, all within `within`.
+/// The only addresses a request goes to: each one, read with a `GET`, changes nothing.
+pub const READ_PATHS: &[&str] = &[
+    "/api/camera_proxy/",
+    "/api/image_proxy/",
+    "/api/hls/",
+    "/api/config/automation/config/",
+];
+
+/// Whether `path` is one this extension may read: under [`READ_PATHS`], one path with nothing
+/// that could step out of it or start another line.
+pub fn readable(path: &str) -> bool {
+    READ_PATHS.iter().any(|prefix| path.starts_with(prefix))
+        && !path.split(['/', '?']).any(|part| part == "..")
+        // Nothing encoded: an encoded `/` or `.` could step out after all.
+        && !path.contains('%')
+        && path.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// `GET {base}{path}` with `token`, the body at most `limit` bytes, all within `within`. Refused,
+/// with nothing sent, unless the address is [`readable`].
 pub async fn get(
     transport: &Transport,
     path: &str,
@@ -26,6 +50,9 @@ pub async fn get(
     limit: usize,
     within: Duration,
 ) -> Result<Answer, String> {
+    if !readable(path) {
+        return Err(format!("`{path}` isn't an address this extension reads"));
+    }
     tokio::time::timeout(within, fetch(transport, path, token, limit))
         .await
         .map_err(|_| "Home Assistant didn't answer in time".to_owned())?
@@ -252,7 +279,7 @@ mod tests {
                 .to_vec(),
         )
         .await;
-        let answer = get(&base, "/", "t", 1000, Duration::from_secs(5))
+        let answer = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
             .await
             .expect("a picture");
         assert_eq!(answer.body, b"PNG");
@@ -271,17 +298,67 @@ mod tests {
         .into_bytes();
         answer.extend_from_slice(&zipped);
         let (base, _) = serve(answer).await;
-        let answer = get(&base, "/", "t", 1000, Duration::from_secs(5))
+        let answer = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
             .await
             .expect("a playlist");
         assert_eq!(answer.body, b"#EXTM3U\n");
+    }
+
+    /// Rule 5: only reads leave. Every request is a `GET`, and only to an address that reads.
+    #[tokio::test]
+    async fn only_reads_are_sent() {
+        for path in [
+            "/api/camera_proxy/camera.front",
+            "/api/image_proxy/image.door",
+            "/api/hls/abc/master_playlist.m3u8",
+            "/api/hls/abc/playlist.m3u8?_HLS_msn=3",
+            "/api/config/automation/config/1700000000000",
+        ] {
+            assert!(readable(path), "{path}");
+        }
+        for path in [
+            "/api/services/light/turn_on",
+            "/api/config/automation/config",
+            "/api/config/automation/config/../../services/light/turn_on",
+            "/api/config/automation/config/..",
+            "/api/config/automation/config/x%2F..%2Fy",
+            "/api/config/automation/config/a b",
+            "/api/config/automation/config/a\r\nX: y",
+            "/api/config/script/config/x",
+            "/api/events/x",
+            "/",
+        ] {
+            assert!(!readable(path), "{path}");
+        }
+
+        // Refused before anything is sent: the server never hears from it.
+        let (base, asked) =
+            serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec()).await;
+        let why = get(&base, "/api/services/light/turn_on", "t", 1000, Duration::from_secs(5))
+            .await
+            .expect_err("refused");
+        assert!(why.contains("isn't an address"), "{why}");
+        asked.abort();
+
+        // What does leave is a GET.
+        let (base, asked) =
+            serve(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_vec()).await;
+        get(&base, "/api/config/automation/config/17", "t", 1000, Duration::from_secs(5))
+            .await
+            .expect("an answer");
+        let request = asked.await.expect("asked");
+        assert!(
+            request.starts_with("GET /api/config/automation/config/17 HTTP/1.1\r\n"),
+            "{request}"
+        );
+        assert_eq!(request.matches("\r\n\r\n").count(), 1, "one request, no body");
     }
 
     #[tokio::test]
     async fn refusals_and_oversized_pictures_are_said() {
         let (base, _) =
             serve(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec()).await;
-        let why = get(&base, "/", "t", 1000, Duration::from_secs(5))
+        let why = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
             .await
             .expect_err("refused");
         assert!(why.contains("token"), "{why}");
@@ -290,7 +367,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 5000\r\n\r\n".to_vec(),
         )
         .await;
-        let why = get(&base, "/", "t", 1000, Duration::from_secs(5))
+        let why = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
             .await
             .expect_err("too big");
         assert!(why.contains("bigger"), "{why}");

@@ -254,6 +254,9 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     Some(irori_protocol::Incoming::Talk(talk)) => {
                         talk.line.end(Some("Zigbee devices have no cameras".into()));
                     }
+                    Some(irori_protocol::Incoming::Ask(ask)) => {
+                        ask.reply(Err("Zigbee answers no questions".into()));
+                    }
                     None => break Ok(()),
                 }
             }

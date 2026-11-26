@@ -852,6 +852,7 @@ async fn supervise(
             unpairs: contribution.unpairs,
             app: None,
             engine: false,
+            answers: contribution.answers.clone(),
         },
     );
 
@@ -1382,6 +1383,7 @@ async fn supervise_package(
                 unpairs: false,
                 app,
                 engine: false,
+                answers: Vec::new(),
             },
         );
         if !has_app {
@@ -1458,6 +1460,9 @@ async fn supervise_package(
             unpairs: contribution.is_some_and(|contribution| contribution.unpairs),
             app: app.clone(),
             engine: manifest.is_engine(),
+            answers: contribution
+                .map(|contribution| contribution.answers.clone())
+                .unwrap_or_default(),
         },
     );
 
@@ -2004,6 +2009,15 @@ async fn pass_talk(stream: u64, mut audio: mpsc::Receiver<Vec<u8>>, out: mpsc::S
 }
 
 fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
+    if let Some((from, method, params)) = incoming.asking() {
+        return ToExt::AppRequest {
+            id,
+            method: method.to_owned(),
+            params: params.clone(),
+            caller: None,
+            from: Some(from.to_owned()),
+        };
+    }
     if let Some(unique_id) = incoming.picturing() {
         return ToExt::CameraPicture {
             id,
@@ -2479,6 +2493,17 @@ async fn apply_from_ext(
             }
             Ok(None)
         }
+        // A protocol's answer to another extension's question; an engine's page's answers are
+        // taken by `EngineLink::handle` before they get here.
+        FromExt::AppAnswer { id, value, error } => {
+            if let Some(incoming) = pending_actions.remove(&id) {
+                incoming.reply_answer(match error {
+                    None => Ok(value.unwrap_or(serde_json::Value::Null)),
+                    Some(error) => Err(error),
+                });
+            }
+            Ok(None)
+        }
         // Answered by `EngineLink::handle` before they get here.
         FromExt::GetRegistry { .. }
         | FromExt::GetStates { .. }
@@ -2487,7 +2512,7 @@ async fn apply_from_ext(
         | FromExt::Note { .. }
         | FromExt::Subscribe { .. }
         | FromExt::CallService { .. }
-        | FromExt::AppAnswer { .. } => Ok(None),
+        | FromExt::AskExtension { .. } => Ok(None),
     }
 }
 
