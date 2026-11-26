@@ -37,6 +37,7 @@ pub fn List() -> impl IntoView {
         open: RwSignal::new(false),
         found: RwSignal::new(None),
         results: RwSignal::new(BTreeMap::new()),
+        note: RwSignal::new(None),
     };
     // A flow brought over from Home Assistant being turned on: the warning shown under it, and
     // what turning one on or off said, by flow id. Kept here for the same reason.
@@ -79,7 +80,11 @@ pub fn List() -> impl IntoView {
                     let beside_home_assistant = found.home_assistant;
                     view! {
                         {beside_home_assistant.then(|| view! {
-                            <FromHomeAssistant panel=home_assistant brought=Callback::new(move |()| refresh()) />
+                            <FromHomeAssistant panel=home_assistant brought=Callback::new(move |()| {
+                                // What turning a flow on said may not hold any more.
+                                said.set(BTreeMap::new());
+                                refresh();
+                            }) />
                         })}
                         {(!problems.is_empty()).then(|| view! {
                             <div class="problems-box">
@@ -238,6 +243,8 @@ struct HaPanel {
     open: RwSignal<bool>,
     found: RwSignal<Option<Result<api::HaAutomations, String>>>,
     results: RwSignal<BTreeMap<String, Result<api::BroughtOver, String>>>,
+    /// What Restore or Forget said, kept after the list is read again without that one.
+    note: RwSignal<Option<Result<String, String>>>,
 }
 
 #[component]
@@ -246,6 +253,7 @@ fn FromHomeAssistant(panel: HaPanel, brought: Callback<()>) -> impl IntoView {
         open,
         found,
         results,
+        note,
     } = panel;
     let load = move || {
         found.set(None);
@@ -263,6 +271,7 @@ fn FromHomeAssistant(panel: HaPanel, brought: Callback<()>) -> impl IntoView {
                 open.set(opening);
                 if opening {
                     results.set(BTreeMap::new());
+                    note.set(None);
                     load();
                 }
             }>{move || if open.get() { "Close" } else { "Bring over from Home Assistant" }}</button>
@@ -284,8 +293,12 @@ fn FromHomeAssistant(panel: HaPanel, brought: Callback<()>) -> impl IntoView {
                     Some(Ok(all)) => {
                         let off = all.switched_off;
                         view! {
+                            {move || note.get().map(|said| match said {
+                                Ok(said) => view! { <p class="meta">{said}</p> }.into_any(),
+                                Err(why) => view! { <div class="problems-box">{why}</div> }.into_any(),
+                            })}
                             {(!off.is_empty()).then(|| view! {
-                                <SwitchedOffList off=off changed=Callback::new(move |()| {
+                                <SwitchedOffList off=off note=note changed=Callback::new(move |()| {
                                     brought.run(());
                                     load();
                                 }) />
@@ -403,8 +416,11 @@ fn HaRow(
 /// its flow off and switches it back on there; Forget only takes it off the list, for one
 /// switched back on in Home Assistant by hand.
 #[component]
-fn SwitchedOffList(off: Vec<api::SwitchedOff>, changed: Callback<()>) -> impl IntoView {
-    let said = RwSignal::new(None::<Result<String, String>>);
+fn SwitchedOffList(
+    off: Vec<api::SwitchedOff>,
+    note: RwSignal<Option<Result<String, String>>>,
+    changed: Callback<()>,
+) -> impl IntoView {
     let busy = RwSignal::new(false);
     view! {
         <div class="hand-over">
@@ -430,7 +446,7 @@ fn SwitchedOffList(off: Vec<api::SwitchedOff>, changed: Callback<()>) -> impl In
                             api::ha_forget(&entity_id).await.map(|_| "Taken off the list.".to_owned())
                         };
                         let _ = busy.try_set(false);
-                        let _ = said.try_set(Some(answer));
+                        let _ = note.try_set(Some(answer));
                         changed.run(());
                     });
                 };
@@ -459,10 +475,6 @@ fn SwitchedOffList(off: Vec<api::SwitchedOff>, changed: Callback<()>) -> impl In
                     </div>
                 }
             }).collect_view()}
-            {move || said.get().map(|answer| match answer {
-                Ok(note) => view! { <p class="meta">{note}</p> }.into_any(),
-                Err(why) => view! { <div class="problems-box">{why}</div> }.into_any(),
-            })}
         </div>
     }
 }
