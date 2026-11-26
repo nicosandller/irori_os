@@ -701,6 +701,11 @@
     @keyframes fell-b { from { color: var(--ember); translate: 0 -.3em; } }
     .badge { color: var(--muted); font: .65rem var(--mono); letter-spacing: .08em;
              text-transform: uppercase; }
+    /* Who runs a device, in a home that has Home Assistant. */
+    .side { display: table; margin: .2rem 0 0; padding: 0 .4rem; border: 1px solid var(--muted);
+            border-radius: 999px; font: .6rem var(--mono); letter-spacing: .06em;
+            text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+    .side.ha { color: var(--fg); border-color: var(--ember); }
     /* Why the last command was refused, on its own line under the row it belongs to. */
     .why { flex-basis: 100%; margin: .15rem 0 0; color: var(--ember); font-size: .8rem; }
 

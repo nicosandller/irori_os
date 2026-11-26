@@ -383,17 +383,25 @@ pub async fn handle(
 
 async fn ask(service: &mut Service, who: &Who, method: &str, raw: Value) -> Result<Value, String> {
     match method {
-        "flows.list" => answer(json!({
-            "flows": list(service, who),
-            // Files that couldn't be read are the home's to look at.
-            "file_problems": if who.owner {
-                service.store.problems().iter().map(|p| json!({
-                    "file": p.file, "reason": p.reason,
-                })).collect::<Vec<_>>()
-            } else {
-                Vec::new()
-            },
-        })),
+        "flows.list" => {
+            let mut listing = json!({
+                "flows": list(service, who),
+                // Files that couldn't be read are the home's to look at.
+                "file_problems": if who.owner {
+                    service.store.problems().iter().map(|p| json!({
+                        "file": p.file, "reason": p.reason,
+                    })).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                },
+            });
+            // Said only in a home Home Assistant's devices came into, so the page can tell whose
+            // flows these are. A home without it is answered exactly as it was.
+            if bridged(&service.registry) {
+                listing["home_assistant"] = json!(true);
+            }
+            answer(listing)
+        }
         // One flow written out for the assistant. The core never opens the flow file.
         "flow.brief" => {
             #[derive(Deserialize)]
@@ -835,6 +843,14 @@ async fn ask(service: &mut Service, who: &Who, method: &str, raw: Value) -> Resu
         }
         other => Err(format!("the Automations engine has no `{other}`")),
     }
+}
+
+/// Whether any entity of the home came through the Home Assistant extension.
+fn bridged(registry: &irori_rules::MapRegistry) -> bool {
+    registry
+        .entities
+        .values()
+        .any(|entity| entity.protocol.as_str() == "homeassistant")
 }
 
 fn list(service: &Service, who: &Who) -> Vec<FlowSummary> {

@@ -1415,3 +1415,33 @@ async fn a_change_made_while_stopped_turns_the_flow_off_at_start() {
         "{told:?}"
     );
 }
+
+async fn list_as_owner(service: &mut Service) -> serde_json::Value {
+    rpc::handle(
+        service,
+        &Caller::owner(),
+        "flows.list",
+        serde_json::json!({}),
+    )
+    .await
+    .expect("lists")
+}
+
+/// The list says whose flows these are only in a home Home Assistant's devices came into: a home
+/// without it is answered exactly as before, with nothing added.
+#[tokio::test]
+async fn the_list_says_so_only_in_a_home_with_home_assistant() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let (mut service, _notes) = started_on(dir.path(), &People::default()).await;
+    let native = list_as_owner(&mut service).await;
+    assert!(native.get("home_assistant").is_none(), "{native}");
+
+    let mut bridged = entity("light.lamp", Capabilities::Light(Default::default()));
+    bridged.protocol = "homeassistant".parse().expect("valid");
+    service
+        .registry
+        .entities
+        .insert(bridged.id.clone(), bridged);
+    let listed = list_as_owner(&mut service).await;
+    assert_eq!(listed["home_assistant"], true, "{listed}");
+}

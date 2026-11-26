@@ -63,7 +63,14 @@ pub fn List() -> impl IntoView {
                 Some(Err(why)) => view! { <div class="problems-box">{why}</div> }.into_any(),
                 Some(Ok(found)) => {
                     let problems = found.file_problems.clone();
+                    let beside_home_assistant = found.home_assistant;
                     view! {
+                        {beside_home_assistant.then(|| view! {
+                            <p class="muted">
+                                "These flows are run by Irori. Home Assistant's own automations can't "
+                                "be listed here yet; bringing them over is planned."
+                            </p>
+                        })}
                         {(!problems.is_empty()).then(|| view! {
                             <div class="problems-box">
                                 <strong>"Some flow files can't be read. "</strong>
@@ -110,6 +117,11 @@ pub fn List() -> impl IntoView {
                                                 <div class="row">
                                                     <span class="name">{flow.name.to_string()}</span>
                                                     {status(&flow)}
+                                                    {beside_home_assistant.then(|| view! {
+                                                        <span class="chip" title="Irori runs this automation. Home Assistant's own automations are run by Home Assistant.">
+                                                            "Run by Irori"
+                                                        </span>
+                                                    })}
                                                     {flow.owner.as_ref().map(|owner| view! {
                                                         <span class="chip" title="Whose automation this is">
                                                             {format!("{}'s", owner.name)}
