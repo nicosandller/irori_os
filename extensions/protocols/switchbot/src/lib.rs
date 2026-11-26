@@ -296,7 +296,7 @@ struct World {
     strangers: std::collections::BTreeSet<String>,
     /// Devices whose MAC came in an advert from another address, each logged once.
     impostors: BTreeSet<String>,
-    /// Said once: more devices were heard than are kept.
+    /// Said once each time the list fills: more devices were heard than are kept.
     full_said: bool,
     /// Devices only Bluetooth knew that were forgotten after a day unheard, oldest first: one
     /// heard again is let back in even when [`MAX_HEARD`] are kept, since it may be one someone
@@ -602,6 +602,8 @@ impl World {
         for id in forget {
             self.devices.remove(&id);
             self.let_back_later(id.clone());
+            // There's room again: say so again the next time the list fills.
+            self.full_said = false;
             self.readings_dirty = true;
             self.map_dirty = true;
         }
