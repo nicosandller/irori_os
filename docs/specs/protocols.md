@@ -287,7 +287,7 @@ that doesn't, so a home without one does no extra work.
 - **Bounded.** At most 7 days of changes and 366 days of hours; at most 2,000 changes (the
   newest) and 8,784 hours in an answer; two questions at a time across the home; 8 seconds to
   answer, after which Irori's own history is shown alone. An engine's one question fills in at
-  most 24 entities this way. The core checks each change against the entity, as it would a
+  most 24 entities this way, all within the same 8 seconds. The core checks each change against the entity, as it would a
   report, and drops what's outside the stretch.
 - **Changes** are `{ at, availability?, state }`, `state` the entity kind's value or `null`.
   **Hours** are `{ start, value, min?, max? }`: the hour's average for a measurement, or how much

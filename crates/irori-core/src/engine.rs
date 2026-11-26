@@ -219,11 +219,20 @@ impl EngineLink {
                 tokio::spawn(async move {
                     let mut history = serde_json::Map::new();
                     let mut asked = 0;
+                    // One wait for the whole question, not one per entity: a bridged system that
+                    // hangs costs a backtest seconds, not minutes. What's left past it gets
+                    // Irori's own history alone.
+                    let deadline = tokio::time::Instant::now() + crate::PAST_TIMEOUT;
                     for (entity, lends) in entities.iter().zip(lending) {
                         let own = core.history(entity, since);
                         let states = if lends && asked < crate::PAST_ENTITIES_PER_ASK {
                             asked += 1;
-                            match core.past_changes(entity, since).await {
+                            let past =
+                                tokio::time::timeout_at(deadline, core.past_changes(entity, since))
+                                    .await
+                                    .ok()
+                                    .flatten();
+                            match past {
                                 Some(past) => crate::join_past(past.states, own),
                                 None => own,
                             }
