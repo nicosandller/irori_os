@@ -439,36 +439,88 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
     }
 }
 
-/// Turns the flow on or off. A saved flow switches at once; a new one when it's saved.
+/// Turns the flow on or off. A saved flow switches at once; a new one when it's saved. One
+/// brought over from Home Assistant is turned on only once its warning was read (issue #199),
+/// and only as it's saved: its automation there is switched off first.
 #[component]
 fn HeaderToggle() -> impl IntoView {
     let ed = expect_context::<Editing>();
     let on = Signal::derive(move || ed.draft.with(|d| d.as_ref().is_some_and(|f| f.enabled)));
+    let twin = Signal::derive(move || {
+        ed.saved
+            .with(|saved| saved.as_ref().and_then(|flow| flow.home_assistant.clone()))
+    });
+    let confirming = RwSignal::new(false);
+    let handing = RwSignal::new(false);
+    let switched = move |id: String, on: bool, answer: Result<serde_json::Value, String>| {
+        match answer {
+            Ok(done) => {
+                for signal in [ed.draft, ed.saved] {
+                    signal.update(|f| {
+                        if let Some(f) = f {
+                            f.enabled = on;
+                        }
+                    });
+                }
+                if let Some(why) = api::still_waiting(&done) {
+                    ed.message.set(Some(format!(
+                        "Turned off. Home Assistant's automation will be switched back on as soon as it can be: {why}"
+                    )));
+                }
+                spawn_local(async move {
+                    if let Ok(detail) = api::get(&id).await {
+                        ed.armed.set(detail.armed);
+                    }
+                });
+            }
+            Err(why) => ed.message.set(Some(why)),
+        }
+    };
     let set = Callback::new(move |on: bool| {
+        let twinned = twin.get_untracked().is_some();
+        if twinned && (ed.is_new.get_untracked() || ed.dirty()) {
+            ed.message.set(Some(
+                "Save your changes first: a flow brought over from Home Assistant is turned on or off on its own."
+                    .to_owned(),
+            ));
+            return;
+        }
         if ed.is_new.get_untracked() || ed.dirty() {
             ed.edit(|flow| flow.enabled = on);
             return;
         }
+        if on && twinned {
+            confirming.set(true);
+            return;
+        }
         let id = ed.id();
         spawn_local(async move {
-            match api::enable(&id, on).await {
-                Ok(_) => {
-                    for signal in [ed.draft, ed.saved] {
-                        signal.update(|f| {
-                            if let Some(f) = f {
-                                f.enabled = on;
-                            }
-                        });
-                    }
-                    if let Ok(detail) = api::get(&id).await {
-                        ed.armed.set(detail.armed);
-                    }
-                }
-                Err(why) => ed.message.set(Some(why)),
-            }
+            let answer = api::enable(&id, on).await;
+            switched(id, on, answer);
         });
     });
-    view! { <crate::widgets::Toggle on=on set=set label="On or off" /> }
+    let confirm = Callback::new(move |()| {
+        let id = ed.id();
+        handing.set(true);
+        spawn_local(async move {
+            let answer = api::enable_handing_over(&id).await;
+            let _ = handing.try_set(false);
+            let _ = confirming.try_set(false);
+            switched(id, true, answer);
+        });
+    });
+    view! {
+        <crate::widgets::Toggle on=on set=set label="On or off" />
+        {move || (confirming.get()).then(|| view! {
+            <div class="hand-over-float">
+                <crate::widgets::HandOverWarning
+                    automation=twin.get().map(|twin| twin.entity_id).unwrap_or_default()
+                    busy=handing
+                    confirm=confirm
+                    cancel=Callback::new(move |()| confirming.set(false)) />
+            </div>
+        })}
+    }
 }
 
 /// What can be added: click one and it lands on the canvas, open.

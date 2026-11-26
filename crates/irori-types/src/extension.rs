@@ -332,6 +332,12 @@ pub struct ProtocolContribution {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[schemars(extend("uniqueItems" = true))]
     pub answers: Vec<ExtensionId>,
+    /// Whether it changed something outside Irori that it has to undo before it's removed
+    /// (`docs/specs/protocols.md` §5.6): a Home Assistant automation it switched off, say. With
+    /// this set, removing the extension first asks it to tidy up (`removing`), and an error it
+    /// answers keeps it installed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub tidies_up: bool,
 }
 
 impl ProtocolContribution {

@@ -122,6 +122,7 @@ core's process.
 | Send a picture | receives a camera or image entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` and `image` entities. §5.2 |
 | Send live video | receives a camera entity's `unique_id`, a quality and the codecs the page plays; sends an init segment, then video, until told to stop | Only for its own `camera` entities that say `live`. §5.3 |
 | Answer another extension | receives a question (a method and its parameters) from an extension its manifest names in `answers`; replies with JSON or why not | Only with `answers` in its manifest. §5.5 |
+| Tidy up before removal | is told it's about to be removed; undoes what it changed outside Irori, replies with a result | Only with `tidies_up` in its manifest. An error keeps it installed. §5.6 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 
@@ -285,6 +286,23 @@ own automations, so the owner can bring one over as a flow
 - **It has 20 seconds** to answer, as it may have to read the system it bridges first.
 - **A core older than 1.7.0 doesn't know the message**, so an engine asks only when the home
   has the protocol it asks: one that does is 1.7.0 or newer.
+
+### 5.6 Tidying up before it's removed
+
+A protocol that changed something outside Irori that only it can undo is asked to undo it before
+it's removed: the Home Assistant extension switches back on the Home Assistant automations it
+switched off for flows that ran in their place (issue #199).
+
+- **Only with `tidies_up = true`** in its manifest ([extensions.md](extensions.md) §4). Any
+  other extension is removed exactly as before, and never sees the message.
+- **On the wire** it is `removing { id }`, answered with `action_result { id, error? }`. In the
+  SDK it is `Incoming::Removing`, answered with `reply`. A protocol with nothing to undo answers
+  at once.
+- **An error keeps it installed.** The removal is refused with the protocol's words, which say
+  what's left and what to do. A protocol that isn't running, or doesn't answer within 30
+  seconds, isn't removed either: what it changed would otherwise be left with nobody to undo it.
+- **It is sent only when the extension is removed**, not when Irori stops or the extension is
+  updated or restarted: then it is `stop`, and what it changed stays until it runs again.
 
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
@@ -801,7 +819,8 @@ answered with the same `id`. Sample conversations are in
 | → core | `set_action_open` | `action_id`, `closes_in_ms`? | A timed action is open (for this long), or closed. |
 | core → | `action_call` | `id`, `action_id`, `stop`?, `way`?, `fields`? | Someone pressed one of its actions. |
 | core → | `unpair_device` | `id`, `unique_id`, `force`? | Take a device off the network. Only to a protocol whose manifest says `unpairs`. |
-| → core | `action_result` | `id`, `error`? | The answer to `action_call` and `unpair_device`. |
+| core → | `removing` | `id` | It's about to be removed: undo what only it can undo outside Irori. Only to a protocol whose manifest says `tidies_up` (§5.6). |
+| → core | `action_result` | `id`, `error`? | The answer to `action_call`, `unpair_device` and `removing`. |
 | core → | `camera_picture` | `id`, `unique_id` | A page wants a picture from this camera. |
 | → core | `picture_result` | `id`, `picture`?: `{content_type, data}` (base64), `error`? | The picture, or why there's none. |
 

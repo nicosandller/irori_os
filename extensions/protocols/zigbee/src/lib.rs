@@ -257,6 +257,8 @@ async fn run(settings: Settings, mut ctx: ProtocolContext) -> Result<(), Protoco
                     Some(irori_protocol::Incoming::Ask(ask)) => {
                         ask.reply(Err("Zigbee answers no questions".into()));
                     }
+                    // Never sent: its manifest doesn't say `tidies_up`.
+                    Some(irori_protocol::Incoming::Removing(removing)) => removing.reply(Ok(())),
                     None => break Ok(()),
                 }
             }

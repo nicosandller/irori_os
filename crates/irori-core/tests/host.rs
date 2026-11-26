@@ -2369,3 +2369,73 @@ async fn a_protocol_answers_only_the_extensions_it_names() {
     assert!(nobody.is_err());
     host.shutdown().await;
 }
+
+// --- A protocol that tidies up before it's removed (`docs/specs/protocols.md` §5.6) --------
+
+/// Whether [`Tidy`] can undo what it changed: it can't while this is set.
+static CANT_TIDY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+/// How many times [`Tidy`] was asked.
+static TIDIED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+struct Tidy;
+impl Protocol for Tidy {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "tidy"
+        name = "Tidy"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.protocol]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+        tidies_up = true
+    "#;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        use std::sync::atomic::Ordering;
+        while let Some(incoming) = ctx.next().await {
+            if let irori_protocol::Incoming::Removing(removing) = incoming {
+                TIDIED.fetch_add(1, Ordering::SeqCst);
+                if CANT_TIDY.load(Ordering::SeqCst) {
+                    removing.reply(Err("the other system is away".into()));
+                } else {
+                    removing.reply(Ok(()));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An extension whose manifest says `tidies_up` is asked before it's removed, and stays
+/// installed and running when it can't tidy up; one that doesn't is never asked.
+#[tokio::test(start_paused = true)]
+async fn an_extension_that_tidies_up_is_asked_before_it_goes() {
+    use std::sync::atomic::Ordering;
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Tidy>().expect("a builtin"));
+    eventually("tidy running", || {
+        status(&core, "tidy") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    let id = ExtensionId::try_from("tidy").expect("valid");
+
+    let refused = host.uninstall(&id).await;
+    assert_eq!(refused, Err("the other system is away".to_owned()));
+    assert_eq!(TIDIED.load(Ordering::SeqCst), 1);
+    assert_eq!(status(&core, "tidy"), Some(ExtensionStatus::Running));
+
+    CANT_TIDY.store(false, Ordering::SeqCst);
+    host.uninstall(&id).await.expect("removed");
+    assert_eq!(TIDIED.load(Ordering::SeqCst), 2);
+    assert_eq!(status(&core, "tidy"), None);
+
+    // One that doesn't say `tidies_up` is never asked: nothing to wait for.
+    assert_eq!(
+        core.tidy_up(&ExtensionId::try_from("bridge").expect("valid"))
+            .await,
+        Ok(())
+    );
+    host.shutdown().await;
+}

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use irori_flow_types::{Flow, Node, Trigger};
 use irori_flows::engine::next_moment;
 use irori_flows::{sim, validate};
-use irori_protocol::engine::Caller;
+use irori_protocol::engine::{AppRequest, Caller};
 use irori_types::{ContextId, RuleId, Timestamp, UserId};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,13 @@ fn stamped(service: &Service, who: &Who, flow: &mut Flow) {
         None => who.by(),
     };
     flow.home_assistant = existing.and_then(|existing| existing.home_assistant.clone());
+    // One brought over is turned on only by handing its twin over (`twin`): a save, a version
+    // put back or the assistant leave it as it was.
+    if let Some(existing) = existing
+        && existing.home_assistant.is_some()
+    {
+        flow.enabled = existing.enabled;
+    }
 }
 
 fn params<T: DeserializeOwned>(params: Value) -> Result<T, String> {
@@ -855,7 +862,12 @@ async fn ask(service: &mut Service, who: &Who, method: &str, raw: Value) -> Resu
 pub fn finish_fetched(service: &mut Service, fetched: home_assistant::Fetched) {
     use home_assistant::Fetched;
     match fetched {
-        Fetched::List { request, list } => {
+        Fetched::List {
+            request,
+            list,
+            twins,
+        } => {
+            let switched_off = switched_off(service, &twins);
             let answer = list.map(|list| {
                 let automations: Vec<Value> = home_assistant::listed(&list)
                     .into_iter()
@@ -873,10 +885,21 @@ pub fn finish_fetched(service: &mut Service, fetched: home_assistant::Fetched) {
                         row
                     })
                     .collect();
-                json!({ "automations": automations })
+                json!({ "automations": automations, "switched_off": switched_off })
             });
             request.answer(answer);
         }
+        Fetched::HandedOver {
+            request,
+            flow,
+            entity_id,
+            answer,
+        } => crate::twin::handed_over(service, request, flow, entity_id, answer),
+        Fetched::GaveBack {
+            request,
+            done,
+            answer,
+        } => crate::twin::gave_back(request, done, answer),
         Fetched::Setup {
             request,
             list,
@@ -887,6 +910,110 @@ pub fn finish_fetched(service: &mut Service, fetched: home_assistant::Fetched) {
             request.answer(Ok(result));
         }
     }
+}
+
+/// What Irori switched off in Home Assistant, each with the flow it's the twin of. One whose
+/// flow is gone or off is asked back: its flow was deleted or turned off while the Home
+/// Assistant extension couldn't be asked, or its file was edited by hand.
+fn switched_off(service: &Service, twins: &Value) -> Vec<Value> {
+    let underway: Vec<&str> = service
+        .twins_underway
+        .iter()
+        .filter_map(|id| service.store.flow(id))
+        .filter_map(|flow| flow.home_assistant.as_ref())
+        .map(|twin| twin.entity_id.as_str())
+        .collect();
+    twins["twins"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|held| {
+            let entity_id = held["entity_id"].as_str()?;
+            let flow = service.store.flows().find(|flow| {
+                flow.enabled
+                    && flow
+                        .home_assistant
+                        .as_ref()
+                        .is_some_and(|twin| twin.entity_id == entity_id)
+            });
+            let releasing = held["releasing"].as_bool().unwrap_or(false);
+            if flow.is_none() && !releasing && !underway.contains(&entity_id) {
+                crate::twin::give_back(service, entity_id.to_owned(), None, Value::Null);
+            }
+            let mut row = json!({
+                "entity_id": entity_id,
+                "name": held["name"].as_str().unwrap_or(entity_id),
+                "waiting": releasing || flow.is_none(),
+            });
+            if let Some(flow) = flow {
+                row["flow"] = json!(flow.id);
+            }
+            Some(row)
+        })
+        .collect()
+}
+
+/// The owner's Restore or Forget beside one Irori switched off. Restore turns off the flows
+/// that are its twin's first, so the two never both run, then asks for it back; Forget only
+/// takes it off the list, for one they switched back on in Home Assistant themselves.
+pub fn restore_or_forget(service: &mut Service, request: AppRequest) {
+    let Some(entity_id) = request.params["entity_id"].as_str().map(str::to_owned) else {
+        request.answer(Err("say which automation: `entity_id`".to_owned()));
+        return;
+    };
+    if !bridged(&service.registry) {
+        request.answer(Err("this home has no Home Assistant".to_owned()));
+        return;
+    }
+    if request.method == home_assistant::FORGET {
+        let client = service.client.clone();
+        let fetched = service.fetched_tx.clone();
+        tokio::spawn(async move {
+            let bridge = irori_types::ExtensionId::try_from("homeassistant").expect("an id");
+            let answer = client
+                .ask_extension(bridge, "twin.forget", json!({ "entity_id": entity_id }))
+                .await
+                .map_err(|why| why.to_string());
+            match answer {
+                Ok(_) => {
+                    let _ = fetched.send(home_assistant::Fetched::GaveBack {
+                        request: Some(request),
+                        done: Value::Null,
+                        answer: Ok(json!({})),
+                    });
+                }
+                Err(why) => request.answer(Err(why)),
+            }
+        });
+        return;
+    }
+    let turned_off: Vec<Flow> = service
+        .store
+        .flows()
+        .filter(|flow| {
+            flow.enabled
+                && flow
+                    .home_assistant
+                    .as_ref()
+                    .is_some_and(|twin| twin.entity_id == entity_id)
+        })
+        .cloned()
+        .map(|mut flow| {
+            flow.enabled = false;
+            flow
+        })
+        .collect();
+    for flow in &turned_off {
+        if let Err(why) = service.store.save(flow, now(), None) {
+            request.answer(Err(why));
+            return;
+        }
+    }
+    if !turned_off.is_empty() {
+        service.arm();
+    }
+    let done = json!({ "turned_off": turned_off.iter().map(|f| &f.id).collect::<Vec<_>>() });
+    crate::twin::give_back(service, entity_id, Some(request), done);
 }
 
 /// Brings one automation over, or says why not: `{ "flow": id }` (with `already` when it was

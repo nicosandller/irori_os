@@ -475,6 +475,7 @@ async fn read_incoming<R>(
             | ToExt::ServiceCall { .. }
             | ToExt::ActionCall { .. }
             | ToExt::UnpairDevice { .. }
+            | ToExt::Removing { .. }
             | ToExt::CameraPicture { .. } => continue,
         };
         if in_tx.send(incoming).is_err() {

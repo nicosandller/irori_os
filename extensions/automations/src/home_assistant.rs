@@ -28,10 +28,14 @@ const BRIDGE: &str = "homeassistant";
 /// The page's questions.
 pub const AUTOMATIONS: &str = "home_assistant.automations";
 pub const BRING_OVER: &str = "home_assistant.bring_over";
+/// Switch back on one of Home Assistant's automations Irori switched off, turning its flow off.
+pub const RESTORE: &str = "home_assistant.restore";
+/// Take one off the list of what Irori switched off, without touching Home Assistant.
+pub const FORGET: &str = "home_assistant.forget";
 
 /// Whether the page's question is one of these.
 pub fn asks(method: &str) -> bool {
-    method == AUTOMATIONS || method == BRING_OVER
+    matches!(method, AUTOMATIONS | BRING_OVER | RESTORE | FORGET)
 }
 
 /// What came back from Home Assistant, for the service's own loop to finish with: the reading
@@ -41,12 +45,28 @@ pub enum Fetched {
     List {
         request: AppRequest,
         list: Result<Value, String>,
+        /// What Irori switched off there (issue #199), as the Home Assistant extension keeps it.
+        twins: Value,
     },
     Setup {
         request: AppRequest,
         list: Value,
         automation: Listed,
         setup: Result<Value, String>,
+    },
+    /// The twin of a flow being turned on was switched off, or wasn't ([`crate::twin`]).
+    HandedOver {
+        request: AppRequest,
+        flow: RuleId,
+        entity_id: String,
+        answer: Result<Value, String>,
+    },
+    /// A twin was asked back, or forgotten: the page is answered `done`, with what Home
+    /// Assistant is still waited for.
+    GaveBack {
+        request: Option<AppRequest>,
+        done: Value,
+        answer: Result<Value, String>,
     },
 }
 
@@ -96,7 +116,19 @@ pub fn start(
         .map_err(|_| late())
         .and_then(|answer| answer.map_err(|e| e.to_string()));
         if request.method == AUTOMATIONS {
-            let _ = fetched.send(Fetched::List { request, list });
+            // Read too, for the list and to switch back on any whose flow is gone.
+            let twins = match &list {
+                Ok(_) => client
+                    .ask_extension(bridge.clone(), "twins.list", json!({}))
+                    .await
+                    .unwrap_or_else(|_| json!({})),
+                Err(_) => json!({}),
+            };
+            let _ = fetched.send(Fetched::List {
+                request,
+                list,
+                twins,
+            });
             return;
         }
         let list = match list {

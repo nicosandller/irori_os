@@ -49,16 +49,55 @@ pub struct HaAutomation {
     pub flow: Option<String>,
 }
 
+/// One of Home Assistant's automations Irori switched off, because its flow is on in Irori.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
-struct HaAutomations {
-    automations: Vec<HaAutomation>,
+pub struct SwitchedOff {
+    pub entity_id: String,
+    pub name: String,
+    /// The flow that's on in its place; absent when it's waiting to be switched back on.
+    #[serde(default)]
+    pub flow: Option<String>,
+    /// Waiting to be switched back on: its flow is off or gone, Home Assistant hasn't yet.
+    #[serde(default)]
+    pub waiting: bool,
 }
 
-/// Home Assistant's own automations. Reading them changes nothing in Home Assistant.
-pub async fn ha_automations() -> Result<Vec<HaAutomation>, String> {
-    call::<HaAutomations>("home_assistant.automations", json!({}))
-        .await
-        .map(|found| found.automations)
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HaAutomations {
+    pub automations: Vec<HaAutomation>,
+    #[serde(default)]
+    pub switched_off: Vec<SwitchedOff>,
+}
+
+/// Home Assistant's own automations, and those Irori switched off. Reading them changes
+/// nothing in Home Assistant.
+pub async fn ha_automations() -> Result<HaAutomations, String> {
+    call("home_assistant.automations", json!({})).await
+}
+
+/// Switches one Irori switched off back on in Home Assistant, turning its flow off first.
+pub async fn ha_restore(entity_id: &str) -> Result<Value, String> {
+    call("home_assistant.restore", json!({ "entity_id": entity_id })).await
+}
+
+/// Takes one off the list without touching Home Assistant: for one switched on there by hand.
+pub async fn ha_forget(entity_id: &str) -> Result<Value, String> {
+    call("home_assistant.forget", json!({ "entity_id": entity_id })).await
+}
+
+/// Turns on a flow brought over from Home Assistant, once the owner read the warning: its
+/// automation there is switched off first. The flow stays off if Home Assistant doesn't.
+pub async fn enable_handing_over(id: &str) -> Result<Value, String> {
+    call(
+        "flows.enable",
+        json!({ "id": id, "enabled": true, "hand_over": true }),
+    )
+    .await
+}
+
+/// What Home Assistant still has to do after a flow was turned off or deleted, if anything.
+pub fn still_waiting(answer: &Value) -> Option<String> {
+    answer["home_assistant_waiting"].as_str().map(str::to_owned)
 }
 
 /// What bringing one over did: the flow it made (or had made before), or why it can't come

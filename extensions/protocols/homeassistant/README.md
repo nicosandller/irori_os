@@ -99,8 +99,8 @@ Irori doesn't yet warn that a flow and a Home Assistant automation act on the sa
 
 On the Automations page, **Bring over from Home Assistant** lists Home Assistant's own
 automations. Bringing one over makes it an Irori flow, **switched off**, that remembers which Home
-Assistant automation it came from (its twin). Home Assistant keeps running its own: nothing in
-Home Assistant changes. When an automation uses something a flow can't do yet (a template, a
+Assistant automation it came from (its twin). Home Assistant keeps running its own, and bringing
+one over changes nothing in Home Assistant. When an automation uses something a flow can't do yet (a template, a
 `choose`, a call on a whole area…), nothing is brought over and every such part is listed. Only
 the home's owner can do this. What translates is in `docs/specs/flows.md` §8.
 
@@ -109,8 +109,29 @@ reads two things for it: the automations, from `get_states`, and one automation'
 Assistant's REST API (`GET /api/config/automation/config/<id>`). An automation written in YAML
 without an `id` has no setup there to read, and is listed as such.
 
-Switching the twin off in Home Assistant when the flow is turned on is #199; until then, turning
-both on runs both.
+### Turning the flow on switches its twin off
+
+So the same light isn't switched by both, **turning a brought-over flow on switches off its twin
+in Home Assistant**, and only that one automation. Irori asks first: the warning names the
+automation, and the flow stays off unless you confirm. If Home Assistant refuses or can't be
+reached, the flow stays off too and you're told why.
+
+- **Turning the flow off, deleting it, or removing this extension switches the twin back on.**
+  Under **Bring over from Home Assistant**, Irori lists what it switched off, each with
+  **Restore** (turns its flow off and switches it back on) and **Forget** (only takes it off the
+  list, for one you switched back on in Home Assistant yourself).
+- **An automation you had already switched off in Home Assistant is left alone**, and Irori
+  never switches it on.
+- **The list is kept**, so it survives restarts. What Irori couldn't switch back on yet (Home
+  Assistant was away) is switched on as soon as it connects again.
+- **If Irori is stopped while a flow is on, its automation stays off in Home Assistant until
+  Irori is back.** Switch it on in Home Assistant yourself if you stop Irori for good without
+  removing this extension.
+- **Removing this extension** first switches back on everything it switched off. If Home
+  Assistant can't be reached then, the extension isn't removed, and Irori says which automations
+  are still off.
+- With "Let Irori control devices" off, nothing is switched: the flow stays off, and you're told
+  why.
 
 ## Going easy on the core
 
@@ -129,14 +150,18 @@ A big Home Assistant must not crowd out a home's own devices, so this extension 
 
 `dev/ha-load` checks this holds against a fake Home Assistant of 2,000 and 5,000 entities.
 
-## Never changes Home Assistant's setup
+## Never changes Home Assistant's setup, with one exception
 
 What this extension can send is a closed list, checked again before anything leaves: signing in,
 `get_config`, the four registries' `list`, `get_states`, `subscribe_entities`,
 `subscribe_events`, `unsubscribe_events`, `camera/stream` (which only starts a stream to read),
-and `call_service`. Over HTTP it only reads, with a `GET`, from a closed list of addresses: a
+and `call_service`.
+
+**The one exception**, by your choice: `automation.turn_off` and `automation.turn_on`, each on
+one automation, the twin of a flow you turned on in Irori (above). Nothing else about an
+automation is ever sent, and a test fails if anything else can be. Over HTTP it only reads, with a `GET`, from a closed list of addresses: a
 camera's or image's picture, a camera's live stream, and an automation's setup. It never touches
-Home Assistant's registries, areas or automations, and it can't unpair anything. A test fails if
+Home Assistant's registries or areas, never edits an automation, and it can't unpair anything. A test fails if
 anything else can be sent.
 
 `call_service` does act on your home, and it is **on by default**: a command someone gives in

@@ -439,7 +439,10 @@ impl ExtensionHost {
     }
 
     /// Stops the extension, removes its devices, forgets it, and deletes its package directory.
+    /// One whose manifest says `tidies_up` is asked to undo what it changed outside Irori first;
+    /// if it can't, nothing is removed and its reason is the error.
     pub async fn uninstall(&self, id: &ExtensionId) -> Result<(), String> {
+        self.inner.core.tidy_up(id).await?;
         let task = {
             let mut running = self
                 .inner
@@ -853,6 +856,7 @@ async fn supervise(
             app: None,
             engine: false,
             answers: contribution.answers.clone(),
+            tidies_up: contribution.tidies_up,
         },
     );
 
@@ -1384,6 +1388,7 @@ async fn supervise_package(
                 app,
                 engine: false,
                 answers: Vec::new(),
+                tidies_up: false,
             },
         );
         if !has_app {
@@ -1463,6 +1468,7 @@ async fn supervise_package(
             answers: contribution
                 .map(|contribution| contribution.answers.clone())
                 .unwrap_or_default(),
+            tidies_up: contribution.is_some_and(|contribution| contribution.tidies_up),
         },
     );
 
@@ -2009,6 +2015,9 @@ async fn pass_talk(stream: u64, mut audio: mpsc::Receiver<Vec<u8>>, out: mpsc::S
 }
 
 fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
+    if incoming.removing() {
+        return ToExt::Removing { id };
+    }
     if let Some((from, method, params)) = incoming.asking() {
         return ToExt::AppRequest {
             id,

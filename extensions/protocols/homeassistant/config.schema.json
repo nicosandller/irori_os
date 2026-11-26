@@ -12,7 +12,7 @@
     },
     "commands": {
       "title": "Let Irori control devices",
-      "description": "On by default: Irori can switch, unlock, disarm and send commands through Home Assistant,\nand Automations flows can do the same. Turn it off for a read-only try: Irori then only\nreads Home Assistant and answers every command \"read-only\".",
+      "description": "On by default: Irori can switch, unlock, disarm and send commands through Home Assistant,\nand Automations flows can do the same. Turning on a flow brought over from Home\nAssistant also switches off that one automation there (after asking you), until the flow\nis turned off, deleted, or this extension removed. Turn it off for a read-only try: Irori\nthen only reads Home Assistant and answers every command \"read-only\".",
       "type": "boolean",
       "default": true
     },

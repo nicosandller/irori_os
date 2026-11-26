@@ -5880,6 +5880,7 @@ mod tests {
                     irori_protocol::Incoming::Ask(ask) => {
                         ask.reply(Err("the mesh answers no questions".into()));
                     }
+                    irori_protocol::Incoming::Removing(removing) => removing.reply(Ok(())),
                 }
             }
             Ok(())

@@ -738,6 +738,10 @@
             }
           ]
         },
+        "tidies_up": {
+          "description": "Whether it changed something outside Irori that it has to undo before it's removed\n(`docs/specs/protocols.md` §5.6): a Home Assistant automation it switched off, say. With\nthis set, removing the extension first asks it to tidy up (`removing`), and an error it\nanswers keeps it installed.",
+          "type": "boolean"
+        },
         "unpairs": {
           "description": "Whether removing one of its devices also has to take the device off a network the\nprotocol keeps (`docs/specs/protocols.md` §5) — a Zigbee device stays paired until the\nnetwork lets it go. With this set, removing a device asks the protocol to unpair it\nfirst, and the device is gone rather than back among what was found.",
           "type": "boolean"

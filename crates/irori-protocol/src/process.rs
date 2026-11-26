@@ -264,6 +264,12 @@ pub enum ToExt {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         force: bool,
     },
+    /// Irori is about to remove this extension: undo what only it can undo outside Irori. Only
+    /// sent to an extension whose manifest says `tidies_up`. Answered with `action_result`; an
+    /// error keeps it installed (`docs/specs/protocols.md` §5.6).
+    Removing {
+        id: u64,
+    },
     /// A page wants a picture from one of its cameras. Answered with `picture_result`.
     CameraPicture {
         id: u64,
@@ -773,6 +779,12 @@ fn handle_host_line(
             force,
         } => {
             let (incoming, result) = host::incoming_unpair(unique_id, force);
+            if !queue_action(id, incoming, result, actions, out, runtime) {
+                return ReadControl::Stop;
+            }
+        }
+        ToExt::Removing { id } => {
+            let (incoming, result) = host::incoming_removing();
             if !queue_action(id, incoming, result, actions, out, runtime) {
                 return ReadControl::Stop;
             }

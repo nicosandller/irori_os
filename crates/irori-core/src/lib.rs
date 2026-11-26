@@ -76,6 +76,10 @@ pub const PICTURE_TIMEOUT: Duration = Duration::from_secs(5);
 /// it from the system it bridges (`docs/specs/protocols.md` §5.5).
 pub const ASK_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// How long an extension that tidies up before it's removed may take (`docs/specs/protocols.md`
+/// §5.6): it may have to reach the system it bridges, once per thing it undoes.
+pub const TIDY_UP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How long an extension's page waits for its engine to answer. Longer than a service call: a
 /// backtest replays a day of history (`docs/specs/automations.md` §B3).
 pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -202,6 +206,10 @@ pub struct ExtensionInfo {
     /// served: it's the core's to check.
     #[serde(skip)]
     pub answers: Vec<ExtensionId>,
+    /// Whether it's asked to tidy up before it's removed (the manifest's `tidies_up`). Not
+    /// served: it's the core's to act on.
+    #[serde(skip)]
+    pub tidies_up: bool,
 }
 
 /// An extension's page, as the shell lists it.
@@ -1329,6 +1337,33 @@ impl Core {
     ) -> Result<(), CallActionError> {
         let asked = irori_protocol::host::incoming_stop(action_id.to_owned());
         self.ask(extension, asked, SERVICE_CALL_TIMEOUT).await
+    }
+
+    /// Asks an extension that is about to be removed to undo what it changed outside Irori, when
+    /// its manifest says `tidies_up` (`docs/specs/protocols.md` §5.6). `Ok` at once for any
+    /// other. An error is the extension's reason it can't go yet: it stays installed.
+    pub async fn tidy_up(&self, extension: &ExtensionId) -> Result<(), String> {
+        let tidies_up = read(&self.0.extensions)
+            .get(extension)
+            .and_then(|overview| overview.info.as_ref())
+            .is_some_and(|info| info.tidies_up);
+        if !tidies_up {
+            return Ok(());
+        }
+        let asked = irori_protocol::host::incoming_removing();
+        self.ask(extension, asked, TIDY_UP_TIMEOUT)
+            .await
+            .map_err(|why| match why {
+                CallActionError::NotRunning(_) => format!(
+                    "`{extension}` has to be running to undo what it changed outside Irori \
+                     before it's removed: turn it on, then remove it"
+                ),
+                CallActionError::Timeout => format!(
+                    "`{extension}` didn't finish undoing what it changed outside Irori in time, \
+                     so it wasn't removed"
+                ),
+                CallActionError::Failed(why) => why,
+            })
     }
 
     /// Whether removing this device has to unpair it: its protocol's manifest says `unpairs`.

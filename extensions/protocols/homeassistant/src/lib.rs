@@ -21,6 +21,7 @@ pub mod network;
 pub mod settings;
 pub mod throttle;
 pub mod transport;
+pub mod twins;
 
 #[cfg(any(test, feature = "fake"))]
 pub mod fake;
@@ -33,13 +34,13 @@ use std::time::Duration;
 
 use irori_protocol::{
     AvailabilityTarget, Health, Incoming, IncomingAsk, IncomingCall, IncomingLive, IncomingPicture,
-    Picture, Protocol, ProtocolContext, ProtocolError, ServiceError,
+    IncomingRemoving, Picture, Protocol, ProtocolContext, ProtocolError, ServiceError,
 };
 use irori_types::{
     Availability, Capabilities, ContextId, DeviceDescription, EntityDescription, SecretRequest,
     State, StateReport, SuggestedLayout, UniqueId, Unmodeled, Waiting,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 
@@ -48,6 +49,7 @@ use crate::model::{Bridged, HaState, Plan, Reading, Registry};
 use crate::settings::Settings;
 use crate::throttle::Throttle;
 use crate::transport::Transport;
+use crate::twins::Held;
 
 /// The extension, for [`irori_protocol::serve`].
 #[derive(Debug)]
@@ -132,6 +134,7 @@ fn turn_away(incoming: Incoming) {
             "you can't talk through a camera in Home Assistant from Irori".into(),
         )),
         Incoming::Ask(ask) => ask.reply(Err(NOT_CONNECTED.into())),
+        Incoming::Removing(removing) => removing.reply(Err(NOT_CONNECTED.into())),
         Incoming::Call(_) | Incoming::Picture(_) | Incoming::Live(_) => {}
     }
 }
@@ -148,7 +151,7 @@ pub async fn drive(
         Ok(transport) => transport,
         Err(why) => {
             ctx.set_health(Health::Degraded(why)).await;
-            while_waiting(&mut ctx, std::future::pending::<()>()).await;
+            while_waiting(&mut ctx, &mut bridge, std::future::pending::<()>()).await;
             return Ok(());
         }
     };
@@ -156,6 +159,7 @@ pub async fn drive(
     loop {
         let Some(connected) = while_waiting(
             &mut ctx,
+            &mut bridge,
             client::connect(&transport, settings.token.expose()),
         )
         .await
@@ -202,7 +206,7 @@ pub async fn drive(
                 retry
             }
         };
-        if while_waiting(&mut ctx, tokio::time::sleep(wait))
+        if while_waiting(&mut ctx, &mut bridge, tokio::time::sleep(wait))
             .await
             .is_none()
         {
@@ -216,7 +220,11 @@ pub async fn drive(
 
 /// Waits for `future`, answering commands meanwhile: Home Assistant isn't there to take them.
 /// `None` once the extension should stop.
-async fn while_waiting<T>(ctx: &mut ProtocolContext, future: impl Future<Output = T>) -> Option<T> {
+async fn while_waiting<T>(
+    ctx: &mut ProtocolContext,
+    bridge: &mut Bridge,
+    future: impl Future<Output = T>,
+) -> Option<T> {
     let future = std::pin::pin!(future);
     let mut future = future;
     loop {
@@ -228,6 +236,10 @@ async fn while_waiting<T>(ctx: &mut ProtocolContext, future: impl Future<Output 
                 ))),
                 Some(Incoming::Picture(picture)) => picture.reply(Err(NOT_CONNECTED.into())),
                 Some(Incoming::Live(live)) => live.feed.end(Some(NOT_CONNECTED.into())),
+                Some(Incoming::Ask(ask)) if twins::asks(&ask.method) => {
+                    bridge.twin_offline(ctx, ask).await;
+                }
+                Some(Incoming::Removing(removing)) => bridge.removing_offline(removing),
                 Some(other) => turn_away(other),
                 None => return None,
             },
@@ -265,7 +277,40 @@ struct Bridge {
     /// What's kept in the store, as last written.
     stored_entities: Vec<UniqueId>,
     stored_devices: Vec<UniqueId>,
+    /// Home Assistant automations Irori switched off, to switch back on ([`twins`]).
+    twins: Vec<Held>,
 }
+
+/// Why the extension can't be removed yet: these automations are still off in Home Assistant.
+fn cant_remove(held: &[Held], why: &str) -> String {
+    format!(
+        "Irori switched off Home Assistant automations ({}) and couldn't switch them back on: \
+         {why}. Try again once Home Assistant is reachable, or switch them on in Home Assistant \
+         yourself and press Forget beside each in Automations → Bring over from Home Assistant",
+        twins::names(held)
+    )
+}
+
+/// A step of switching a twin, back in the session's loop: the loop keeps the list.
+#[derive(Debug)]
+enum TwinStep {
+    /// The automation's state was read for switching it off: whether it's on, and its name.
+    Checked {
+        ask: IncomingAsk,
+        entity_id: String,
+        found: Result<Option<(bool, String)>, String>,
+    },
+    /// Home Assistant answered a switch.
+    Switched {
+        ask: Option<IncomingAsk>,
+        entity_id: String,
+        on: bool,
+        result: Result<(), HaError>,
+    },
+}
+
+/// Why a twin isn't switched off while "Let Irori control devices" is off.
+const TWIN_READ_ONLY: &str = "read-only: \"Let Irori control devices\" is off in the Home Assistant extension's settings, so Irori doesn't switch Home Assistant's automation off; the flow stays off";
 
 /// The answer to every command while "Let Irori control devices" is off.
 const READ_ONLY: &str = "read-only: turn on \"Let Irori control devices\" in the Home Assistant extension's settings to control this from Irori";
@@ -339,6 +384,97 @@ impl Bridge {
         self.earlier_devices = devices.iter().cloned().collect();
         self.stored_entities = entities;
         self.stored_devices = devices;
+        match ctx.load(twins::STORED).await {
+            Ok(stored) => self.twins = twins::read(stored),
+            Err(why) => tracing::warn!(%why, "couldn't read what Irori switched off"),
+        }
+    }
+
+    /// Keeps the list of what Irori switched off, as it is now.
+    async fn keep_twins(&self, ctx: &ProtocolContext) -> Result<(), String> {
+        ctx.store(twins::STORED, json!(self.twins))
+            .await
+            .map_err(|why| format!("couldn't keep the list of what Irori switched off: {why}"))
+    }
+
+    fn twin(&mut self, entity_id: &str) -> Option<&mut Held> {
+        self.twins
+            .iter_mut()
+            .find(|held| held.entity_id == entity_id)
+    }
+
+    /// Answers what needs no Home Assistant: who may ask, [`twins::LIST`], [`twins::FORGET`],
+    /// and giving back one Irori never switched off. Hands the rest back, with the automation.
+    async fn twin_said(
+        &mut self,
+        ctx: &ProtocolContext,
+        ask: IncomingAsk,
+    ) -> Option<(IncomingAsk, String)> {
+        if ask.from != twins::ASKER {
+            let why = format!("`{}` can't ask this extension", ask.from);
+            ask.reply(Err(why));
+            return None;
+        }
+        if ask.method == twins::LIST {
+            ask.reply(Ok(twins::listed(&self.twins)));
+            return None;
+        }
+        let entity_id = match twins::asked_entity(&ask.params) {
+            Ok(entity_id) => entity_id,
+            Err(why) => {
+                ask.reply(Err(why));
+                return None;
+            }
+        };
+        match ask.method.as_str() {
+            twins::FORGET => {
+                self.twins.retain(|held| held.entity_id != entity_id);
+                let kept = self.keep_twins(ctx).await;
+                ask.reply(kept.map(|()| json!({})));
+                None
+            }
+            twins::GIVE_BACK if self.twin(&entity_id).is_none() => {
+                ask.reply(Ok(json!({ "switched_on": false })));
+                None
+            }
+            _ => Some((ask, entity_id)),
+        }
+    }
+
+    /// Marks one to switch back on, and keeps that: it's tried at every connection until done.
+    async fn release(&mut self, ctx: &ProtocolContext, entity_id: &str) -> Result<(), String> {
+        if let Some(held) = self.twin(entity_id) {
+            held.releasing = true;
+        }
+        self.keep_twins(ctx).await
+    }
+
+    /// A question about the twins while Home Assistant isn't connected: nothing is switched
+    /// off, and one given back is switched on once it is.
+    async fn twin_offline(&mut self, ctx: &ProtocolContext, ask: IncomingAsk) {
+        let Some((ask, entity_id)) = self.twin_said(ctx, ask).await else {
+            return;
+        };
+        let method = ask.method.clone();
+        match method.as_str() {
+            twins::GIVE_BACK => {
+                let kept = self.release(ctx, &entity_id).await;
+                ask.reply(kept.map(|()| json!({ "switched_on": false, "waiting": NOT_CONNECTED })));
+            }
+            _ => ask.reply(Err(format!(
+                "{NOT_CONNECTED}, so its automation can't be switched off"
+            ))),
+        }
+    }
+
+    /// The extension is being removed while Home Assistant isn't connected: fine with nothing
+    /// switched off; otherwise it stays, or those automations would stay off for good.
+    fn removing_offline(&self, removing: IncomingRemoving) {
+        if self.twins.is_empty() {
+            removing.reply(Ok(()));
+        } else {
+            removing.reply(Err(cant_remove(&self.twins, NOT_CONNECTED)));
+        }
     }
 
     /// The `unique_id`s of the entities brought over, in this run or an earlier one.
@@ -524,6 +660,8 @@ struct Session<'a> {
     /// already there, not something happening now.
     heard_first: bool,
     registry_subscriptions: Vec<u64>,
+    /// Steps of switching a twin, back to the loop.
+    twin_tx: mpsc::Sender<TwinStep>,
 }
 
 async fn session(
@@ -560,6 +698,7 @@ async fn session(
     for event_type in REGISTRY_EVENTS {
         let subscribed = while_waiting(
             ctx,
+            bridge,
             client.subscribe(Outgoing::SubscribeEvents { event_type }),
         )
         .await;
@@ -573,7 +712,7 @@ async fn session(
         }
     }
     let registry = loop {
-        match while_waiting(ctx, read(client.clone())).await {
+        match while_waiting(ctx, bridge, read(client.clone())).await {
             None => return Ended::Stopped,
             Some(Ok(registry)) => break registry,
             Some(Err(why)) if why.is_unauthorized() => return not_admin(ctx, bridge).await,
@@ -581,7 +720,7 @@ async fn session(
             Some(Err(why)) if why.is_starting() => {
                 ctx.set_health(Health::Degraded(format!("{why}; waiting for it")))
                     .await;
-                if while_waiting(ctx, tokio::time::sleep(timing.starting_retry))
+                if while_waiting(ctx, bridge, tokio::time::sleep(timing.starting_retry))
                     .await
                     .is_none()
                 {
@@ -591,6 +730,7 @@ async fn session(
             Some(Err(why)) => return Ended::Lost(why.to_string()),
         }
     };
+    let (twin_tx, mut twin_steps) = mpsc::channel::<TwinStep>(64);
     let mut session = Session {
         client,
         transport: transport.clone(),
@@ -607,11 +747,14 @@ async fn session(
         entities_subscription: None,
         heard_first: false,
         registry_subscriptions,
+        twin_tx,
     };
     if let Err(why) = session.take(ctx, &registry, settings).await {
         return Ended::Lost(why.to_string());
     }
     ctx.set_health(Health::Running).await;
+    // What was being switched back on when the last connection ended, or Irori stopped.
+    session.retry_releases();
 
     let (done_tx, mut done) = mpsc::channel::<Done>(64);
     let mut tick = tokio::time::interval(timing.tick);
@@ -643,11 +786,16 @@ async fn session(
                 Some(Incoming::Call(call)) => session.call(call, &done_tx),
                 Some(Incoming::Picture(picture)) => session.picture(picture, settings),
                 Some(Incoming::Live(live)) => session.live(live, settings),
+                Some(Incoming::Ask(ask)) if twins::asks(&ask.method) => {
+                    session.twin_ask(ctx, ask).await;
+                }
                 Some(Incoming::Ask(ask)) => session.ask(ask, settings),
+                Some(Incoming::Removing(removing)) => session.removing(ctx, removing).await,
                 Some(other) => turn_away(other),
                 None => return Ended::Stopped,
             },
             Some(finished) = done.recv() => session.done(finished),
+            Some(step) = twin_steps.recv() => session.twin_step(ctx, step).await,
             event = events.recv() => match event {
                 Some(event) => {
                     let mut arrived = vec![event];
@@ -1017,6 +1165,247 @@ impl Session<'_> {
                 )))),
             }
         });
+    }
+
+    /// A question about the twins ([`twins`]): switch one off, or back on.
+    async fn twin_ask(&mut self, ctx: &ProtocolContext, ask: IncomingAsk) {
+        let Some((ask, entity_id)) = self.bridge.twin_said(ctx, ask).await else {
+            return;
+        };
+        let method = ask.method.clone();
+        match method.as_str() {
+            twins::HAND_OVER => {
+                if !self.commands {
+                    ask.reply(Err(TWIN_READ_ONLY.to_owned()));
+                    return;
+                }
+                if self
+                    .bridge
+                    .twin(&entity_id)
+                    .is_some_and(|held| !held.releasing)
+                {
+                    ask.reply(Ok(json!({ "switched_off": true })));
+                    return;
+                }
+                // Read first: one already off in Home Assistant is left alone.
+                let client = self.client.clone();
+                let steps = self.twin_tx.clone();
+                tokio::spawn(async move {
+                    let found = client
+                        .request(Outgoing::GetStates, client::READ_TIMEOUT)
+                        .await
+                        .map(|states| twins::state_of(&states, &entity_id))
+                        .map_err(|why| why.to_string());
+                    let _ = steps
+                        .send(TwinStep::Checked {
+                            ask,
+                            entity_id,
+                            found,
+                        })
+                        .await;
+                });
+            }
+            twins::GIVE_BACK => {
+                if let Err(why) = self.bridge.release(ctx, &entity_id).await {
+                    ask.reply(Err(why));
+                    return;
+                }
+                self.switch(Some(ask), entity_id, true);
+            }
+            other => ask.reply(Err(format!("this extension doesn't answer `{other}`"))),
+        }
+    }
+
+    /// Sends the switch, the list already kept; the answer comes back as a [`TwinStep`].
+    fn switch(&self, ask: Option<IncomingAsk>, entity_id: String, on: bool) {
+        let message = match Outgoing::twin_switch(&entity_id, on) {
+            Ok(message) => message,
+            Err(why) => {
+                if let Some(ask) = ask {
+                    ask.reply(Err(why));
+                }
+                return;
+            }
+        };
+        let client = self.client.clone();
+        let steps = self.twin_tx.clone();
+        tokio::spawn(async move {
+            let result = client
+                .request(message, client::CALL_TIMEOUT)
+                .await
+                .map(|_| ());
+            let _ = steps
+                .send(TwinStep::Switched {
+                    ask,
+                    entity_id,
+                    on,
+                    result,
+                })
+                .await;
+        });
+    }
+
+    /// Switches back on what was waiting to be.
+    fn retry_releases(&self) {
+        for held in self.bridge.twins.iter().filter(|held| held.releasing) {
+            self.switch(None, held.entity_id.clone(), true);
+        }
+    }
+
+    async fn twin_step(&mut self, ctx: &ProtocolContext, step: TwinStep) {
+        match step {
+            TwinStep::Checked {
+                ask,
+                entity_id,
+                found,
+            } => match found {
+                Err(why) => ask.reply(Err(format!(
+                    "couldn't read Home Assistant's automations: {why}; nothing was switched off"
+                ))),
+                Ok(None) => ask.reply(Err(format!(
+                    "Home Assistant has no automation `{entity_id}`; nothing was switched off"
+                ))),
+                Ok(Some((false, _))) => {
+                    // Off already. One Irori switched off stays on the list; one the owner
+                    // switched off isn't put on it, so Irori never switches it on.
+                    let ours = match self.bridge.twin(&entity_id) {
+                        Some(held) => {
+                            held.releasing = false;
+                            true
+                        }
+                        None => false,
+                    };
+                    if ours && let Err(why) = self.bridge.keep_twins(ctx).await {
+                        ask.reply(Err(why));
+                        return;
+                    }
+                    ask.reply(Ok(json!({ "switched_off": ours, "already_off": !ours })));
+                }
+                Ok(Some((true, name))) => {
+                    match self.bridge.twin(&entity_id) {
+                        Some(held) => held.releasing = false,
+                        None => self.bridge.twins.push(Held {
+                            entity_id: entity_id.clone(),
+                            name,
+                            releasing: false,
+                        }),
+                    }
+                    // On the list before it's switched off, so it's never off unlisted.
+                    if let Err(why) = self.bridge.keep_twins(ctx).await {
+                        self.bridge.twins.retain(|held| held.entity_id != entity_id);
+                        ask.reply(Err(format!("{why}; nothing was switched off")));
+                        return;
+                    }
+                    self.switch(Some(ask), entity_id, false);
+                }
+            },
+            TwinStep::Switched {
+                ask,
+                entity_id,
+                on: false,
+                result,
+            } => {
+                let Some(ask) = ask else { return };
+                match result {
+                    Ok(()) => ask.reply(Ok(json!({ "switched_off": true }))),
+                    // Refused: it's still on, so it's not Irori's to switch back on.
+                    Err(why) if why.code.is_some() => {
+                        self.bridge.twins.retain(|held| held.entity_id != entity_id);
+                        let kept = self.bridge.keep_twins(ctx).await;
+                        if let Err(also) = kept {
+                            tracing::warn!(%also, "couldn't keep the list");
+                        }
+                        ask.reply(Err(format!("Home Assistant didn't switch it off: {why}")));
+                    }
+                    // No answer: it may have happened. The flow stays off, so it's switched
+                    // back on, now and at each connection until done.
+                    Err(why) => {
+                        if let Err(also) = self.bridge.release(ctx, &entity_id).await {
+                            tracing::warn!(%also, "couldn't keep the list");
+                        }
+                        self.switch(None, entity_id, true);
+                        ask.reply(Err(format!(
+                            "no answer from Home Assistant ({why}); the flow stays off, and \
+                             Irori switches the automation back on in case it did go off"
+                        )));
+                    }
+                }
+            }
+            TwinStep::Switched {
+                ask,
+                entity_id,
+                on: true,
+                result,
+            } => match result {
+                Ok(()) => {
+                    // Unless it was handed over again meanwhile.
+                    let before = self.bridge.twins.len();
+                    self.bridge
+                        .twins
+                        .retain(|held| held.entity_id != entity_id || !held.releasing);
+                    if self.bridge.twins.len() != before
+                        && let Err(why) = self.bridge.keep_twins(ctx).await
+                    {
+                        tracing::warn!(%why, "couldn't keep the list");
+                    }
+                    if let Some(ask) = ask {
+                        ask.reply(Ok(json!({ "switched_on": true })));
+                    }
+                }
+                Err(why) => {
+                    tracing::warn!(%why, %entity_id, "couldn't switch the automation back on yet");
+                    if let Some(ask) = ask {
+                        ask.reply(Ok(
+                            json!({ "switched_on": false, "waiting": why.to_string() }),
+                        ));
+                    }
+                }
+            },
+        }
+    }
+
+    /// The extension is being removed: everything Irori switched off is switched back on
+    /// first. If one can't be, the extension stays.
+    async fn removing(&mut self, ctx: &ProtocolContext, removing: IncomingRemoving) {
+        if self.bridge.twins.is_empty() {
+            removing.reply(Ok(()));
+            return;
+        }
+        let switches = self.bridge.twins.iter().map(|held| {
+            let client = self.client.clone();
+            let entity_id = held.entity_id.clone();
+            async move {
+                let sent = match Outgoing::twin_switch(&entity_id, true) {
+                    Ok(message) => client
+                        .request(message, client::CALL_TIMEOUT)
+                        .await
+                        .map(|_| ())
+                        .map_err(|why| why.to_string()),
+                    Err(why) => Err(why),
+                };
+                (entity_id, sent)
+            }
+        });
+        let results = futures_util::future::join_all(switches).await;
+        let mut why = None;
+        for (entity_id, result) in results {
+            match result {
+                Ok(()) => self.bridge.twins.retain(|held| held.entity_id != entity_id),
+                Err(not) => {
+                    why.get_or_insert(not);
+                    if let Some(held) = self.bridge.twin(&entity_id) {
+                        held.releasing = true;
+                    }
+                }
+            }
+        }
+        if let Err(also) = self.bridge.keep_twins(ctx).await {
+            tracing::warn!(%also, "couldn't keep the list");
+        }
+        match why {
+            None => removing.reply(Ok(())),
+            Some(why) => removing.reply(Err(cant_remove(&self.bridge.twins, &why))),
+        }
     }
 
     /// A camera's picture as it is now, from Home Assistant's camera proxy. Its token stays in
