@@ -339,3 +339,67 @@ fn a_flow_id_is_free_and_a_slug() {
         "home_assistant"
     );
 }
+
+#[test]
+fn a_sun_condition_with_both_sides_needs_both() {
+    // In Home Assistant `after: sunset, before: sunrise` is never true; it mustn't become a
+    // window over the night.
+    let flow = bring(json!({
+        "triggers": [{ "trigger": "state", "entity_id": "binary_sensor.hall_motion", "to": "on" }],
+        "conditions": [{ "condition": "sun", "after": "sunset", "before": "sunrise", "before_offset": "01:00:00" }],
+        "actions": [{ "action": "light.turn_on", "target": { "entity_id": "light.hall_ceiling" } }],
+    }))
+    .expect("it comes over");
+    let gate = serde_json::to_value(
+        &flow.nodes[&irori_flow_types::NodeId::try_from("check_1").expect("an id")],
+    )
+    .expect("json");
+    assert_eq!(
+        gate["condition"],
+        json!({ "type": "all", "conditions": [
+            { "type": "sun", "after": "sunset" },
+            { "type": "sun", "before": "sunrise", "before_offset": "1h" },
+        ] })
+    );
+}
+
+#[test]
+fn a_numeric_condition_on_no_entity_is_said_not_dropped() {
+    let missing = bring(json!({
+        "triggers": [{ "trigger": "state", "entity_id": "binary_sensor.hall_motion", "to": "on" }],
+        "conditions": [{ "condition": "numeric_state", "below": 30 }],
+        "actions": [{ "action": "light.turn_on", "target": { "entity_id": "light.hall_ceiling" } }],
+    }))
+    .expect_err("no entity");
+    assert!(missing[0].contains("numeric_state"), "{missing:?}");
+}
+
+#[test]
+fn settings_beside_an_action_are_said_not_dropped() {
+    let device = bring(json!({
+        "triggers": [{ "trigger": "state", "entity_id": "binary_sensor.hall_motion", "to": "on" }],
+        "actions": [{ "device_id": "d1", "domain": "light", "type": "turn_on",
+                      "entity_id": "r-hall-light", "brightness_pct": 30 }],
+    }))
+    .expect_err("a brightness on a device action");
+    assert!(device[0].contains("brightness_pct"), "{device:?}");
+
+    let call = bring(json!({
+        "triggers": [{ "trigger": "state", "entity_id": "binary_sensor.hall_motion", "to": "on" }],
+        "actions": [{ "action": "light.turn_on", "target": { "entity_id": "light.hall_ceiling" }, "brightness": 30 }],
+    }))
+    .expect_err("a key Home Assistant's call doesn't have");
+    assert!(call[0].contains("brightness"), "{call:?}");
+
+    // The older `data_template`, without a template, is read like `data`.
+    let flow = bring(json!({
+        "triggers": [{ "trigger": "state", "entity_id": "binary_sensor.hall_motion", "to": "on" }],
+        "actions": [{ "service": "light.turn_on", "entity_id": "light.hall_ceiling", "data_template": { "brightness_pct": 40 } }],
+    }))
+    .expect("it comes over");
+    let call = serde_json::to_value(
+        &flow.nodes[&irori_flow_types::NodeId::try_from("do_1").expect("an id")],
+    )
+    .expect("json");
+    assert!(call.to_string().contains("40"), "{call}");
+}

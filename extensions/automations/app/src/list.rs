@@ -1,5 +1,6 @@
 //! Every flow, with whether it's running, how its last run went, and what it nearly did.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use irori_flow_types::api::{Armed, FlowSummary};
@@ -30,6 +31,13 @@ pub fn List() -> impl IntoView {
         });
     };
     refresh();
+    // Kept here, not in the panel: the list below is drawn again whenever it changes (every few
+    // seconds while flows run), and the panel would close and forget what it said.
+    let home_assistant = HaPanel {
+        open: RwSignal::new(false),
+        found: RwSignal::new(None),
+        results: RwSignal::new(BTreeMap::new()),
+    };
     // A run finishing, or a flow file edited by hand, shows without reloading.
     let alive = StoredValue::new(true);
     spawn_local(async move {
@@ -66,7 +74,7 @@ pub fn List() -> impl IntoView {
                     let beside_home_assistant = found.home_assistant;
                     view! {
                         {beside_home_assistant.then(|| view! {
-                            <FromHomeAssistant brought=Callback::new(move |()| refresh()) />
+                            <FromHomeAssistant panel=home_assistant brought=Callback::new(move |()| refresh()) />
                         })}
                         {(!problems.is_empty()).then(|| view! {
                             <div class="problems-box">
@@ -170,10 +178,22 @@ pub fn List() -> impl IntoView {
 /// Home Assistant's own automations, to bring one over as a flow. Shown only in a home Home
 /// Assistant's devices came into. A flow brought over arrives switched off, and Home Assistant
 /// keeps running its own: nothing in Home Assistant changes.
+/// What the Home Assistant panel shows: whether it's open, the automations it found, and what
+/// bringing each one over said, by `entity_id`.
+#[derive(Clone, Copy)]
+struct HaPanel {
+    open: RwSignal<bool>,
+    found: RwSignal<Option<Result<Vec<api::HaAutomation>, String>>>,
+    results: RwSignal<BTreeMap<String, Result<api::BroughtOver, String>>>,
+}
+
 #[component]
-fn FromHomeAssistant(brought: Callback<()>) -> impl IntoView {
-    let open = RwSignal::new(false);
-    let found = RwSignal::new(None::<Result<Vec<api::HaAutomation>, String>>);
+fn FromHomeAssistant(panel: HaPanel, brought: Callback<()>) -> impl IntoView {
+    let HaPanel {
+        open,
+        found,
+        results,
+    } = panel;
     let load = move || {
         found.set(None);
         spawn_local(async move {
@@ -189,6 +209,7 @@ fn FromHomeAssistant(brought: Callback<()>) -> impl IntoView {
                 let opening = !open.get_untracked();
                 open.set(opening);
                 if opening {
+                    results.set(BTreeMap::new());
                     load();
                 }
             }>{move || if open.get() { "Close" } else { "Bring over from Home Assistant" }}</button>
@@ -211,7 +232,7 @@ fn FromHomeAssistant(brought: Callback<()>) -> impl IntoView {
                         <p class="muted">"Home Assistant has no automations."</p>
                     }.into_any(),
                     Some(Ok(all)) => all.into_iter().map(|automation| view! {
-                        <HaRow automation=automation brought=Callback::new(move |()| {
+                        <HaRow automation=automation results=results brought=Callback::new(move |()| {
                             brought.run(());
                             load();
                         }) />
@@ -224,10 +245,17 @@ fn FromHomeAssistant(brought: Callback<()>) -> impl IntoView {
 
 /// One of Home Assistant's automations, and what bringing it over did.
 #[component]
-fn HaRow(automation: api::HaAutomation, brought: Callback<()>) -> impl IntoView {
+fn HaRow(
+    automation: api::HaAutomation,
+    results: RwSignal<BTreeMap<String, Result<api::BroughtOver, String>>>,
+    brought: Callback<()>,
+) -> impl IntoView {
     let busy = RwSignal::new(false);
-    let result = RwSignal::new(None::<Result<api::BroughtOver, String>>);
     let entity_id = automation.entity_id.clone();
+    let result = {
+        let entity_id = entity_id.clone();
+        move || results.with(|all| all.get(&entity_id).cloned())
+    };
     let bring = move |_| {
         let entity_id = entity_id.clone();
         busy.set(true);
@@ -235,7 +263,7 @@ fn HaRow(automation: api::HaAutomation, brought: Callback<()>) -> impl IntoView 
             let answer = api::bring_over(&entity_id).await;
             let made = matches!(&answer, Ok(done) if done.flow.is_some());
             let _ = busy.try_set(false);
-            let _ = result.try_set(Some(answer));
+            let _ = results.try_update(|all| all.insert(entity_id, answer));
             if made {
                 brought.run(());
             }
@@ -276,7 +304,7 @@ fn HaRow(automation: api::HaAutomation, brought: Callback<()>) -> impl IntoView 
                 {action}
             </div>
             <div class="meta mono">{automation.entity_id.clone()}</div>
-            {move || result.get().map(|answer| match answer {
+            {move || result().map(|answer| match answer {
                 Err(why) => view! { <div class="problems-box">{why}</div> }.into_any(),
                 Ok(done) if !done.untranslatable.is_empty() => view! {
                     <div class="problems-box">

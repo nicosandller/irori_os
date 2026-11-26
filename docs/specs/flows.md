@@ -332,12 +332,18 @@ would run differently from the whole one Home Assistant keeps running. What tran
   cron), Home Assistant starting (`startup`), and device triggers that say an entity turned on or
   off (a binary sensor's `motion`/`no_motion` and the like).
 - **Conditions**, gates one after another: `state`, `numeric_state` (as `num()` expressions),
-  `time`, `sun`, `and`/`or`/`not`, and device conditions `is_on`/`is_off`.
+  `time`, `sun`, `and`/`or`/`not`, and device conditions `is_on`/`is_off`. A `sun` condition with
+  both `after` and `before` becomes both, as in Home Assistant (`after: sunset, before: sunrise`
+  never holds there, so it doesn't here either), not one window over the night.
 - **Actions**, in order: a service call on named entities (`homeassistant.turn_on` and the like
   take the entity's own kind), each entity its own call, with its settings checked as a flow's
   are; `continue_on_error` wires a call's `error` port on too; device actions `turn_on`,
-  `turn_off` and `toggle`; `scene`; `delay`; a `condition` step; `stop`.
+  `turn_off` and `toggle`; `scene`; `delay`; a `condition` step; `stop`. A setting the import
+  doesn't know beside an action (a device action's brightness, say) refuses the automation rather
+  than being left out; the older `data_template` is read as `data`.
 - **Its mode**: `single`, `restart`, and `queued`/`parallel` up to 32.
+- Both questions to Home Assistant together have 25 seconds, less than the page waits, so a flow
+  is never made after the page was told it wasn't.
 - Entities are found through what the Home Assistant extension brought over. One it didn't bring,
   or one whose device isn't added yet, is said as such.
 

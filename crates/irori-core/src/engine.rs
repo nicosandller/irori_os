@@ -34,6 +34,9 @@ pub(crate) struct EngineLink {
     registry: bool,
 }
 
+/// Where the ids of a page's requests start, clear of the questions the host numbers from 0.
+const PAGE_IDS: u64 = 1 << 62;
+
 impl EngineLink {
     pub(crate) fn new(manifest: &ExtensionManifest) -> Self {
         let (out_tx, out_rx) = mpsc::unbounded_channel();
@@ -47,7 +50,13 @@ impl EngineLink {
             app_tx,
             app_rx,
             pending_app: HashMap::new(),
-            next_app: 0,
+            // An extension that is also a protocol answers other extensions' questions with
+            // `app_answer` too, numbered from 0 by the host: its page's are numbered apart.
+            next_app: if manifest.contributes.protocol.is_empty() {
+                0
+            } else {
+                PAGE_IDS
+            },
             events: None,
             states: false,
             registry: false,
@@ -299,7 +308,11 @@ impl EngineLink {
                 });
             }
             // A protocol's answers to another extension's questions go to the protocol path.
-            FromExt::AppAnswer { .. } if self.is_protocol => return Some(from),
+            FromExt::AppAnswer { id, .. }
+                if self.is_protocol && !self.pending_app.contains_key(&id) =>
+            {
+                return Some(from);
+            }
             FromExt::AppAnswer { id, value, error } => {
                 if let Some(reply) = self.pending_app.remove(&id) {
                     let _ = reply.send(match error {

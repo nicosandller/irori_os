@@ -443,7 +443,9 @@ async fn read_incoming<R>(
                 }
                 Incoming::RegistryChanged
             }
-            // The core asks only protocols on another extension's behalf (`from`).
+            // The core asks only protocols on another extension's behalf (`from`): that is the
+            // protocol side's to answer, not something the owner's page asked.
+            ToExt::AppRequest { from: Some(_), .. } => continue,
             ToExt::AppRequest {
                 id,
                 method,

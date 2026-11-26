@@ -13,6 +13,7 @@
 //! Nothing here asks Home Assistant to change anything, and only the home's owner may ask.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use irori_flow_types::Flow;
 use irori_protocol::engine::{AppRequest, EngineClient};
@@ -85,10 +86,15 @@ pub fn start(
     let fetched = fetched.clone();
     tokio::spawn(async move {
         let bridge = ExtensionId::try_from(BRIDGE).expect("a valid id");
-        let list = client
-            .ask_extension(bridge.clone(), "automations.list", json!({}))
-            .await
-            .map_err(|e| e.to_string());
+        let deadline = tokio::time::Instant::now() + WITHIN;
+        let late = || "Home Assistant didn't answer in time; nothing was brought over".to_owned();
+        let list = tokio::time::timeout_at(
+            deadline,
+            client.ask_extension(bridge.clone(), "automations.list", json!({})),
+        )
+        .await
+        .map_err(|_| late())
+        .and_then(|answer| answer.map_err(|e| e.to_string()));
         if request.method == AUTOMATIONS {
             let _ = fetched.send(Fetched::List { request, list });
             return;
@@ -112,10 +118,13 @@ pub fn start(
             return;
         };
         let setup = match &automation.id {
-            Some(id) => client
-                .ask_extension(bridge, "automation.setup", json!({ "id": id }))
-                .await
-                .map_err(|e| e.to_string()),
+            Some(id) => tokio::time::timeout_at(
+                deadline,
+                client.ask_extension(bridge, "automation.setup", json!({ "id": id })),
+            )
+            .await
+            .map_err(|_| late())
+            .and_then(|answer| answer.map_err(|e| e.to_string())),
             None => Err(NO_ID.to_owned()),
         };
         let _ = fetched.send(Fetched::Setup {
@@ -126,6 +135,46 @@ pub fn start(
         });
     });
 }
+
+/// What a device action may say besides which entity and what to do.
+const DEVICE_ACTION_KEYS: &[&str] = &[
+    "device_id",
+    "domain",
+    "type",
+    "entity_id",
+    "alias",
+    "enabled",
+    "continue_on_error",
+    "metadata",
+];
+
+/// What a service call may say.
+const CALL_KEYS: &[&str] = &[
+    "action",
+    "service",
+    "target",
+    "data",
+    "service_data",
+    "data_template",
+    "entity_id",
+    "alias",
+    "enabled",
+    "continue_on_error",
+    "metadata",
+    "response_variable",
+];
+
+/// The first key of `item` not in `known`.
+fn unknown_key<'v>(item: &'v Value, known: &[&str]) -> Option<&'v str> {
+    item.as_object()?
+        .keys()
+        .map(String::as_str)
+        .find(|key| !known.contains(key))
+}
+
+/// How long both questions to Home Assistant may take together: less than the page waits for an
+/// answer, so a flow is never made after the page was told it wasn't.
+pub const WITHIN: Duration = Duration::from_secs(25);
 
 /// Why one without an id can't come over.
 const NO_ID: &str = "it's written in Home Assistant's YAML without an `id`, so Home Assistant \
@@ -778,6 +827,20 @@ impl Build<'_, '_> {
 
     /// One condition, as Irori's.
     fn condition(&mut self, condition: &Value) -> Option<Value> {
+        // A condition left out would make the flow do more than Home Assistant's automation
+        // does, so one that can't come over always says why.
+        let said = self.missing.len();
+        let out = self.condition_of(condition);
+        if out.is_none() && self.missing.len() == said {
+            self.miss(format!(
+                "a `{}` condition Irori can't read",
+                condition["condition"].as_str().unwrap_or("?")
+            ));
+        }
+        out
+    }
+
+    fn condition_of(&mut self, condition: &Value) -> Option<Value> {
         if condition.is_string() || templated(condition) {
             self.miss("a condition that's a template, which Irori doesn't run");
             return None;
@@ -812,7 +875,11 @@ impl Build<'_, '_> {
                 Some(one_or(all, "all"))
             }
             "numeric_state" => {
-                let entity_ids = texts(&condition["entity_id"])?;
+                let Some(entity_ids) = texts(&condition["entity_id"]).filter(|ids| !ids.is_empty())
+                else {
+                    self.miss("a `numeric_state` condition on no entity Irori can read");
+                    return None;
+                };
                 let mut all = Vec::new();
                 for ha in entity_ids {
                     let entity = self.entity(&ha)?.clone();
@@ -860,8 +927,12 @@ impl Build<'_, '_> {
                 Some(out)
             }
             "sun" => {
-                let mut out = json!({ "type": "sun" });
+                // In Home Assistant both sides must hold, each on the same day: `after: sunset,
+                // before: sunrise` is never true. One Irori sun condition with both is a window
+                // that may wrap past midnight, so each side is its own condition.
+                let mut sides = Vec::new();
                 for side in ["after", "before"] {
+                    let mut out = json!({ "type": "sun" });
                     if let Some(event) = condition.get(side).and_then(Value::as_str) {
                         if !["sunrise", "sunset"].contains(&event) {
                             self.miss(format!("a sun condition {side} `{event}`"));
@@ -871,15 +942,25 @@ impl Build<'_, '_> {
                     }
                     let key = format!("{side}_offset");
                     match duration(condition.get(&key).unwrap_or(&Value::Null)) {
-                        Ok(Some(offset)) => out[key] = json!(offset),
+                        Ok(Some(offset)) => out[&key] = json!(offset),
                         Ok(None) => {}
                         Err(why) => {
                             self.miss(format!("a sun condition moved by {why}"));
                             return None;
                         }
                     }
+                    if out.get(side).is_some() {
+                        sides.push(out);
+                    } else if out.get(&key).is_some() {
+                        self.miss(format!("a sun condition with `{key}` but no `{side}`"));
+                        return None;
+                    }
                 }
-                Some(out)
+                if sides.is_empty() {
+                    self.miss("a sun condition with neither `after` nor `before`");
+                    return None;
+                }
+                Some(one_or(sides, "all"))
             }
             "and" | "or" | "not" => {
                 let mut inner = Vec::new();
@@ -961,6 +1042,13 @@ impl Build<'_, '_> {
                 ));
                 return tails;
             }
+            // A setting beside it (a brightness, a colour) would be lost.
+            if let Some(extra) = unknown_key(action, DEVICE_ACTION_KEYS) {
+                self.miss(format!(
+                    "the `{domain}` device action `{event}` with `{extra}`, which this import can't bring over yet"
+                ));
+                return tails;
+            }
             let call = json!({ "target": { "entity_id": ha } });
             return self.call(&call, &format!("homeassistant.{event}"), tails);
         }
@@ -1022,6 +1110,12 @@ impl Build<'_, '_> {
             self.miss(format!("the action `{service}`"));
             return tails;
         };
+        if let Some(extra) = unknown_key(action, CALL_KEYS) {
+            self.miss(format!(
+                "`{service}` with `{extra}`, which this import can't bring over yet"
+            ));
+            return tails;
+        }
         if action.get("response_variable").is_some() {
             self.miss(format!("`{service}` keeps its answer in a variable"));
             return tails;
@@ -1039,6 +1133,7 @@ impl Build<'_, '_> {
         let mut data: Map<String, Value> = action
             .get("data")
             .or_else(|| action.get("service_data"))
+            .or_else(|| action.get("data_template"))
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
