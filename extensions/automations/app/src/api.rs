@@ -28,6 +28,9 @@ pub struct Listing {
     pub flows: Vec<FlowSummary>,
     #[serde(default)]
     pub file_problems: Vec<FileProblem>,
+    /// Whether Home Assistant's devices are in this home, so flows say they are Irori's.
+    #[serde(default)]
+    pub home_assistant: bool,
 }
 
 pub async fn list() -> Result<Listing, String> {

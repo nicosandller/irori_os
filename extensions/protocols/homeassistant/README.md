@@ -85,6 +85,18 @@ The settings widen or narrow that:
 Areas are matched by name, integrations by their domain (`hue`, `zha`, `mqtt`…), both ignoring
 case.
 
+## Which side runs what
+
+While this extension is installed, Irori's Devices list and a device's page say who runs each
+device: **Home Assistant** for what came through here, **Irori** for what one of Irori's own
+extensions reaches. Automations says its flows are run by Irori. Without this extension nothing is
+labelled: a home with one side has nothing to tell apart.
+
+This extension doesn't read Home Assistant's own automations, or what they act on: Home Assistant
+doesn't give that over the WebSocket reads this extension is limited to (its states name an
+automation but not its targets), so Irori doesn't warn that a flow and a Home Assistant
+automation act on the same device. Tracked in #169.
+
 ## Going easy on the core
 
 Every extension shares the core's event broadcast, its history queue and the home's write lock.
@@ -170,5 +182,5 @@ extension then says so on its page and asks for another token there.
 - A water heater whose modes aren't ones Irori's water heaters have is listed, with its modes.
 - Checking for an update again (`homeassistant.update_entity` isn't the update's own service).
 - History from Home Assistant's recorder (#167), a welcome step for trying Irori this way (#166),
-  showing which side runs what (#169), handing a device over from Home Assistant to a native
+  warning that a flow and a Home Assistant automation act on the same device (#169), handing a device over from Home Assistant to a native
   extension (#168), and packaging for Home Assistant OS (#170, #171).
