@@ -21,6 +21,7 @@ irori-cloud.workspace = true
 # already links it.
 flate2.workspace = true
 futures-util.workspace = true
+jiff.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

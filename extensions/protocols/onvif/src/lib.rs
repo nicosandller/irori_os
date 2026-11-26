@@ -1091,6 +1091,9 @@ fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sende
                 }
             });
         }
+        Incoming::History(history) => {
+            history.reply(Err("cameras keep no history of their own".into()));
+        }
     }
 }
 

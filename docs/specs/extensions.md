@@ -204,6 +204,7 @@ One list per contribution kind, written as TOML arrays of tables (`[[contributes
 | `entity_kinds` | list of entity kinds, at least one, no repeats | yes | The kinds it creates. It must handle the standard services of each ([protocols.md](protocols.md) §6) |
 | `run` | `{ command = <package path>, args = [<string>…] }` | external only | How the core starts it. Built-in extensions leave it out |
 | `unpairs` | bool | no | Removing one of its devices takes it off the protocol's network too ([protocols.md](protocols.md) §5.1) |
+| `history` | bool | no | It can lend the history the system it bridges kept before Irori did, and is asked for it ([protocols.md](protocols.md) §5.5) |
 | `actions` | list of `{ id, label, seconds?, place?, ways?, answer_within_seconds? }` | no | Buttons on its "+ Add device" screen, or on the network map with `place = "network"`. `ways = [{ id, label, hint?, fields?, settings? }]` makes it a form: a choice of way, the settings that way changes, and lines of text (`fields = [{ id, label, hint?, placeholder? }]`); `answer_within_seconds` (1–300) is how long the core waits for the answer ([protocols.md](protocols.md) §5.1) |
 
 **At most one protocol per extension** in this version (D25). The protocol's id is the

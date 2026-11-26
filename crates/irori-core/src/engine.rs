@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use irori_protocol::{FromExt, ToExt};
-use irori_types::{ApiScope, Context, ExtensionId, ExtensionManifest, Origin, format};
+use irori_types::{ApiScope, Context, EntityId, ExtensionId, ExtensionManifest, Origin, format};
 use serde_json::json;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
@@ -191,23 +191,66 @@ impl EngineLink {
                 entities,
                 since,
             } => {
-                let result = self.allowed(ApiScope::HistoryRead).map(|()| {
-                    let history: serde_json::Map<String, serde_json::Value> = entities
-                        .iter()
-                        // An entity the engine can't read has no history it could read either.
-                        .filter(|entity| format::readable(self.format, entity.kind()))
-                        .map(|entity| {
-                            let states: Vec<serde_json::Value> = core
-                                .history(entity, since)
-                                .iter()
-                                .filter_map(|state| format::state_for(self.format, state))
-                                .collect();
-                            (entity.as_str().to_owned(), json!(states))
-                        })
-                        .collect();
-                    serde_json::Value::Object(history)
+                if let Err(why) = self.allowed(ApiScope::HistoryRead) {
+                    self.answer(id, Err(why));
+                    return None;
+                }
+                // An entity the engine can't read has no history it could read either.
+                let entities: Vec<EntityId> = entities
+                    .into_iter()
+                    .filter(|entity| format::readable(self.format, entity.kind()))
+                    .collect();
+                // A bridged entity's history from before Irori recorded it is asked of its
+                // protocol, which takes a moment: the answer goes out when it's in, and this
+                // engine's other messages are read meanwhile. Nothing is asked in a home
+                // without such a protocol, and the answer is made here as it always was.
+                let lending: Vec<bool> = entities
+                    .iter()
+                    .map(|entity| core.lends_history(entity))
+                    .collect();
+                let format = self.format;
+                if !lending.contains(&true) {
+                    let history = own_history(core, format, &entities, since);
+                    self.answer(id, Ok(history));
+                    return None;
+                }
+                let core = core.clone();
+                let out = self.out_tx.clone();
+                tokio::spawn(async move {
+                    let mut history = serde_json::Map::new();
+                    let mut asked = 0;
+                    // One wait for the whole question, not one per entity: a bridged system that
+                    // hangs costs a backtest seconds, not minutes. What's left past it gets
+                    // Irori's own history alone.
+                    let deadline = tokio::time::Instant::now() + crate::PAST_TIMEOUT;
+                    for (entity, lends) in entities.iter().zip(lending) {
+                        let own = core.history(entity, since);
+                        let states = if lends && asked < crate::PAST_ENTITIES_PER_ASK {
+                            asked += 1;
+                            let past =
+                                tokio::time::timeout_at(deadline, core.past_changes(entity, since))
+                                    .await
+                                    .ok()
+                                    .flatten();
+                            match past {
+                                Some(past) => crate::join_past(past.states, own),
+                                None => own,
+                            }
+                        } else {
+                            own
+                        };
+                        let states: Vec<serde_json::Value> = states
+                            .iter()
+                            .filter_map(|state| format::state_for(format, state))
+                            .collect();
+                        history.insert(entity.as_str().to_owned(), json!(states));
+                    }
+                    let _ = out.send(ToExt::Answer {
+                        id,
+                        value: Some(serde_json::Value::Object(history)),
+                        error: None,
+                    });
                 });
-                self.answer(id, result);
             }
             FromExt::Subscribe {
                 id,
@@ -310,6 +353,27 @@ impl EngineLink {
         }
         None
     }
+}
+
+/// Every entity's states since `since`, from Irori's own history, as the engine reads them.
+fn own_history(
+    core: &Core,
+    format: u32,
+    entities: &[EntityId],
+    since: irori_types::Timestamp,
+) -> serde_json::Value {
+    let history: serde_json::Map<String, serde_json::Value> = entities
+        .iter()
+        .map(|entity| {
+            let states: Vec<serde_json::Value> = core
+                .history(entity, since)
+                .iter()
+                .filter_map(|state| format::state_for(format, state))
+                .collect();
+            (entity.as_str().to_owned(), json!(states))
+        })
+        .collect();
+    serde_json::Value::Object(history)
 }
 
 async fn next_event(

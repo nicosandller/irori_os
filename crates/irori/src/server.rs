@@ -482,6 +482,11 @@ struct HistoryView {
     /// doesn't start at the start of the day. Absent when nothing was left out.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
+    /// The changes before `until` came from the system the entity's protocol bridges, read
+    /// for this answer and not stored: Irori wasn't recording the entity yet
+    /// (`docs/specs/protocols.md` §5.5). Absent when every change is Irori's own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    borrowed: Option<irori_core::Borrowed>,
 }
 
 /// How many calls one answer looks up the sender of.
@@ -500,7 +505,23 @@ async fn entity_history(
             format!("there's no entity `{entity_id}`"),
         );
     }
-    let irori_recorder::Changes { states, truncated } = state.0.history.last_day(&entity_id);
+    let irori_recorder::Changes {
+        mut states,
+        truncated,
+    } = state.0.history.last_day(&entity_id);
+    // Before Irori recorded a bridged entity, from the system it bridges. Nothing is asked for
+    // an entity whose protocol can't lend history.
+    let mut borrowed = None;
+    if state.0.core.lends_history(&entity_id)
+        && let Some(past) = state
+            .0
+            .core
+            .past_changes(&entity_id, crate::history::day_ago())
+            .await
+    {
+        states = irori_core::join_past(past.states, states);
+        borrowed = Some(past.borrowed);
+    }
     // The calls the changes answered, found in the activity log. At most as many as there are
     // changes in a day worth drawing.
     let calls: Vec<ContextId> = states
@@ -533,6 +554,7 @@ async fn entity_history(
         states,
         by,
         truncated,
+        borrowed,
     })
     .into_response()
 }
@@ -582,6 +604,10 @@ async fn set_recorder(State(state): State<AppState>, Json(body): Json<RecorderBo
 struct SummaryView {
     entity: EntityId,
     points: Vec<SummaryPointView>,
+    /// The points before `until` came from the system the entity's protocol bridges, as
+    /// [`HistoryView::borrowed`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    borrowed: Option<irori_core::Borrowed>,
 }
 
 #[derive(Debug, Serialize)]
@@ -618,7 +644,7 @@ async fn entity_summary(
         Ok(since) => since,
         Err(error) => return refused(StatusCode::UNPROCESSABLE_ENTITY, error.to_string()),
     };
-    let points = state
+    let own = state
         .0
         .history
         .summaries(&entity_id, since)
@@ -628,11 +654,25 @@ async fn entity_summary(
             value: point.value,
             min: point.min,
             max: point.max,
-        })
-        .collect();
+        });
+    let mut points = Vec::new();
+    let mut borrowed = None;
+    if state.0.core.lends_history(&entity_id)
+        && let Some(past) = state.0.core.past_hours(&entity_id, since).await
+    {
+        points.extend(past.hours.into_iter().map(|hour| SummaryPointView {
+            start: hour.start,
+            value: hour.value,
+            min: hour.min,
+            max: hour.max,
+        }));
+        borrowed = Some(past.borrowed);
+    }
+    points.extend(own);
     Json(SummaryView {
         entity: entity_id,
         points,
+        borrowed,
     })
     .into_response()
 }
@@ -4440,6 +4480,8 @@ mod tests {
         assert_eq!(history["entity"], serde_json::json!(entity.to_string()));
         let states = history["states"].as_array().expect("a list of states");
         assert_eq!(states.len(), 2, "the two recorded changes: {history}");
+        // The demo lends no history: what's served is Irori's own, said as before.
+        assert!(history.get("borrowed").is_none(), "{history}");
 
         // An entity Irori has never heard of is refused, not answered with an empty table.
         let (status, _) = server
@@ -5876,6 +5918,9 @@ mod tests {
                     }
                     irori_protocol::Incoming::Talk(talk) => {
                         talk.line.end(Some("no cameras on this mesh".into()));
+                    }
+                    irori_protocol::Incoming::History(history) => {
+                        history.reply(Err("no history on this mesh".into()));
                     }
                 }
             }
@@ -7573,6 +7618,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 })
                 .await?;
                 for entity in 0..entities {

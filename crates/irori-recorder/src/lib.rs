@@ -227,6 +227,12 @@ enum Job {
         reply: std::sync::mpsc::Sender<()>,
     },
     Check(std::sync::mpsc::Sender<bool>),
+    /// When the record of this entity begins: its first change, or its first hourly summary.
+    Began {
+        entity_id: EntityId,
+        hourly: bool,
+        reply: std::sync::mpsc::Sender<Option<Timestamp>>,
+    },
     /// Rewrite what is stored for this entity from the unit its device speaks to the one the
     /// model keeps, once: `value * scale + offset`, for rows before `before`.
     Convert {
@@ -317,6 +323,9 @@ fn abandon(job: Job) {
         }
         Job::Check(reply) => {
             let _ = reply.send(false);
+        }
+        Job::Began { reply, .. } => {
+            let _ = reply.send(None);
         }
         Job::Configure { reply, .. } => {
             let _ = reply.send(());
@@ -561,6 +570,20 @@ impl Recorder {
             return Vec::new();
         }
         reply_rx.recv().unwrap_or_default()
+    }
+
+    /// When what's kept for `entity_id` begins: its oldest change, or with `hourly` its oldest
+    /// hourly summary. `None` when nothing is kept for it. A read, like [`Recorder::since`].
+    pub fn began(&self, entity_id: &EntityId, hourly: bool) -> Option<Timestamp> {
+        let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+        if !self.enqueue_waiting(Job::Began {
+            entity_id: entity_id.clone(),
+            hourly,
+            reply: reply_tx,
+        }) {
+            return None;
+        }
+        reply_rx.recv().ok().flatten()
     }
 
     /// Whether a trivial read works and the last write succeeded.
@@ -813,6 +836,31 @@ fn apply(
                 }
             };
             let _ = reply.send(rows);
+        }
+        Job::Began {
+            entity_id,
+            hourly,
+            reply,
+        } => {
+            write_batch(connection, batch, last_write_ok);
+            let sql = if hourly {
+                "SELECT MIN(start_ns) FROM statistics WHERE entity_id = ?1"
+            } else {
+                "SELECT MIN(updated_ns) FROM state_history WHERE entity_id = ?1"
+            };
+            let first = connection
+                .query_row(sql, [entity_id.as_str()], |row| {
+                    row.get::<_, Option<i64>>(0)
+                })
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "where history begins could not be read");
+                    None
+                });
+            let _ = reply.send(first.and_then(|ns| {
+                jiff::Timestamp::from_nanosecond(i128::from(ns))
+                    .ok()
+                    .map(Timestamp::from_jiff)
+            }));
         }
         Job::Summaries {
             entity_id,
@@ -1242,6 +1290,22 @@ mod tests {
         assert_eq!(seen.len(), 1, "the change survived the restart");
         assert_eq!(seen[0].last_updated, when);
         assert!(recorder.check());
+    }
+
+    #[test]
+    fn where_the_record_begins_is_its_oldest_change() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let recorder = open(&dir);
+        let plug = entity("switch.plug");
+        assert_eq!(recorder.began(&plug, false), None);
+        assert_eq!(recorder.began(&plug, true), None);
+        let first = now();
+        recorder.append(sample("switch.plug", true, first));
+        recorder.append(sample("switch.plug", false, later(first, 1)));
+        recorder.append(sample("switch.other", true, later(first, -5)));
+        assert_eq!(recorder.began(&plug, false), Some(first));
+        // A switch isn't summarized.
+        assert_eq!(recorder.began(&plug, true), None);
     }
 
     #[test]

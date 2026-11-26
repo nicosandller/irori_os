@@ -10,6 +10,7 @@ mod home_access;
 mod host;
 mod installs;
 mod live;
+mod past;
 mod people;
 mod reach;
 mod services;
@@ -72,6 +73,11 @@ pub const UNPAIR_TIMEOUT: Duration = Duration::from_secs(25);
 /// How long a page waits for a camera's picture. Longer than a live view can bear.
 pub const PICTURE_TIMEOUT: Duration = Duration::from_secs(5);
 
+pub use past::{
+    Borrowed, BorrowedChanges, BorrowedHours, PAST_CHANGES_DAYS, PAST_ENTITIES_PER_ASK,
+    PAST_HOURS_DAYS, PAST_TIMEOUT, join as join_past,
+};
+
 /// How long an extension's page waits for its engine to answer. Longer than a service call: a
 /// backtest replays a day of history (`docs/specs/automations.md` §B3).
 pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
@@ -82,6 +88,13 @@ pub const APP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub trait HistorySource: Send + Sync + fmt::Debug {
     /// This entity's states since `since`, oldest first.
     fn changes(&self, entity_id: &EntityId, since: Timestamp) -> Vec<EntityState>;
+
+    /// When this source's own record of an entity begins: its first kept change, or with
+    /// `hourly` its first hourly summary. `None` when it keeps nothing for it yet. History
+    /// borrowed from a bridged system only ever comes from before this
+    /// (`docs/specs/protocols.md` §5.5). Only asked about an entity whose protocol can lend
+    /// history, so a home without one never asks.
+    fn began(&self, entity_id: &EntityId, hourly: bool) -> Option<Timestamp>;
 
     /// Deletes what is kept for an entity that has left the home. The core calls it as the
     /// entity is removed, before the removal goes out as an event, so the deletion does not
@@ -188,6 +201,10 @@ pub struct ExtensionInfo {
     /// manifest's `unpairs`).
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub unpairs: bool,
+    /// Whether it can read the history the system it bridges kept before Irori did (the
+    /// manifest's `history`). Not sent: the history pages say where a stretch came from.
+    #[serde(skip)]
+    pub history: bool,
     /// Its page in the sidebar, if it has one (`docs/specs/automations.md` §B3).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<AppInfo>,
@@ -395,6 +412,8 @@ struct Shared {
     app_links: RwLock<HashMap<ExtensionId, mpsc::Sender<AppCall>>>,
     /// Where `history:read` is answered from; nothing until the binary provides it.
     history: RwLock<Option<Arc<dyn HistorySource>>>,
+    /// History borrowed from bridged systems, kept for a few minutes (`past.rs`).
+    past: past::PastCache,
     /// The config directory, handed to engines whose permissions name it.
     config_dir: RwLock<Option<PathBuf>>,
     /// Where the home is and its time zone (`home.toml`), for engines that fire by the clock.
@@ -498,6 +517,7 @@ impl Core {
             networks: RwLock::default(),
             app_links: RwLock::default(),
             history: RwLock::default(),
+            past: past::PastCache::default(),
             config_dir: RwLock::default(),
             place: RwLock::default(),
             busy: Mutex::default(),
@@ -1455,6 +1475,226 @@ impl Core {
         }
     }
 
+    /// Whether an entity's protocol can lend history from before Irori recorded it: its
+    /// manifest says `history` and it's running. Cheap, and false for every entity of a home
+    /// without such a protocol.
+    pub fn lends_history(&self, entity_id: &EntityId) -> bool {
+        self.lender(entity_id).is_some()
+    }
+
+    /// The extension that would lend an entity's history, its name, and the entity's
+    /// `unique_id` there.
+    fn lender(&self, entity_id: &EntityId) -> Option<(ExtensionId, String, UniqueId)> {
+        let (protocol, unique_id) = {
+            let home = read(&self.0.home);
+            let entity = home.entity(entity_id)?;
+            (entity.protocol.clone(), entity.unique_id.clone())
+        };
+        let extension = ExtensionId::try_from(protocol.as_str()).ok()?;
+        let name = read(&self.0.extensions)
+            .get(&extension)
+            .and_then(|overview| overview.info.as_ref())
+            .filter(|info| info.history)
+            .map(|info| info.name.to_string())?;
+        read(&self.0.action_links)
+            .contains_key(&extension)
+            .then_some(())?;
+        Some((extension, name, unique_id))
+    }
+
+    /// Where Irori's own record of an entity begins, asked of the history source once it has
+    /// one.
+    fn own_began(&self, entity_id: &EntityId, hourly: bool) -> Option<Timestamp> {
+        if let Some(at) = self.0.past.began(entity_id, hourly) {
+            return Some(at);
+        }
+        let history = read(&self.0.history).clone()?;
+        let at = history.began(entity_id, hourly)?;
+        self.0.past.note_began(entity_id, hourly, at);
+        Some(at)
+    }
+
+    /// An entity's changes from `since` up to where Irori's own record of it begins, read from
+    /// the system its protocol bridges (`docs/specs/protocols.md` §5.5). `None` when its
+    /// protocol can't lend history, Irori's record already covers `since`, the system kept
+    /// nothing, or it didn't answer within [`past::PAST_TIMEOUT`]. Never more than
+    /// [`past::PAST_CHANGES_DAYS`] back, nor more than [`irori_protocol::history::MAX_PAST_CHANGES`]
+    /// changes, the newest kept. Each is checked against the entity, as a report would be.
+    pub async fn past_changes(
+        &self,
+        entity_id: &EntityId,
+        since: Timestamp,
+    ) -> Option<past::BorrowedChanges> {
+        let (extension, from, unique_id) = self.lender(entity_id)?;
+        let (since, until, open) =
+            self.past_stretch(entity_id, since, false, past::PAST_CHANGES_DAYS)?;
+        let answer = self
+            .ask_past(&extension, entity_id, unique_id, since, until, open, false)
+            .await?;
+        let entity = self.entity(entity_id)?;
+        let protocol = entity.protocol.clone();
+        let mut changes: Vec<irori_protocol::PastChange> = answer
+            .changes
+            .into_iter()
+            .filter(|change| change.at >= since && change.at < until)
+            .filter(|change| {
+                change
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| entity.capabilities.fits(state).is_ok())
+            })
+            .collect();
+        changes.sort_by_key(|change| change.at);
+        let extra = changes
+            .len()
+            .saturating_sub(irori_protocol::history::MAX_PAST_CHANGES);
+        changes.drain(..extra);
+        let mut states: Vec<EntityState> = Vec::with_capacity(changes.len());
+        for change in changes {
+            let last_changed = match states.last() {
+                Some(before)
+                    if before.state == change.state
+                        && before.availability == change.availability =>
+                {
+                    before.last_changed
+                }
+                _ => change.at,
+            };
+            states.push(EntityState {
+                entity_id: entity_id.clone(),
+                availability: change.availability,
+                state: change.state,
+                attributes: irori_types::Attributes::new(),
+                last_changed,
+                last_updated: change.at,
+                last_reported: change.at,
+                context: Context {
+                    id: context_id::new_context_id(change.at),
+                    parent_id: None,
+                    origin: Origin::Device {
+                        protocol: protocol.clone(),
+                    },
+                },
+            });
+        }
+        (!states.is_empty()).then_some(past::BorrowedChanges {
+            states,
+            borrowed: past::Borrowed { from, until },
+        })
+    }
+
+    /// An entity's hourly summaries from `since` up to Irori's own first one, read from the
+    /// system its protocol bridges. As [`Self::past_changes`], at most
+    /// [`past::PAST_HOURS_DAYS`] back.
+    pub async fn past_hours(
+        &self,
+        entity_id: &EntityId,
+        since: Timestamp,
+    ) -> Option<past::BorrowedHours> {
+        let (extension, from, unique_id) = self.lender(entity_id)?;
+        let (since, until, open) =
+            self.past_stretch(entity_id, since, true, past::PAST_HOURS_DAYS)?;
+        let answer = self
+            .ask_past(&extension, entity_id, unique_id, since, until, open, true)
+            .await?;
+        let mut hours: Vec<irori_protocol::PastHour> = answer
+            .hours
+            .into_iter()
+            .filter(|hour| hour.start >= since && hour.start < until)
+            .filter(|hour| {
+                hour.value.is_finite()
+                    && hour.min.is_none_or(f64::is_finite)
+                    && hour.max.is_none_or(f64::is_finite)
+            })
+            .collect();
+        hours.sort_by_key(|hour| hour.start);
+        hours.dedup_by_key(|hour| hour.start);
+        let extra = hours
+            .len()
+            .saturating_sub(irori_protocol::history::MAX_PAST_HOURS);
+        hours.drain(..extra);
+        (!hours.is_empty()).then_some(past::BorrowedHours {
+            hours,
+            borrowed: past::Borrowed { from, until },
+        })
+    }
+
+    /// The stretch to borrow: from `since`, no further back than `days`, up to where Irori's own
+    /// record begins, or now. `None` when there's nothing before Irori's own.
+    fn past_stretch(
+        &self,
+        entity_id: &EntityId,
+        since: Timestamp,
+        hourly: bool,
+        days: i64,
+    ) -> Option<(Timestamp, Timestamp, bool)> {
+        let now = self.now();
+        let began = self.own_began(entity_id, hourly);
+        let until = began.map_or(now, |began| began.min(now));
+        let earliest = Timestamp::from_jiff(
+            until
+                .as_jiff()
+                .checked_sub(jiff::SignedDuration::from_hours(days * 24))
+                .ok()?,
+        );
+        let since = since.max(earliest);
+        (since < until).then_some((since, until, began.is_none()))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn ask_past(
+        &self,
+        extension: &ExtensionId,
+        entity_id: &EntityId,
+        unique_id: UniqueId,
+        since: Timestamp,
+        until: Timestamp,
+        open: bool,
+        hourly: bool,
+    ) -> Option<irori_protocol::Past> {
+        if let Some(kept) = self.0.past.get(entity_id, hourly, since, until) {
+            return Some(kept);
+        }
+        let deadline = tokio::time::Instant::now() + past::PAST_TIMEOUT;
+        // Taken in turn across the home: a page of many sensors, or a backtest of many
+        // entities, doesn't become as many questions at once to the bridged system.
+        let _turn = tokio::time::timeout_at(deadline, self.0.past.at_once.acquire())
+            .await
+            .ok()?
+            .ok()?;
+        // Someone else may have asked while this waited its turn.
+        if let Some(kept) = self.0.past.get(entity_id, hourly, since, until) {
+            return Some(kept);
+        }
+        let sender = read(&self.0.action_links).get(extension).cloned()?;
+        let (incoming, result) = irori_protocol::host::incoming_history(irori_protocol::PastAsk {
+            unique_id,
+            since,
+            until,
+            hourly,
+        });
+        let answer = match tokio::time::timeout_at(deadline, sender.send(incoming)).await {
+            Ok(Ok(())) => tokio::time::timeout_at(deadline, result).await,
+            _ => return None,
+        };
+        match answer {
+            Ok(Ok(Ok(past))) => {
+                self.0
+                    .past
+                    .put(entity_id, hourly, since, until, open, past.clone());
+                Some(past)
+            }
+            Ok(Ok(Err(why))) => {
+                tracing::debug!(%extension, %entity_id, why, "no history from before Irori");
+                None
+            }
+            Ok(Err(_)) | Err(_) => {
+                tracing::debug!(%extension, %entity_id, "no history from before Irori in time");
+                None
+            }
+        }
+    }
+
     async fn ask(
         &self,
         extension: &ExtensionId,
@@ -1539,6 +1779,7 @@ impl Core {
                 if let Some(history) = history {
                     history.forget(entity_id);
                 }
+                self.0.past.forget(entity_id);
             }
             // No listeners is fine.
             let _ = self.0.events.send(event);

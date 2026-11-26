@@ -16,6 +16,7 @@ use crate::api::Home;
 
 mod builder;
 mod controls;
+pub(crate) use controls::moment::when;
 mod grouping;
 mod tables;
 mod updates;

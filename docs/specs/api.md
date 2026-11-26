@@ -193,6 +193,11 @@ changes, oldest first, at most 2,000. When the day had more, the oldest are left
 command (the `parent_id` of a state change that answered it) to who sent it, when the activity
 log has the command: the owner and a person with the whole home are told the name, a person with
 some rooms is told their own and "someone" for the rest (`docs/specs/access.md` §3.1).
+`borrowed`, `{ "from", "until" }`, says the changes before `until` were read from the system the
+entity's protocol bridges (`from` names the extension), for this answer only: Irori wasn't
+recording the entity yet, and keeps no copy (`docs/specs/protocols.md` §5.5). The summary,
+`{ "entity", "points", "borrowed"? }`, says the same of its hours. Both leave it out when every
+change is Irori's own.
 
 `GET /api/audit` is the activity log, for an owner (a token gets `403`):
 `{ "entries": [AuditEntry…], "older"? }`, newest first. The query narrows it: `user` (an id; what

@@ -326,6 +326,12 @@ pub struct ProtocolContribution {
     /// first, and the device is gone rather than back among what was found.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unpairs: bool,
+    /// Whether it can read the history the system it bridges kept before Irori did
+    /// (`docs/specs/protocols.md` §5.5). With this set, a page or an engine asking for an
+    /// entity's history from before Irori began recording it is sent `past_history`. Nothing
+    /// asks a protocol that leaves it out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history: bool,
 }
 
 impl ProtocolContribution {

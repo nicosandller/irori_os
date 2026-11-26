@@ -41,6 +41,12 @@ Home Assistant's setup changes.
 - **Streams a camera live** when Home Assistant streams it: `camera/stream` gives an HLS
   playlist of fragmented MP4, the container Irori's live view plays, so its init segment and then
   each new segment are passed on as they are, starting at the newest, until nobody watches.
+- **Lends Home Assistant's history** from before Irori recorded an entity, when a page opens its
+  history or a flow is backtested (`docs/specs/protocols.md` §5.5): the changes from
+  `history/history_during_period` and, for a sensor that measures or counts, the hourly
+  statistics from `recorder/statistics_during_period`. One entity per question, one question at
+  a time, never on connecting, and only for the stretch before Irori's own record begins. Irori
+  shows it with a note saying where it came from, and stores none of it.
 - **Passes commands on** as `call_service` to the entity, and answers once Home Assistant has
   carried it out, within 8 seconds. The change it causes is reported as caused by that command.
 - **Reconnects on its own** when Home Assistant restarts or the network drops: after a second,
@@ -107,6 +113,8 @@ A big Home Assistant must not crowd out a home's own devices, so this extension 
 What this extension can send is a closed list, checked again before anything leaves: signing in,
 `get_config`, the four registries' `list`, `get_states`, `subscribe_entities`,
 `subscribe_events`, `unsubscribe_events`, `camera/stream` (which only starts a stream to read),
+`history/history_during_period` and `recorder/statistics_during_period` (reads of the recorder,
+named one by one: its other commands import, clear and rewrite statistics, and are never sent),
 and `call_service`. It never touches Home Assistant's registries, areas or automations, and it
 can't unpair anything. A test fails if anything else can be sent.
 
@@ -169,6 +177,11 @@ extension then says so on its page and asks for another token there.
   for it. Listed as unmodeled.
 - A water heater whose modes aren't ones Irori's water heaters have is listed, with its modes.
 - Checking for an update again (`homeassistant.update_entity` isn't the update's own service).
-- History from Home Assistant's recorder (#167), a welcome step for trying Irori this way (#166),
+- Keeping a copy of Home Assistant's history in Irori, so it outlives Home Assistant's own
+  retention or a disconnect: it's read each time for now. The assistant and a helper's preview
+  read Irori's own history only; charts and backtests have Home Assistant's too.
+- An attribute's own history: a light's past brightness is the first row's for the whole
+  stretch, since Home Assistant sends attributes once in a minimal answer. On and off are right.
+- A welcome step for trying Irori this way (#166),
   showing which side runs what (#169), handing a device over from Home Assistant to a native
   extension (#168), and packaging for Home Assistant OS (#170, #171).

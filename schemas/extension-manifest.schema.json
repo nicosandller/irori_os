@@ -715,6 +715,10 @@
           "minItems": 1,
           "uniqueItems": true
         },
+        "history": {
+          "description": "Whether it can read the history the system it bridges kept before Irori did\n(`docs/specs/protocols.md` §5.5). With this set, a page or an engine asking for an\nentity's history from before Irori began recording it is sent `past_history`. Nothing\nasks a protocol that leaves it out.",
+          "type": "boolean"
+        },
         "iot_class": {
           "description": "Where its devices live and how it hears about changes. Shown as a badge.",
           "$ref": "#/$defs/IotClass"

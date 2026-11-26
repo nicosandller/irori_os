@@ -2,8 +2,9 @@
 //! For the tests, and for the load gate (`dev/ha-load`, through `examples/fake_ha.rs`).
 //!
 //! It serves a [`World`] of floors, areas, devices, entities and states; sends changes to whoever
-//! subscribed; carries out `call_service` on lights and switches; and records every message it
-//! receives, so a test can check what this extension sent.
+//! subscribed; carries out `call_service` on lights and switches; answers the recorder's reads
+//! with a made-up past ([`past_value`]); and records every message it receives, so a test can
+//! check what this extension sent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -452,6 +453,39 @@ fn compact(state: &str, attributes: &Map<String, Value>) -> Value {
 }
 
 /// What the fake answers `asked` with, in order.
+/// What an entity was at `at` (seconds since the epoch), made up from what it is now: a number
+/// swings a fifth either way over each day, anything with `on` and `off` takes turns every three
+/// hours, and anything else stays as it is. The same moment always gives the same answer.
+pub fn past_value(now: &str, at: f64) -> String {
+    if let Ok(number) = now.parse::<f64>() {
+        let swing = (number.abs() * 0.2).max(1.0);
+        let value = number + swing * (at / 86_400.0 * std::f64::consts::TAU).sin();
+        return format!("{:.1}", value);
+    }
+    match now {
+        "on" | "off" => {
+            if ((at / 10_800.0).floor() as i64) % 2 == 0 {
+                "on".to_owned()
+            } else {
+                "off".to_owned()
+            }
+        }
+        other => other.to_owned(),
+    }
+}
+
+/// A read's `start_time` and `end_time`, in seconds since the epoch. No end is now.
+fn period(asked: &Value) -> Option<(f64, f64)> {
+    let seconds = |text: &Value| {
+        let parsed: jiff::Timestamp = text.as_str()?.parse().ok()?;
+        Some(parsed.as_millisecond() as f64 / 1000.0)
+    };
+    let start = seconds(&asked["start_time"])?;
+    let end = seconds(&asked["end_time"])
+        .unwrap_or_else(|| jiff::Timestamp::now().as_millisecond() as f64 / 1000.0);
+    Some((start, end))
+}
+
 fn answer_to(shared: &Shared, connection: u64, asked: &Value) -> Vec<Value> {
     let id = &asked["id"];
     let kind = asked["type"].as_str().unwrap_or("");
@@ -538,6 +572,68 @@ fn answer_to(shared: &Shared, connection: u64, asked: &Value) -> Vec<Value> {
                 subscriptions.remove(&subscription);
             }
             vec![result(id, Value::Null)]
+        }
+        "history/history_during_period" => {
+            let Some((start, end)) = period(asked) else {
+                return vec![error(id, "invalid_start_time", "Invalid start_time")];
+            };
+            let mut answer = Map::new();
+            for entity_id in asked["entity_ids"].as_array().into_iter().flatten() {
+                let Some(entity_id) = entity_id.as_str() else {
+                    continue;
+                };
+                let Some((state, attributes)) = world.states.get(entity_id) else {
+                    continue;
+                };
+                let numeric = state.parse::<f64>().ok();
+                // A reading every quarter hour; a switch's change every three hours.
+                let step = if numeric.is_some() { 900.0 } else { 10_800.0 };
+                let mut rows = Vec::new();
+                let mut at = start;
+                while at < end {
+                    let s = past_value(state, at);
+                    let row = if rows.is_empty() {
+                        json!({ "s": s, "a": attributes, "lu": at })
+                    } else {
+                        json!({ "s": s, "lu": at })
+                    };
+                    rows.push(row);
+                    at = (at / step).floor() * step + step;
+                }
+                answer.insert(entity_id.to_owned(), Value::Array(rows));
+            }
+            vec![result(id, Value::Object(answer))]
+        }
+        "recorder/statistics_during_period" => {
+            let Some((start, end)) = period(asked) else {
+                return vec![error(id, "invalid_start_time", "Invalid start_time")];
+            };
+            let mut answer = Map::new();
+            for entity_id in asked["statistic_ids"].as_array().into_iter().flatten() {
+                let Some(entity_id) = entity_id.as_str() else {
+                    continue;
+                };
+                let Some((state, attributes)) = world.states.get(entity_id) else {
+                    continue;
+                };
+                if attributes.get("state_class").is_none() || state.parse::<f64>().is_err() {
+                    continue;
+                }
+                let mut rows = Vec::new();
+                let mut hour = (start / 3600.0).ceil() * 3600.0;
+                while hour + 3600.0 <= end {
+                    let mean: f64 = past_value(state, hour + 1800.0).parse().unwrap_or(0.0);
+                    let spread = (mean.abs() * 0.05).max(0.5);
+                    rows.push(json!({
+                        "start": (hour * 1000.0) as i64, "end": ((hour + 3600.0) * 1000.0) as i64,
+                        "mean": mean, "min": mean - spread, "max": mean + spread,
+                        "change": spread,
+                    }));
+                    hour += 3600.0;
+                }
+                answer.insert(entity_id.to_owned(), Value::Array(rows));
+            }
+            vec![result(id, Value::Object(answer))]
         }
         "call_service" => {
             let context = shared.context();

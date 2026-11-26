@@ -1283,11 +1283,32 @@ pub async fn stop_action(extension: &ExtensionId, action_id: &str) -> Result<(),
 pub struct EntityHistory {
     pub entity: EntityId,
     pub states: Vec<EntityState>,
+    /// The changes before `until` came from the system the entity's protocol bridges.
+    #[serde(default)]
+    pub borrowed: Option<Borrowed>,
+}
+
+/// Where the start of an entity's history came from: a bridged system's own history, read for
+/// the page and not stored by Irori, up to when Irori's own record takes over.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct Borrowed {
+    /// The extension that read it, by name: "Home Assistant".
+    pub from: String,
+    pub until: irori_types::Timestamp,
 }
 
 /// The last day of an entity's changes, for the page's expandable table. The server keeps that
 /// day in the database, so a restart does not blank it.
 pub async fn entity_history(entity_id: &EntityId) -> Result<Vec<EntityState>, String> {
+    entity_history_from(entity_id)
+        .await
+        .map(|(states, _)| states)
+}
+
+/// [`entity_history`], with where its start came from when Irori wasn't recording it yet.
+pub async fn entity_history_from(
+    entity_id: &EntityId,
+) -> Result<(Vec<EntityState>, Option<Borrowed>), String> {
     let response = Request::get(&format!("{HISTORY_URL}/{entity_id}"))
         .send()
         .await
@@ -1303,7 +1324,7 @@ pub async fn entity_history(entity_id: &EntityId) -> Result<Vec<EntityState>, St
     response
         .json::<EntityHistory>()
         .await
-        .map(|history| history.states)
+        .map(|history| (history.states, history.borrowed))
         .map_err(|e| format!("Irori sent something this page can't read: {e}"))
 }
 
@@ -1689,13 +1710,15 @@ pub struct SummaryPoint {
 #[derive(Debug, Deserialize)]
 struct SummaryResponse {
     points: Vec<SummaryPoint>,
+    #[serde(default)]
+    borrowed: Option<Borrowed>,
 }
 
 /// Hourly summaries from `since`, an RFC 3339 timestamp. Oldest first.
 pub async fn entity_summary(
     entity_id: &EntityId,
     since: &str,
-) -> Result<Vec<SummaryPoint>, String> {
+) -> Result<(Vec<SummaryPoint>, Option<Borrowed>), String> {
     let since = web_sys::js_sys::encode_uri_component(since)
         .as_string()
         .unwrap_or_else(|| since.to_owned());
@@ -1713,7 +1736,7 @@ pub async fn entity_summary(
     response
         .json::<SummaryResponse>()
         .await
-        .map(|summary| summary.points)
+        .map(|summary| (summary.points, summary.borrowed))
         .map_err(|error| format!("Irori sent something this page can't read: {error}"))
 }
 

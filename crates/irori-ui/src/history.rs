@@ -24,6 +24,8 @@ const LATER_KEPT: usize = 2000;
 #[derive(Debug, Clone)]
 pub struct Kept {
     pub day: ArcRwSignal<Day>,
+    /// Where the start of the day came from, when Irori wasn't recording the entity yet.
+    pub borrowed: ArcRwSignal<Option<crate::api::Borrowed>>,
     later: Arc<Mutex<VecDeque<EntityState>>>,
 }
 
@@ -31,6 +33,7 @@ impl Kept {
     fn new() -> Self {
         Self {
             day: ArcRwSignal::new(None),
+            borrowed: ArcRwSignal::new(None),
             later: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
@@ -117,9 +120,16 @@ impl Histories {
         self.asked.update_value(|asked| {
             asked.insert(id.clone());
         });
-        let (id, day) = (id.clone(), self.day(id).day);
+        let kept = self.day(id);
+        let (id, day, borrowed) = (id.clone(), kept.day, kept.borrowed);
         spawn_local(async move {
-            day.set(Some(crate::api::entity_history(&id).await));
+            match crate::api::entity_history_from(&id).await {
+                Ok((states, from)) => {
+                    borrowed.set(from);
+                    day.set(Some(Ok(states)));
+                }
+                Err(why) => day.set(Some(Err(why))),
+            }
         });
     }
 

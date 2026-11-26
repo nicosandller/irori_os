@@ -850,6 +850,7 @@ async fn supervise(
             config_schema: Some(builtin.config_schema.clone()),
             actions: contribution.actions.clone(),
             unpairs: contribution.unpairs,
+            history: contribution.history,
             app: None,
             engine: false,
         },
@@ -1380,6 +1381,7 @@ async fn supervise_package(
                 config_schema: None,
                 actions: Vec::new(),
                 unpairs: false,
+                history: false,
                 app,
                 engine: false,
             },
@@ -1456,6 +1458,7 @@ async fn supervise_package(
                 .map(|contribution| contribution.actions.clone())
                 .unwrap_or_default(),
             unpairs: contribution.is_some_and(|contribution| contribution.unpairs),
+            history: contribution.is_some_and(|contribution| contribution.history),
             app: app.clone(),
             engine: manifest.is_engine(),
         },
@@ -2004,6 +2007,15 @@ async fn pass_talk(stream: u64, mut audio: mpsc::Receiver<Vec<u8>>, out: mpsc::S
 }
 
 fn action_message(id: u64, incoming: &IncomingAction) -> ToExt {
+    if let Some(ask) = incoming.remembering() {
+        return ToExt::PastHistory {
+            id,
+            unique_id: ask.unique_id.clone(),
+            since: ask.since,
+            until: ask.until,
+            hourly: ask.hourly,
+        };
+    }
     if let Some(unique_id) = incoming.picturing() {
         return ToExt::CameraPicture {
             id,
@@ -2441,6 +2453,20 @@ async fn apply_from_ext(
                     (_, Some(error)) => Err(error),
                     (Some(picture), None) => irori_protocol::Picture::try_from(picture),
                     (None, None) => Err("it sent no picture".to_owned()),
+                });
+            }
+            Ok(None)
+        }
+        FromExt::PastHistoryResult {
+            id,
+            changes,
+            hours,
+            error,
+        } => {
+            if let Some(incoming) = pending_actions.remove(&id) {
+                incoming.reply_history(match error {
+                    Some(error) => Err(error),
+                    None => Ok(irori_protocol::Past { changes, hours }),
                 });
             }
             Ok(None)
