@@ -1028,3 +1028,9 @@ async fn history_from_before_irori_is_read_only_when_asked() {
         assert!(ALLOWED.contains(&kind), "{kind}");
     }
 }
+
+#[test]
+fn the_manifest_reads_and_says_it_lends_history() {
+    let builtin = irori_protocol::builtin::<crate::HomeAssistant>().expect("a valid manifest");
+    assert!(builtin.manifest.contributes.protocol[0].history);
+}

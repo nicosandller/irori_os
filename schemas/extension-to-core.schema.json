@@ -412,6 +412,43 @@
       ]
     },
     {
+      "description": "The answer to `past_history` (`docs/specs/protocols.md` §5.5): the changes, or the hours\nwhen hours were asked for, oldest first; or why there's none. Empty lists when the\nsystem kept nothing for that stretch.",
+      "type": "object",
+      "properties": {
+        "changes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PastChange"
+          }
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hours": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PastHour"
+          }
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "past_history_result"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
       "description": "A live stream's init segment (`docs/specs/protocols.md` §5.3), base64.",
       "type": "object",
       "properties": {
@@ -3058,6 +3095,68 @@
         "opening",
         "closed",
         "closing"
+      ]
+    },
+    "PastChange": {
+      "description": "One change the bridged system recorded: when, and what the entity was then.",
+      "type": "object",
+      "properties": {
+        "at": {
+          "description": "When it changed.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "availability": {
+          "description": "`unavailable` when the system had lost the device then.",
+          "$ref": "#/$defs/Availability"
+        },
+        "state": {
+          "description": "The value, as the entity's kind has it; `null` when the system didn't know it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/State"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "at"
+      ]
+    },
+    "PastHour": {
+      "description": "One hour of a sensor that measures or counts, as the bridged system summarized it: the\naverage for a measurement, how much a counter changed for one that counts.",
+      "type": "object",
+      "properties": {
+        "max": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "min": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
+        "start": {
+          "description": "The start of the hour.",
+          "$ref": "#/$defs/Timestamp"
+        },
+        "value": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "value"
       ]
     },
     "Playback": {

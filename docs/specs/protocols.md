@@ -121,6 +121,7 @@ core's process.
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
 | Send a picture | receives a camera or image entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` and `image` entities. §5.2 |
 | Send live video | receives a camera entity's `unique_id`, a quality and the codecs the page plays; sends an init segment, then video, until told to stop | Only for its own `camera` entities that say `live`. §5.3 |
+| Lend history | receives an entity's `unique_id`, a stretch of time and whether hours are wanted; replies with the changes or hourly summaries the bridged system kept | Only with `history` in its manifest. §5.5 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 
@@ -265,6 +266,37 @@ On the wire the request is `talk_start { stream, unique_id }`, then `talk_audio 
 for each chunk (`data` the bytes as base64) and `talk_stop { stream }`; the protocol answers with
 `talk_ready { stream }` and `talk_end { stream, error }`. In the SDK it is `Incoming::Talk`, whose
 `audio` is the chunks and whose `line` says `ready()` and `end(error)`.
+
+### 5.5 History from before Irori
+
+A protocol that bridges a system with its own history (Home Assistant's recorder) can lend it,
+so a person trying Irori sees charts, and can backtest a flow, from the first day. It declares
+`history = true` in its manifest ([extensions.md](extensions.md) §6.1). Nothing asks a protocol
+that doesn't, so a home without one does no extra work.
+
+- **Asked, never pushed.** The core asks when a page opens an entity's history or an engine
+  reads it (`history:read`), one entity at a time. Nothing is asked when the protocol connects.
+- **Only before Irori's own record.** The stretch asked for ends where Irori's own record of the
+  entity begins (its first change, or for hours its first hourly summary), or now when it has
+  none. The two never cover the same moment, so nothing is counted twice. At the seam, Irori's
+  first change is dropped from what's shown when it says the same as the last lent one: it's
+  the protocol saying what the entity is as it connected, not a change.
+- **Never stored.** What's lent is joined with Irori's own history in the answer and kept in
+  memory for up to 10 minutes. It's never written to `irori.db`. Pages say where it came from:
+  `/api/history/{id}` and its `summary` carry `borrowed: { from, until }` ([api.md](api.md)).
+- **Bounded.** At most 7 days of changes and 366 days of hours; at most 2,000 changes (the
+  newest) and 8,784 hours in an answer; two questions at a time across the home; 8 seconds to
+  answer, after which Irori's own history is shown alone. An engine's one question fills in at
+  most 24 entities this way. The core checks each change against the entity, as it would a
+  report, and drops what's outside the stretch.
+- **Changes** are `{ at, availability?, state }`, `state` the entity kind's value or `null`.
+  **Hours** are `{ start, value, min?, max? }`: the hour's average for a measurement, or how much
+  a counter changed.
+
+On the wire the request is `past_history { id, unique_id, since, until, hourly? }`, answered
+with `past_history_result { id, changes?, hours?, error? }`. In the SDK it is
+`Incoming::History`, from `ProtocolContext::next`; `next_action` refuses it for a protocol that
+doesn't read it.
 
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
@@ -784,6 +816,8 @@ answered with the same `id`. Sample conversations are in
 | → core | `action_result` | `id`, `error`? | The answer to `action_call` and `unpair_device`. |
 | core → | `camera_picture` | `id`, `unique_id` | A page wants a picture from this camera. |
 | → core | `picture_result` | `id`, `picture`?: `{content_type, data}` (base64), `error`? | The picture, or why there's none. |
+| core → | `past_history` | `id`, `unique_id`, `since`, `until`, `hourly`? | An entity's history from before Irori recorded it (§5.5). Only to a protocol whose manifest says `history`. |
+| → core | `past_history_result` | `id`, `changes`?, `hours`?, `error`? | What the bridged system kept for that stretch, oldest first. |
 
 **Live video and talk** (§5.3, §5.4; not answered: `stream` ties each one to its stream)
 

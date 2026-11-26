@@ -181,6 +181,40 @@
       ]
     },
     {
+      "description": "A page or an engine wants an entity's history from before Irori recorded it, from\n`since` up to (not including) `until`: its changes, or with `hourly` its hourly\nsummaries. Only sent to a protocol whose manifest says `history`\n(`docs/specs/protocols.md` §5.5). Answered with `past_history_result`.",
+      "type": "object",
+      "properties": {
+        "hourly": {
+          "type": "boolean"
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "since": {
+          "$ref": "#/$defs/Timestamp"
+        },
+        "type": {
+          "type": "string",
+          "const": "past_history"
+        },
+        "unique_id": {
+          "$ref": "#/$defs/UniqueId"
+        },
+        "until": {
+          "$ref": "#/$defs/Timestamp"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "unique_id",
+        "since",
+        "until"
+      ]
+    },
+    {
       "description": "A page wants to watch one of its cameras live. Answered with `live_init`, then\n`live_fragment`s, until `live_end` or `live_stop`.",
       "type": "object",
       "properties": {

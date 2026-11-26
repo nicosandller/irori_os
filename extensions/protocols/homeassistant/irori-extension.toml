@@ -22,7 +22,7 @@ entity_kinds = [
     "fan", "event", "valve", "siren", "climate", "media_player", "camera", "device_tracker",
     "update", "alarm_control_panel", "vacuum", "water_heater", "humidifier", "lawn_mower", "scene",
     "text", "date", "time", "datetime", "image", "notify", "remote", "weather", "calendar", "todo",
-"    "timer", "schedule",
+    "timer", "schedule",
 ]
 # Asked for an entity's history from before Irori recorded it, when a page or a backtest wants
 # it: read from Home Assistant's recorder, never written there or kept in Irori.
