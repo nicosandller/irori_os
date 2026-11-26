@@ -461,9 +461,7 @@ impl Bridge {
                 let kept = self.release(ctx, &entity_id).await;
                 ask.reply(kept.map(|()| json!({ "switched_on": false, "waiting": NOT_CONNECTED })));
             }
-            _ => ask.reply(Err(format!(
-                "{NOT_CONNECTED}, so its automation can't be switched off"
-            ))),
+            _ => ask.reply(Err(NOT_CONNECTED.to_owned())),
         }
     }
 
@@ -1305,7 +1303,12 @@ impl Session<'_> {
                 on: false,
                 result,
             } => {
-                let Some(ask) = ask else { return };
+                let Some(ask) = ask else {
+                    if let Err(why) = result {
+                        tracing::warn!(%why, %entity_id, "couldn't switch the automation off again");
+                    }
+                    return;
+                };
                 match result {
                     Ok(()) => ask.reply(Ok(json!({ "switched_off": true }))),
                     // Refused: it's still on, so it's not Irori's to switch back on.
@@ -1338,7 +1341,19 @@ impl Session<'_> {
                 result,
             } => match result {
                 Ok(()) => {
-                    // Unless it was handed over again meanwhile.
+                    // Handed over again while this was on its way: its flow is on, so it goes
+                    // off again, or both would run.
+                    if self
+                        .bridge
+                        .twin(&entity_id)
+                        .is_some_and(|held| !held.releasing)
+                    {
+                        self.switch(None, entity_id, false);
+                        if let Some(ask) = ask {
+                            ask.reply(Ok(json!({ "switched_on": false })));
+                        }
+                        return;
+                    }
                     let before = self.bridge.twins.len();
                     self.bridge
                         .twins
