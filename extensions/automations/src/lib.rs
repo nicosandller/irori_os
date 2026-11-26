@@ -6,6 +6,7 @@
 //! next timer, for a call's answer, and every couple of seconds to notice edited flow files.
 
 pub mod brief;
+pub mod home_assistant;
 pub mod people;
 pub mod rpc;
 pub mod store;
@@ -67,6 +68,10 @@ pub struct Service {
     calls: mpsc::UnboundedSender<(u64, Result<(), String>)>,
     /// The runs in progress when they were last kept on disk.
     kept_running: BTreeSet<ContextId>,
+    /// What Home Assistant answered about its automations, read beside the loop
+    /// ([`home_assistant`]); the loop finishes with it.
+    fetched_tx: mpsc::UnboundedSender<home_assistant::Fetched>,
+    fetched: Option<mpsc::UnboundedReceiver<home_assistant::Fetched>>,
 }
 
 impl Service {
@@ -206,6 +211,7 @@ impl Service {
         store: Store,
     ) -> Result<(Self, mpsc::UnboundedReceiver<(u64, Result<(), String>)>), String> {
         let (calls, answers) = mpsc::unbounded_channel();
+        let (fetched_tx, fetched) = mpsc::unbounded_channel();
         let mut engine = Engine::new(Box::new(RandomIds));
         // Subscribed before reading, so nothing that happens in between is missed.
         client
@@ -227,6 +233,8 @@ impl Service {
             waiting: BTreeSet::new(),
             calls,
             kept_running: BTreeSet::new(),
+            fetched_tx,
+            fetched: Some(fetched),
         };
         // Runs a stop with no warning cut off last time: recorded, so the run's page says what
         // happened instead of the run never having been.
@@ -477,6 +485,16 @@ impl Service {
                 self.apply_effects();
             }
             Incoming::RegistryChanged => self.read_again().await,
+            // Bringing a Home Assistant automation over: Home Assistant is read beside the
+            // loop, and `finish_fetched` takes it from there.
+            Incoming::App(request) if home_assistant::asks(&request.method) => {
+                home_assistant::start(
+                    request,
+                    &self.client,
+                    rpc::bridged(&self.registry),
+                    &self.fetched_tx,
+                );
+            }
             Incoming::App(request) => {
                 let result = rpc::handle(
                     self,
@@ -664,6 +682,10 @@ pub async fn serve(
 ) {
     let mut poll = tokio::time::interval(POLL);
     let mut reading = Reading::default();
+    let mut fetched = service
+        .fetched
+        .take()
+        .expect("served once, with what Home Assistant answers");
     loop {
         let wake = service.engine.next_deadline().map(|at| {
             let wait = at.as_jiff().duration_since(now().as_jiff());
@@ -703,6 +725,9 @@ pub async fn serve(
                         }
                     }
                 }
+            }
+            Some(answered) = fetched.recv() => {
+                rpc::finish_fetched(&mut service, answered);
             }
             Some((call_id, result)) = answers.recv() => {
                 service.engine.call_finished(call_id, result, now());
