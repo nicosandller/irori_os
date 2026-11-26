@@ -4,6 +4,8 @@ name: Release
 # attaches the archive and `install/install.sh` to a GitHub Release, and builds every official
 # extension as `<bin>-<target>.tar.gz` (the name `packages.rs` downloads them by). The installer
 # downloads the binary from there; `releases/latest/download/install.sh` is the one-liner.
+# The `image` job then packs the same Linux binaries and extensions into the container image
+# `ghcr.io/<owner>/irori:<version>` (install/docker/Dockerfile), which the Home Assistant app runs.
 #
 # A release can also be started from the GitHub web UI: 'Draft a new release', type a NEW tag
 # (e.g. `v0.4.1`, which GitHub creates on publish) and pick the commit/branch it points at.
