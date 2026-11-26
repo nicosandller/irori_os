@@ -128,6 +128,8 @@ fn turn_away(incoming: Incoming) {
         Incoming::Talk(talk) => talk.line.end(Some(
             "you can't talk through a camera in Home Assistant from Irori".into(),
         )),
+        // Answered by the session; here only when it isn't connected.
+        Incoming::History(history) => history.reply(Err(NOT_CONNECTED.into())),
         Incoming::Call(_) | Incoming::Picture(_) | Incoming::Live(_) => {}
     }
 }

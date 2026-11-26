@@ -1880,6 +1880,10 @@ impl irori_core::HistorySource for Forgets {
         Vec::new()
     }
 
+    fn began(&self, _: &EntityId, _: bool) -> Option<irori_protocol::types::Timestamp> {
+        None
+    }
+
     fn forget(&self, entity_id: &EntityId) {
         self.0.lock().expect("not poisoned").push(entity_id.clone());
     }
@@ -2296,4 +2300,159 @@ async fn a_programs_proposal_goes_when_it_exits() {
     .await;
 
     host.shutdown().await;
+}
+
+// --- History from before Irori, lent by a bridge (`docs/specs/protocols.md` §5.5) --------------
+
+/// How many times a lender was asked for its history.
+static LENT: AtomicUsize = AtomicUsize::new(0);
+
+/// A lamp whose protocol keeps the lamp's history from before Irori, as a bridge does.
+struct Lender;
+impl Protocol for Lender {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = LENDER_MANIFEST;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        describe_lamp(&ctx).await?;
+        ctx.report_state(light(true, Some(100), None));
+        while let Some(incoming) = ctx.next().await {
+            match incoming {
+                irori_protocol::Incoming::History(asked) => {
+                    LENT.fetch_add(1, Ordering::SeqCst);
+                    let until = asked.until;
+                    let at = |minutes: i64| {
+                        irori_protocol::types::Timestamp::from_jiff(
+                            until.as_jiff() - jiff::SignedDuration::from_mins(minutes),
+                        )
+                    };
+                    let lit = |on: bool| {
+                        Some(State::Light(LightState {
+                            on,
+                            brightness: Some(100),
+                            color_mode: None,
+                            color_temp_kelvin: None,
+                            rgb: None,
+                        }))
+                    };
+                    let change = |at, state| irori_protocol::PastChange {
+                        at,
+                        availability: Availability::Available,
+                        state,
+                    };
+                    let past = irori_protocol::Past {
+                        changes: vec![
+                            // Out of order, as a system may send them.
+                            change(at(60), lit(true)),
+                            change(at(180), lit(false)),
+                            // Not a light's value: left out.
+                            change(
+                                at(120),
+                                Some(State::Switch(irori_protocol::types::SwitchState {
+                                    on: true,
+                                })),
+                            ),
+                            // Where Irori's own record has it: left out.
+                            change(until, lit(false)),
+                        ],
+                        hours: Vec::new(),
+                    };
+                    asked.reply(Ok(past));
+                }
+                irori_protocol::Incoming::Call(call) => call.reply(Ok(())),
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+const LENDER_MANIFEST: &str = r#"
+    [extension]
+    id = "lender"
+    name = "Lender"
+    version = "0.1.0"
+    irori = ">=0.0.0"
+
+    [[contributes.protocol]]
+    iot_class = "local_push"
+    entity_kinds = ["light"]
+    history = true
+"#;
+
+/// A history whose own record of every entity begins an hour ago, counting how often it's asked.
+#[derive(Debug, Default)]
+struct BeganAnHourAgo(AtomicUsize);
+impl irori_core::HistorySource for BeganAnHourAgo {
+    fn changes(
+        &self,
+        _: &EntityId,
+        _: irori_protocol::types::Timestamp,
+    ) -> Vec<irori_protocol::types::EntityState> {
+        Vec::new()
+    }
+
+    fn began(&self, _: &EntityId, _: bool) -> Option<irori_protocol::types::Timestamp> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Some(irori_protocol::types::Timestamp::from_jiff(
+            jiff::Timestamp::now() - jiff::SignedDuration::from_hours(1),
+        ))
+    }
+
+    fn forget(&self, _: &EntityId) {}
+}
+
+fn a_day_ago() -> irori_protocol::types::Timestamp {
+    irori_protocol::types::Timestamp::from_jiff(
+        jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24),
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_bridge_lends_history_from_before_irori_once() {
+    let core = Core::new(Arc::new(SystemClock));
+    let history = Arc::new(BeganAnHourAgo::default());
+    core.use_history(history.clone());
+    let _host = start(&core, builtin::<Lender>().expect("valid"));
+    let lamp = lamp_id("lender");
+    eventually("the lamp is in the home", || core.state(&lamp).is_some()).await;
+    assert!(core.lends_history(&lamp));
+
+    let lent = core
+        .past_changes(&lamp, a_day_ago())
+        .await
+        .expect("the bridge's history");
+    let ons: Vec<bool> = lent
+        .states
+        .iter()
+        .map(|state| matches!(state.state, Some(State::Light(LightState { on: true, .. }))))
+        .collect();
+    // Oldest first, only a light's values, and only before Irori's own record began.
+    assert_eq!(ons, [false, true]);
+    assert!(lent.states.iter().all(|state| state.last_updated < lent.borrowed.until));
+    assert_eq!(lent.borrowed.from, "Lender");
+    assert_eq!(LENT.load(Ordering::SeqCst), 1);
+
+    // Asked again: answered from memory, and where Irori's record begins isn't looked up again.
+    let again = core.past_changes(&lamp, a_day_ago()).await.expect("kept");
+    let when = |states: &[irori_protocol::types::EntityState]| {
+        states.iter().map(|state| state.last_updated).collect::<Vec<_>>()
+    };
+    assert_eq!(when(&again.states), when(&lent.states));
+    assert_eq!(LENT.load(Ordering::SeqCst), 1);
+    assert_eq!(history.0.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_protocol_that_keeps_no_history_is_never_asked() {
+    let core = Core::new(Arc::new(SystemClock));
+    let history = Arc::new(BeganAnHourAgo::default());
+    core.use_history(history.clone());
+    let _host = start(&core, builtin::<Lamp>().expect("valid"));
+    let lamp = lamp_id("lamp");
+    eventually("the lamp is in the home", || core.state(&lamp).is_some()).await;
+
+    assert!(!core.lends_history(&lamp));
+    assert!(core.past_changes(&lamp, a_day_ago()).await.is_none());
+    assert!(core.past_hours(&lamp, a_day_ago()).await.is_none());
+    // Not even Irori's own history was asked where it begins: a native home does no extra work.
+    assert_eq!(history.0.load(Ordering::SeqCst), 0);
 }

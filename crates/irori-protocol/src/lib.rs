@@ -25,11 +25,13 @@ use tokio::sync::{Notify, mpsc, oneshot, watch};
 pub use irori_types as types;
 
 pub mod engine;
+pub mod history;
 pub mod home;
 pub mod live;
 mod process;
 pub mod talk;
 pub use bytes::Bytes;
+pub use history::{IncomingHistory, Past, PastAsk, PastChange, PastHour};
 pub use live::{IncomingLive, LiveChunk, LiveClosed, LiveFeed, Sent};
 pub use process::{ExtProcess, FromExt, ProcessGroup, ToExt, WireCommand, schemas, serve, spawn};
 pub use talk::{IncomingTalk, TalkLine, TalkWord};
@@ -303,6 +305,7 @@ impl Picture {
 enum ActionReply {
     Done(oneshot::Sender<Result<(), String>>),
     Picture(oneshot::Sender<Result<Picture, String>>),
+    History(oneshot::Sender<Result<Past, String>>),
 }
 
 /// What a person filled in for an action with ways: which way, and its fields by id. Empty for a
@@ -340,6 +343,10 @@ pub struct IncomingAction {
     /// Set when it's a page asking to talk through a camera, which travels the same way too.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Talk`].
     talk: Option<IncomingTalk>,
+    /// Set when it's the core asking for history from before Irori recorded an entity, which
+    /// travels the same way too. [`ProtocolContext::next`] hands those out as
+    /// [`Incoming::History`].
+    history: Option<PastAsk>,
     reply: ActionReply,
 }
 
@@ -357,6 +364,9 @@ impl IncomingAction {
             ActionReply::Picture(reply) => {
                 let _ = reply.send(result.and_then(|()| Err("it sent no picture".to_owned())));
             }
+            ActionReply::History(reply) => {
+                let _ = reply.send(result.and_then(|()| Err("it sent no history".to_owned())));
+            }
         }
     }
 
@@ -369,7 +379,30 @@ impl IncomingAction {
             ActionReply::Done(reply) => {
                 let _ = reply.send(result.map(|_| ()));
             }
+            ActionReply::History(reply) => {
+                let _ = reply.send(result.and_then(|_| Err("it sent a picture".to_owned())));
+            }
         }
+    }
+
+    /// Answers a history request; for the host, which reads the answer off the pipe.
+    pub fn reply_history(self, result: Result<Past, String>) {
+        match self.reply {
+            ActionReply::History(reply) => {
+                let _ = reply.send(result);
+            }
+            ActionReply::Done(reply) => {
+                let _ = reply.send(result.map(|_| ()));
+            }
+            ActionReply::Picture(reply) => {
+                let _ = reply.send(result.and_then(|_| Err("it sent history".to_owned())));
+            }
+        }
+    }
+
+    /// The history wanted, if that's what this is. For the host.
+    pub fn remembering(&self) -> Option<&PastAsk> {
+        self.history.as_ref()
     }
 
     /// The device to unpair and whether to force it, if that's what this is. For the host,
@@ -412,7 +445,19 @@ impl IncomingAction {
         if let Some(talk) = self.talk {
             return Incoming::Talk(talk);
         }
-        match (self.unpair, self.picture, self.reply) {
+        let reply = match (self.history, self.reply) {
+            (Some(ask), ActionReply::History(reply)) => {
+                return Incoming::History(IncomingHistory {
+                    unique_id: ask.unique_id,
+                    since: ask.since,
+                    until: ask.until,
+                    hourly: ask.hourly,
+                    reply,
+                });
+            }
+            (_, reply) => reply,
+        };
+        match (self.unpair, self.picture, reply) {
             (Some((unique_id, force)), _, ActionReply::Done(reply)) => {
                 Incoming::Unpair(IncomingUnpair {
                     unique_id,
@@ -432,6 +477,7 @@ impl IncomingAction {
                 picture,
                 live: None,
                 talk: None,
+                history: None,
                 reply,
             }),
         }
@@ -485,6 +531,7 @@ pub enum Incoming {
     Picture(IncomingPicture),
     Live(IncomingLive),
     Talk(IncomingTalk),
+    History(IncomingHistory),
 }
 
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
@@ -690,6 +737,9 @@ impl ProtocolContext {
                         }
                         Incoming::Talk(talk) => {
                             talk.line.end(Some("this protocol can't talk through a camera".into()));
+                        }
+                        Incoming::History(history) => {
+                            history.reply(Err("this protocol keeps no history".into()));
                         }
                         Incoming::Call(_) => {}
                     }
@@ -1116,6 +1166,7 @@ pub mod host {
             picture: None,
             live: None,
             talk: None,
+            history: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, result)
@@ -1167,7 +1218,29 @@ pub mod host {
             picture: Some(unique_id),
             live: None,
             talk: None,
+            history: None,
             reply: ActionReply::Picture(reply),
+        };
+        (incoming, result)
+    }
+
+    /// Builds a history request for the protocol, as it travels: on the actions channel.
+    /// [`ProtocolContext::next`] hands it out as [`Incoming::History`].
+    pub fn incoming_history(
+        ask: crate::PastAsk,
+    ) -> (IncomingAction, oneshot::Receiver<Result<crate::Past, String>>) {
+        let (reply, result) = oneshot::channel();
+        let incoming = IncomingAction {
+            action_id: String::new(),
+            stop: false,
+            way: None,
+            fields: BTreeMap::new(),
+            unpair: None,
+            picture: None,
+            live: None,
+            talk: None,
+            history: Some(ask),
+            reply: ActionReply::History(reply),
         };
         (incoming, result)
     }
@@ -1197,6 +1270,7 @@ pub mod host {
                 feed,
             }),
             talk: None,
+            history: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, chunks)
@@ -1229,6 +1303,7 @@ pub mod host {
                 audio,
                 line,
             }),
+            history: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, audio_tx, words)

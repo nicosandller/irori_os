@@ -142,6 +142,12 @@ impl irori_core::HistorySource for History {
         off_the_runtime(move || recorder.since(&entity_id, since))
     }
 
+    fn began(&self, entity_id: &EntityId, hourly: bool) -> Option<Timestamp> {
+        let recorder = self.recorder.clone();
+        let entity_id = entity_id.clone();
+        off_the_runtime(move || recorder.began(&entity_id, hourly))
+    }
+
     fn forget(&self, entity_id: &EntityId) {
         self.recorder.forget(entity_id);
     }
@@ -193,7 +199,7 @@ fn class_in(core: &Core, entity_id: &EntityId) -> Option<StateClass> {
     core.entity(entity_id).as_ref().and_then(class_of)
 }
 
-fn day_ago() -> Timestamp {
+pub(crate) fn day_ago() -> Timestamp {
     Timestamp::from_jiff(
         jiff::Timestamp::now()
             .checked_sub(PAGE_WINDOW_HOURS.hours())

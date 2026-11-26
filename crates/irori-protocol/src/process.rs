@@ -113,6 +113,18 @@ pub enum FromExt {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// The answer to `past_history` (`docs/specs/protocols.md` §5.5): the changes, or the hours
+    /// when hours were asked for, oldest first; or why there's none. Empty lists when the
+    /// system kept nothing for that stretch.
+    PastHistoryResult {
+        id: u64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        changes: Vec<crate::PastChange>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        hours: Vec<crate::PastHour>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
     /// A live stream's init segment (`docs/specs/protocols.md` §5.3), base64.
     LiveInit {
         stream: u64,
@@ -259,6 +271,18 @@ pub enum ToExt {
         id: u64,
         unique_id: UniqueId,
     },
+    /// A page or an engine wants an entity's history from before Irori recorded it, from
+    /// `since` up to (not including) `until`: its changes, or with `hourly` its hourly
+    /// summaries. Only sent to a protocol whose manifest says `history`
+    /// (`docs/specs/protocols.md` §5.5). Answered with `past_history_result`.
+    PastHistory {
+        id: u64,
+        unique_id: UniqueId,
+        since: Timestamp,
+        until: Timestamp,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        hourly: bool,
+    },
     /// A page wants to watch one of its cameras live. Answered with `live_init`, then
     /// `live_fragment`s, until `live_end` or `live_stop`.
     LiveStart {
@@ -330,6 +354,15 @@ pub fn schemas() -> Vec<irori_types::SchemaDoc> {
         irori_types::SchemaDoc::for_type::<FromExt>("extension-to-core"),
         irori_types::SchemaDoc::for_type::<ToExt>("core-to-extension"),
     ]
+}
+
+fn past_refused(id: u64, error: String) -> FromExt {
+    FromExt::PastHistoryResult {
+        id,
+        changes: Vec::new(),
+        hours: Vec::new(),
+        error: Some(error),
+    }
 }
 
 /// A picture on the wire: its type, and its bytes as base64.
@@ -784,6 +817,43 @@ fn handle_host_line(
                         picture: None,
                         error: Some("the extension is busy and can't take this yet".into()),
                     },
+                ),
+            }
+        }
+        ToExt::PastHistory {
+            id,
+            unique_id,
+            since,
+            until,
+            hourly,
+        } => {
+            let (incoming, result) = host::incoming_history(crate::PastAsk {
+                unique_id,
+                since,
+                until,
+                hourly,
+            });
+            match actions.try_send(incoming) {
+                Ok(()) => {
+                    let out = out.clone();
+                    runtime.spawn(async move {
+                        let message = match result.await {
+                            Ok(Ok(past)) => FromExt::PastHistoryResult {
+                                id,
+                                changes: past.changes,
+                                hours: past.hours,
+                                error: None,
+                            },
+                            Ok(Err(error)) => past_refused(id, error),
+                            Err(_) => past_refused(id, "the protocol dropped the request".into()),
+                        };
+                        enqueue_json(&out, &message);
+                    });
+                }
+                Err(TrySendError::Closed(_)) => return ReadControl::Stop,
+                Err(TrySendError::Full(_)) => enqueue_json(
+                    out,
+                    &past_refused(id, "the extension is busy and can't take this yet".into()),
                 ),
             }
         }
