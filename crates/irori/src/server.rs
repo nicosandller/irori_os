@@ -4480,6 +4480,8 @@ mod tests {
         assert_eq!(history["entity"], serde_json::json!(entity.to_string()));
         let states = history["states"].as_array().expect("a list of states");
         assert_eq!(states.len(), 2, "the two recorded changes: {history}");
+        // The demo lends no history: what's served is Irori's own, said as before.
+        assert!(history.get("borrowed").is_none(), "{history}");
 
         // An entity Irori has never heard of is refused, not answered with an empty table.
         let (status, _) = server

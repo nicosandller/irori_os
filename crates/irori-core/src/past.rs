@@ -57,10 +57,20 @@ pub struct BorrowedHours {
 /// Irori's own changes after the borrowed ones. Irori's first change of a bridged entity is the
 /// bridge telling it what the entity is when it connects, not a change: when it says the same
 /// as the last borrowed one, it's left out, so a chart doesn't show a step and a backtest
-/// doesn't see the entity "turn on" again at the seam.
+/// doesn't see the entity "turn on" again at the seam. Before that, Irori may have kept the
+/// entity as it was added, with no value yet: that isn't a change either, and is left out too.
 pub fn join(borrowed: Vec<EntityState>, own: Vec<EntityState>) -> Vec<EntityState> {
     let mut joined = borrowed;
     let mut own = own.into_iter().peekable();
+    if joined.is_empty() {
+        joined.extend(own);
+        return joined;
+    }
+    while own.peek().is_some_and(|first| {
+        first.state.is_none() && first.availability == irori_types::Availability::Available
+    }) {
+        own.next();
+    }
     if let (Some(last), Some(first)) = (joined.last(), own.peek())
         && last.state == first.state
         && last.availability == first.availability
@@ -229,8 +239,12 @@ mod tests {
             switch(false, "2026-11-20T08:00:00Z"),
             switch(true, "2026-11-20T10:00:00Z"),
         ];
-        // Irori's first row is the bridge saying "on" as it connected: the same as before.
+        // Irori kept the switch as it was added, with no value yet, then the bridge saying "on"
+        // as it connected: the same as before.
+        let mut added = switch(true, "2026-11-20T12:00:00Z");
+        added.state = None;
         let own = vec![
+            added,
             switch(true, "2026-11-20T12:00:00Z"),
             switch(false, "2026-11-20T13:00:00Z"),
         ];

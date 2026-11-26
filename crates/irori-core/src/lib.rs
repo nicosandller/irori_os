@@ -1577,7 +1577,7 @@ impl Core {
                 },
             });
         }
-        (!states.is_empty()).then(|| past::BorrowedChanges {
+        (!states.is_empty()).then_some(past::BorrowedChanges {
             states,
             borrowed: past::Borrowed { from, until },
         })
@@ -1613,7 +1613,7 @@ impl Core {
             .len()
             .saturating_sub(irori_protocol::history::MAX_PAST_HOURS);
         hours.drain(..extra);
-        (!hours.is_empty()).then(|| past::BorrowedHours {
+        (!hours.is_empty()).then_some(past::BorrowedHours {
             hours,
             borrowed: past::Borrowed { from, until },
         })
