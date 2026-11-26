@@ -127,22 +127,23 @@ use the bridge, Irori never opens either:
   the local network only, and a test fails if that ever changes.
 - **Every other extension** runs only once you install it. Nothing is installed on its own.
 - **The `irori` user** from step 2 isn't in the `dialout` or `bluetooth` groups, so on Debian and
-  Raspberry Pi OS it can't open a USB serial dongle or Bluetooth even by mistake. Irori installed for your own user (without `--system`) runs as you and
-  doesn't have this protection.
+  Raspberry Pi OS it can't open a USB serial dongle or use Bluetooth even by mistake. Irori
+  installed for your own user (without `--system`) runs as you and doesn't have this protection.
 
 Installing one of these brings the clash back:
 
-- **Zigbee** opens the dongle in its settings. Home Assistant's ZHA or Zigbee2MQTT then loses it.
-  Give each its own dongle, or move the dongle over from Home Assistant first (#168).
+- **Zigbee** opens the dongle you choose in its settings, and Home Assistant's ZHA or
+  Zigbee2MQTT then loses it. Give each its own dongle. Handing devices over from Home Assistant
+  to Irori is #168.
 - **SwitchBot** reads nearby devices over Bluetooth by default. Next to Home Assistant's
   Bluetooth, turn off "Read nearby devices over Bluetooth" in its settings.
 
 ## Memory and CPU
 
-Measured with `dev/ha-load --release`, in `dev/pi`'s container: Linux arm64, one CPU of an Apple
-Silicon Mac (roughly a Raspberry Pi 4's four cores together) and 4 GB. A fake Home Assistant
-stood in for the real one, with its sensors changing 300 times a second in all. The figures are
-Irori's core (the `irori` process) over a 60-second window:
+Measured with `dev/ha-load --release`, a release build run natively on an Apple Silicon Mac, not
+yet on a small machine. A fake Home Assistant stood in for the real one, with its sensors changing
+300 times a second in all. The figures are Irori's core (the `irori` process) over a 60-second
+window:
 
 | | CPU | Memory |
 |---|---|---|
@@ -151,5 +152,6 @@ Irori's core (the `irori` process) over a 60-second window:
 
 The bridge's own process stayed under 1% of a core.
 
-Not measured yet: Home Assistant and Irori together on a real small machine, Home Assistant's
-own share (it depends on its integrations), and the bridge's memory.
+Not measured yet: Irori on a real small machine such as a Raspberry Pi, Home Assistant and Irori
+there together, Home Assistant's own share (it depends on its integrations), and the bridge's
+memory. A Pi's core is slower than a Mac's, so expect higher CPU figures there.
