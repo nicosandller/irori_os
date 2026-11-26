@@ -1,0 +1,34 @@
+# Irori as a Home Assistant app. Staged here; it is served from an app repository of its own,
+# which holds this folder and ../repository.yaml at its root. `version` must name an image tag
+# that already exists on ghcr: bump it there only after the release job has published it.
+name: Irori
+version: "1.7.0"
+slug: irori
+description: A local-first home platform, tried beside the Home Assistant it runs on.
+url: https://github.com/nicosandller/irori_os
+arch:
+  - amd64
+  - aarch64
+image: ghcr.io/nicosandller/irori
+startup: application
+boot: auto
+# Host networking: Irori finds devices on the network, and the Home Assistant extension reaches
+# Home Assistant at 127.0.0.1:8123 with the address left empty. Home Assistant's own app token
+# (SUPERVISOR_TOKEN) is not used yet: the bridge can't talk to the Supervisor's proxy.
+host_network: true
+ports:
+  8480/tcp: 8480
+ports_description:
+  8480/tcp: Irori's page (fixed at 8480 with host networking)
+webui: http://[HOST]:[PORT:8480]/
+watchdog: http://[HOST]:[PORT:8480]/api/health
+# The database is SQLite: Irori is stopped while Home Assistant backs up /data.
+backup: cold
+environment:
+  IRORI_DATA: /data
+  IRORI_CONFIG: /data/config
+  IRORI_BIND: 0.0.0.0:8480
+  IRORI_BIND_FALLBACK: 0.0.0.0:8480
+  # Needed to open Irori from a browser: the home is open on the network until the welcome sets
+  # the owner's password, so do that first.
+  IRORI_ALLOW_UNAUTHENTICATED_LAN: "true"

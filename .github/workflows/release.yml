@@ -261,3 +261,56 @@ jobs:
               $prerelease \
               dist/*.tar.gz dist/SHA256SUMS install/install.sh
           fi
+
+  # The container image, `ghcr.io/<owner>/irori:<version>`, for Linux on amd64 and arm64: the
+  # binaries and extensions the build job just made, laid out by install/docker/stage.sh. Nothing
+  # is compiled here. Prereleases don't move `latest`. A new ghcr package starts private: the
+  # owner makes it public once, or nobody (and no Home Assistant app) can pull it.
+  image:
+    name: Publish the container image
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: "*-linux-*"
+          merge-multiple: true
+          path: dist
+      - name: Lay out the image's files
+        run: install/docker/stage.sh dist "$RUNNER_TEMP/image"
+      - name: Name the image
+        id: names
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${OWNER,,}/irori"
+          version="${GITHUB_REF_NAME#v}"
+          tags="$image:$version"
+          if [[ "$version" != *-* ]]; then
+            tags="$tags,$image:latest"
+          fi
+          echo "tags=$tags" >>"$GITHUB_OUTPUT"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ${{ runner.temp }}/image
+          file: install/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.names.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ github.ref_name }}

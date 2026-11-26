@@ -1,0 +1,4 @@
+# Copy to the root of the Home Assistant app repository (not this one), beside the `irori/` folder.
+name: Irori
+url: https://github.com/nicosandller/irori_os
+maintainer: Irori
