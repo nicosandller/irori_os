@@ -955,8 +955,10 @@ fn day_body(
     numeric: bool,
 ) -> AnyView {
     let kept = history.clone();
+    let borrowed = history.borrowed.clone();
     let history = history.day;
     view! {
+        {move || borrowed.get().map(|borrowed| borrowed_note(&borrowed))}
         {move || match history.get().map(|day| day.map(|states| kept.with_later(states))) {
             // A number's chart will need the room: keep it, so the drawer doesn't jump
             // when the day arrives.
@@ -987,12 +989,29 @@ fn day_body(
     .into_any()
 }
 
+/// Says where the start of a history came from, when Irori wasn't recording the entity yet: the
+/// bridged system's own history, read for this page and not kept by Irori.
+fn borrowed_note(borrowed: &crate::api::Borrowed) -> AnyView {
+    let until = devices::when(borrowed.until);
+    view! {
+        <p class="muted small history-note history-borrowed">
+            {format!(
+                "Before {until}, this is {}'s history: Irori wasn't recording it yet. It's read \
+                 from there when you look, and not stored in Irori.",
+                borrowed.from
+            )}
+        </p>
+    }
+    .into_any()
+}
+
 /// A week, a month, or a year of hourly summaries. The line is the average for a measurement
 /// and the change during the hour for a counter. It does not follow the live reading: that
 /// reading is one sample, and these points are hours.
 #[component]
 fn HourlyHistory(entity: Entity, window: RwSignal<Window>) -> impl IntoView {
-    let points = RwSignal::new(None::<Result<Vec<crate::api::SummaryPoint>, String>>);
+    type Hours = (Vec<crate::api::SummaryPoint>, Option<crate::api::Borrowed>);
+    let points = RwSignal::new(None::<Result<Hours, String>>);
     // A slower answer for the previous range must not replace the one now on screen.
     let ticket = RwSignal::new(0_u32);
     let id = entity.id.clone();
@@ -1026,7 +1045,7 @@ fn HourlyHistory(entity: Entity, window: RwSignal<Window>) -> impl IntoView {
                 <p class="muted small history-note">"Nothing to show until it can be asked again."</p>
             }
             .into_any(),
-            Some(Ok(points)) if points.is_empty() => view! {
+            Some(Ok((points, _))) if points.is_empty() => view! {
                 <p class="muted small history-note">
                     "No hourly summaries in this range yet. Irori saves one each hour for a \
                      sensor that measures or counts, and keeps those after the detailed history \
@@ -1034,7 +1053,7 @@ fn HourlyHistory(entity: Entity, window: RwSignal<Window>) -> impl IntoView {
                 </p>
             }
             .into_any(),
-            Some(Ok(points)) => {
+            Some(Ok((points, borrowed))) => {
                 let readings = points
                     .iter()
                     .map(|point| chart::Reading {
@@ -1045,6 +1064,7 @@ fn HourlyHistory(entity: Entity, window: RwSignal<Window>) -> impl IntoView {
                     .collect();
                 let quiet: Signal<Option<chart::Reading>> = Signal::derive(|| None);
                 view! {
+                    {borrowed.as_ref().map(borrowed_note)}
                     <p class="muted small history-note">
                         "Each point is one hour. A measurement is the average for that hour. A \
                          counter is how much it changed."
