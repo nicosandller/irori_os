@@ -1,9 +1,11 @@
 //! What the Home Assistant extension can be told: where Home Assistant is, the access token it
 //! signs in with, and which of its integrations and areas to bring over.
 //!
-//! `url` and `token` are required, so until both are given the extension waits in "needs setup"
-//! instead of starting and failing (`missing_required` in the core). The token is a secret
-//! (`writeOnly`): kept in `secrets.toml`, never sent back to a page, never printed.
+//! `token` is required, so until it's given the extension waits in "needs setup" instead of
+//! starting and failing (`missing_required` in the core). `url` left empty means the Home
+//! Assistant on this machine, at [`ON_THIS_MACHINE`]: Irori installed beside it needs no address.
+//! The token is a secret (`writeOnly`): kept in `secrets.toml`, never sent back to a page, never
+//! printed.
 //!
 //! The manifest asks for `lan` and nothing else, so the address is checked here by what is
 //! written, without looking it up, the way the MQTT extension checks its broker: a private,
@@ -25,9 +27,12 @@ use serde::{Deserialize, Deserializer};
 #[derive(Debug, Clone, PartialEq, Eq, JsonSchema)]
 pub struct Settings {
     /// Home Assistant's local address, as you open it in a browser on this network:
-    /// `https://homeassistant.local:8123`, or `http://` if it doesn't use a certificate.
+    /// `https://homeassistant.local:8123`, or `http://` if it doesn't use a certificate. Leave it
+    /// empty when Home Assistant runs on this same machine: Irori then uses
+    /// `http://127.0.0.1:8123`, and the token never leaves the machine.
     #[schemars(
         title = "Home Assistant address",
+        default = "no_text",
         extend("x-irori-warn" = {
             "starts_with": "http://",
             "text": "Not encrypted: your Home Assistant administrator's access token travels unencrypted on your local network. Use https:// if your Home Assistant has a certificate."
@@ -109,6 +114,10 @@ fn no_text() -> String {
     String::new()
 }
 
+/// The address an empty `url` stands for: Home Assistant on this machine, on its own port. Over
+/// loopback, so plain `http://` keeps the token on this machine.
+pub const ON_THIS_MACHINE: &str = "http://127.0.0.1:8123";
+
 /// Which certificates an `https://` connection trusts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Trust {
@@ -179,6 +188,11 @@ fn pem_certificates(text: &str) -> Result<Vec<Vec<u8>>, String> {
 }
 
 impl Settings {
+    /// Whether this is the Home Assistant on this machine that an empty address stands for.
+    pub fn on_this_machine(&self) -> bool {
+        self.url == ON_THIS_MACHINE
+    }
+
     pub fn is_secure(&self) -> bool {
         self.url.starts_with("https://")
     }
@@ -217,6 +231,7 @@ impl Settings {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Raw {
+    #[serde(default)]
     url: String,
     token: Secret,
     #[serde(default = "on")]
@@ -238,7 +253,11 @@ struct Raw {
 impl<'de> Deserialize<'de> for Settings {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let raw = Raw::deserialize(deserializer)?;
-        let url = checked_url(&raw.url, raw.resolves_locally).map_err(serde::de::Error::custom)?;
+        let url = if raw.url.trim().is_empty() {
+            ON_THIS_MACHINE.to_owned()
+        } else {
+            checked_url(&raw.url, raw.resolves_locally).map_err(serde::de::Error::custom)?
+        };
         parse_trust(&raw.certificate).map_err(serde::de::Error::custom)?;
         if raw.token.expose().is_empty() {
             return Err(serde::de::Error::custom("the access token is empty"));
@@ -396,12 +415,16 @@ mod tests {
     }
 
     #[test]
-    fn the_address_and_token_are_required_so_the_extension_waits_for_setup() {
+    fn the_token_is_required_so_the_extension_waits_for_setup() {
         let schema = serde_json::to_value(schemars::schema_for!(Settings)).expect("a schema");
         assert_eq!(
             schema.get("required"),
-            Some(&serde_json::json!(["url", "token"])),
+            Some(&serde_json::json!(["token"])),
             "{schema:#}"
+        );
+        assert_eq!(
+            schema["properties"]["url"]["default"],
+            serde_json::json!("")
         );
         assert_eq!(
             schema["properties"]["token"]["$ref"],
@@ -411,6 +434,28 @@ mod tests {
             schema["$defs"]["Secret"]["writeOnly"],
             serde_json::json!(true)
         );
+    }
+
+    #[test]
+    fn no_address_is_the_home_assistant_on_this_machine_over_loopback() {
+        for url in [None, Some(""), Some("   ")] {
+            let mut value = serde_json::json!({ "token": "t" });
+            if let Some(url) = url {
+                value["url"] = serde_json::json!(url);
+            }
+            let settings = load(value).expect("valid");
+            assert_eq!(settings.url, ON_THIS_MACHINE);
+            assert!(settings.on_this_machine());
+            assert_eq!(
+                settings.websocket_url(),
+                "ws://127.0.0.1:8123/api/websocket"
+            );
+            assert_eq!(settings.host_port().0, "127.0.0.1");
+        }
+        let elsewhere =
+            load(serde_json::json!({ "url": "http://192.168.1.20:8123", "token": "t" }))
+                .expect("valid");
+        assert!(!elsewhere.on_this_machine());
     }
 
     #[test]

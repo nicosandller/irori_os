@@ -71,8 +71,9 @@
     },
     "url": {
       "title": "Home Assistant address",
-      "description": "Home Assistant's local address, as you open it in a browser on this network:\n`https://homeassistant.local:8123`, or `http://` if it doesn't use a certificate.",
+      "description": "Home Assistant's local address, as you open it in a browser on this network:\n`https://homeassistant.local:8123`, or `http://` if it doesn't use a certificate. Leave it\nempty when Home Assistant runs on this same machine: Irori then uses\n`http://127.0.0.1:8123`, and the token never leaves the machine.",
       "type": "string",
+      "default": "",
       "x-irori-warn": {
         "starts_with": "http://",
         "text": "Not encrypted: your Home Assistant administrator's access token travels unencrypted on your local network. Use https:// if your Home Assistant has a certificate."
@@ -80,7 +81,6 @@
     }
   },
   "required": [
-    "url",
     "token"
   ],
   "$defs": {

@@ -42,6 +42,10 @@ won't be picked up by the one-liner; install it by name with `--version` instead
 `install/irori.service` is a systemd unit for a `--system` install; it runs as an unprivileged
 `irori` user with its data in `/var/lib/irori` (see the header of that file).
 
+Already running Home Assistant? [docs/beside-home-assistant.md](docs/beside-home-assistant.md)
+installs Irori on the same machine, next to Home Assistant Container or Core, and connects the
+two with no address to type.
+
 ## Build from source
 
 Requires stable Rust (pinned via `rust-toolchain.toml`). One command builds the UI and installs

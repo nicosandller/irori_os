@@ -120,7 +120,8 @@ control devices": every command is then answered "read-only" and no service call
 ```toml
 [homeassistant]
 # Home Assistant's address, as you open it in a browser on this network. With http://, the
-# administrator's token travels unencrypted on your local network.
+# administrator's token travels unencrypted on your local network. Left out or empty: the Home
+# Assistant on this machine, at http://127.0.0.1:8123.
 url = "https://homeassistant.local:8123"
 # In Home Assistant, as an administrator: your profile → Security → Long-lived access tokens →
 # Create token. A secret: kept in secrets.toml and never shown again.
@@ -139,7 +140,11 @@ include_areas = []
 exclude_areas = []
 ```
 
-Until `url` and `token` are given, the extension waits in "needs setup". The address has to be on
+Until `token` is given, the extension waits in "needs setup". With `url` left out or empty, it
+connects to the Home Assistant on this machine, at `http://127.0.0.1:8123`, so Irori installed
+beside Home Assistant needs no address (`docs/beside-home-assistant.md`). Over loopback the token
+never leaves the machine. If nothing answers there, the extension's page says so and asks for the
+address; it never looks anywhere else on its own. The address has to be on
 the local network: a private, loopback or link-local IP address, `localhost`, or a name under
 `.local`, `.home.arpa`, `.internal`, `.lan` or `.home`. A Home Assistant Cloud (Nabu Casa)
 address is refused.
@@ -171,4 +176,4 @@ extension then says so on its page and asks for another token there.
 - Checking for an update again (`homeassistant.update_entity` isn't the update's own service).
 - History from Home Assistant's recorder (#167), a welcome step for trying Irori this way (#166),
   showing which side runs what (#169), handing a device over from Home Assistant to a native
-  extension (#168), and packaging for Home Assistant OS (#170, #171).
+  extension (#168), and Irori as a Home Assistant app on Home Assistant OS (#171).
