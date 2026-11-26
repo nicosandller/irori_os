@@ -953,7 +953,10 @@ fn the_bridge_asks_for_the_local_network_and_nothing_else() {
 fn with_no_address_an_unreachable_home_assistant_is_looked_for_on_this_machine() {
     let here: Settings = serde_json::from_value(json!({ "token": TOKEN })).expect("settings");
     let said = crate::unreachable(&here, "couldn't reach Home Assistant: refused".into());
-    assert!(said.contains("no Home Assistant answered on this machine (http://127.0.0.1:8123)"), "{said}");
+    assert!(
+        said.contains("no Home Assistant answered on this machine (http://127.0.0.1:8123)"),
+        "{said}"
+    );
     assert!(said.contains("enter its address"), "{said}");
     let there: Settings =
         serde_json::from_value(json!({ "url": "http://192.168.1.20:8123", "token": TOKEN }))

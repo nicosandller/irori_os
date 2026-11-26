@@ -421,7 +421,10 @@ mod tests {
             Some(&serde_json::json!(["token"])),
             "{schema:#}"
         );
-        assert_eq!(schema["properties"]["url"]["default"], serde_json::json!(""));
+        assert_eq!(
+            schema["properties"]["url"]["default"],
+            serde_json::json!("")
+        );
         assert_eq!(
             schema["properties"]["token"]["$ref"],
             serde_json::json!("#/$defs/Secret")
@@ -442,11 +445,15 @@ mod tests {
             let settings = load(value).expect("valid");
             assert_eq!(settings.url, ON_THIS_MACHINE);
             assert!(settings.on_this_machine());
-            assert_eq!(settings.websocket_url(), "ws://127.0.0.1:8123/api/websocket");
+            assert_eq!(
+                settings.websocket_url(),
+                "ws://127.0.0.1:8123/api/websocket"
+            );
             assert_eq!(settings.host_port().0, "127.0.0.1");
         }
-        let elsewhere = load(serde_json::json!({ "url": "http://192.168.1.20:8123", "token": "t" }))
-            .expect("valid");
+        let elsewhere =
+            load(serde_json::json!({ "url": "http://192.168.1.20:8123", "token": "t" }))
+                .expect("valid");
         assert!(!elsewhere.on_this_machine());
     }
 
