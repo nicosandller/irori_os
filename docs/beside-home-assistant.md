@@ -9,6 +9,9 @@ This page is for **Home Assistant Container** (Home Assistant in Docker) and **H
 Core** (Home Assistant in a Python environment). Both run on an ordinary Linux system, so Irori
 installs beside them the same way: as its own program, with its own system service.
 
+It needs Irori 1.7.0 or later: the first release with the Home Assistant extension. Leaving the
+address empty needs that extension's version 0.5.0 or later.
+
 **Home Assistant OS** (a Green, a Yellow, or Home Assistant's own image on a Pi or a VM) runs only
 what its app store installs, so Irori can't be installed beside it this way. Irori as a Home
 Assistant app is #171.
@@ -128,9 +131,10 @@ use the bridge, Irori never opens either:
 - **The bridge** talks to Home Assistant over the network and nothing else. Its manifest asks for
   the local network only, and a test fails if that ever changes.
 - **Every other extension** runs only once you install it. Nothing is installed on its own.
-- **The `irori` user** from step 2 isn't in the `dialout` or `bluetooth` groups, so on Debian and
-  Raspberry Pi OS it can't open a USB serial dongle or use Bluetooth even by mistake. Irori
-  installed for your own user (without `--system`) runs as you and doesn't have this protection.
+- **The `irori` user** from step 2 isn't in the `dialout` group, which USB serial dongles belong
+  to on Debian and Raspberry Pi OS, so it can't open one even by mistake. It isn't in the
+  `bluetooth` group either. Irori installed for your own user (without `--system`) runs as you and
+  doesn't have this protection.
 
 Installing one of these brings the clash back:
 
