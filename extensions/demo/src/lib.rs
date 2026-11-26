@@ -150,6 +150,8 @@ async fn run(config: Config, mut ctx: ProtocolContext) -> Result<(), ProtocolErr
                     Some(Incoming::Ask(ask)) => {
                         ask.reply(Err("the demo answers no questions".into()));
                     }
+                    // Never sent: its manifest doesn't say `tidies_up`.
+                    Some(Incoming::Removing(removing)) => removing.reply(Ok(())),
                     Some(Incoming::Action(action)) if action.action_id == SCAN_NETWORK => {
                         if action.stop {
                             action.reply(Err("a scan can't be stopped once it's under way".into()));

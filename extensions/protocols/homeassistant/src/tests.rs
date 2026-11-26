@@ -1044,3 +1044,258 @@ async fn automations_and_their_setups_are_read_and_nothing_written() {
     }
     assert!(fake.calls().is_empty());
 }
+
+impl Running {
+    /// The core saying the extension is about to be removed.
+    async fn removing(&self) -> Result<(), String> {
+        let (incoming, answer) = host::incoming_removing();
+        self._actions.send(incoming).await.expect("running");
+        tokio::time::timeout(Duration::from_secs(15), answer)
+            .await
+            .expect("an answer in time")
+            .expect("an answer")
+    }
+}
+
+/// The automations switched, as `(service, entity_id)`.
+fn switched(fake: &FakeHa) -> Vec<(String, String)> {
+    fake.calls()
+        .iter()
+        .map(|call| {
+            (
+                format!(
+                    "{}.{}",
+                    call["domain"].as_str().unwrap_or(""),
+                    call["service"].as_str().unwrap_or("")
+                ),
+                call["target"]["entity_id"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
+            )
+        })
+        .collect()
+}
+
+fn automation_state(fake: &FakeHa, entity_id: &str) -> String {
+    fake.with_world(|world| world.states[entity_id].0.clone())
+}
+
+fn twin_home() -> World {
+    let mut home = home();
+    home.automation("automation.hall", "Hall light", true, Some("1"), json!({}))
+        .automation(
+            "automation.porch",
+            "Porch light",
+            false,
+            Some("2"),
+            json!({}),
+        )
+        .automation("automation.other", "Other", true, Some("3"), json!({}));
+    home
+}
+
+/// Issue #199: the one exception. A twin is switched off only when asked, kept on the list
+/// before it is, and switched back on when given back; one the owner had switched off is never
+/// touched, and nothing but `automation.turn_off`/`turn_on` of a twin is sent.
+#[tokio::test]
+async fn a_twin_is_switched_off_and_given_back_and_nothing_else() {
+    let fake = FakeHa::start(twin_home()).await.expect("a fake");
+    let store = Store::default();
+    let world = world_keeping(settings(&fake), Arc::clone(&store)).await;
+    world.running().await;
+    let hall = json!({ "entity_id": "automation.hall" });
+
+    let off = world
+        .asked("automations", "twin.hand_over", hall.clone())
+        .await
+        .expect("switched off");
+    assert_eq!(off, json!({ "switched_off": true }));
+    assert_eq!(automation_state(&fake, "automation.hall"), "off");
+    assert_eq!(
+        store.lock().expect("store")["twins"],
+        json!([{ "entity_id": "automation.hall", "name": "Hall light" }])
+    );
+    // Asked again: nothing more sent.
+    world
+        .asked("automations", "twin.hand_over", hall.clone())
+        .await
+        .expect("still off");
+
+    // Already off in Home Assistant: left alone, not listed, so never switched on by Irori.
+    let porch = json!({ "entity_id": "automation.porch" });
+    let left = world
+        .asked("automations", "twin.hand_over", porch.clone())
+        .await
+        .expect("left alone");
+    assert_eq!(left, json!({ "switched_off": false, "already_off": true }));
+    let given = world
+        .asked("automations", "twin.give_back", porch)
+        .await
+        .expect("nothing to give back");
+    assert_eq!(given, json!({ "switched_on": false }));
+    assert_eq!(automation_state(&fake, "automation.porch"), "off");
+
+    let listed = world
+        .asked("automations", "twins.list", json!({}))
+        .await
+        .expect("a list");
+    assert_eq!(
+        listed,
+        json!({ "twins": [{ "entity_id": "automation.hall", "name": "Hall light" }] })
+    );
+
+    // Only an automation, and only from Automations.
+    let light = world
+        .asked(
+            "automations",
+            "twin.hand_over",
+            json!({ "entity_id": "light.kitchen" }),
+        )
+        .await
+        .expect_err("not an automation");
+    assert!(
+        light.contains("isn't a Home Assistant automation"),
+        "{light}"
+    );
+    let stranger = world
+        .asked("someone", "twin.give_back", hall.clone())
+        .await
+        .expect_err("refused");
+    assert!(stranger.contains("can't ask"), "{stranger}");
+
+    let on = world
+        .asked("automations", "twin.give_back", hall)
+        .await
+        .expect("switched on");
+    assert_eq!(on, json!({ "switched_on": true }));
+    assert_eq!(automation_state(&fake, "automation.hall"), "on");
+    assert_eq!(store.lock().expect("store")["twins"], json!([]));
+    world.stop().await;
+
+    assert_eq!(
+        switched(&fake),
+        vec![
+            (
+                "automation.turn_off".to_owned(),
+                "automation.hall".to_owned()
+            ),
+            (
+                "automation.turn_on".to_owned(),
+                "automation.hall".to_owned()
+            ),
+        ]
+    );
+    assert_eq!(automation_state(&fake, "automation.other"), "on");
+    for kind in fake.received_types() {
+        assert!(ALLOWED.contains(&kind.as_str()), "{kind} was sent");
+    }
+}
+
+/// Refused by Home Assistant: nothing is listed and the answer says so. Read-only: nothing is
+/// switched off at all.
+#[tokio::test]
+async fn a_refused_or_read_only_hand_over_leaves_it_on() {
+    let fake = FakeHa::start(twin_home()).await.expect("a fake");
+    fake.with_world(|world| world.refuse_calls = Some("Automation is locked".into()));
+    let store = Store::default();
+    let world = world_keeping(settings(&fake), Arc::clone(&store)).await;
+    world.running().await;
+    let why = world
+        .asked(
+            "automations",
+            "twin.hand_over",
+            json!({ "entity_id": "automation.hall" }),
+        )
+        .await
+        .expect_err("refused");
+    assert!(why.contains("didn't switch it off"), "{why}");
+    assert_eq!(store.lock().expect("store")["twins"], json!([]));
+    world.stop().await;
+
+    fake.with_world(|world| world.refuse_calls = None);
+    let read_only: Settings =
+        serde_json::from_value(json!({ "url": fake.url, "token": TOKEN, "commands": false }))
+            .expect("settings");
+    let world = world_with(read_only).await;
+    world.running().await;
+    let why = world
+        .asked(
+            "automations",
+            "twin.hand_over",
+            json!({ "entity_id": "automation.hall" }),
+        )
+        .await
+        .expect_err("read-only");
+    assert!(why.contains("read-only"), "{why}");
+    world.stop().await;
+    assert_eq!(automation_state(&fake, "automation.hall"), "on");
+    assert_eq!(
+        switched(&fake),
+        vec![(
+            "automation.turn_off".to_owned(),
+            "automation.hall".to_owned()
+        )],
+        "only the refused one"
+    );
+}
+
+/// The list outlives a restart; one given back while Home Assistant was away is switched on at
+/// the next connection; and removing the extension switches everything left back on, or, with
+/// Home Assistant away, refuses.
+#[tokio::test]
+async fn the_list_outlives_restarts_and_removal_gives_everything_back() {
+    let fake = FakeHa::start(twin_home()).await.expect("a fake");
+    let store = Store::default();
+    let world = world_keeping(settings(&fake), Arc::clone(&store)).await;
+    world.running().await;
+    for twin in ["automation.hall", "automation.other"] {
+        world
+            .asked(
+                "automations",
+                "twin.hand_over",
+                json!({ "entity_id": twin }),
+            )
+            .await
+            .expect("switched off");
+    }
+    world.stop().await;
+
+    // Home Assistant away: given back is waited for, and removing is refused.
+    let away: Settings =
+        serde_json::from_value(json!({ "url": "http://127.0.0.1:9", "token": TOKEN }))
+            .expect("settings");
+    let world = world_keeping(away, Arc::clone(&store)).await;
+    let waiting = world
+        .asked(
+            "automations",
+            "twin.give_back",
+            json!({ "entity_id": "automation.hall" }),
+        )
+        .await
+        .expect("waiting");
+    assert_eq!(waiting["switched_on"], false);
+    let why = world.removing().await.expect_err("stays");
+    assert!(why.contains("Hall light") && why.contains("Other"), "{why}");
+    world.stop().await;
+    assert_eq!(automation_state(&fake, "automation.hall"), "off");
+
+    // Back: the one given back is switched on at once; removing switches on the rest.
+    let world = world_keeping(settings(&fake), Arc::clone(&store)).await;
+    world.running().await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while automation_state(&fake, "automation.hall") != "on" {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "never switched back on"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    world.removing().await.expect("tidied up");
+    assert_eq!(automation_state(&fake, "automation.other"), "on");
+    assert_eq!(store.lock().expect("store")["twins"], json!([]));
+    // Nothing left: removing again needs nothing from Home Assistant.
+    world.removing().await.expect("nothing to do");
+    world.stop().await;
+    assert_eq!(automation_state(&fake, "automation.porch"), "off");
+}

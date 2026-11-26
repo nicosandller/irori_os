@@ -1,12 +1,17 @@
 //! Home Assistant's WebSocket API: sign in, ask, and hear what it sends back. One request and its
 //! answer are matched by `id`; events arrive on the subscription's `id`.
 //!
-//! **This extension never changes Home Assistant** (rule 5 of milestone 11). Everything it sends
-//! is an [`Outgoing`], a closed list: signing in, the reads, subscribing and unsubscribing,
+//! **This extension never changes Home Assistant's setup** (rule 5 of milestone 11). Everything it
+//! sends is an [`Outgoing`], a closed list: signing in, the reads, subscribing and unsubscribing,
 //! asking for a camera's stream to watch (`camera/stream`, which reads and changes nothing), and
-//! `call_service`, which [`crate`] sends only in answer to a command someone gave in Irori. There
-//! is no way to send a registry, area or automation write, and [`Client::request`] checks
-//! every message's type against [`ALLOWED`] once more before it leaves.
+//! `call_service`, which [`crate`] sends only in answer to a command someone gave in Irori, or as
+//! [`Outgoing::TwinSwitch`]. There is no way to send a registry, area or automation write, and
+//! [`Client::request`] checks every message's type against [`ALLOWED`] once more before it leaves.
+//!
+//! **The one exception** (issue #199, the owner's choice): [`Outgoing::TwinSwitch`] switches one
+//! Home Assistant automation off or back on, `automation.turn_off` / `automation.turn_on` and
+//! nothing else, and only for the twin of a flow the owner turned on in Irori (see
+//! [`crate::twins`]).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -90,6 +95,13 @@ pub enum Outgoing {
         entity_id: String,
         data: serde_json::Map<String, Value>,
     },
+    /// Switches one Home Assistant automation off (`on: false`) or back on: the twin of a flow
+    /// the owner turned on in Irori. Built only by [`Outgoing::twin_switch`], which takes an
+    /// `automation.*` entity and nothing else.
+    TwinSwitch {
+        entity_id: String,
+        on: bool,
+    },
 }
 
 impl Outgoing {
@@ -106,8 +118,19 @@ impl Outgoing {
             Self::SubscribeEvents { .. } => "subscribe_events",
             Self::Unsubscribe { .. } => "unsubscribe_events",
             Self::CameraStream { .. } => "camera/stream",
-            Self::CallService { .. } => "call_service",
+            Self::CallService { .. } | Self::TwinSwitch { .. } => "call_service",
         }
+    }
+
+    /// Switches the automation `entity_id` off or on; refused for anything but one automation.
+    pub fn twin_switch(entity_id: &str, on: bool) -> Result<Self, String> {
+        if !is_automation(entity_id) {
+            return Err(format!("`{entity_id}` isn't a Home Assistant automation"));
+        }
+        Ok(Self::TwinSwitch {
+            entity_id: entity_id.to_owned(),
+            on,
+        })
     }
 
     fn body(&self, id: u64) -> Value {
@@ -133,10 +156,28 @@ impl Outgoing {
                 // Waits for the integration to carry it out, so the answer says it did.
                 body["return_response"] = json!(false);
             }
+            Self::TwinSwitch { entity_id, on } => {
+                body["domain"] = json!("automation");
+                body["service"] = json!(if *on { "turn_on" } else { "turn_off" });
+                body["service_data"] = json!({});
+                body["target"] = json!({ "entity_id": entity_id });
+                body["return_response"] = json!(false);
+            }
             _ => {}
         }
         body
     }
+}
+
+/// Whether `entity_id` names one Home Assistant automation: `automation.` and a slug.
+pub fn is_automation(entity_id: &str) -> bool {
+    entity_id.strip_prefix("automation.").is_some_and(|slug| {
+        !slug.is_empty()
+            && slug.len() <= 250
+            && slug
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+    })
 }
 
 /// Whether a message of this type may be sent. The last check before anything leaves.
@@ -559,6 +600,10 @@ mod tests {
                 entity_id: "light.a".into(),
                 data: serde_json::Map::new(),
             },
+            Outgoing::TwinSwitch {
+                entity_id: "automation.hall".into(),
+                on: false,
+            },
         ]
     }
 
@@ -580,6 +625,8 @@ mod tests {
                 | Outgoing::Unsubscribe { .. }
                 | Outgoing::CameraStream { .. }
                 | Outgoing::CallService { .. } => {}
+                // The one exception: checked on its own below.
+                Outgoing::TwinSwitch { .. } => {}
             }
             assert!(allowed(message.kind()), "{} isn't allowed", message.kind());
             assert_eq!(message.body(7)["type"], message.kind());
@@ -616,6 +663,43 @@ mod tests {
             "ping",
         ] {
             assert!(!allowed(write), "{write} is allowed");
+        }
+    }
+
+    /// Issue #199: beyond what was allowed before, exactly `automation.turn_off` and
+    /// `automation.turn_on`, each for one automation, and only through [`Outgoing::twin_switch`].
+    #[test]
+    fn the_one_exception_switches_one_automation_off_or_on() {
+        for (on, service) in [(false, "turn_off"), (true, "turn_on")] {
+            let body = Outgoing::twin_switch("automation.hall_light", on)
+                .expect("an automation")
+                .body(9);
+            assert_eq!(
+                body,
+                json!({
+                    "id": 9,
+                    "type": "call_service",
+                    "domain": "automation",
+                    "service": service,
+                    "service_data": {},
+                    "target": { "entity_id": "automation.hall_light" },
+                    "return_response": false,
+                })
+            );
+        }
+        for not_one in [
+            "light.hall",
+            "automation.",
+            "automation",
+            "script.hall",
+            "automation.a,automation.b",
+            "automation.A",
+            "automation.hall light",
+        ] {
+            assert!(
+                Outgoing::twin_switch(not_one, false).is_err(),
+                "{not_one} was taken"
+            );
         }
     }
 

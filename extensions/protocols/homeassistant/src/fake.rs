@@ -32,6 +32,9 @@ pub struct World {
     /// Automations' setups, by their `id`, as `GET /api/config/automation/config/<id>` gives
     /// them.
     pub automation_setups: BTreeMap<String, Value>,
+    /// Service calls refused with this message, as Home Assistant refuses one it can't carry
+    /// out: none when `None`.
+    pub refuse_calls: Option<String>,
 }
 
 impl World {
@@ -701,13 +704,17 @@ fn answer_to(shared: &Shared, connection: u64, asked: &Value) -> Vec<Value> {
             vec![result(id, Value::Null)]
         }
         "call_service" => {
+            let refused = shared.lock_world().refuse_calls.clone();
+            if let Some(why) = refused {
+                return vec![error(id, "home_assistant_error", &why)];
+            }
             let context = shared.context();
             let domain = asked["domain"].as_str().unwrap_or("");
             let service = asked["service"].as_str().unwrap_or("");
             let entity_id = asked["target"]["entity_id"].as_str().unwrap_or("");
             let state = match (domain, service) {
-                ("light" | "switch", "turn_on") => Some("on"),
-                ("light" | "switch", "turn_off") => Some("off"),
+                ("light" | "switch" | "automation", "turn_on") => Some("on"),
+                ("light" | "switch" | "automation", "turn_off") => Some("off"),
                 _ => None,
             };
             let mut plus = json!({ "c": context });

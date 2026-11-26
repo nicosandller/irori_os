@@ -10,6 +10,7 @@ pub mod home_assistant;
 pub mod people;
 pub mod rpc;
 pub mod store;
+pub mod twin;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
@@ -72,6 +73,8 @@ pub struct Service {
     /// ([`home_assistant`]); the loop finishes with it.
     fetched_tx: mpsc::UnboundedSender<home_assistant::Fetched>,
     fetched: Option<mpsc::UnboundedReceiver<home_assistant::Fetched>>,
+    /// Flows whose Home Assistant twin is being switched off right now ([`twin`]).
+    pub twins_underway: BTreeSet<RuleId>,
 }
 
 impl Service {
@@ -233,6 +236,7 @@ impl Service {
             waiting: BTreeSet::new(),
             calls,
             kept_running: BTreeSet::new(),
+            twins_underway: BTreeSet::new(),
             fetched_tx,
             fetched: Some(fetched),
         };
@@ -487,6 +491,16 @@ impl Service {
             Incoming::RegistryChanged => self.read_again().await,
             // Bringing a Home Assistant automation over: Home Assistant is read beside the
             // loop, and `finish_fetched` takes it from there.
+            // A flow brought over from Home Assistant turned on or off, or deleted: its twin
+            // there is switched too (`twin`).
+            Incoming::App(request) if twin::takes(self, &request) => twin::start(self, request),
+            Incoming::App(request)
+                if request.caller.owner
+                    && (request.method == home_assistant::RESTORE
+                        || request.method == home_assistant::FORGET) =>
+            {
+                rpc::restore_or_forget(self, request);
+            }
             Incoming::App(request) if home_assistant::asks(&request.method) => {
                 home_assistant::start(
                     request,

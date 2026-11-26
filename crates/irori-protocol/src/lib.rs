@@ -345,6 +345,9 @@ pub struct IncomingAction {
     /// (`answers`), which travels the same way too. [`ProtocolContext::next`] hands those out
     /// as [`Incoming::Ask`].
     ask: Option<Question>,
+    /// Set when the core is about to remove this extension and its manifest says it tidies up
+    /// first (`tidies_up`). [`ProtocolContext::next`] hands those out as [`Incoming::Removing`].
+    removing: bool,
     reply: ActionReply,
 }
 
@@ -415,6 +418,11 @@ impl IncomingAction {
         }
     }
 
+    /// Whether it's the core saying the extension is about to be removed. For the host.
+    pub fn removing(&self) -> bool {
+        self.removing
+    }
+
     /// The device to unpair and whether to force it, if that's what this is. For the host,
     /// which sends the two differently.
     pub fn unpairing(&self) -> Option<(&UniqueId, bool)> {
@@ -455,7 +463,13 @@ impl IncomingAction {
         if let Some(talk) = self.talk {
             return Incoming::Talk(talk);
         }
-        let reply = match (self.ask, self.reply) {
+        let reply = match (self.removing, self.reply) {
+            (true, ActionReply::Done(reply)) => {
+                return Incoming::Removing(IncomingRemoving { reply });
+            }
+            (_, reply) => reply,
+        };
+        let reply = match (self.ask, reply) {
             (Some(question), ActionReply::Answer(reply)) => {
                 return Incoming::Ask(IncomingAsk {
                     from: question.from,
@@ -487,9 +501,25 @@ impl IncomingAction {
                 live: None,
                 talk: None,
                 ask: None,
+                removing: false,
                 reply,
             }),
         }
+    }
+}
+
+/// The core is about to remove this extension (`docs/specs/protocols.md` §5.6): only sent to one
+/// whose manifest says `tidies_up`. Undo what it did outside Irori that only it can undo, then
+/// reply: an error keeps the extension installed, with the error as the reason. Reply exactly
+/// once; dropping it without replying refuses the removal too.
+#[derive(Debug)]
+pub struct IncomingRemoving {
+    reply: oneshot::Sender<Result<(), String>>,
+}
+
+impl IncomingRemoving {
+    pub fn reply(self, result: Result<(), String>) {
+        let _ = self.reply.send(result);
     }
 }
 
@@ -559,6 +589,7 @@ pub enum Incoming {
     Live(IncomingLive),
     Talk(IncomingTalk),
     Ask(IncomingAsk),
+    Removing(IncomingRemoving),
 }
 
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
@@ -768,6 +799,8 @@ impl ProtocolContext {
                         Incoming::Ask(ask) => {
                             ask.reply(Err("this protocol answers no questions".into()));
                         }
+                        // Nothing outside Irori to undo.
+                        Incoming::Removing(removing) => removing.reply(Ok(())),
                         Incoming::Call(_) => {}
                     }
                 }
@@ -1194,6 +1227,7 @@ pub mod host {
             live: None,
             talk: None,
             ask: None,
+            removing: false,
             reply: ActionReply::Done(reply),
         };
         (incoming, result)
@@ -1216,6 +1250,14 @@ pub mod host {
     ) -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
         let (mut incoming, result) = incoming_action(action_id);
         incoming.stop = true;
+        (incoming, result)
+    }
+
+    /// Builds the core's word that the extension is about to be removed, as it travels: on the
+    /// actions channel. [`ProtocolContext::next`] hands it out as [`Incoming::Removing`].
+    pub fn incoming_removing() -> (IncomingAction, oneshot::Receiver<Result<(), String>>) {
+        let (mut incoming, result) = incoming_action(String::new());
+        incoming.removing = true;
         (incoming, result)
     }
 
@@ -1246,6 +1288,7 @@ pub mod host {
             live: None,
             talk: None,
             ask: None,
+            removing: false,
             reply: ActionReply::Picture(reply),
         };
         (incoming, result)
@@ -1277,6 +1320,7 @@ pub mod host {
             }),
             talk: None,
             ask: None,
+            removing: false,
             reply: ActionReply::Done(reply),
         };
         (incoming, chunks)
@@ -1310,6 +1354,7 @@ pub mod host {
                 line,
             }),
             ask: None,
+            removing: false,
             reply: ActionReply::Done(reply),
         };
         (incoming, audio_tx, words)
@@ -1341,6 +1386,7 @@ pub mod host {
                 method,
                 params,
             }),
+            removing: false,
             reply: ActionReply::Answer(reply),
         };
         (incoming, result)

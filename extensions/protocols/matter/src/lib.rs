@@ -256,6 +256,8 @@ async fn drive(
                 Some(Incoming::Ask(ask)) => {
                     ask.reply(Err("Matter answers no questions".to_owned()));
                 }
+                // Never sent: its manifest doesn't say `tidies_up`.
+                Some(Incoming::Removing(removing)) => removing.reply(Ok(())),
             },
             Some(finished) = done.recv() => home.finish(finished, ctx).await,
             _ = update_check.tick() => home.check_updates(None, &client, &done_tx),

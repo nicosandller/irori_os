@@ -72,7 +72,7 @@ same file the canvas saves (rules.md D18).
 | `wires` | array of `[from, to]`, 0–512 | no | `[]` | `from` is `node` or `node:port`; `to` is a node id |
 | `layout` | map of node id → `[x, y]` | no | `{}` | Canvas position, finite numbers. Not part of the version |
 | `groups` | map of node id → `Name` | no | `{}` | Names given to the canvas's branch backgrounds, by the node each starts at (a branch by its first trigger, a part of one by its first node). Not part of the version |
-| `home_assistant` | `{ entity_id, id }` | no | | The Home Assistant automation the flow was brought over from: its twin, which Home Assistant goes on running (§8). Set only by bringing one over; a save keeps what the saved flow had, whatever the page sends. Absent for a flow made in Irori. Not part of the version |
+| `home_assistant` | `{ entity_id, id }` | no | | The Home Assistant automation the flow was brought over from: its twin (§8). Home Assistant goes on running it while the flow is off; turning the flow on switches it off there. Set only by bringing one over; a save keeps what the saved flow had, whatever the page sends, and so does `enabled` for such a flow: it's turned on only by `flows.enable` with `hand_over`. Absent for a flow made in Irori. Not part of the version |
 
 Unknown fields are rejected everywhere.
 
@@ -305,8 +305,8 @@ says what it is about, and a test fails for one that does not. The assistant cal
 | `flow.source` | `id` | The saved flow for the assistant to read and rewrite: the definition without `layout`, `groups` or `enabled`. Missing flow is an error. The core never opens the file |
 | `flows.propose` | `id` (optional), `flow` | Checks a suggestion and hands back the flow to draw (`ok`, `flow`, `problems`), or `ok: false` and `problems` with no flow. `id` is this chat's flow. Without `id` the flow is a new one the editor has not saved: nothing is kept from a saved flow, nodes are laid out left to right along their wires, and the editor names it on Save. It is filled in when the suggestion omits it, and a different id is refused. `layout`, `groups` and `enabled` on the suggestion are ignored: the saved on/off switch is kept, positions of nodes that remain are kept, a new node is placed to the right of the rightmost, and group names whose nodes remain are kept. An error refuses it. A warning comes back with the flow. Nothing is written and nothing is armed |
 | `flows.save` | `flow` | Version, problems. Writes the file atomically. The flow's `owner` is the asking regular user's if it is new; a flow that is there keeps its owner whoever saves it |
-| `flows.enable` | `id`, `enabled` | |
-| `flows.delete` | `id` | |
+| `flows.enable` | `id`, `enabled`, `hand_over`? | For a flow brought over from Home Assistant (owner only): turning it on needs `hand_over: true`, sent once the page has warned the owner; its twin is switched off in Home Assistant first (`{ switched_off }`, or `{ already_off: true }` for one the owner had switched off there, which is left alone), and if Home Assistant refuses or can't be reached the flow stays off and the error says why. Turning it off saves it off, then asks for the twin back: `{ home_assistant_waiting }` says why that is still to happen, when it is |
+| `flows.delete` | `id` | For a flow brought over from Home Assistant, as turning it off: deleted, then its twin asked back |
 | `versions.list` / `versions.get` / `versions.restore` | `id`, `version` | |
 | `runs.list` | `id` | Run summaries, newest first |
 | `runs.get` | `run_id` | The run record |
@@ -320,8 +320,21 @@ says what it is about, and a test fails for one that does not. The assistant cal
 | `clock.holds` | `conditions`: `time` and `sun` conditions | For each, whether it holds right now (`holds`), or `why` that can't be told (no time zone, no location, no sunset at home today, or a window that isn't well formed). With the home's `time_zone`, `location`, `now` and today's `sun`, as `clock.next`. Read-only. It is what colours a window's dot on the canvas, so the dot and a run read the same clock |
 | `live` | `id`, `after?` | What the canvas plays while the flow is open: runs finished and near-misses since `after` (none without it; at most 5 each, oldest first), the triggers holding a `for` and when they'd fire, and `now` to ask with next time |
 | `tests.get` / `tests.save` | `id`, `settings` | How the page last set up a test of this flow (up to 16 KB, kept as given), so it runs again the same way. Deleted with the flow |
-| `home_assistant.automations` | — | Owner only, and only in a home Home Assistant's devices came into. Home Assistant's own automations, read through the Home Assistant extension ([protocols.md](protocols.md) §5.5): each `entity_id`, `name`, `on` (in Home Assistant), `readable` (whether Home Assistant keeps a setup of it to read; one written in YAML without an `id` has none), and `flow` when one was brought over from it. Read beside the engine's loop, so flows keep running meanwhile. Nothing in Home Assistant changes |
+| `home_assistant.automations` | — | Owner only, and only in a home Home Assistant's devices came into. Home Assistant's own automations, read through the Home Assistant extension ([protocols.md](protocols.md) §5.5): each `entity_id`, `name`, `on` (in Home Assistant), `readable` (whether Home Assistant keeps a setup of it to read; one written in YAML without an `id` has none), and `flow` when one was brought over from it; and `switched_off`, what Irori switched off there (each `entity_id`, `name`, `flow` while its flow is on, and `waiting` while it's waiting to be switched back on). Read beside the engine's loop, so flows keep running meanwhile. Reading changes nothing; a twin on the list whose flow is off or gone is asked back |
+| `home_assistant.restore` | `entity_id` | Owner only. Turns off every flow that is that automation's twin, then asks for the automation back on in Home Assistant. `{ turned_off, home_assistant_waiting? }` |
+| `home_assistant.forget` | `entity_id` | Owner only. Takes it off the Home Assistant extension's list without touching Home Assistant: for one the owner switched back on there themselves |
 | `home_assistant.bring_over` | `entity_id` | Owner only, as above. Reads that automation's setup and translates it into a flow (below), switched off, with `home_assistant` set: `{ flow }`, or `{ flow, already: true }` when one was brought over before. When any part can't be said as a flow, or the flow couldn't run in this home, nothing is written: `{ untranslatable: [why, …] }`. Nothing in Home Assistant changes: its automation keeps running |
+
+**Handing an automation over** (issue #199). The one thing Irori changes in Home Assistant, by
+the owner's choice: when they turn on a flow brought over, after a warning that names the
+automation, the Home Assistant extension switches that one automation off
+(`automation.turn_off`), so the two don't both run. Turning the flow off, deleting it, Restore,
+or removing the Home Assistant extension switches it back on (`automation.turn_on`); one the
+owner had switched off in Home Assistant before is never touched. The Home Assistant extension
+keeps the list of what it switched off in its store, so it survives restarts, and switches back
+on what it still owes each time it connects. **If Irori is stopped while a flow is on, its
+automation stays off in Home Assistant until Irori is back.** A flow file edited by hand to turn
+such a flow on isn't handed over: it runs beside Home Assistant's until turned off and on again.
 
 **Bringing a Home Assistant automation over** (issue #198). All or nothing: half an automation
 would run differently from the whole one Home Assistant keeps running. What translates:

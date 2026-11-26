@@ -8,7 +8,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 
 use crate::time::ago;
-use crate::widgets::Toggle;
+use crate::widgets::{HandOverWarning, Toggle};
 use crate::{Route, api, go};
 
 fn status(summary: &FlowSummary) -> impl IntoView + use<> {
@@ -37,7 +37,13 @@ pub fn List() -> impl IntoView {
         open: RwSignal::new(false),
         found: RwSignal::new(None),
         results: RwSignal::new(BTreeMap::new()),
+        note: RwSignal::new(None),
     };
+    // A flow brought over from Home Assistant being turned on: the warning shown under it, and
+    // what turning one on or off said, by flow id. Kept here for the same reason.
+    let confirming = RwSignal::new(None::<String>);
+    let handing = RwSignal::new(false);
+    let said = RwSignal::new(BTreeMap::<String, Result<String, String>>::new());
     // A run finishing, or a flow file edited by hand, shows without reloading.
     let alive = StoredValue::new(true);
     spawn_local(async move {
@@ -74,7 +80,11 @@ pub fn List() -> impl IntoView {
                     let beside_home_assistant = found.home_assistant;
                     view! {
                         {beside_home_assistant.then(|| view! {
-                            <FromHomeAssistant panel=home_assistant brought=Callback::new(move |()| refresh()) />
+                            <FromHomeAssistant panel=home_assistant brought=Callback::new(move |()| {
+                                // What turning a flow on said may not hold any more.
+                                said.set(BTreeMap::new());
+                                refresh();
+                            }) />
                         })}
                         {(!problems.is_empty()).then(|| view! {
                             <div class="problems-box">
@@ -105,7 +115,11 @@ pub fn List() -> impl IntoView {
                                         let id = flow.id.to_string();
                                         let open = id.clone();
                                         let toggle = id.clone();
+                                        let warned = id.clone();
+                                        let told = id.clone();
                                         let enabled = flow.enabled;
+                                        let twin = flow.home_assistant.clone();
+                                        let twinned = twin.is_some();
                                         let last = flow.last_run.as_ref().map(|run| {
                                             format!("last run {} · {}", ago(&run.started_at),
                                                 if run.summary.is_empty() { run.outcome.clone() } else { run.summary.clone() })
@@ -129,7 +143,7 @@ pub fn List() -> impl IntoView {
                                                     })}
                                                     {flow.home_assistant.as_ref().map(|twin| view! {
                                                         <span class="chip" title=format!(
-                                                            "Brought over from Home Assistant's {twin}, which Home Assistant keeps running"
+                                                            "Brought over from Home Assistant's {twin}. While this flow is on, Irori keeps that one switched off in Home Assistant."
                                                         )>
                                                             "From Home Assistant"
                                                         </span>
@@ -151,8 +165,22 @@ pub fn List() -> impl IntoView {
                                                     label=if enabled { "Turn off" } else { "Turn on" }
                                                     set=Callback::new(move |on: bool| {
                                                         let id = toggle.clone();
+                                                        // Turned on only once the owner read what that does in
+                                                        // Home Assistant.
+                                                        if on && twinned {
+                                                            said.update(|all| { all.remove(&id); });
+                                                            confirming.set(Some(id));
+                                                            return;
+                                                        }
                                                         spawn_local(async move {
-                                                            let _ = api::enable(&id, on).await;
+                                                            let answer = api::enable(&id, on).await;
+                                                            if twinned {
+                                                                let note = answer.map(|done| api::still_waiting(&done).map_or_else(
+                                                                    || "Turned off. Home Assistant runs its automation again.".to_owned(),
+                                                                    |why| format!("Turned off. Home Assistant's automation will be switched back on as soon as it can be: {why}"),
+                                                                ));
+                                                                let _ = said.try_update(|all| all.insert(id, note));
+                                                            }
                                                             let _ = listing.try_set(Some(api::list().await));
                                                         });
                                                     })
@@ -162,6 +190,35 @@ pub fn List() -> impl IntoView {
                                                         if flow.triggers == 1 { "" } else { "s" }, flow.nodes)}
                                                     {reason.map(|r| view! { <div style="color: var(--error)">{r}</div> })}
                                                 </div>
+                                                {move || (confirming.get().as_deref() == Some(warned.as_str())).then(|| {
+                                                    let id = warned.clone();
+                                                    let automation = twin.clone().unwrap_or_default();
+                                                    view! {
+                                                        <HandOverWarning automation=automation busy=handing
+                                                            confirm=Callback::new(move |()| {
+                                                                let id = id.clone();
+                                                                handing.set(true);
+                                                                spawn_local(async move {
+                                                                    let answer = api::enable_handing_over(&id).await.map(|done| {
+                                                                        if done["already_off"] == true {
+                                                                            "Turned on. Its automation was already off in Home Assistant, so it was left as it was.".to_owned()
+                                                                        } else {
+                                                                            "Turned on. Its automation is switched off in Home Assistant while this runs.".to_owned()
+                                                                        }
+                                                                    });
+                                                                    let _ = handing.try_set(false);
+                                                                    let _ = confirming.try_set(None);
+                                                                    let _ = said.try_update(|all| all.insert(id, answer));
+                                                                    let _ = listing.try_set(Some(api::list().await));
+                                                                });
+                                                            })
+                                                            cancel=Callback::new(move |()| confirming.set(None)) />
+                                                    }
+                                                })}
+                                                {move || said.with(|all| all.get(&told).cloned()).map(|note| match note {
+                                                    Ok(note) => view! { <p class="meta" on:click=|e| e.stop_propagation()>{note}</p> }.into_any(),
+                                                    Err(why) => view! { <div class="problems-box" on:click=|e| e.stop_propagation()>{why}</div> }.into_any(),
+                                                })}
                                             </div>
                                         }
                                     }).collect_view()}
@@ -175,16 +232,19 @@ pub fn List() -> impl IntoView {
     }
 }
 
-/// Home Assistant's own automations, to bring one over as a flow. Shown only in a home Home
-/// Assistant's devices came into. A flow brought over arrives switched off, and Home Assistant
-/// keeps running its own: nothing in Home Assistant changes.
+/// Home Assistant's own automations, to bring one over as a flow, and those Irori switched off
+/// because their flow is on. Shown only in a home Home Assistant's devices came into. A flow
+/// brought over arrives switched off, and Home Assistant keeps running its own until the owner
+/// turns the flow on.
 /// What the Home Assistant panel shows: whether it's open, the automations it found, and what
 /// bringing each one over said, by `entity_id`.
 #[derive(Clone, Copy)]
 struct HaPanel {
     open: RwSignal<bool>,
-    found: RwSignal<Option<Result<Vec<api::HaAutomation>, String>>>,
+    found: RwSignal<Option<Result<api::HaAutomations, String>>>,
     results: RwSignal<BTreeMap<String, Result<api::BroughtOver, String>>>,
+    /// What Restore or Forget said, kept after the list is read again without that one.
+    note: RwSignal<Option<Result<String, String>>>,
 }
 
 #[component]
@@ -193,6 +253,7 @@ fn FromHomeAssistant(panel: HaPanel, brought: Callback<()>) -> impl IntoView {
         open,
         found,
         results,
+        note,
     } = panel;
     let load = move || {
         found.set(None);
@@ -210,6 +271,7 @@ fn FromHomeAssistant(panel: HaPanel, brought: Callback<()>) -> impl IntoView {
                 open.set(opening);
                 if opening {
                     results.set(BTreeMap::new());
+                    note.set(None);
                     load();
                 }
             }>{move || if open.get() { "Close" } else { "Bring over from Home Assistant" }}</button>
@@ -220,23 +282,39 @@ fn FromHomeAssistant(panel: HaPanel, brought: Callback<()>) -> impl IntoView {
                     <strong>"Home Assistant's automations. "</strong>
                     <span class="muted">
                         "Bring one over to try it in Irori. It arrives switched off, and Home "
-                        "Assistant keeps running its own: nothing in Home Assistant changes. If "
-                        "anything in it can't be done by a flow yet, nothing is brought over and "
-                        "you're told why."
+                        "Assistant keeps running its own. Only when you turn the flow on does Irori "
+                        "switch that one off in Home Assistant, after asking you. If anything in it "
+                        "can't be done by a flow yet, nothing is brought over and you're told why."
                     </span>
                 </p>
                 {move || match found.get() {
                     None => view! { <p class="muted">"Asking Home Assistant…"</p> }.into_any(),
                     Some(Err(why)) => view! { <div class="problems-box">{why}</div> }.into_any(),
-                    Some(Ok(all)) if all.is_empty() => view! {
-                        <p class="muted">"Home Assistant has no automations."</p>
-                    }.into_any(),
-                    Some(Ok(all)) => all.into_iter().map(|automation| view! {
-                        <HaRow automation=automation results=results brought=Callback::new(move |()| {
-                            brought.run(());
-                            load();
-                        }) />
-                    }).collect_view().into_any(),
+                    Some(Ok(all)) => {
+                        let off = all.switched_off;
+                        view! {
+                            {move || note.get().map(|said| match said {
+                                Ok(said) => view! { <p class="meta">{said}</p> }.into_any(),
+                                Err(why) => view! { <div class="problems-box">{why}</div> }.into_any(),
+                            })}
+                            {(!off.is_empty()).then(|| view! {
+                                <SwitchedOffList off=off note=note changed=Callback::new(move |()| {
+                                    brought.run(());
+                                    load();
+                                }) />
+                            })}
+                            {if all.automations.is_empty() {
+                                view! { <p class="muted">"Home Assistant has no automations."</p> }.into_any()
+                            } else {
+                                all.automations.into_iter().map(|automation| view! {
+                                    <HaRow automation=automation results=results brought=Callback::new(move |()| {
+                                        brought.run(());
+                                        load();
+                                    }) />
+                                }).collect_view().into_any()
+                            }}
+                        }.into_any()
+                    }
                 }}
             </div>
         })}
@@ -325,11 +403,78 @@ fn HaRow(
                                 e.prevent_default();
                                 go(Route::Flow(open.clone()));
                             }>{flow}</a>
-                            ". Home Assistant keeps running its own until you switch it off there."
+                            ". Home Assistant keeps running its own; turning the flow on switches that one off there, after asking you."
                         </p>
                     }.into_any()
                 }
             })}
+        </div>
+    }
+}
+
+/// What Irori switched off in Home Assistant (issue #199), each with a way back: Restore turns
+/// its flow off and switches it back on there; Forget only takes it off the list, for one
+/// switched back on in Home Assistant by hand.
+#[component]
+fn SwitchedOffList(
+    off: Vec<api::SwitchedOff>,
+    note: RwSignal<Option<Result<String, String>>>,
+    changed: Callback<()>,
+) -> impl IntoView {
+    let busy = RwSignal::new(false);
+    view! {
+        <div class="hand-over">
+            <p>
+                <strong>"Switched off in Home Assistant by Irori. "</strong>
+                <span class="muted">
+                    "Each stays off while its flow runs in Irori, and while Irori is stopped. "
+                    "Restore turns the flow off and switches the automation back on."
+                </span>
+            </p>
+            {off.into_iter().map(|twin| {
+                let restoring = twin.entity_id.clone();
+                let forgetting = twin.entity_id.clone();
+                let act = move |entity_id: String, restore: bool| {
+                    busy.set(true);
+                    spawn_local(async move {
+                        let answer = if restore {
+                            api::ha_restore(&entity_id).await.map(|done| api::still_waiting(&done).map_or_else(
+                                || "Switched back on in Home Assistant.".to_owned(),
+                                |why| format!("Its flow is off; Home Assistant will switch it back on as soon as it can: {why}"),
+                            ))
+                        } else {
+                            api::ha_forget(&entity_id).await.map(|_| "Taken off the list.".to_owned())
+                        };
+                        let _ = busy.try_set(false);
+                        let _ = note.try_set(Some(answer));
+                        changed.run(());
+                    });
+                };
+                let forget = act.clone();
+                view! {
+                    <div class="row">
+                        <span class="name grow">{twin.name.clone()}" "<span class="meta mono">{twin.entity_id.clone()}</span></span>
+                        {match (&twin.flow, twin.waiting) {
+                            (Some(flow), _) => {
+                                let flow = flow.clone();
+                                let open = flow.clone();
+                                view! {
+                                    <a href="#" on:click=move |e| {
+                                        e.prevent_default();
+                                        go(Route::Flow(open.clone()));
+                                    }>{format!("on in Irori as {flow}")}</a>
+                                }.into_any()
+                            }
+                            (None, _) => view! { <span class="chip warn">"waiting to be switched back on"</span> }.into_any(),
+                        }}
+                        <button class="btn" disabled=move || busy.get()
+                            on:click=move |_| act(restoring.clone(), true)>"Restore"</button>
+                        <button class="btn" disabled=move || busy.get()
+                            title="Only takes it off this list. For one you switched back on in Home Assistant yourself."
+                            on:click=move |_| forget(forgetting.clone(), false)>"Forget"</button>
+                    </div>
+                }
+            }).collect_view()}
         </div>
     }
 }

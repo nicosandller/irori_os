@@ -40,8 +40,10 @@ pub struct Settings {
     #[schemars(title = "Access token", extend("x-irori-secret-for" = "url"))]
     pub token: Secret,
     /// On by default: Irori can switch, unlock, disarm and send commands through Home Assistant,
-    /// and Automations flows can do the same. Turn it off for a read-only try: Irori then only
-    /// reads Home Assistant and answers every command "read-only".
+    /// and Automations flows can do the same. Turning on a flow brought over from Home
+    /// Assistant also switches off that one automation there (after asking you), until the flow
+    /// is turned off, deleted, or this extension removed. Turn it off for a read-only try: Irori
+    /// then only reads Home Assistant and answers every command "read-only".
     #[schemars(title = "Let Irori control devices", default = "on")]
     pub commands: bool,
     /// For a certificate no public authority issued, like Home Assistant's self-signed one: its
