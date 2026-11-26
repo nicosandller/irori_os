@@ -823,6 +823,38 @@ fn times_described(world: &World, id: &str) -> usize {
         .count()
 }
 
+/// Devices the account lists, here as an earlier run saved them, don't count towards the most
+/// devices kept that only Bluetooth knows.
+#[tokio::test]
+async fn devices_the_account_lists_dont_count_towards_the_most_heard() {
+    let listed: Vec<Value> = (0..crate::MAX_HEARD + 44)
+        .map(|n| {
+            json!({
+                "listed": { "id": format!("FFEEDD{n:06X}"), "name": "Meter", "device_type": "Meter", "hub": null },
+                "reading": {},
+                "from_cloud": true
+            })
+        })
+        .collect();
+    let stored = BTreeMap::from([("devices".to_owned(), json!(listed))]);
+    let (radio, heard) = mpsc::channel(8);
+    let world = world_hearing(None, stored, FAST, Some(heard)).await;
+    let macs: Vec<String> = (0..crate::MAX_HEARD + 1)
+        .map(|n| format!("AABBCC{n:06X}"))
+        .collect();
+    let macs: Vec<&str> = macs.iter().map(String::as_str).collect();
+    hear_all(&world, &radio, &macs).await;
+    let heard = {
+        let log = world.log.lock().expect("log");
+        log.devices
+            .iter()
+            .filter(|device| device.unique_id.as_str().starts_with("AABBCC"))
+            .count()
+    };
+    assert_eq!(heard, crate::MAX_HEARD);
+    world.shutdown().await;
+}
+
 /// A device someone added and the extension forgot while it wasn't running comes back when
 /// heard again, even with the list full.
 #[tokio::test]
