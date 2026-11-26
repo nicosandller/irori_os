@@ -691,6 +691,86 @@ mod tests {
         list.iter().map(|id| id.parse().expect("valid")).collect()
     }
 
+    /// The markers that stood for the device that steps aside stand for the one that takes
+    /// over, and where it is stays decided by the marker that decided it before: the stepping
+    /// aside one's, when it had one.
+    #[test]
+    fn the_floorplan_follows_the_device_handed_over() {
+        use irori_types::{Floorplan, Level, PlacedDevice, Point};
+        let (from, to): (DeviceId, DeviceId) = (
+            "hub_plug".parse().expect("valid"),
+            "here_plug".parse().expect("valid"),
+        );
+        let at = |device: &DeviceId, x: i32, copy: bool| PlacedDevice {
+            copy,
+            ..PlacedDevice::new(device.clone(), Point::new(x, 0))
+        };
+        let helper = PlacedDevice {
+            device: None,
+            entity: Some("switch.kettle_group".parse().expect("valid")),
+            ..at(&from, 40, false)
+        };
+        let plan_of = |devices: Vec<PlacedDevice>| Floorplan {
+            floors: [(
+                "ground".parse().expect("valid"),
+                Level {
+                    devices,
+                    ..Level::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let markers = |plan: &Floorplan| -> Vec<(Option<String>, i32, bool)> {
+            plan.floors
+                .values()
+                .flat_map(|level| &level.devices)
+                .map(|marker| {
+                    (
+                        marker.device.as_ref().map(ToString::to_string),
+                        marker.at.x,
+                        marker.copy,
+                    )
+                })
+                .collect()
+        };
+        let own = |x: i32, copy: bool| (Some(to.to_string()), x, copy);
+
+        // Both drawn: the bridged one's spot is where it is, the plug's own becomes a copy.
+        let mut plan = plan_of(vec![
+            at(&from, 10, false),
+            at(&from, 20, true),
+            at(&to, 30, false),
+            helper.clone(),
+        ]);
+        repoint_plan(&mut plan, &from, &to);
+        assert_eq!(
+            markers(&plan),
+            [
+                own(10, false),
+                own(20, true),
+                own(30, true),
+                (None, 40, false)
+            ]
+        );
+
+        // Only a copy of the bridged one: the plug's own spot still decides.
+        let mut plan = plan_of(vec![at(&from, 20, true), at(&to, 30, false)]);
+        repoint_plan(&mut plan, &from, &to);
+        assert_eq!(markers(&plan), [own(20, true), own(30, false)]);
+
+        // Only copies, of the bridged one: one of them becomes where it is.
+        let mut plan = plan_of(vec![at(&from, 20, true)]);
+        repoint_plan(&mut plan, &from, &to);
+        assert_eq!(markers(&plan), [own(20, false)]);
+
+        // A plan without either is left as it was.
+        let mut plan = plan_of(vec![helper]);
+        let before = plan.clone();
+        repoint_plan(&mut plan, &from, &to);
+        assert_eq!(plan, before);
+    }
+
     #[test]
     fn only_whole_mentions_are_renamed() {
         let pairs: BTreeMap<EntityId, EntityId> = [(
