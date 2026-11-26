@@ -761,6 +761,134 @@ async fn devices_heard_over_bluetooth_stop_at_the_most_that_are_kept() {
     world.shutdown().await;
 }
 
+/// `count` devices only Bluetooth knows, as an earlier run saved them, last heard `ago` seconds
+/// before noon: `AABBCC000000` onwards.
+fn heard_devices(count: usize, ago: u64) -> Vec<Value> {
+    (0..count)
+        .map(|n| {
+            json!({
+                "listed": { "id": format!("AABBCC{n:06X}"), "name": "Meter", "device_type": "Meter", "hub": null },
+                "reading": {},
+                "from_cloud": false,
+                "heard_at": noon() - ago
+            })
+        })
+        .collect()
+}
+
+/// Sends each advert, then waits until every one has been taken in.
+async fn hear_all(world: &World, radio: &mpsc::Sender<crate::ble::Radio>, macs: &[&str]) {
+    for mac in macs {
+        radio
+            .send(crate::ble::Radio::Advert(meter_advert(mac)))
+            .await
+            .expect("listening");
+    }
+    // Handled in order, so once this is reported every advert before it has been taken in.
+    radio
+        .send(crate::ble::Radio::Failed("stopped for the test".into()))
+        .await
+        .expect("listening");
+    world
+        .health("Bluetooth isn't working (stopped for the test)")
+        .await;
+    let mut log = world.log.lock().expect("log");
+    log.health.clear();
+}
+
+/// How many times the device `id` was described.
+fn times_described(world: &World, id: &str) -> usize {
+    let log = world.log.lock().expect("log");
+    log.devices
+        .iter()
+        .filter(|device| device.unique_id.as_str() == id)
+        .count()
+}
+
+/// A device someone added and the extension forgot while it wasn't running comes back when
+/// heard again, even with the list full.
+#[tokio::test]
+async fn a_device_forgotten_before_a_restart_is_let_back_in_when_the_list_is_full() {
+    let mut devices = heard_devices(crate::MAX_HEARD, 3_600);
+    devices.push(json!({
+        "listed": { "id": "AABBCCDDEEFF", "name": "Meter EEFF", "device_type": "Meter", "hub": null },
+        "reading": {},
+        "from_cloud": false,
+        "heard_at": noon() - 2 * 86_400
+    }));
+    let stored = BTreeMap::from([("devices".to_owned(), json!(devices))]);
+    let (radio, heard) = mpsc::channel(8);
+    let world = world_hearing(None, stored, FAST, Some(heard)).await;
+    hear_all(&world, &radio, &["AABBCCDDEEFF", "112233445566"]).await;
+    assert_eq!(times_described(&world, "AABBCCDDEEFF"), 1, "let back in");
+    assert_eq!(
+        times_described(&world, "112233445566"),
+        0,
+        "a new one isn't"
+    );
+    world.shutdown().await;
+}
+
+/// The list of forgotten devices is kept between runs.
+#[tokio::test]
+async fn forgotten_devices_are_let_back_in_after_a_restart() {
+    let stored = BTreeMap::from([
+        (
+            "devices".to_owned(),
+            json!(heard_devices(crate::MAX_HEARD, 3_600)),
+        ),
+        ("let_back".to_owned(), json!(["AABBCCDDEEFF"])),
+    ]);
+    let (radio, heard) = mpsc::channel(8);
+    let world = world_hearing(None, stored, FAST, Some(heard)).await;
+    hear_all(&world, &radio, &["AABBCCDDEEFF", "112233445566"]).await;
+    assert_eq!(times_described(&world, "AABBCCDDEEFF"), 1, "let back in");
+    assert_eq!(
+        times_described(&world, "112233445566"),
+        0,
+        "a new one isn't"
+    );
+    let log = Arc::clone(&world.log);
+    world.shutdown().await;
+    let log = log.lock().expect("log");
+    assert_eq!(log.stored["let_back"], json!([]), "taken off once back");
+}
+
+/// The clock for the next test, which moves it on.
+static LATER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn later() -> u64 {
+    noon() + LATER.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// With the list full, a device forgotten while running frees its place for a new one, and is
+/// still let back in when heard again with the list full once more.
+#[tokio::test]
+async fn a_device_forgotten_while_running_frees_a_place_and_is_let_back_in() {
+    // All heard an hour ago, the first a day less ten minutes ago.
+    let mut devices = heard_devices(crate::MAX_HEARD, 3_600);
+    devices[0]["heard_at"] = json!(noon() - 86_400 + 600);
+    let stored = BTreeMap::from([("devices".to_owned(), json!(devices))]);
+    let (radio, heard) = mpsc::channel(8);
+    let timing = Timing { now: later, ..FAST };
+    let world = world_hearing(None, stored, timing, Some(heard)).await;
+    hear_all(&world, &radio, &["112233445566"]).await;
+    assert_eq!(times_described(&world, "112233445566"), 0, "full");
+    // Twenty minutes on, the first is past a day unheard and is forgotten at the next redraw,
+    // every ten seconds.
+    LATER.store(1_200, std::sync::atomic::Ordering::Relaxed);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while times_described(&world, "112233445566") == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "no room came back");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        hear_all(&world, &radio, &["112233445566"]).await;
+    }
+    hear_all(&world, &radio, &["AABBCC000000", "665544332211"]).await;
+    assert_eq!(times_described(&world, "AABBCC000000"), 2, "let back in");
+    assert_eq!(times_described(&world, "665544332211"), 0, "full again");
+    world.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_device_only_bluetooth_knew_is_forgotten_after_a_day_unheard() {
     let now = noon();
