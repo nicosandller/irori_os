@@ -930,3 +930,33 @@ async fn a_picture_comes_over_the_same_checked_connection() {
     assert_eq!(answer.content_type, "image/jpeg");
     assert_eq!(answer.body, b"jpeg");
 }
+
+/// Beside Home Assistant on one machine (#170), Irori must leave its USB radios and Bluetooth to
+/// it. The bridge reaches Home Assistant over the network and nothing else: a test fails if its
+/// manifest ever asks for more than `lan`.
+#[test]
+fn the_bridge_asks_for_the_local_network_and_nothing_else() {
+    let manifest = include_str!("../irori-extension.toml");
+    let (_, permissions) = manifest
+        .split_once("[permissions]")
+        .expect("a [permissions] table");
+    let asked: Vec<&str> = permissions
+        .lines()
+        .map(str::trim)
+        .take_while(|line| !line.starts_with('['))
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert_eq!(asked, ["lan = true"]);
+}
+
+#[test]
+fn with_no_address_an_unreachable_home_assistant_is_looked_for_on_this_machine() {
+    let here: Settings = serde_json::from_value(json!({ "token": TOKEN })).expect("settings");
+    let said = crate::unreachable(&here, "couldn't reach Home Assistant: refused".into());
+    assert!(said.contains("no Home Assistant answered on this machine (http://127.0.0.1:8123)"), "{said}");
+    assert!(said.contains("enter its address"), "{said}");
+    let there: Settings =
+        serde_json::from_value(json!({ "url": "http://192.168.1.20:8123", "token": TOKEN }))
+            .expect("settings");
+    assert_eq!(crate::unreachable(&there, "refused".into()), "refused");
+}

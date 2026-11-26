@@ -132,6 +132,19 @@ fn turn_away(incoming: Incoming) {
     }
 }
 
+/// Why Home Assistant can't be reached, for the extension's page. With no address given, it says
+/// it looked on this machine, and that a Home Assistant anywhere else needs its address.
+fn unreachable(settings: &Settings, why: String) -> String {
+    if settings.on_this_machine() {
+        format!(
+            "no Home Assistant answered on this machine ({}): {why}. If it runs on another machine, or on another port, enter its address in this extension's settings",
+            settings::ON_THIS_MACHINE
+        )
+    } else {
+        why
+    }
+}
+
 /// Runs until told to stop. Never fails: Home Assistant going away is waited out here.
 pub async fn drive(
     settings: Settings,
@@ -194,7 +207,8 @@ pub async fn drive(
             }
             Err(ConnectError::Unreachable(why)) => {
                 bridge.lost(&ctx).await;
-                ctx.set_health(Health::Degraded(why)).await;
+                ctx.set_health(Health::Degraded(unreachable(&settings, why)))
+                    .await;
                 retry
             }
         };
