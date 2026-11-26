@@ -20,6 +20,29 @@ use crate::users::password_trouble;
 /// The steps, in order. What each is called is what the dots along the bottom are read as.
 const STEPS: [&str; 4] = ["Welcome", "You", "Time zone", "Done"];
 
+/// The step that connects to Home Assistant. It is reached only by choosing to, and sits
+/// between the time zone and the end, so the dots grow by one then and not otherwise.
+const HOME_ASSISTANT: usize = 5;
+
+/// Where step `step` is among the dots: unchanged unless Home Assistant is being connected, when
+/// its own step comes before the last.
+fn place_of(step: usize, connecting: bool) -> usize {
+    match (connecting, step) {
+        (true, HOME_ASSISTANT) => 3,
+        (true, 3) => 4,
+        _ => step,
+    }
+}
+
+/// The dots' names and the step each stands for.
+fn dots(connecting: bool) -> Vec<(usize, &'static str)> {
+    let mut dots: Vec<(usize, &'static str)> = STEPS.iter().copied().enumerate().collect();
+    if connecting {
+        dots.insert(3, (HOME_ASSISTANT, "Home Assistant"));
+    }
+    dots
+}
+
 /// Whether the welcome is on show. Set by the page as it boots, and by Settings to open it
 /// again.
 #[derive(Debug, Clone, Copy)]
@@ -54,6 +77,9 @@ pub fn Welcome() -> impl IntoView {
     // What was set on the way, for the last step to say back.
     let made = RwSignal::new(None::<String>);
     let placed = RwSignal::new(None::<HomeSettings>);
+    // Whether Home Assistant was chosen on the first step, and what came of it.
+    let connecting = RwSignal::new(false);
+    let brought = RwSignal::new(None::<crate::welcome_ha::Brought>);
     // Somebody is already the owner when the welcome is opened again from Settings.
     let has_owner = move || session.with(|s| s.as_ref().is_some_and(|s| s.setup.owner));
 
@@ -101,7 +127,11 @@ pub fn Welcome() -> impl IntoView {
                 Ok(kept) => {
                     saved.set(Some(kept.clone()));
                     placed.set(Some(kept));
-                    go(3);
+                    go(if connecting.get_untracked() {
+                        HOME_ASSISTANT
+                    } else {
+                        3
+                    });
                 }
                 Err(why) => trouble.set(Some(why)),
             }
@@ -132,6 +162,18 @@ pub fn Welcome() -> impl IntoView {
                     >
                         "Set it up"
                     </button>
+                    // A home that already runs on Home Assistant can be tried from it: its
+                    // devices and rooms come over once the owner and the time zone are set.
+                    <button
+                        type="button"
+                        class="welcome-later"
+                        on:click=move |_| {
+                            connecting.set(true);
+                            go(if has_owner() { 2 } else { 1 });
+                        }
+                    >
+                        "Connect to Home Assistant"
+                    </button>
                     // A home that is being moved or rebuilt brings its past with it.
                     {move || (!has_owner()).then(|| view! {
                         <button type="button" class="welcome-later" on:click=move |_| go(4)>
@@ -140,6 +182,13 @@ pub fn Welcome() -> impl IntoView {
                     })}
                 </div>
             </div>
+        }
+        .into_any(),
+        HOME_ASSISTANT => view! {
+            <crate::welcome_ha::ConnectHomeAssistant done=Callback::new(move |result| {
+                brought.set(result);
+                go(3);
+            }) />
         }
         .into_any(),
         4 => view! { <RestoreFirst back=Callback::new(move |()| go(0)) /> }.into_any(),
@@ -251,6 +300,16 @@ pub fn Welcome() -> impl IntoView {
                         }}
                     </li>
                 </ul>
+                {move || brought.get().map(|brought| view! {
+                    <ul class="welcome-said">
+                        <li>
+                            {format!(
+                                "Home Assistant's {} came over.",
+                                crate::welcome_ha::said(&brought)
+                            )}
+                        </li>
+                    </ul>
+                })}
                 <p class="muted small">"Both are in Settings, under Users and Location and time zone."</p>
                 <div class="welcome-actions">
                     <button type="button" class="welcome-next" on:click=finish>"Open IroriOS"</button>
@@ -266,16 +325,18 @@ pub fn Welcome() -> impl IntoView {
             <div class="welcome-card">
                 {body}
                 <ol class="welcome-dots" aria-label="Steps">
-                    {STEPS
-                        .iter()
-                        .enumerate()
+                    {move || dots(connecting.get())
+                        .into_iter()
                         .map(|(i, name)| view! {
                             <li
                                 class:here=move || step.get() == i
-                                class:past={move || step.get() > i}
+                                class:past=move || {
+                                    let connecting = connecting.get();
+                                    place_of(step.get(), connecting) > place_of(i, connecting)
+                                }
                                 aria-current=move || (step.get() == i).then_some("step")
                             >
-                                <span class="visually-hidden">{*name}</span>
+                                <span class="visually-hidden">{name}</span>
                             </li>
                         })
                         .collect_view()}
@@ -499,5 +560,32 @@ fn RestoreFirst(back: Callback<()>) -> impl IntoView {
                 </button>
             </div>
         </div>
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A home that doesn't choose Home Assistant has the four steps it always had.
+    #[test]
+    fn the_plain_welcome_keeps_its_four_steps() {
+        assert_eq!(
+            dots(false),
+            vec![(0, "Welcome"), (1, "You"), (2, "Time zone"), (3, "Done")]
+        );
+        for step in 0..=4 {
+            assert_eq!(place_of(step, false), step);
+        }
+    }
+
+    #[test]
+    fn home_assistant_comes_before_the_last_step() {
+        let named = dots(true);
+        assert_eq!(named.len(), 5);
+        assert_eq!(named[3], (HOME_ASSISTANT, "Home Assistant"));
+        assert_eq!(named[4], (3, "Done"));
+        assert!(place_of(HOME_ASSISTANT, true) < place_of(3, true));
+        assert!(place_of(2, true) < place_of(HOME_ASSISTANT, true));
     }
 }

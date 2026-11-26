@@ -6,6 +6,8 @@
 //!     --port 18123 --devices 200 --per-device 10 --rate 300 --token load-token
 //! ```
 //!
+//! `--not-admin` makes the token a non-administrator's, to see what an Irori says about it.
+//!
 //! Prints `listening <url>` once it serves, then once a second how many changes it has sent.
 
 use std::time::Duration;
@@ -38,7 +40,9 @@ async fn main() -> std::io::Result<()> {
     let per_device = usize::try_from(arg("--per-device", 10)).unwrap_or(10);
     let rate = arg("--rate", 300);
     let token = text_arg("--token", "load-token");
-    let world = World::home(&token, devices, per_device);
+    let mut world = World::home(&token, devices, per_device);
+    // `--not-admin`: the token's user can sign in but not read the registries.
+    world.admin = !std::env::args().any(|a| a == "--not-admin");
     let sensors: Vec<String> = world
         .states
         .keys()
