@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    Area, AreaId, Description, DeviceId, ExtensionId, Floor, FloorId, Floorplan, IdError, Name,
-    ProtocolId, UniqueId,
+    Area, AreaId, Description, DeviceId, EntityId, ExtensionId, Floor, FloorId, Floorplan, IdError,
+    Name, ProtocolId, UniqueId,
 };
 
 /// Everything the config directory says.
@@ -28,6 +28,9 @@ pub struct Settings {
     /// Whether a device Irori hasn't been told to add waits to be added, rather than joining the
     /// home as soon as it's found (`irori.toml`, `[devices] new = "ask"`).
     pub ask_before_adding: bool,
+    /// Devices handed over to another way of reaching the same hardware (`handovers.toml`), by
+    /// the id of the one that stepped aside. Empty in a home that never handed one over.
+    pub handovers: BTreeMap<DeviceId, Handover>,
 }
 
 impl Settings {
@@ -85,6 +88,21 @@ impl Placement {
     pub fn is_unsaid(&self) -> bool {
         matches!(self, Placement::Unsaid)
     }
+}
+
+/// A device that stepped aside for another way of reaching the same hardware: a bridged
+/// device whose own extension now reaches it (`docs/specs/config.md` §3.11).
+///
+/// While it's written down, the device that stepped aside stays out of the home and out of
+/// "+ Add device", and its history is kept rather than deleted, so handing it back finds
+/// everything where it was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Handover {
+    /// The device that took over.
+    pub to: DeviceId,
+    /// Each of its entities that has one there, and which entity of `to` that is. What
+    /// references to the first were rewritten to; handing back rewrites them the other way.
+    pub entities: BTreeMap<EntityId, EntityId>,
 }
 
 /// What a person has said about one device.

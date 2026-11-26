@@ -260,7 +260,10 @@ pub async fn record(core: Core, history: History, mut events: broadcast::Receive
                     history.notice(&entity.id, class);
                 }
             }
-            Ok(Event::EntityRemoved { entity_id }) => history.forget(&entity_id),
+            // A handed-over device's entities step aside with their history.
+            Ok(Event::EntityRemoved { entity_id }) if !core.keeps_history(&entity_id) => {
+                history.forget(&entity_id);
+            }
             // A button has no state to keep, so each press is kept as a row of its own: when,
             // and who asked (its context). Pages draw its day from these.
             Ok(Event::ServiceCalled {

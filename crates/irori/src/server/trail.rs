@@ -115,6 +115,7 @@ pub const ACTIONS: &[(&str, &str, Log)] = &[
     ("POST", "/api/devices/add", Later("devices_added")),
     ("PATCH", "/api/devices/{id}", Later("device_changed")),
     ("DELETE", "/api/devices/{id}", Later("device_removed")),
+    ("POST", "/api/devices/{id}/handover", Later("device_handed_over")),
     ("PATCH", "/api/entities/{id}", Later("entity_changed")),
     ("PUT", "/api/extensions/{id}/secrets", Later("extension_secret_given")),
     ("POST", "/api/extensions/{id}/layout", Later("layout_brought_over")),

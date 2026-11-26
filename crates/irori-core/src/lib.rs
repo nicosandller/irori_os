@@ -710,6 +710,37 @@ impl Core {
         read(&self.0.home).entity_key(id)
     }
 
+    /// The devices handed over to another way of reaching them (`handovers.toml`), by the id
+    /// of the one that stepped aside.
+    pub fn handovers(&self) -> BTreeMap<DeviceId, irori_types::Handover> {
+        read(&self.0.home).settings().handovers.clone()
+    }
+
+    /// The entities this one took over from, newest handover first: whose history comes before
+    /// its own. Empty in a home that never handed a device over.
+    pub fn took_over_from(&self, entity: &EntityId) -> Vec<EntityId> {
+        let home = read(&self.0.home);
+        home.settings()
+            .handovers
+            .values()
+            .flat_map(|handover| handover.entities.iter())
+            .filter(|(_, now)| *now == entity)
+            .map(|(before, _)| before.clone())
+            .collect()
+    }
+
+    /// Whether this entity's history stays although it left the home: its device was handed
+    /// over to another way of reaching it.
+    pub fn keeps_history(&self, entity: &EntityId) -> bool {
+        read(&self.0.home).keeps_history(entity)
+    }
+
+    /// Whether two devices are one piece of hardware that two extensions reach
+    /// (`docs/specs/protocols.md` §6.1).
+    pub fn same_hardware(&self, one: &DeviceId, other: &DeviceId) -> bool {
+        read(&self.0.home).same_hardware(one, other)
+    }
+
     /// Brings the registry in line with what a person has said, publishing what changed.
     ///
     /// This is the only way settings reach the core, whether they came from a UI edit or from
@@ -1534,7 +1565,10 @@ impl Core {
             }
             // History is told directly: a listener that falls behind the bus would miss the
             // event, and the entity's rows would outlive it.
-            if let Event::EntityRemoved { entity_id } = &event {
+            // A handed-over device's entities step aside with their history.
+            if let Event::EntityRemoved { entity_id } = &event
+                && !self.keeps_history(entity_id)
+            {
                 let history = read(&self.0.history).clone();
                 if let Some(history) = history {
                     history.forget(entity_id);
@@ -1698,6 +1732,11 @@ impl Core {
 
     /// The entities a device keeps — in the home, or remembered for a found one — as protocol
     /// and unique id pairs, the two fields an `entities.toml` key is made of.
+    /// Whose a device is and what that protocol calls it, in the home or only found.
+    pub fn device_key(&self, id: &DeviceId) -> Option<(ProtocolId, UniqueId)> {
+        read(&self.0.home).device_key(id)
+    }
+
     pub fn device_entity_keys(&self, id: &DeviceId) -> Option<Vec<(ProtocolId, UniqueId)>> {
         read(&self.0.home).device_entity_keys(id)
     }

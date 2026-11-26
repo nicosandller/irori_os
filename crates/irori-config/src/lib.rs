@@ -80,6 +80,7 @@ pub struct Store {
     secrets: Part<ExtensionSettings>,
     home: Part<HomeSettings>,
     users: Part<Vec<User>>,
+    handovers: Part<BTreeMap<DeviceId, irori_types::Handover>>,
     /// `extensions/<id>.toml`, one per extension that has one.
     extensions: BTreeMap<ExtensionId, Part<serde_json::Map<String, serde_json::Value>>>,
     /// Keys set in both an extension's file and its secrets, as last reported: said once when
@@ -105,6 +106,7 @@ impl Store {
             secrets: Part::default(),
             home: Part::default(),
             users: Part::default(),
+            handovers: Part::default(),
             extensions: BTreeMap::new(),
             clashes: std::collections::BTreeSet::new(),
             missing_floors: std::collections::BTreeSet::new(),
@@ -131,6 +133,7 @@ impl Store {
             // Always: what an extension finds is a proposal, and only a person adds it to the
             // home (`docs/specs/config.md` §3.2).
             ask_before_adding: true,
+            handovers: self.handovers.value.clone(),
         }
     }
 
@@ -499,6 +502,7 @@ impl Store {
             File::Secrets => self.secrets.value = files::read_secrets(&text)?,
             File::Home => self.home.value = files::read_home(&text)?,
             File::Users => self.users.value = files::read_users(&text)?,
+            File::Handovers => self.handovers.value = files::read_handovers(&text)?,
         }
         // Only once it parsed: a file that is being edited and saved half-written should be
         // re-read on the next tick, not remembered as good.
@@ -516,6 +520,7 @@ impl Store {
             File::Secrets => self.secrets.seen.as_ref(),
             File::Home => self.home.seen.as_ref(),
             File::Users => self.users.seen.as_ref(),
+            File::Handovers => self.handovers.seen.as_ref(),
         }
     }
 
@@ -529,6 +534,7 @@ impl Store {
             File::Secrets => &mut self.secrets.seen,
             File::Home => &mut self.home.seen,
             File::Users => &mut self.users.seen,
+            File::Handovers => &mut self.handovers.seen,
         }
     }
 
@@ -545,8 +551,11 @@ impl Store {
     pub fn save(&mut self, settings: &Settings) -> std::io::Result<Vec<File>> {
         let mut prepared = Vec::new();
         for file in File::SETTINGS {
-            let text = files::write(file, settings);
             let path = self.path(file);
+            if file.only_when_needed() && settings.handovers.is_empty() && !path.exists() {
+                continue;
+            }
+            let text = files::write(file, settings);
             if std::fs::read_to_string(&path).is_ok_and(|current| current == text) {
                 continue;
             }
@@ -590,6 +599,7 @@ impl Store {
         self.floorplan.value = settings.floorplan.clone();
         self.devices.value = settings.devices.clone();
         self.entities.value = settings.entities.clone();
+        self.handovers.value = settings.handovers.clone();
         // The files on disk are now these settings, so the next reload must not treat Irori's
         // own write as an outside edit and parse them again.
         for file in File::SETTINGS {
@@ -764,6 +774,14 @@ mod tests {
             floorplan: irori_types::Floorplan::default(),
             devices: [(device("demo_lamp"), named("Reading lamp"))].into(),
             entities: BTreeMap::new(),
+            handovers: [(
+                device("homeassistant_lamp"),
+                irori_types::Handover {
+                    to: device("demo_lamp"),
+                    entities: BTreeMap::new(),
+                },
+            )]
+            .into(),
         };
 
         let mut store = Store::new(home.path());
@@ -791,6 +809,34 @@ mod tests {
             [File::Areas, File::Floorplan, File::Devices, File::Entities]
         );
         assert_eq!(store.save(&settings).expect("saved"), Vec::<File>::new());
+        assert!(!home.path().join("handovers.toml").exists());
+    }
+
+    /// Once a device has been handed over, the file stays, even when the last handover goes:
+    /// emptied rather than deleted, like every other file Irori writes.
+    #[test]
+    fn handovers_are_written_once_there_is_one() {
+        let home = dir();
+        let mut store = Store::new(home.path());
+        let mut settings = Settings::default();
+        settings.handovers.insert(
+            device("homeassistant_lamp"),
+            irori_types::Handover {
+                to: device("demo_lamp"),
+                entities: BTreeMap::new(),
+            },
+        );
+        assert!(
+            store
+                .save(&settings)
+                .expect("saved")
+                .contains(&File::Handovers)
+        );
+        settings.handovers.clear();
+        assert_eq!(store.save(&settings).expect("saved"), [File::Handovers]);
+        let mut fresh = Store::new(home.path());
+        assert!(fresh.reload().is_empty());
+        assert!(fresh.settings().handovers.is_empty());
     }
 
     /// The point of the whole crate: an edit made in a text editor reaches the running server.
@@ -894,6 +940,7 @@ mod tests {
         std::fs::create_dir(home.path().join("entities.toml.writing")).expect("in the way");
         let before: Vec<String> = File::SETTINGS
             .iter()
+            .filter(|file| !file.only_when_needed())
             .map(|file| std::fs::read_to_string(home.path().join(file.name())).expect("readable"))
             .collect();
 
@@ -910,10 +957,15 @@ mod tests {
                 },
             )]
             .into(),
+            handovers: BTreeMap::new(),
         });
 
         assert!(refused.is_err(), "the save should have failed");
-        for (file, was) in File::SETTINGS.iter().zip(before) {
+        for (file, was) in File::SETTINGS
+            .iter()
+            .filter(|file| !file.only_when_needed())
+            .zip(before)
+        {
             assert_eq!(
                 std::fs::read_to_string(home.path().join(file.name())).expect("readable"),
                 was,
