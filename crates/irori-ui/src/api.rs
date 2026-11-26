@@ -712,6 +712,83 @@ pub async fn remove_device(device_id: &DeviceId, force: bool) -> Result<(), Remo
     })
 }
 
+/// One of the two devices in a handover, as Irori names it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HandoverSide {
+    pub id: DeviceId,
+    pub name: Name,
+    /// The extension that reaches it.
+    pub through: String,
+}
+
+/// An entity and the one that stands for it once the device is handed over.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HandoverPair {
+    pub from: EntityId,
+    pub to: EntityId,
+    pub name: Name,
+}
+
+/// An entity with nothing to stand for it.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HandoverLeft {
+    pub id: EntityId,
+    pub name: Name,
+}
+
+/// An automation or helper that names the device's entities.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HandoverUses {
+    pub id: String,
+    pub name: String,
+    pub entities: Vec<EntityId>,
+}
+
+/// What handing a device over would do (`GET /api/devices/{id}/handover`).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HandoverPlan {
+    pub from: HandoverSide,
+    pub to: HandoverSide,
+    pub back: bool,
+    pub name: Name,
+    #[serde(default)]
+    pub area: Option<AreaId>,
+    pub entities: Vec<HandoverPair>,
+    pub left_behind: Vec<HandoverLeft>,
+    pub automations: Vec<HandoverUses>,
+    pub helpers: Vec<HandoverUses>,
+    /// Why it can't be done now.
+    #[serde(default)]
+    pub blocked: Option<String>,
+}
+
+/// What handing `device_id` over would do. `None` when there's nothing to hand it over to.
+pub async fn fetch_handover(device_id: &DeviceId) -> Result<Option<HandoverPlan>, String> {
+    let response = Request::get(&format!("/api/devices/{device_id}/handover"))
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if response.status() == 404 {
+        return Ok(None);
+    }
+    read(response).await.map(Some)
+}
+
+/// Hands `device_id` over to `to`, as the plan the person saw said.
+pub async fn hand_over(device_id: &DeviceId, to: &DeviceId) -> Result<(), String> {
+    #[derive(Serialize)]
+    struct HandOver<'a> {
+        to: &'a DeviceId,
+    }
+    let response = post(&format!("/api/devices/{device_id}/handover"))
+        .json(&HandOver { to })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
 #[derive(Debug, Serialize)]
 struct EntityEdit {
     name: Option<Name>,

@@ -133,7 +133,7 @@ pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};
 pub use service_fields::{FieldShape, ServiceField};
 pub use settings::{
-    DeviceSettings, EntitySettings, ExtensionSettings, Placement, SecretError, Settings,
+    DeviceSettings, EntitySettings, ExtensionSettings, Handover, Placement, SecretError, Settings,
     SettingsKey,
 };
 pub use state::{Attributes, Availability, EntityState, State};

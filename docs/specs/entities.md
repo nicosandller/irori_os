@@ -569,7 +569,10 @@ Recorded as D20 in the ROADMAP decision log.
 
 1. **Entity renames.** When a user renames `light.hallway` to `light.hall_ceiling`, should the
    core rewrite rule files (they're the user's plain-text source of truth, D18), keep an alias,
-   or refuse while rules reference it? Decide in M0.7 (config) with M0.3 (rules).
+   or refuse while rules reference it? Decide in M0.7 (config) with M0.3 (rules). Handing a
+   device over ([config.md](config.md) §3.11) chose rewriting: the automations are rewritten
+   through the extension that owns them, and anything naming an entity with nothing to stand
+   for it refuses the handover.
 2. ~~**Text sensor values.**~~ Decided: a text sensor may list its `options` (§4.4), and rules are
    checked against them.
 3. **Units.** Temperatures are decided: °C in the model, converted by protocols (§4.4). Other

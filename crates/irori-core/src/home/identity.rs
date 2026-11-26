@@ -225,7 +225,7 @@ impl Identities {
     }
 
     /// The devices of other extensions that share an identifier with this one, in id order.
-    fn matches(&self, id: &DeviceId) -> BTreeSet<DeviceId> {
+    pub fn matches(&self, id: &DeviceId) -> BTreeSet<DeviceId> {
         let Some(entry) = self.entries.get(id) else {
             return BTreeSet::new();
         };

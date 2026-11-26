@@ -34,6 +34,7 @@ mod apps;
 mod assistant;
 mod auth;
 mod backups;
+mod handover;
 mod live;
 mod people;
 mod tokens;
@@ -230,6 +231,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/api/devices/{id}",
             patch(edit_device).delete(remove_device),
+        )
+        .route(
+            "/api/devices/{id}/handover",
+            get(handover::plan).post(handover::hand_over),
         )
         .route("/api/entities/{id}", patch(edit_entity))
         .route("/api/entities/{id}/picture", get(camera_picture))
@@ -500,7 +505,28 @@ async fn entity_history(
             format!("there's no entity `{entity_id}`"),
         );
     }
-    let irori_recorder::Changes { states, truncated } = state.0.history.last_day(&entity_id);
+    let irori_recorder::Changes {
+        mut states,
+        truncated,
+    } = state.0.history.last_day(&entity_id);
+    // What a device handed over to this one recorded first, until this one's own begin.
+    for earlier in state.0.core.took_over_from(&entity_id) {
+        let first = states.first().map(|change| change.last_updated);
+        let mut before: Vec<_> = state
+            .0
+            .history
+            .last_day(&earlier)
+            .states
+            .into_iter()
+            .filter(|change| first.is_none_or(|first| change.last_updated < first))
+            .map(|mut change| {
+                change.entity_id = entity_id.clone();
+                change
+            })
+            .collect();
+        before.append(&mut states);
+        states = before;
+    }
     // The calls the changes answered, found in the activity log. At most as many as there are
     // changes in a day worth drawing.
     let calls: Vec<ContextId> = states
@@ -618,10 +644,21 @@ async fn entity_summary(
         Ok(since) => since,
         Err(error) => return refused(StatusCode::UNPROCESSABLE_ENTITY, error.to_string()),
     };
-    let points = state
-        .0
-        .history
-        .summaries(&entity_id, since)
+    let mut points = state.0.history.summaries(&entity_id, since);
+    // What a device handed over to this one recorded first, until this one's own begin.
+    for earlier in state.0.core.took_over_from(&entity_id) {
+        let first = points.first().map(|point| point.start);
+        let mut before: Vec<_> = state
+            .0
+            .history
+            .summaries(&earlier, since)
+            .into_iter()
+            .filter(|point| first.is_none_or(|first| point.start < first))
+            .collect();
+        before.append(&mut points);
+        points = before;
+    }
+    let points = points
         .into_iter()
         .map(|point| SummaryPointView {
             start: point.start,
@@ -7041,6 +7078,341 @@ mod tests {
         Ok(())
     }
 
+    /// One plug, reached directly by `Here` (by its MAC) and through `Hub`, a bridge to another
+    /// system that names the plug's MAC. Each has the plug's relay and motion sensor; the bridge
+    /// also has a "connected" sensor the plug's own extension doesn't.
+    struct Here;
+    struct Hub;
+
+    fn plug_entity(
+        unique_id: &str,
+        device: &str,
+        motion: Option<bool>,
+    ) -> anyhow::Result<irori_types::EntityDescription> {
+        Ok(irori_types::EntityDescription {
+            unique_id: unique_id.parse()?,
+            name: Some(unique_id.rsplit('-').next().unwrap_or(unique_id).parse()?),
+            device_unique_id: Some(device.parse()?),
+            suggested_object_id: None,
+            capabilities: match motion {
+                None => irori_types::Capabilities::Switch(irori_types::SwitchCapabilities {
+                    device_class: None,
+                }),
+                Some(motion) => {
+                    irori_types::Capabilities::BinarySensor(irori_types::BinarySensorCapabilities {
+                        device_class: motion.then_some(irori_types::BinarySensorClass::Motion),
+                    })
+                }
+            },
+            entity_category: None,
+        })
+    }
+
+    impl irori_protocol::Protocol for Here {
+        type Config = NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "here"
+            name = "Here"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch", "binary_sensor"]
+        "#;
+        async fn run(
+            _: NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let failed = |e: anyhow::Error| irori_protocol::ProtocolError::new(e.to_string());
+            ctx.describe_device(plain("AA:BB:CC:DD:EE:01", "TS011F").map_err(failed)?)
+                .await?;
+            for (unique_id, motion) in [("plug-relay", None), ("plug-occupancy", Some(true))] {
+                ctx.describe_entity(
+                    plug_entity(unique_id, "AA:BB:CC:DD:EE:01", motion).map_err(failed)?,
+                )
+                .await?;
+            }
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    impl irori_protocol::Protocol for Hub {
+        type Config = NoSettings;
+        const MANIFEST: &'static str = r#"
+            [extension]
+            id = "hub"
+            name = "Hub"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["switch", "binary_sensor"]
+        "#;
+        async fn run(
+            _: NoSettings,
+            mut ctx: irori_protocol::ProtocolContext,
+        ) -> Result<(), irori_protocol::ProtocolError> {
+            let failed = |e: anyhow::Error| irori_protocol::ProtocolError::new(e.to_string());
+            let mut plug = plain("plug", "Kitchen plug").map_err(failed)?;
+            plug.connections = vec![
+                irori_types::Connection::new(irori_types::ConnectionKind::Mac, "aa:bb:cc:dd:ee:01")
+                    .map_err(|e| irori_protocol::ProtocolError::new(e.to_string()))?,
+            ];
+            ctx.describe_device(plug).await?;
+            for (unique_id, motion) in [
+                ("plug-switch", None),
+                ("plug-motion", Some(true)),
+                ("plug-connected", Some(false)),
+            ] {
+                ctx.describe_entity(plug_entity(unique_id, "plug", motion).map_err(failed)?)
+                    .await?;
+            }
+            while ctx.next().await.is_some() {}
+            Ok(())
+        }
+    }
+
+    /// A plug tried through a bridge moves to its own extension and back: it keeps its name and
+    /// room, what names its entities follows it, the bridged one is neither listed nor offered,
+    /// and nothing that names an entity with no counterpart is ever left pointing at nothing.
+    #[tokio::test]
+    async fn a_bridged_device_is_handed_over_to_its_own_extension_and_back() -> anyhow::Result<()> {
+        let core = core();
+        let host = irori_core::ExtensionHost::start(
+            &core,
+            vec![
+                irori_protocol::builtin::<Here>().map_err(anyhow::Error::msg)?,
+                irori_protocol::builtin::<Hub>().map_err(anyhow::Error::msg)?,
+            ],
+            irori_core::Timing::default(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        let server = Server::new(core.clone())?;
+        let (bridged, native) = ("hub_plug", "here_aa_bb_cc_dd_ee_01");
+        std::fs::write(
+            server.config_dir().join("areas.toml"),
+            "[areas.kitchen]\nname = \"Kitchen\"\n",
+        )?;
+        std::fs::write(
+            server.config_dir().join("devices.toml"),
+            format!(
+                "[devices.{bridged}]\nadded = true\narea = \"kitchen\"\n\n\
+                 [devices.{native}]\nadded = true\n"
+            ),
+        )?;
+        server
+            .config
+            .edit(&core, |_| Ok(()))
+            .await
+            .map_err(|e| anyhow::anyhow!("{e:?}"))?;
+        let entity = |device: &str, name: &str| {
+            core.entities()
+                .into_iter()
+                .find(|entity| {
+                    entity
+                        .device_id
+                        .as_ref()
+                        .is_some_and(|id| id.as_str() == device)
+                        && entity.name.as_str() == name
+                })
+                .map(|entity| entity.id.to_string())
+        };
+        for _ in 0..500 {
+            if entity(bridged, "connected").is_some() && entity(native, "occupancy").is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let switch = entity(bridged, "switch").expect("the bridged switch");
+        let connected = entity(bridged, "connected").expect("the bridged connected sensor");
+        let relay = entity(native, "relay").expect("the plug's own relay");
+        assert_eq!(
+            server.read("/api/devices").await?.as_array().map(|all| all
+                .iter()
+                .find(|d| d["id"] == bridged)
+                .map(|d| d["duplicate_of"].clone())),
+            Some(Some(serde_json::json!(native)))
+        );
+
+        // A helper that names the sensor nothing stands for: refused, with nothing changed.
+        let helpers = server.config_dir().join("extensions/helpers.toml");
+        std::fs::create_dir_all(server.config_dir().join("extensions"))?;
+        std::fs::write(
+            &helpers,
+            format!(
+                "[groups.kitchen]\nname = \"Kitchen\"\nmembers = [\"{switch}\", \"{connected}\"]\n"
+            ),
+        )?;
+        let path = format!("/api/devices/{bridged}/handover");
+        let plan = server.read(&path).await?;
+        assert!(
+            plan["blocked"]
+                .as_str()
+                .is_some_and(|why| why.contains("Kitchen")),
+            "{plan}"
+        );
+        let (status, body) = server
+            .json("POST", &path, serde_json::json!({"to": native}))
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(!server.config_dir().join("handovers.toml").exists());
+
+        std::fs::write(
+            &helpers,
+            format!("[groups.kitchen]\nname = \"Kitchen\"\nmembers = [\"{switch}\"]\n"),
+        )?;
+        let plan = server.read(&path).await?;
+        assert!(plan.get("blocked").is_none(), "{plan}");
+        assert_eq!(plan["to"]["id"], native, "{plan}");
+        assert_eq!(plan["back"], false, "{plan}");
+        assert_eq!(plan["name"], "Kitchen plug", "{plan}");
+        assert_eq!(plan["area"], "kitchen", "{plan}");
+        assert_eq!(plan["entities"].as_array().map(Vec::len), Some(2), "{plan}");
+        assert_eq!(plan["left_behind"][0]["id"], connected.as_str(), "{plan}");
+        assert_eq!(plan["helpers"][0]["id"], "groups.kitchen", "{plan}");
+
+        // Shown one device, asked about another: nothing is done.
+        let (status, _) = server
+            .json("POST", &path, serde_json::json!({"to": bridged}))
+            .await?;
+        assert_eq!(status, StatusCode::CONFLICT);
+
+        // What the bridged switch recorded an hour ago, and the relay's own since. The server
+        // under test isn't subscribed to the core, so both are handed to the diary.
+        let earlier = |entity: &str| -> anyhow::Result<irori_types::EntityState> {
+            let mut state = core
+                .state(&entity.parse()?)
+                .ok_or_else(|| anyhow::anyhow!("no state for {entity}"))?;
+            let hour_ago = irori_types::Timestamp::from_jiff(
+                state.last_updated.as_jiff() - jiff::SignedDuration::from_hours(1),
+            );
+            (state.last_changed, state.last_updated, state.last_reported) =
+                (hour_ago, hour_ago, hour_ago);
+            Ok(state)
+        };
+        server.history.record(switch.parse()?, earlier(&switch)?);
+        let now = core
+            .state(&relay.parse()?)
+            .ok_or_else(|| anyhow::anyhow!("no state for the relay"))?;
+        server.history.record(relay.parse()?, now);
+
+        let (status, body) = server
+            .json("POST", &path, serde_json::json!({"to": native}))
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let devices = server.read("/api/devices").await?;
+        let listed = |id: &str| {
+            devices
+                .as_array()
+                .and_then(|all| all.iter().find(|d| d["id"] == id))
+                .cloned()
+        };
+        assert!(listed(bridged).is_none(), "the bridged one stepped aside");
+        let own = listed(native).expect("the plug's own is in the home");
+        assert_eq!(own["name"], "Kitchen plug", "{own}");
+        assert_eq!(own["area_id"], "kitchen", "{own}");
+        assert!(
+            core.held_devices()
+                .iter()
+                .all(|held| held.id.as_str() != bridged),
+            "the bridged one isn't offered"
+        );
+        assert!(core.keeps_history(&switch.parse()?), "its history is kept");
+        let history = server.read(&format!("/api/history/{relay}")).await?;
+        let states = history["states"].as_array().expect("a list of states");
+        assert_eq!(
+            states.len(),
+            2,
+            "the switch's change, then the relay's: {history}"
+        );
+        assert!(
+            states
+                .iter()
+                .all(|change| change["entity_id"] == relay.as_str()),
+            "told as the relay's: {history}"
+        );
+        let group = std::fs::read_to_string(&helpers)?;
+        assert!(
+            group.contains(&relay) && !group.contains(&switch),
+            "{group}"
+        );
+        let written = std::fs::read_to_string(server.config_dir().join("handovers.toml"))?;
+        assert!(
+            written.contains(&format!("[handovers.{bridged}]")),
+            "{written}"
+        );
+        assert!(written.contains(&format!("to = \"{native}\"")), "{written}");
+
+        // And back.
+        let path = format!("/api/devices/{native}/handover");
+        let plan = server.read(&path).await?;
+        assert_eq!(plan["back"], true, "{plan}");
+        assert_eq!(plan["to"]["id"], bridged, "{plan}");
+        let (status, body) = server
+            .json("POST", &path, serde_json::json!({"to": bridged}))
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let devices = server.read("/api/devices").await?;
+        let back = devices
+            .as_array()
+            .and_then(|all| all.iter().find(|d| d["id"] == bridged))
+            .cloned()
+            .expect("the bridged one is back");
+        assert_eq!(back["name"], "Kitchen plug", "{back}");
+        assert_eq!(back["area_id"], "kitchen", "{back}");
+        assert!(
+            !devices
+                .as_array()
+                .is_some_and(|all| all.iter().any(|d| d["id"] == native))
+        );
+        assert!(
+            core.held_devices()
+                .iter()
+                .all(|held| held.id.as_str() != native),
+            "the plug's own isn't offered either while it's handed back"
+        );
+        let group = std::fs::read_to_string(&helpers)?;
+        assert!(
+            group.contains(&switch) && !group.contains(&relay),
+            "{group}"
+        );
+        let written = std::fs::read_to_string(server.config_dir().join("handovers.toml"))?;
+        assert!(
+            written.contains(&format!("[handovers.{native}]")),
+            "{written}"
+        );
+        assert!(
+            !written.contains(&format!("[handovers.{bridged}]")),
+            "{written}"
+        );
+
+        // Removing the device it was handed back to drops the handover: the plug's own is then
+        // offered like any found device.
+        let (status, body) = server
+            .json(
+                "DELETE",
+                &format!("/api/devices/{bridged}"),
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let written = std::fs::read_to_string(server.config_dir().join("handovers.toml"))?;
+        assert!(!written.contains("[handovers."), "{written}");
+        assert!(
+            core.held_devices()
+                .iter()
+                .any(|held| held.id.as_str() == native),
+            "the plug's own is offered again"
+        );
+
+        host.shutdown().await;
+        Ok(())
+    }
+
     /// A bridge that knows how its home is divided: two floors, three rooms (one said twice,
     /// one Irori has already), and devices that say which room they're in.
     struct Rooms;
@@ -7573,6 +7945,7 @@ mod tests {
                     serial_number: None,
                     suggested_area: None,
                     via_device_unique_id: None,
+                    connections: Vec::new(),
                 })
                 .await?;
                 for entity in 0..entities {
@@ -12781,6 +13154,8 @@ mod tests {
         ("POST", "/api/extensions/{id}/layout", Run),
         ("PATCH", "/api/devices/{id}", Run),
         ("DELETE", "/api/devices/{id}", Run),
+        ("GET", "/api/devices/{id}/handover", Run),
+        ("POST", "/api/devices/{id}/handover", Run),
         ("PATCH", "/api/entities/{id}", Run),
         ("GET", "/api/entities/{id}/picture", Hidden),
         ("GET", "/api/entities/{id}/live", Hidden),

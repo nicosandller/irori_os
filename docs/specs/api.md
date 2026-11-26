@@ -122,6 +122,32 @@ the extensions that reach it too, and a copy that was added before its twin was 
 `duplicate_of`. Both are left out when they don't apply, so a home where no extension names
 connections is served exactly as before.
 
+`GET /api/devices/<id>/handover`, for an owner, says what handing that device over to the other
+way of reaching it would do ([config.md](config.md) §3.11). It changes nothing: cancelling is not
+sending. It answers for a copy that is in the home with its twin (`duplicate_of`), handing over to
+the twin, and for a device another one was handed over to, handing back; otherwise `404`. The
+answer is `{ "from": side, "to": side, "back", "name", "area"?, "entities": [{ "from", "to",
+"name" }], "left_behind": [{ "id", "name" }], "automations": [uses], "helpers": [uses],
+"blocked"? }`, where a side is `{ "id", "name", "through" }` (`through`: the extension's name) and
+`uses` is `{ "id", "name", "entities" }`. Entities are paired one to one, never by guessing: the same kind and the same class (a
+temperature with a temperature), the same standing (a diagnostic with a diagnostic) where that
+settles it, and the same name where several are still alike. Any left unpaired are in
+`left_behind`. `blocked` says why it can't be done now, in words for the page: an automation or
+helper names an entity in `left_behind`, or the Automations extension is installed but can't be
+asked which automations name the device.
+
+`POST /api/devices/<id>/handover` with `{ "to": "<device id>" }` does it, answering with the plan
+it carried out. `to` must be the device the plan names, or nothing is done (`409`); a blocked
+plan is `409` with the reason. The automations are rewritten first, through the Automations
+extension (`flows.get` and `flows.save`, so each is a new version of the flow that can be
+restored), then the helpers in `extensions/helpers.toml`, then the home in one edit of the config
+files. An automation the extension refuses stops it there with `502`, the rest unchanged; trying
+again picks up where it stopped. Every whole mention of an entity is rewritten, in fields and in
+expressions (`num('sensor.x')`), never part of a longer id. Nothing is sent to either extension's
+devices or to what is behind a bridge: Home Assistant is never written to. It is written in the
+activity log as `device_handed_over`, with the device as its target and the one it went to as its
+detail.
+
 An extension that proposes floors and rooms ([protocols.md](protocols.md) §6.9) carries them in
 `GET /api/home` as `suggested_layout`: `{ "floors"?: [{ "name", "level"? }], "areas"?: [{ "name",
 "floor"? }] }`, holding only the ones the home doesn't have by those names (trimmed, ignoring

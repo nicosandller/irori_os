@@ -8,9 +8,9 @@
 use std::collections::BTreeMap;
 
 use irori_types::{
-    Area, AreaId, Description, DeviceId, DeviceSettings, EntitySettings, ExtensionId,
-    ExtensionSettings, Floor, FloorId, Floorplan, HomeSettings, Name, Placement, Role, Settings,
-    SettingsKey, User, UserId,
+    Area, AreaId, Description, DeviceId, DeviceSettings, EntityId, EntitySettings, ExtensionId,
+    ExtensionSettings, Floor, FloorId, Floorplan, Handover, HomeSettings, Name, Placement, Role,
+    Settings, SettingsKey, User, UserId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -25,11 +25,12 @@ pub enum File {
     Secrets,
     Home,
     Users,
+    Handovers,
 }
 
 impl File {
     /// Every file, in the order they're read.
-    pub const ALL: [File; 8] = [
+    pub const ALL: [File; 9] = [
         File::Irori,
         File::Areas,
         File::Floorplan,
@@ -38,10 +39,24 @@ impl File {
         File::Secrets,
         File::Home,
         File::Users,
+        File::Handovers,
     ];
 
-    /// The files that make up [`Settings`], which are saved together.
-    pub const SETTINGS: [File; 4] = [File::Areas, File::Floorplan, File::Devices, File::Entities];
+    /// The files that make up [`Settings`], which are saved together. `handovers.toml` is one of
+    /// them, but only written once there is something to say in it ([`File::only_when_needed`]).
+    pub const SETTINGS: [File; 5] = [
+        File::Areas,
+        File::Floorplan,
+        File::Devices,
+        File::Entities,
+        File::Handovers,
+    ];
+
+    /// Whether this file is left uncreated while it would say nothing: a home that never handed
+    /// a device over has no `handovers.toml`, as it had before there was one.
+    pub fn only_when_needed(self) -> bool {
+        matches!(self, File::Handovers)
+    }
 
     pub fn name(self) -> &'static str {
         match self {
@@ -53,6 +68,7 @@ impl File {
             File::Secrets => "secrets.toml",
             File::Home => "home.toml",
             File::Users => "users.toml",
+            File::Handovers => "handovers.toml",
         }
     }
 }
@@ -147,6 +163,43 @@ impl RawPlacement {
             ),
         }
     }
+}
+
+/// `handovers.toml`: which devices stepped aside for another way of reaching the same hardware
+/// (`docs/specs/config.md` §3.11). Its own file, so an Irori from before handovers, reading this
+/// directory after a rollback, finds `devices.toml` as it understands it.
+#[derive(Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HandoversFile {
+    #[serde(default)]
+    handovers: BTreeMap<DeviceId, RawHandover>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawHandover {
+    to: DeviceId,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    entities: BTreeMap<EntityId, EntityId>,
+}
+
+pub fn read_handovers(text: &str) -> Result<BTreeMap<DeviceId, Handover>, String> {
+    let file: HandoversFile = toml::from_str(text).map_err(|e| e.to_string())?;
+    file.handovers
+        .into_iter()
+        .map(|(id, raw)| {
+            if raw.to == id {
+                return Err(format!("`{id}` is handed over to itself"));
+            }
+            Ok((
+                id,
+                Handover {
+                    to: raw.to,
+                    entities: raw.entities,
+                },
+            ))
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -713,6 +766,21 @@ pub fn write(file: File, settings: &Settings) -> String {
         // plan is nothing but coordinates, and `from = [0, 0]` is the point of writing it in
         // whole centimetres in the first place.
         File::Floorplan => toml::to_string(&settings.floorplan),
+        File::Handovers => toml::to_string_pretty(&HandoversFile {
+            handovers: settings
+                .handovers
+                .iter()
+                .map(|(id, handover)| {
+                    (
+                        id.clone(),
+                        RawHandover {
+                            to: handover.to.clone(),
+                            entities: handover.entities.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        }),
         File::Secrets => unreachable!("secrets are written by `write_secrets`"),
         File::Irori => unreachable!("irori.toml is only ever read"),
         File::Home => unreachable!("home.toml is written by `write_home`"),
@@ -758,6 +826,13 @@ fn preamble(file: File) -> String {
         File::Entities => {
             "What you've said about individual entities.\n\
              # Each key is `<protocol>/<the protocol's own id for the entity>`."
+        }
+        File::Handovers => {
+            "Devices handed over to another way of reaching the same hardware, usually from a\n\
+             # bridge to Irori's own extension. Each key is the device that stepped aside, `to` the\n\
+             # one that took over, and `entities` which entity stands for which. Hand a device\n\
+             # back from its page rather than by editing this: the page rewrites the automations\n\
+             # that use it too."
         }
         File::Secrets | File::Home | File::Users => {
             unreachable!("this file has its own preamble")
@@ -1107,6 +1182,22 @@ mod tests {
                 },
             )]
             .into(),
+            handovers: [(
+                "homeassistant_0f1e2d3c".parse::<DeviceId>().expect("valid"),
+                Handover {
+                    to: "esphome_34_98_7a_2b_09_00".parse().expect("valid"),
+                    entities: [(
+                        "binary_sensor.homeassistant_0f1e2d3c_occupancy"
+                            .parse()
+                            .expect("valid"),
+                        "binary_sensor.esphome_34_98_7a_2b_09_00_occupancy"
+                            .parse()
+                            .expect("valid"),
+                    )]
+                    .into(),
+                },
+            )]
+            .into(),
         };
 
         assert_eq!(
@@ -1125,6 +1216,16 @@ mod tests {
             read_floorplan(&write(File::Floorplan, &settings)).expect("valid"),
             settings.floorplan
         );
+        assert_eq!(
+            read_handovers(&write(File::Handovers, &settings)).expect("valid"),
+            settings.handovers
+        );
+    }
+
+    #[test]
+    fn a_device_handed_over_to_itself_is_refused() {
+        let refused = read_handovers("[handovers.demo_lamp]\nto = \"demo_lamp\"\n");
+        assert!(refused.is_err(), "{refused:?}");
     }
 
     /// Two floors: a wall with a door in it, a wall without, a room traced out, and a device

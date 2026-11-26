@@ -115,6 +115,15 @@ Irori goes to that entity, with a service of its own kind. So Irori can switch, 
 send commands, and Automations flows can do the same. For a read-only try, turn off "Let Irori
 control devices": every command is then answered "read-only" and no service call is sent.
 
+## Moving a device to Irori's own extension
+
+When one of Irori's own extensions (Zigbee, ESPHome, MQTT…) reaches a device this one brought
+over, both are recognised as one device (the same MAC, IEEE address or serial). The bridged one's
+page then offers to hand it over: it keeps its name, room, spot on the floorplan and history, and
+the automations and helpers that use it are changed to use the native one. Nothing is changed in
+Home Assistant. It can be handed back from the native device's page. See
+`docs/specs/config.md` §3.11.
+
 ## Settings
 
 ```toml
@@ -170,5 +179,4 @@ extension then says so on its page and asks for another token there.
 - A water heater whose modes aren't ones Irori's water heaters have is listed, with its modes.
 - Checking for an update again (`homeassistant.update_entity` isn't the update's own service).
 - History from Home Assistant's recorder (#167), a welcome step for trying Irori this way (#166),
-  showing which side runs what (#169), handing a device over from Home Assistant to a native
-  extension (#168), and packaging for Home Assistant OS (#170, #171).
+  showing which side runs what (#169), and packaging for Home Assistant OS (#170, #171).

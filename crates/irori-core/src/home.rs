@@ -105,6 +105,10 @@ pub(crate) struct Home {
     /// only once a device arrives that names its connections: until then, `None`, and nothing
     /// is compared (`identity`).
     identities: Option<identity::Identities>,
+    /// Entities of a device that was just handed over to another way of reaching it
+    /// (`Settings::handovers`), taken out of the registry without losing their history: kept
+    /// until they're in the registry again. Empty in a home that never handed one over.
+    kept_history: std::collections::HashSet<EntityId>,
 }
 
 /// A device a protocol has found that isn't in the home (`docs/specs/config.md` §3.2): nobody has
@@ -197,6 +201,20 @@ impl Home {
         &self.settings
     }
 
+    /// Whether this entity's history is to be kept although it left the registry: its device
+    /// was handed over (`Settings::handovers`).
+    pub fn keeps_history(&self, entity: &EntityId) -> bool {
+        self.kept_history.contains(entity)
+    }
+
+    /// Whether two devices are one piece of hardware reached by two extensions, as their
+    /// connections, addresses and serial numbers say (`identity`), in the home or not.
+    pub fn same_hardware(&self, one: &DeviceId, other: &DeviceId) -> bool {
+        self.identities
+            .as_ref()
+            .is_some_and(|identities| identities.matches(one).contains(other))
+    }
+
     /// Whether a device is kept out of the home: while Irori asks before adding — always, outside
     /// tests — anything a person hasn't said a word about. Any `devices.toml` entry is a word
     /// about it: a name or a room is as much a decision as `added = true`, and removing a device
@@ -210,7 +228,8 @@ impl Home {
     }
 
     /// Every device found but not in the home, in id order.
-    /// A copy of a device another extension already reaches isn't offered.
+    /// A copy of a device another extension already reaches isn't offered, nor one that was
+    /// handed over to another way of reaching it.
     pub fn held_devices(&self) -> Vec<HeldDevice> {
         self.found
             .iter()
@@ -219,6 +238,7 @@ impl Home {
                     .identities
                     .as_ref()
                     .is_some_and(|identities| identities.is_duplicate(id))
+                    && !self.settings.handovers.contains_key(*id)
             })
             .map(|(id, found)| {
                 let mut provides = BTreeMap::new();
@@ -262,6 +282,12 @@ impl Home {
             .filter(|entity| entity.device_id.as_ref() == Some(id))
             .cloned()
             .collect();
+        // Handed over, it steps aside rather than leaving: what it recorded stays, for the device
+        // that took over to show and for handing it back.
+        if self.settings.handovers.contains_key(id) {
+            self.kept_history
+                .extend(owned.iter().map(|entity| entity.id.clone()));
+        }
         for entity in &owned {
             if let Some(described) = self.entity_descriptions.get(&entity.id) {
                 found
@@ -916,6 +942,9 @@ impl Home {
         self.entity_keys
             .insert((protocol.clone(), description.unique_id), id.clone());
         self.entities.insert(id.clone(), entity.clone());
+        if !self.kept_history.is_empty() {
+            self.kept_history.remove(&id);
+        }
         self.states.insert(id.clone(), state.clone());
         Ok(vec![
             Event::EntityAdded { entity },
@@ -2915,6 +2944,7 @@ mod tests {
         let mut home = Home::default();
         home.settle(Settings {
             ask_before_adding: false,
+            handovers: std::collections::BTreeMap::new(),
             floors: Vec::new(),
             areas: vec![area("study", "Study")],
             floorplan: irori_types::Floorplan::default(),
