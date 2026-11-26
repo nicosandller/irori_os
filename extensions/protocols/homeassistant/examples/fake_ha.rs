@@ -7,6 +7,8 @@
 //! ```
 //!
 //! `--not-admin` makes the token a non-administrator's, to see what an Irori says about it.
+//! `--automations` adds three automations on the first device: one that can be brought over as
+//! a flow, one that can't yet (it uses a template), and one written in YAML without an `id`.
 //!
 //! Prints `listening <url>` once it serves, then once a second how many changes it has sent.
 
@@ -43,6 +45,9 @@ async fn main() -> std::io::Result<()> {
     let mut world = World::home(&token, devices, per_device);
     // `--not-admin`: the token's user can sign in but not read the registries.
     world.admin = !std::env::args().any(|a| a == "--not-admin");
+    if std::env::args().any(|a| a == "--automations") && devices > 0 {
+        automations(&mut world);
+    }
     let sensors: Vec<String> = world
         .states
         .keys()
@@ -74,6 +79,48 @@ async fn main() -> std::io::Result<()> {
             println!("sent {sent} connections {}", fake.connections());
         }
     }
+}
+
+/// Three automations on the first device's light and motion sensor.
+fn automations(world: &mut World) {
+    world
+        .automation(
+            "automation.hall_light_on_motion",
+            "Hall light on motion",
+            true,
+            Some("1700000000001"),
+            json!({
+                "id": "1700000000001",
+                "alias": "Hall light on motion",
+                "mode": "restart",
+                "triggers": [{ "trigger": "state", "entity_id": "binary_sensor.d0_motion", "to": "on" }],
+                "conditions": [{ "condition": "sun", "after": "sunset" }],
+                "actions": [
+                    { "action": "light.turn_on", "target": { "entity_id": "light.d0" } },
+                    { "delay": { "minutes": 5 } },
+                    { "action": "light.turn_off", "target": { "entity_id": "light.d0" } }
+                ]
+            }),
+        )
+        .automation(
+            "automation.warm_evening",
+            "Warm evening",
+            true,
+            Some("1700000000002"),
+            json!({
+                "id": "1700000000002",
+                "alias": "Warm evening",
+                "triggers": [{ "trigger": "template", "value_template": "{{ states('sensor.d0_temperature_2') | float > 25 }}" }],
+                "actions": [{ "action": "light.turn_on", "target": { "entity_id": "light.d0" }, "data": { "brightness_pct": 40 } }]
+            }),
+        )
+        .automation(
+            "automation.from_yaml",
+            "Written in YAML",
+            false,
+            None,
+            json!({}),
+        );
 }
 
 /// The next number of a xorshift sequence.

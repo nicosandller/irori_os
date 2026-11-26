@@ -924,6 +924,7 @@ async fn available(ctx: &ProtocolContext, id: &str, availability: Availability) 
 /// Handles something from the core.
 fn handle(incoming: Incoming, cams: &BTreeMap<String, Cam>, events: &mpsc::Sender<Event>) {
     match incoming {
+        Incoming::Ask(ask) => ask.reply(Err("cameras answer no questions".into())),
         Incoming::Call(call) => {
             let extra = reolink::Part::ALL.into_iter().find_map(|part| {
                 let id = call

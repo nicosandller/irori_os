@@ -77,6 +77,10 @@ pub struct FlowSummary {
     /// Nodes by kind, for the row's little picture.
     pub triggers: usize,
     pub nodes: usize,
+    /// The Home Assistant automation it was brought over from, by its `entity_id`: its twin,
+    /// which Home Assistant goes on running. Absent for a flow made in Irori.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_assistant: Option<String>,
 }
 
 /// A run in a list: enough to pick it.

@@ -5877,6 +5877,9 @@ mod tests {
                     irori_protocol::Incoming::Talk(talk) => {
                         talk.line.end(Some("no cameras on this mesh".into()));
                     }
+                    irori_protocol::Incoming::Ask(ask) => {
+                        ask.reply(Err("the mesh answers no questions".into()));
+                    }
                 }
             }
             Ok(())

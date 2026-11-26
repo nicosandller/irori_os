@@ -403,6 +403,13 @@
             }
           ]
         },
+        "from": {
+          "description": "Set when it isn't a page asking but another extension, by its id, put there by the\ncore: only sent to a protocol whose manifest names that extension in `answers`\n(`docs/specs/protocols.md` §5.5).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "id": {
           "type": "integer",
           "format": "uint64",

@@ -326,6 +326,12 @@ pub struct ProtocolContribution {
     /// first, and the device is gone rather than back among what was found.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unpairs: bool,
+    /// The extensions that may ask it questions (`docs/specs/protocols.md` §5.5): Automations
+    /// asking a bridge for the other system's own automations, say. The one asked decides who
+    /// may ask; nobody may unless named here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[schemars(extend("uniqueItems" = true))]
+    pub answers: Vec<ExtensionId>,
 }
 
 impl ProtocolContribution {
@@ -336,6 +342,7 @@ impl ProtocolContribution {
             ));
         }
         no_duplicates("entity_kinds", &self.entity_kinds)?;
+        no_duplicates("contributes.protocol.answers", &self.answers)?;
         let action_ids: Vec<&str> = self.actions.iter().map(|a| a.id.as_str()).collect();
         no_duplicates("contributes.protocol.actions ids", &action_ids)?;
         for action in &self.actions {

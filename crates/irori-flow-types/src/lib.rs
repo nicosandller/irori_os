@@ -61,6 +61,23 @@ pub struct Flow {
     /// first trigger, a part of one by its first node. Not part of the version.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub groups: BTreeMap<NodeId, Name>,
+    /// The Home Assistant automation this flow was brought over from: its twin, which goes on
+    /// running in Home Assistant until the owner says otherwise. Absent for a flow made in
+    /// Irori. Not part of the version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_assistant: Option<HomeAssistantTwin>,
+}
+
+/// Which Home Assistant automation a flow was brought over from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct HomeAssistantTwin {
+    /// Its entity in Home Assistant, e.g. `automation.hall_light_at_dusk`.
+    #[schemars(length(min = 1, max = 255))]
+    pub entity_id: String,
+    /// The id Home Assistant keeps its setup under (its `id`), e.g. `1700000000001`.
+    #[schemars(length(min = 1, max = 128))]
+    pub id: String,
 }
 
 fn yes() -> bool {
@@ -99,6 +116,8 @@ struct RawFlow {
     layout: BTreeMap<NodeId, [f64; 2]>,
     #[serde(default)]
     groups: BTreeMap<NodeId, Name>,
+    #[serde(default)]
+    home_assistant: Option<HomeAssistantTwin>,
 }
 
 impl<'de> Deserialize<'de> for Flow {
@@ -115,6 +134,7 @@ impl<'de> Deserialize<'de> for Flow {
             wires: raw.wires,
             layout: raw.layout,
             groups: raw.groups,
+            home_assistant: raw.home_assistant,
         };
         flow.validate().map_err(serde::de::Error::custom)?;
         Ok(flow)
@@ -153,7 +173,8 @@ impl Flow {
         Ok(())
     }
 
-    /// The canonical JSON the version is the hash of: no `owner`, `enabled`, `layout` or `groups`, keys sorted,
+    /// The canonical JSON the version is the hash of: no `owner`, `enabled`, `layout`, `groups`
+    /// or `home_assistant`, keys sorted,
     /// wires sorted, no whitespace (`docs/specs/flows.md` §5).
     pub fn canonical_json(&self) -> String {
         let mut value = serde_json::to_value(self).unwrap_or(serde_json::Value::Null);
@@ -162,6 +183,7 @@ impl Flow {
             map.remove("enabled");
             map.remove("layout");
             map.remove("groups");
+            map.remove("home_assistant");
             if let Some(serde_json::Value::Array(wires)) = map.get_mut("wires") {
                 wires.sort_by_key(|wire| wire.to_string());
             }

@@ -92,10 +92,25 @@ device: **Home Assistant** for what came through here, **Irori** for what one of
 extensions reaches. Automations says its flows are run by Irori. Without this extension nothing is
 labelled: a home with one side has nothing to tell apart.
 
-This extension doesn't read Home Assistant's own automations, or what they act on: Home Assistant
-doesn't give that over the WebSocket reads this extension is limited to (its states name an
-automation but not its targets), so Irori doesn't warn that a flow and a Home Assistant
-automation act on the same device. Tracked in #169.
+Irori doesn't yet warn that a flow and a Home Assistant automation act on the same device
+(#169).
+
+## Bringing an automation over
+
+On the Automations page, **Bring over from Home Assistant** lists Home Assistant's own
+automations. Bringing one over makes it an Irori flow, **switched off**, that remembers which Home
+Assistant automation it came from (its twin). Home Assistant keeps running its own: nothing in
+Home Assistant changes. When an automation uses something a flow can't do yet (a template, a
+`choose`, a call on a whole area…), nothing is brought over and every such part is listed. Only
+the home's owner can do this. What translates is in `docs/specs/flows.md` §8.
+
+This extension answers the Automations extension, and nobody else (its manifest's `answers`). It
+reads two things for it: the automations, from `get_states`, and one automation's setup, from Home
+Assistant's REST API (`GET /api/config/automation/config/<id>`). An automation written in YAML
+without an `id` has no setup there to read, and is listed as such.
+
+Switching the twin off in Home Assistant when the flow is turned on is #199; until then, turning
+both on runs both.
 
 ## Going easy on the core
 
@@ -119,8 +134,10 @@ A big Home Assistant must not crowd out a home's own devices, so this extension 
 What this extension can send is a closed list, checked again before anything leaves: signing in,
 `get_config`, the four registries' `list`, `get_states`, `subscribe_entities`,
 `subscribe_events`, `unsubscribe_events`, `camera/stream` (which only starts a stream to read),
-and `call_service`. It never touches Home Assistant's registries, areas or automations, and it
-can't unpair anything. A test fails if anything else can be sent.
+and `call_service`. Over HTTP it only reads, with a `GET`, from a closed list of addresses: a
+camera's or image's picture, a camera's live stream, and an automation's setup. It never touches
+Home Assistant's registries, areas or automations, and it can't unpair anything. A test fails if
+anything else can be sent.
 
 `call_service` does act on your home, and it is **on by default**: a command someone gives in
 Irori goes to that entity, with a service of its own kind. So Irori can switch, unlock, disarm and

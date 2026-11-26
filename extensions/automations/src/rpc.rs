@@ -16,7 +16,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{HISTORY_CAP, Service, a_day_before, brief, history, now};
+use crate::{HISTORY_CAP, Service, a_day_before, brief, history, home_assistant, now};
 
 /// Who is asking, as far as it matters to what they may touch: the home's own owner, or a
 /// regular user and the flows that are theirs (`docs/specs/access.md` §4).
@@ -190,12 +190,15 @@ fn allowed(service: &Service, who: &Who, method: &str, raw: &Value) -> Result<()
 }
 
 /// Whose a flow is, once saved: a new one is the asker's, if they are a regular user; one that
-/// is there keeps its owner, whoever saves it. Never what the page said.
+/// is there keeps its owner, whoever saves it. Never what the page said. The same goes for the
+/// Home Assistant automation it was brought over from: only bringing one over sets that.
 fn stamped(service: &Service, who: &Who, flow: &mut Flow) {
-    flow.owner = match service.store.flow(&flow.id) {
+    let existing = service.store.flow(&flow.id);
+    flow.owner = match existing {
         Some(existing) => existing.owner.clone(),
         None => who.by(),
     };
+    flow.home_assistant = existing.and_then(|existing| existing.home_assistant.clone());
 }
 
 fn params<T: DeserializeOwned>(params: Value) -> Result<T, String> {
@@ -261,6 +264,7 @@ fn propose(service: &Service, who: &Who, raw: Value) -> Result<Value, String> {
     object.remove("groups");
     object.remove("enabled");
     object.remove("owner");
+    object.remove("home_assistant");
     match &id {
         Some(id) => {
             object.entry("id").or_insert_with(|| json!(id));
@@ -845,8 +849,93 @@ async fn ask(service: &mut Service, who: &Who, method: &str, raw: Value) -> Resu
     }
 }
 
+/// Finishes a question about Home Assistant's automations once Home Assistant has answered
+/// (`home_assistant::start` asked it): lists them with the flows brought over from them, or
+/// brings one over, switched off. Nothing in Home Assistant changes either way.
+pub fn finish_fetched(service: &mut Service, fetched: home_assistant::Fetched) {
+    use home_assistant::Fetched;
+    match fetched {
+        Fetched::List { request, list } => {
+            let answer = list.map(|list| {
+                let automations: Vec<Value> = home_assistant::listed(&list)
+                    .into_iter()
+                    .map(|automation| {
+                        let flow = home_assistant::twin_of(service.store.flows(), &automation);
+                        let mut row = json!({
+                            "entity_id": automation.entity_id,
+                            "name": automation.name,
+                            "on": automation.on,
+                            "readable": automation.id.is_some(),
+                        });
+                        if let Some(flow) = flow {
+                            row["flow"] = json!(flow);
+                        }
+                        row
+                    })
+                    .collect();
+                json!({ "automations": automations })
+            });
+            request.answer(answer);
+        }
+        Fetched::Setup {
+            request,
+            list,
+            automation,
+            setup,
+        } => {
+            let result = bring_over(service, &list, &automation, setup);
+            request.answer(Ok(result));
+        }
+    }
+}
+
+/// Brings one automation over, or says why not: `{ "flow": id }` (with `already` when it was
+/// brought over before), or `{ "untranslatable": [why, …] }`, and then nothing is written.
+fn bring_over(
+    service: &mut Service,
+    list: &Value,
+    automation: &home_assistant::Listed,
+    setup: Result<Value, String>,
+) -> Value {
+    if let Some(flow) = home_assistant::twin_of(service.store.flows(), automation) {
+        return json!({ "flow": flow, "already": true });
+    }
+    let setup = match setup {
+        Ok(setup) => setup,
+        Err(why) => return json!({ "untranslatable": [why] }),
+    };
+    let id = match home_assistant::free_id(&automation.entity_id, |id| {
+        service.store.flow(id).is_some() || service.store.knows(id)
+    }) {
+        Ok(id) => id,
+        Err(why) => return json!({ "untranslatable": [why] }),
+    };
+    let home = home_assistant::Home::new(&service.registry, home_assistant::brought(list));
+    let mut flow = match home_assistant::translate(&setup, automation, id, &home) {
+        Ok(flow) => flow,
+        Err(missing) => return json!({ "untranslatable": missing }),
+    };
+    arrange(&mut flow);
+    // Checked against the home as a flow saved from the page is: one that couldn't run here
+    // isn't brought over either.
+    let errors: Vec<String> = service
+        .problems(&flow)
+        .into_iter()
+        .filter(Problem::is_error)
+        .map(|problem| problem.message)
+        .collect();
+    if !errors.is_empty() {
+        return json!({ "untranslatable": errors });
+    }
+    if let Err(why) = service.store.save(&flow, now(), None) {
+        return json!({ "untranslatable": [why] });
+    }
+    service.arm();
+    json!({ "flow": flow.id })
+}
+
 /// Whether any entity of the home came through the Home Assistant extension.
-fn bridged(registry: &irori_rules::MapRegistry) -> bool {
+pub(crate) fn bridged(registry: &irori_rules::MapRegistry) -> bool {
     registry
         .entities
         .values()
@@ -888,6 +977,10 @@ fn list(service: &Service, who: &Who) -> Vec<FlowSummary> {
                 active_runs: service.engine.running(&flow.id),
                 triggers: flow.nodes.values().filter(|n| n.is_trigger()).count(),
                 nodes: flow.nodes.len(),
+                home_assistant: flow
+                    .home_assistant
+                    .as_ref()
+                    .map(|twin| twin.entity_id.clone()),
             }
         })
         .collect()

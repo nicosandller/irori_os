@@ -117,6 +117,8 @@ pub(super) fn change_of(
             ))
         }
         "flows.delete" => Some(("flow_deleted", named(params.get("id")))),
+        // A flow made from a Home Assistant automation: its name is the engine's to choose.
+        "home_assistant.bring_over" => Some(("flow_saved", None)),
         "versions.restore" => Some(("flow_restored", named(params.get("id")))),
         // Stopping a run that is going: it may be in the middle of switching things.
         "runs.cancel" => Some((

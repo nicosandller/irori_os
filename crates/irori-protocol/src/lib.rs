@@ -303,6 +303,7 @@ impl Picture {
 enum ActionReply {
     Done(oneshot::Sender<Result<(), String>>),
     Picture(oneshot::Sender<Result<Picture, String>>),
+    Answer(oneshot::Sender<Result<serde_json::Value, String>>),
 }
 
 /// What a person filled in for an action with ways: which way, and its fields by id. Empty for a
@@ -340,7 +341,19 @@ pub struct IncomingAction {
     /// Set when it's a page asking to talk through a camera, which travels the same way too.
     /// [`ProtocolContext::next`] hands those out as [`Incoming::Talk`].
     talk: Option<IncomingTalk>,
+    /// Set when it's another extension asking this one something its manifest says it answers
+    /// (`answers`), which travels the same way too. [`ProtocolContext::next`] hands those out
+    /// as [`Incoming::Ask`].
+    ask: Option<Question>,
     reply: ActionReply,
+}
+
+/// What another extension asked: a method and its parameters, and who asked.
+#[derive(Debug, Clone)]
+struct Question {
+    from: String,
+    method: String,
+    params: serde_json::Value,
 }
 
 impl IncomingAction {
@@ -357,7 +370,34 @@ impl IncomingAction {
             ActionReply::Picture(reply) => {
                 let _ = reply.send(result.and_then(|()| Err("it sent no picture".to_owned())));
             }
+            ActionReply::Answer(reply) => {
+                let _ = reply.send(result.map(|()| serde_json::Value::Null));
+            }
         }
+    }
+
+    /// Answers a question from another extension; for the host, which reads the answer off the
+    /// pipe.
+    pub fn reply_answer(self, result: Result<serde_json::Value, String>) {
+        match self.reply {
+            ActionReply::Answer(reply) => {
+                let _ = reply.send(result);
+            }
+            ActionReply::Done(reply) => {
+                let _ = reply.send(result.map(|_| ()));
+            }
+            ActionReply::Picture(reply) => {
+                let _ = reply.send(result.and_then(|_| Err("it sent no picture".to_owned())));
+            }
+        }
+    }
+
+    /// The question, if that's what this is: who asked, the method and its parameters. For the
+    /// host, which sends it as an `app_request`.
+    pub fn asking(&self) -> Option<(&str, &str, &serde_json::Value)> {
+        self.ask
+            .as_ref()
+            .map(|q| (q.from.as_str(), q.method.as_str(), &q.params))
     }
 
     /// Answers a picture request; for the host, which reads the answer off the pipe.
@@ -368,6 +408,9 @@ impl IncomingAction {
             }
             ActionReply::Done(reply) => {
                 let _ = reply.send(result.map(|_| ()));
+            }
+            ActionReply::Answer(reply) => {
+                let _ = reply.send(result.and_then(|_| Err("it sent a picture".to_owned())));
             }
         }
     }
@@ -412,7 +455,18 @@ impl IncomingAction {
         if let Some(talk) = self.talk {
             return Incoming::Talk(talk);
         }
-        match (self.unpair, self.picture, self.reply) {
+        let reply = match (self.ask, self.reply) {
+            (Some(question), ActionReply::Answer(reply)) => {
+                return Incoming::Ask(IncomingAsk {
+                    from: question.from,
+                    method: question.method,
+                    params: question.params,
+                    reply,
+                });
+            }
+            (_, reply) => reply,
+        };
+        match (self.unpair, self.picture, reply) {
             (Some((unique_id, force)), _, ActionReply::Done(reply)) => {
                 Incoming::Unpair(IncomingUnpair {
                     unique_id,
@@ -432,9 +486,28 @@ impl IncomingAction {
                 picture,
                 live: None,
                 talk: None,
+                ask: None,
                 reply,
             }),
         }
+    }
+}
+
+/// Another extension asking this one something (`docs/specs/protocols.md` §5.5): only sent to a
+/// protocol whose manifest names the asker in `answers`. Reply exactly once; dropping it
+/// without replying reports a failure.
+#[derive(Debug)]
+pub struct IncomingAsk {
+    /// The extension that asked, as the core vouches for it.
+    pub from: String,
+    pub method: String,
+    pub params: serde_json::Value,
+    reply: oneshot::Sender<Result<serde_json::Value, String>>,
+}
+
+impl IncomingAsk {
+    pub fn reply(self, result: Result<serde_json::Value, String>) {
+        let _ = self.reply.send(result);
     }
 }
 
@@ -485,6 +558,7 @@ pub enum Incoming {
     Picture(IncomingPicture),
     Live(IncomingLive),
     Talk(IncomingTalk),
+    Ask(IncomingAsk),
 }
 
 /// The protocol's handle to the core. Offers exactly the operations of the contract.
@@ -690,6 +764,9 @@ impl ProtocolContext {
                         }
                         Incoming::Talk(talk) => {
                             talk.line.end(Some("this protocol can't talk through a camera".into()));
+                        }
+                        Incoming::Ask(ask) => {
+                            ask.reply(Err("this protocol answers no questions".into()));
                         }
                         Incoming::Call(_) => {}
                     }
@@ -1116,6 +1193,7 @@ pub mod host {
             picture: None,
             live: None,
             talk: None,
+            ask: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, result)
@@ -1167,6 +1245,7 @@ pub mod host {
             picture: Some(unique_id),
             live: None,
             talk: None,
+            ask: None,
             reply: ActionReply::Picture(reply),
         };
         (incoming, result)
@@ -1197,6 +1276,7 @@ pub mod host {
                 feed,
             }),
             talk: None,
+            ask: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, chunks)
@@ -1229,9 +1309,41 @@ pub mod host {
                 audio,
                 line,
             }),
+            ask: None,
             reply: ActionReply::Done(reply),
         };
         (incoming, audio_tx, words)
+    }
+
+    /// Builds another extension's question for the protocol, as it travels: on the actions
+    /// channel. [`ProtocolContext::next`] hands it out as [`Incoming::Ask`]. `from` is the
+    /// extension that asked, as the core knows it.
+    pub fn incoming_ask(
+        from: String,
+        method: String,
+        params: serde_json::Value,
+    ) -> (
+        IncomingAction,
+        oneshot::Receiver<Result<serde_json::Value, String>>,
+    ) {
+        let (reply, result) = oneshot::channel();
+        let incoming = IncomingAction {
+            action_id: String::new(),
+            stop: false,
+            way: None,
+            fields: BTreeMap::new(),
+            unpair: None,
+            picture: None,
+            live: None,
+            talk: None,
+            ask: Some(crate::Question {
+                from,
+                method,
+                params,
+            }),
+            reply: ActionReply::Answer(reply),
+        };
+        (incoming, result)
     }
 }
 

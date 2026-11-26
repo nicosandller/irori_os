@@ -706,6 +706,14 @@
             "$ref": "#/$defs/ProtocolAction"
           }
         },
+        "answers": {
+          "description": "The extensions that may ask it questions (`docs/specs/protocols.md` §5.5): Automations\nasking a bridge for the other system's own automations, say. The one asked decides who\nmay ask; nobody may unless named here.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ExtensionId"
+          },
+          "uniqueItems": true
+        },
         "entity_kinds": {
           "description": "The kinds of entity it creates. It must handle the standard services of each kind.",
           "type": "array",

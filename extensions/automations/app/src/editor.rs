@@ -319,6 +319,12 @@ pub fn Editor(id: String, is_new: bool) -> impl IntoView {
                 Armed::Disabled => view! { <span class="chip">"off"</span> }.into_any(),
                 Armed::Unarmed { .. } => view! { <span class="chip error">"can't run"</span> }.into_any(),
             }}
+            {ed.saved.with(|saved| saved.as_ref().and_then(|flow| flow.home_assistant.clone())).map(|twin| view! {
+                <span class="chip" title=format!(
+                    "Brought over from Home Assistant's {} (id {}), which Home Assistant keeps running",
+                    twin.entity_id, twin.id
+                )>"From Home Assistant"</span>
+            })}
             {(errors > 0).then(|| view! {
                 <button class="chip error" on:click=move |_| {
                     ed.selected.set(Selected::Nothing);

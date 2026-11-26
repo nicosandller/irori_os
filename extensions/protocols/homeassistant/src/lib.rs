@@ -12,6 +12,7 @@
 //! own backoff (a second, doubling to a minute) and marks what it brought over unavailable
 //! meanwhile, so the host's restart is never needed.
 
+pub mod automations;
 pub mod client;
 pub mod http;
 pub mod live;
@@ -31,8 +32,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use irori_protocol::{
-    AvailabilityTarget, Health, Incoming, IncomingCall, IncomingLive, IncomingPicture, Picture,
-    Protocol, ProtocolContext, ProtocolError, ServiceError,
+    AvailabilityTarget, Health, Incoming, IncomingAsk, IncomingCall, IncomingLive, IncomingPicture,
+    Picture, Protocol, ProtocolContext, ProtocolError, ServiceError,
 };
 use irori_types::{
     Availability, Capabilities, ContextId, DeviceDescription, EntityDescription, SecretRequest,
@@ -113,6 +114,8 @@ const NOT_CONNECTED: &str = "Home Assistant isn't connected right now";
 /// The most a picture can be (`docs/specs/protocols.md` §5.2), and how long it can take.
 const PICTURE_MOST: usize = 2_000_000;
 const PICTURE_WITHIN: Duration = Duration::from_millis(4500);
+/// How long reading an automation's setup may take.
+const SETUP_WITHIN: Duration = Duration::from_secs(10);
 /// The picture types Irori takes.
 const PICTURE_TYPES: [&str; 4] = ["image/jpeg", "image/png", "image/webp", "image/svg+xml"];
 
@@ -128,6 +131,7 @@ fn turn_away(incoming: Incoming) {
         Incoming::Talk(talk) => talk.line.end(Some(
             "you can't talk through a camera in Home Assistant from Irori".into(),
         )),
+        Incoming::Ask(ask) => ask.reply(Err(NOT_CONNECTED.into())),
         Incoming::Call(_) | Incoming::Picture(_) | Incoming::Live(_) => {}
     }
 }
@@ -639,6 +643,7 @@ async fn session(
                 Some(Incoming::Call(call)) => session.call(call, &done_tx),
                 Some(Incoming::Picture(picture)) => session.picture(picture, settings),
                 Some(Incoming::Live(live)) => session.live(live, settings),
+                Some(Incoming::Ask(ask)) => session.ask(ask, settings),
                 Some(other) => turn_away(other),
                 None => return Ended::Stopped,
             },
@@ -1056,6 +1061,71 @@ impl Session<'_> {
                 }
             }));
         });
+    }
+
+    /// The Automations extension asking about Home Assistant's own automations, to bring one
+    /// over (see [`automations`]). Both answers are reads.
+    fn ask(&self, ask: IncomingAsk, settings: &Settings) {
+        if ask.from != automations::ASKER {
+            let why = format!("`{}` can't ask this extension", ask.from);
+            ask.reply(Err(why));
+            return;
+        }
+        let method = ask.method.clone();
+        match method.as_str() {
+            automations::LIST => {
+                let client = self.client.clone();
+                let brought = self.entities.clone();
+                tokio::spawn(async move {
+                    let answer = client
+                        .request(Outgoing::GetStates, client::READ_TIMEOUT)
+                        .await
+                        .map(|states| automations::list(&states, &brought))
+                        .map_err(|why| {
+                            format!("couldn't read Home Assistant's automations: {why}")
+                        });
+                    ask.reply(answer);
+                });
+            }
+            automations::SETUP => {
+                let path =
+                    automations::asked_id(&ask.params).and_then(|id| automations::setup_path(&id));
+                let path = match path {
+                    Ok(path) => path,
+                    Err(why) => {
+                        ask.reply(Err(why));
+                        return;
+                    }
+                };
+                let transport = self.transport.clone();
+                let token = settings.token.expose().to_owned();
+                tokio::spawn(async move {
+                    let answer = http::get(
+                        &transport,
+                        &path,
+                        &token,
+                        automations::SETUP_MOST,
+                        SETUP_WITHIN,
+                    )
+                    .await
+                    .map_err(|why| match why.as_str() {
+                        "Home Assistant has nothing at that address" => {
+                            "Home Assistant keeps no setup for this automation that can be read"
+                                .to_owned()
+                        }
+                        _ => why,
+                    })
+                    .and_then(|answer| {
+                        serde_json::from_slice::<Value>(&answer.body).map_err(|_| {
+                            "Home Assistant's answer about this automation isn't readable"
+                                .to_owned()
+                        })
+                    });
+                    ask.reply(answer);
+                });
+            }
+            other => ask.reply(Err(format!("this extension doesn't answer `{other}`"))),
+        }
     }
 
     /// A camera watched live, through Home Assistant's own stream of it.

@@ -930,3 +930,117 @@ async fn a_picture_comes_over_the_same_checked_connection() {
     assert_eq!(answer.content_type, "image/jpeg");
     assert_eq!(answer.body, b"jpeg");
 }
+
+impl Running {
+    /// The Automations extension asking this one something, as the core passes it on.
+    async fn asked(
+        &self,
+        from: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let (incoming, answer) = host::incoming_ask(from.to_owned(), method.to_owned(), params);
+        self._actions.send(incoming).await.expect("running");
+        tokio::time::timeout(Duration::from_secs(5), answer)
+            .await
+            .expect("an answer in time")
+            .expect("an answer")
+    }
+}
+
+/// Issue #198: Home Assistant's automations and one's setup are read for the Automations
+/// extension, and nothing else: the setup with one `GET`, nothing written.
+#[tokio::test]
+async fn automations_and_their_setups_are_read_and_nothing_written() {
+    let mut home = home();
+    let setup = json!({
+        "id": "1700000000001", "alias": "Kitchen light at dusk",
+        "triggers": [{ "trigger": "sun", "event": "sunset" }],
+        "actions": [{ "action": "light.turn_on", "target": { "entity_id": "light.kitchen" } }],
+    });
+    home.automation(
+        "automation.kitchen_light_at_dusk",
+        "Kitchen light at dusk",
+        true,
+        Some("1700000000001"),
+        setup.clone(),
+    )
+    .automation("automation.from_yaml", "From YAML", false, None, json!({}));
+    let fake = FakeHa::start(home).await.expect("a fake");
+    let world = world(&fake).await;
+    world.running().await;
+    world
+        .until("the light", |log| {
+            log.entities
+                .iter()
+                .any(|e| e.unique_id.as_str() == "e-light")
+                .then_some(())
+        })
+        .await;
+
+    let listed = world
+        .asked("automations", "automations.list", json!({}))
+        .await
+        .expect("a list");
+    assert_eq!(
+        listed["automations"],
+        json!([
+            { "entity_id": "automation.from_yaml", "name": "From YAML", "on": false },
+            { "entity_id": "automation.kitchen_light_at_dusk", "name": "Kitchen light at dusk",
+              "on": true, "id": "1700000000001" },
+        ])
+    );
+    assert_eq!(listed["entities"]["light.kitchen"], "e-light");
+
+    let read = world
+        .asked(
+            "automations",
+            "automation.setup",
+            json!({ "id": "1700000000001" }),
+        )
+        .await
+        .expect("a setup");
+    assert_eq!(read, setup);
+
+    let missing = world
+        .asked("automations", "automation.setup", json!({ "id": "404" }))
+        .await
+        .expect_err("none");
+    assert!(missing.contains("no setup"), "{missing}");
+    let odd = world
+        .asked(
+            "automations",
+            "automation.setup",
+            json!({ "id": "../services" }),
+        )
+        .await
+        .expect_err("refused");
+    assert!(odd.contains("isn't an automation id"), "{odd}");
+    let stranger = world
+        .asked("someone", "automations.list", json!({}))
+        .await
+        .expect_err("refused");
+    assert!(stranger.contains("can't ask"), "{stranger}");
+    let other = world
+        .asked(
+            "automations",
+            "automation.turn_off",
+            json!({ "id": "1700000000001" }),
+        )
+        .await
+        .expect_err("refused");
+    assert!(other.contains("doesn't answer"), "{other}");
+    world.stop().await;
+
+    assert_eq!(
+        fake.http_requests(),
+        vec![
+            "GET /api/config/automation/config/1700000000001 HTTP/1.1".to_owned(),
+            "GET /api/config/automation/config/404 HTTP/1.1".to_owned(),
+        ]
+    );
+    for kind in fake.received_types() {
+        assert!(ALLOWED.contains(&kind.as_str()), "{kind} was sent");
+    }
+    assert!(fake.calls().is_empty());
+}

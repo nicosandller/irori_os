@@ -28,6 +28,17 @@
         }
       }
     },
+    "home_assistant": {
+      "description": "The Home Assistant automation this flow was brought over from: its twin, which goes on\nrunning in Home Assistant until the owner says otherwise. Absent for a flow made in\nIrori. Not part of the version.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/HomeAssistantTwin"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "id": {
       "$ref": "#/$defs/RuleId"
     },
@@ -544,6 +555,29 @@
       "additionalProperties": {
         "$ref": "#/$defs/Amount"
       }
+    },
+    "HomeAssistantTwin": {
+      "description": "Which Home Assistant automation a flow was brought over from.",
+      "type": "object",
+      "properties": {
+        "entity_id": {
+          "description": "Its entity in Home Assistant, e.g. `automation.hall_light_at_dusk`.",
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        },
+        "id": {
+          "description": "The id Home Assistant keeps its setup under (its `id`), e.g. `1700000000001`.",
+          "type": "string",
+          "maxLength": 128,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "entity_id",
+        "id"
+      ]
     },
     "JoinMode": {
       "description": "How a join brings paths together.",
