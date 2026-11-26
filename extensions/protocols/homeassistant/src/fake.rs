@@ -90,6 +90,15 @@ impl World {
         self
     }
 
+    /// Gives the entity added last the name its integration gave it, as a real one has
+    /// ("Power"), in place of its entity id.
+    pub fn named(&mut self, original_name: &str) -> &mut Self {
+        if let Some(entity) = self.entities.last_mut() {
+            entity["original_name"] = json!(original_name);
+        }
+        self
+    }
+
     /// A home of `devices` devices with `per_device` entities each, spread over three areas on
     /// two floors: on each device a light, a motion sensor, then temperature and power sensors.
     /// For the load gate.

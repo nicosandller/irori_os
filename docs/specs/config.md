@@ -810,7 +810,9 @@ other's entities are rewritten to name the ones standing for them.
 
 Handing back is the same the other way round, with the pairs written here: the device that took
 over steps aside and is listed here in turn, and the first one's entry goes. It is done from the
-device's page; editing this file by hand changes only what is listed, never the automations.
+device's page, and only while the device that stepped aside is still found by its extension;
+editing this file by hand changes only what is listed, never the automations. Removing either
+device, or uninstalling either one's extension, drops its handover from this file.
 
 ## 4. What a decision is attached to
 

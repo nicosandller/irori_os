@@ -47,8 +47,9 @@ struct Shape {
     /// The other extensions that reach this same device, by their own names where the page
     /// knows them (`docs/specs/protocols.md` §6.1). In the shape for the same reason.
     also_through: Vec<String>,
-    /// Whether it may be handed over to another way of reaching it, or back: it's a copy of a
-    /// device in the home, or another extension reaches it too. The card asks Irori which.
+    /// Whether it may be handed over to another way of reaching it, or back: it's a copy of
+    /// another device, or another extension reaches it too. The card asks Irori which, and
+    /// draws nothing when neither can be done.
     may_hand_over: bool,
 }
 
@@ -141,13 +142,11 @@ fn shape_of(home: &Home, id: &str) -> Shape {
                 .collect()
         })
         .unwrap_or_default();
-    let may_hand_over = device.as_ref().is_some_and(|device| {
-        !device.also_through.is_empty()
-            || device
-                .duplicate_of
-                .as_ref()
-                .is_some_and(|twin| home.devices.iter().any(|other| &other.id == twin))
-    });
+    // Whether the twin is in the home doesn't decide it: one handed over steps aside and
+    // waits, and is handed back from here.
+    let may_hand_over = device
+        .as_ref()
+        .is_some_and(|device| !device.also_through.is_empty() || device.duplicate_of.is_some());
     Shape {
         may_hand_over,
         device,

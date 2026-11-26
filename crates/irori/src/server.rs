@@ -7281,6 +7281,25 @@ mod tests {
             .await?;
         assert_eq!(status, StatusCode::CONFLICT);
 
+        // What the bridged switch recorded an hour ago, and the relay's own since. The server
+        // under test isn't subscribed to the core, so both are handed to the diary.
+        let earlier = |entity: &str| -> anyhow::Result<irori_types::EntityState> {
+            let mut state = core
+                .state(&entity.parse()?)
+                .ok_or_else(|| anyhow::anyhow!("no state for {entity}"))?;
+            let hour_ago = irori_types::Timestamp::from_jiff(
+                state.last_updated.as_jiff() - jiff::SignedDuration::from_hours(1),
+            );
+            (state.last_changed, state.last_updated, state.last_reported) =
+                (hour_ago, hour_ago, hour_ago);
+            Ok(state)
+        };
+        server.history.record(switch.parse()?, earlier(&switch)?);
+        let now = core
+            .state(&relay.parse()?)
+            .ok_or_else(|| anyhow::anyhow!("no state for the relay"))?;
+        server.history.record(relay.parse()?, now);
+
         let (status, body) = server
             .json("POST", &path, serde_json::json!({"to": native}))
             .await?;
@@ -7303,6 +7322,19 @@ mod tests {
             "the bridged one isn't offered"
         );
         assert!(core.keeps_history(&switch.parse()?), "its history is kept");
+        let history = server.read(&format!("/api/history/{relay}")).await?;
+        let states = history["states"].as_array().expect("a list of states");
+        assert_eq!(
+            states.len(),
+            2,
+            "the switch's change, then the relay's: {history}"
+        );
+        assert!(
+            states
+                .iter()
+                .all(|change| change["entity_id"] == relay.as_str()),
+            "told as the relay's: {history}"
+        );
         let group = std::fs::read_to_string(&helpers)?;
         assert!(
             group.contains(&relay) && !group.contains(&switch),
@@ -7356,6 +7388,25 @@ mod tests {
         assert!(
             !written.contains(&format!("[handovers.{bridged}]")),
             "{written}"
+        );
+
+        // Removing the device it was handed back to drops the handover: the plug's own is then
+        // offered like any found device.
+        let (status, body) = server
+            .json(
+                "DELETE",
+                &format!("/api/devices/{bridged}"),
+                serde_json::json!(null),
+            )
+            .await?;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+        let written = std::fs::read_to_string(server.config_dir().join("handovers.toml"))?;
+        assert!(!written.contains("[handovers."), "{written}");
+        assert!(
+            core.held_devices()
+                .iter()
+                .any(|held| held.id.as_str() == native),
+            "the plug's own is offered again"
         );
 
         host.shutdown().await;

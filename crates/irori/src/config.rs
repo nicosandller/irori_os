@@ -801,6 +801,11 @@ fn forget(
 ) {
     settings.devices.retain(|id, _| !device(id));
     settings.entities.retain(|key, _| !entity(key));
+    // A handover from or to a device that is gone has nothing left to hand back: the one that
+    // stepped aside is then a found device like any other.
+    settings
+        .handovers
+        .retain(|from, handover| !device(from) && !device(&handover.to));
     for level in settings.floorplan.floors.values_mut() {
         level
             .devices

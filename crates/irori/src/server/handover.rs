@@ -251,9 +251,15 @@ async fn plan_for(state: &AppState, id: &DeviceId) -> Result<Plan, Refusal> {
     };
     let handovers = core.handovers();
     // Handing back: a device that stepped aside for this one.
+    // Only while its extension still has it: handing back to a device that isn't there would
+    // leave the home with neither.
     let back = handovers
         .iter()
-        .find(|(before, handover)| handover.to == *id && !devices.iter().any(|d| &d.id == *before))
+        .find(|(before, handover)| {
+            handover.to == *id
+                && !devices.iter().any(|d| &d.id == *before)
+                && core.device_key(before).is_some()
+        })
         .map(|(before, handover)| (before.clone(), handover.clone()));
     let (to_id, pairs) = match (&back, &from.duplicate_of) {
         (Some((before, handover)), _) => {

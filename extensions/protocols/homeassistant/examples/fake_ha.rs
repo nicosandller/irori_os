@@ -90,21 +90,36 @@ fn twin(world: &mut World) {
         "connections": [["zigbee", "00:15:8d:00:01:a2:b3:c4"]],
     }));
     world
-        .entity("twin1", "switch.kitchen_plug", Some("kitchenplug"), "on", json!({}))
+        .entity(
+            "twin1",
+            "switch.kitchen_plug",
+            Some("kitchenplug"),
+            "on",
+            json!({}),
+        )
         .entity(
             "twin2",
             "sensor.kitchen_plug_power",
             Some("kitchenplug"),
             "12.5",
-            json!({ "device_class": "power", "unit_of_measurement": "W", "state_class": "measurement" }),
+            json!({
+                "device_class": "power",
+                "unit_of_measurement": "W",
+                "state_class": "measurement",
+            }),
         )
+        .named("Power")
         .entity(
             "twin3",
             "sensor.kitchen_plug_rssi",
             Some("kitchenplug"),
             "-61",
-            json!({ "device_class": "signal_strength", "unit_of_measurement": "dBm" }),
-        );
+            json!({
+                "device_class": "signal_strength",
+                "unit_of_measurement": "dBm",
+            }),
+        )
+        .named("Signal strength");
 }
 
 /// The next number of a xorshift sequence.

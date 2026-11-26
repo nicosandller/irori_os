@@ -53,7 +53,9 @@ pub fn HandoverCard(device: DeviceId) -> impl IntoView {
             <section class="card handover-card">
                 <h2>{heading}</h2>
                 <p class="muted">{said}</p>
-                <button type="button" on:click=move |_| asking.set(true)>{button}</button>
+                <button type="button" class="quiet-button" on:click=move |_| asking.set(true)>
+                    {button}
+                </button>
                 {move || asking.get().then(|| view! {
                     <HandOver plan=shown.clone() on_close=move || asking.set(false) />
                 })}
@@ -79,13 +81,7 @@ fn HandOver(plan: HandoverPlan, #[prop(into)] on_close: Callback<()>) -> impl In
     } else {
         ("Hand over", "Handing over…")
     };
-    let title = format!(
-        "{} {} {} {}?",
-        verb,
-        plan.name,
-        if plan.back { "to" } else { "to" },
-        plan.to.through
-    );
+    let title = format!("{verb} {} to {}?", plan.name, plan.to.through);
     // Where nothing is written: the bridge's side, whichever way this goes.
     let bridge = if plan.back {
         plan.to.through.clone()
