@@ -190,12 +190,15 @@ fn allowed(service: &Service, who: &Who, method: &str, raw: &Value) -> Result<()
 }
 
 /// Whose a flow is, once saved: a new one is the asker's, if they are a regular user; one that
-/// is there keeps its owner, whoever saves it. Never what the page said.
+/// is there keeps its owner, whoever saves it. Never what the page said. The same goes for the
+/// Home Assistant automation it was brought over from: only bringing one over sets that.
 fn stamped(service: &Service, who: &Who, flow: &mut Flow) {
-    flow.owner = match service.store.flow(&flow.id) {
+    let existing = service.store.flow(&flow.id);
+    flow.owner = match existing {
         Some(existing) => existing.owner.clone(),
         None => who.by(),
     };
+    flow.home_assistant = existing.and_then(|existing| existing.home_assistant.clone());
 }
 
 fn params<T: DeserializeOwned>(params: Value) -> Result<T, String> {
@@ -261,6 +264,7 @@ fn propose(service: &Service, who: &Who, raw: Value) -> Result<Value, String> {
     object.remove("groups");
     object.remove("enabled");
     object.remove("owner");
+    object.remove("home_assistant");
     match &id {
         Some(id) => {
             object.entry("id").or_insert_with(|| json!(id));
@@ -973,6 +977,10 @@ fn list(service: &Service, who: &Who) -> Vec<FlowSummary> {
                 active_runs: service.engine.running(&flow.id),
                 triggers: flow.nodes.values().filter(|n| n.is_trigger()).count(),
                 nodes: flow.nodes.len(),
+                home_assistant: flow
+                    .home_assistant
+                    .as_ref()
+                    .map(|twin| twin.entity_id.clone()),
             }
         })
         .collect()

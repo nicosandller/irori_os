@@ -70,12 +70,7 @@ pub fn list(states: &Value, brought: &[Bridged]) -> Value {
     });
     let entities: Map<String, Value> = brought
         .iter()
-        .map(|b| {
-            (
-                b.entity_id.clone(),
-                json!(b.description.unique_id.as_str()),
-            )
-        })
+        .map(|b| (b.entity_id.clone(), json!(b.description.unique_id.as_str())))
         .collect();
     json!({ "automations": automations, "entities": entities })
 }
@@ -93,7 +88,9 @@ pub fn setup_path(id: &str) -> Result<String, String> {
     if fine {
         Ok(format!("/api/config/automation/config/{id}"))
     } else {
-        Err(format!("`{id}` isn't an automation id Home Assistant gives"))
+        Err(format!(
+            "`{id}` isn't an automation id Home Assistant gives"
+        ))
     }
 }
 

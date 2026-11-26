@@ -1258,7 +1258,9 @@ impl Core {
         }
         match tokio::time::timeout_at(deadline, result).await {
             Err(_) => Err(format!("`{extension}` didn't answer in time")),
-            Ok(Err(_)) => Err(format!("`{extension}` dropped the question without answering")),
+            Ok(Err(_)) => Err(format!(
+                "`{extension}` dropped the question without answering"
+            )),
             Ok(Ok(answer)) => answer,
         }
     }

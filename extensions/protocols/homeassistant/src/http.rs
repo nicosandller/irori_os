@@ -279,9 +279,15 @@ mod tests {
                 .to_vec(),
         )
         .await;
-        let answer = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
-            .await
-            .expect("a picture");
+        let answer = get(
+            &base,
+            "/api/camera_proxy/camera.x",
+            "t",
+            1000,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("a picture");
         assert_eq!(answer.body, b"PNG");
     }
 
@@ -298,9 +304,15 @@ mod tests {
         .into_bytes();
         answer.extend_from_slice(&zipped);
         let (base, _) = serve(answer).await;
-        let answer = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
-            .await
-            .expect("a playlist");
+        let answer = get(
+            &base,
+            "/api/camera_proxy/camera.x",
+            "t",
+            1000,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("a playlist");
         assert_eq!(answer.body, b"#EXTM3U\n");
     }
 
@@ -332,44 +344,74 @@ mod tests {
         }
 
         // Refused before anything is sent: the server never hears from it.
-        let (base, asked) =
-            serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec()).await;
-        let why = get(&base, "/api/services/light/turn_on", "t", 1000, Duration::from_secs(5))
-            .await
-            .expect_err("refused");
+        let (base, asked) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}".to_vec()).await;
+        let why = get(
+            &base,
+            "/api/services/light/turn_on",
+            "t",
+            1000,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("refused");
         assert!(why.contains("isn't an address"), "{why}");
         asked.abort();
 
         // What does leave is a GET.
-        let (base, asked) =
-            serve(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}".to_vec()).await;
-        get(&base, "/api/config/automation/config/17", "t", 1000, Duration::from_secs(5))
-            .await
-            .expect("an answer");
+        let (base, asked) = serve(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+                .to_vec(),
+        )
+        .await;
+        get(
+            &base,
+            "/api/config/automation/config/17",
+            "t",
+            1000,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect("an answer");
         let request = asked.await.expect("asked");
         assert!(
             request.starts_with("GET /api/config/automation/config/17 HTTP/1.1\r\n"),
             "{request}"
         );
-        assert_eq!(request.matches("\r\n\r\n").count(), 1, "one request, no body");
+        assert_eq!(
+            request.matches("\r\n\r\n").count(),
+            1,
+            "one request, no body"
+        );
     }
 
     #[tokio::test]
     async fn refusals_and_oversized_pictures_are_said() {
         let (base, _) =
             serve(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n".to_vec()).await;
-        let why = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
-            .await
-            .expect_err("refused");
+        let why = get(
+            &base,
+            "/api/camera_proxy/camera.x",
+            "t",
+            1000,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("refused");
         assert!(why.contains("token"), "{why}");
 
         let (base, _) = serve(
             b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 5000\r\n\r\n".to_vec(),
         )
         .await;
-        let why = get(&base, "/api/camera_proxy/camera.x", "t", 1000, Duration::from_secs(5))
-            .await
-            .expect_err("too big");
+        let why = get(
+            &base,
+            "/api/camera_proxy/camera.x",
+            "t",
+            1000,
+            Duration::from_secs(5),
+        )
+        .await
+        .expect_err("too big");
         assert!(why.contains("bigger"), "{why}");
     }
 }

@@ -145,6 +145,7 @@ instead:
 | `get_reach { id, user }` | — (needs `users = true`, §B1) | Where a person stands now: `{ here: bool, name, owner: bool, entities?: [EntityId] }`. `here: false` is a person who was removed. `entities` is what they can see; left out, the whole home. Answered only to an extension that limits what people can do (`docs/specs/access.md` §4.1), and an error to any other |
 | `note { action, target, detail }` | — (needs `users = true`) | No answer. Asks the core to write a line in the activity log as Irori itself: `flow_turned_off` (a flow was running and the home changed under it; `detail` says why) or `flow_handed_over` (its owner was removed). Any other `action` is dropped |
 | `call_service { id, entity_id, command, data?, run_id, parent_id? }` | `services:call` | `null`, or an error |
+| `ask_extension { id, extension, method, params? }` | — (the one asked names this extension in `answers`) | What that extension answers, or an error. Asks another extension about what it bridges: the Automations extension asks the Home Assistant extension for Home Assistant's automations ([protocols.md](protocols.md) §5.5). Sent only when the home has that extension: a core older than 1.7.0 doesn't know it |
 | `app_answer { id, value?, error? }` | — | (answers `app_request`) |
 
 **Core → extension**

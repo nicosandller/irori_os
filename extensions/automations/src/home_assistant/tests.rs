@@ -198,7 +198,9 @@ fn times_sun_and_a_time_pattern_come_over() {
     );
     assert!(matches!(
         &flow.nodes[&irori_types::ObjectId::try_from("when_4").expect("id")],
-        Node::Trigger { trigger: Trigger::Startup {} }
+        Node::Trigger {
+            trigger: Trigger::Startup {}
+        }
     ));
     assert_eq!(
         value["nodes"]["check_1"]["condition"],
@@ -247,7 +249,10 @@ fn an_entity_home_assistant_didnt_bring_over_is_named() {
         "actions": [{ "action": "light.turn_on", "target": { "entity_id": "light.hall_ceiling" } }],
     }))
     .expect_err("not brought over");
-    assert_eq!(missing, ["`person.ana` isn't brought over from Home Assistant"]);
+    assert_eq!(
+        missing,
+        ["`person.ana` isn't brought over from Home Assistant"]
+    );
 }
 
 #[test]
@@ -306,7 +311,10 @@ fn durations_read_as_irori_writes_them() {
 
 #[test]
 fn a_time_pattern_on_seconds_cant_come_over() {
-    assert_eq!(cron(&json!({ "hours": "/2" })).as_deref(), Ok("0 */2 * * *"));
+    assert_eq!(
+        cron(&json!({ "hours": "/2" })).as_deref(),
+        Ok("0 */2 * * *")
+    );
     assert_eq!(cron(&json!({ "minutes": 15 })).as_deref(), Ok("15 * * * *"));
     assert!(cron(&json!({ "seconds": "/30" })).is_err());
 }
@@ -315,7 +323,9 @@ fn a_time_pattern_on_seconds_cant_come_over() {
 fn a_flow_id_is_free_and_a_slug() {
     let taken = |id: &RuleId| id.as_str() == "hall_light";
     assert_eq!(
-        free_id("automation.hall_light", taken).expect("free").as_str(),
+        free_id("automation.hall_light", taken)
+            .expect("free")
+            .as_str(),
         "hall_light_2"
     );
     assert_eq!(

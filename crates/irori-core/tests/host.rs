@@ -2297,3 +2297,75 @@ async fn a_programs_proposal_goes_when_it_exits() {
 
     host.shutdown().await;
 }
+
+// --- A bridge that answers one other extension (`docs/specs/protocols.md` §5.5) ------------
+
+struct Bridge;
+impl Protocol for Bridge {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "bridge"
+        name = "Bridge"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.protocol]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+        answers = ["automations"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        while let Some(incoming) = ctx.next().await {
+            if let irori_protocol::Incoming::Ask(ask) = incoming {
+                let answer = serde_json::json!({ "from": ask.from, "method": ask.method });
+                ask.reply(Ok(answer));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Only the extension a protocol's manifest names may ask it; the core says who asked.
+#[tokio::test(start_paused = true)]
+async fn a_protocol_answers_only_the_extensions_it_names() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Bridge>().expect("a builtin"));
+    eventually("the bridge running", || {
+        status(&core, "bridge") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    let id = |s: &str| ExtensionId::try_from(s).expect("valid");
+
+    let answer = core
+        .ask_extension(
+            &id("automations"),
+            &id("bridge"),
+            "list".into(),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(
+        answer,
+        Ok(serde_json::json!({ "from": "automations", "method": "list" }))
+    );
+    let refused = core
+        .ask_extension(
+            &id("someone"),
+            &id("bridge"),
+            "list".into(),
+            serde_json::json!({}),
+        )
+        .await;
+    assert_eq!(refused, Err("`bridge` doesn't answer `someone`".to_owned()));
+    let nobody = core
+        .ask_extension(
+            &id("automations"),
+            &id("lamp"),
+            "list".into(),
+            serde_json::json!({}),
+        )
+        .await;
+    assert!(nobody.is_err());
+    host.shutdown().await;
+}

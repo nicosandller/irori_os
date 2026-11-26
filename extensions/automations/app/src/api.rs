@@ -33,6 +33,54 @@ pub struct Listing {
     pub home_assistant: bool,
 }
 
+/// One of Home Assistant's own automations, as the engine lists them for bringing over.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct HaAutomation {
+    pub entity_id: String,
+    pub name: String,
+    /// Whether it's switched on in Home Assistant.
+    pub on: bool,
+    /// Whether Home Assistant keeps a setup of it that can be read (one written in YAML without
+    /// an `id` has none).
+    #[serde(default)]
+    pub readable: bool,
+    /// The flow brought over from it, if it was.
+    #[serde(default)]
+    pub flow: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct HaAutomations {
+    automations: Vec<HaAutomation>,
+}
+
+/// Home Assistant's own automations. Reading them changes nothing in Home Assistant.
+pub async fn ha_automations() -> Result<Vec<HaAutomation>, String> {
+    call::<HaAutomations>("home_assistant.automations", json!({}))
+        .await
+        .map(|found| found.automations)
+}
+
+/// What bringing one over did: the flow it made (or had made before), or why it can't come
+/// over, and then nothing was made.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct BroughtOver {
+    #[serde(default)]
+    pub flow: Option<String>,
+    #[serde(default)]
+    pub already: bool,
+    #[serde(default)]
+    pub untranslatable: Vec<String>,
+}
+
+pub async fn bring_over(entity_id: &str) -> Result<BroughtOver, String> {
+    call(
+        "home_assistant.bring_over",
+        json!({ "entity_id": entity_id }),
+    )
+    .await
+}
+
 pub async fn list() -> Result<Listing, String> {
     call("flows.list", json!({})).await
 }

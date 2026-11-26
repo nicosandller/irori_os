@@ -72,6 +72,7 @@ same file the canvas saves (rules.md D18).
 | `wires` | array of `[from, to]`, 0–512 | no | `[]` | `from` is `node` or `node:port`; `to` is a node id |
 | `layout` | map of node id → `[x, y]` | no | `{}` | Canvas position, finite numbers. Not part of the version |
 | `groups` | map of node id → `Name` | no | `{}` | Names given to the canvas's branch backgrounds, by the node each starts at (a branch by its first trigger, a part of one by its first node). Not part of the version |
+| `home_assistant` | `{ entity_id, id }` | no | | The Home Assistant automation the flow was brought over from: its twin, which Home Assistant goes on running (§8). Set only by bringing one over; a save keeps what the saved flow had, whatever the page sends. Absent for a flow made in Irori. Not part of the version |
 
 Unknown fields are rejected everywhere.
 
@@ -319,6 +320,31 @@ says what it is about, and a test fails for one that does not. The assistant cal
 | `clock.holds` | `conditions`: `time` and `sun` conditions | For each, whether it holds right now (`holds`), or `why` that can't be told (no time zone, no location, no sunset at home today, or a window that isn't well formed). With the home's `time_zone`, `location`, `now` and today's `sun`, as `clock.next`. Read-only. It is what colours a window's dot on the canvas, so the dot and a run read the same clock |
 | `live` | `id`, `after?` | What the canvas plays while the flow is open: runs finished and near-misses since `after` (none without it; at most 5 each, oldest first), the triggers holding a `for` and when they'd fire, and `now` to ask with next time |
 | `tests.get` / `tests.save` | `id`, `settings` | How the page last set up a test of this flow (up to 16 KB, kept as given), so it runs again the same way. Deleted with the flow |
+| `home_assistant.automations` | — | Owner only, and only in a home Home Assistant's devices came into. Home Assistant's own automations, read through the Home Assistant extension ([protocols.md](protocols.md) §5.5): each `entity_id`, `name`, `on` (in Home Assistant), `readable` (whether Home Assistant keeps a setup of it to read; one written in YAML without an `id` has none), and `flow` when one was brought over from it. Read beside the engine's loop, so flows keep running meanwhile. Nothing in Home Assistant changes |
+| `home_assistant.bring_over` | `entity_id` | Owner only, as above. Reads that automation's setup and translates it into a flow (below), switched off, with `home_assistant` set: `{ flow }`, or `{ flow, already: true }` when one was brought over before. When any part can't be said as a flow, or the flow couldn't run in this home, nothing is written: `{ untranslatable: [why, …] }`. Nothing in Home Assistant changes: its automation keeps running |
+
+**Bringing a Home Assistant automation over** (issue #198). All or nothing: half an automation
+would run differently from the whole one Home Assistant keeps running. What translates:
+
+- **Triggers**, each its own trigger node: `state` (with `to`, `from`, `for`; on/off and
+  home/not_home become `true`/`false`), `numeric_state` (`above`, `below`, `for`), `time` (`at` a
+  time of day, `weekday`), `sun` (sunrise, sunset, `offset`), `time_pattern` on whole minutes (as a
+  cron), Home Assistant starting (`startup`), and device triggers that say an entity turned on or
+  off (a binary sensor's `motion`/`no_motion` and the like).
+- **Conditions**, gates one after another: `state`, `numeric_state` (as `num()` expressions),
+  `time`, `sun`, `and`/`or`/`not`, and device conditions `is_on`/`is_off`.
+- **Actions**, in order: a service call on named entities (`homeassistant.turn_on` and the like
+  take the entity's own kind), each entity its own call, with its settings checked as a flow's
+  are; `continue_on_error` wires a call's `error` port on too; device actions `turn_on`,
+  `turn_off` and `toggle`; `scene`; `delay`; a `condition` step; `stop`.
+- **Its mode**: `single`, `restart`, and `queued`/`parallel` up to 32.
+- Entities are found through what the Home Assistant extension brought over. One it didn't bring,
+  or one whose device isn't added yet, is said as such.
+
+Not yet: templates, `choose`/`if`, `repeat`, `wait_for_trigger`, `wait_template`, `parallel`,
+`variables`, events, calls on a whole area or device, triggers and conditions on attributes, and a
+state condition's `for`. Parts switched off in Home Assistant are left out, as they do nothing
+there either.
 
 ---
 

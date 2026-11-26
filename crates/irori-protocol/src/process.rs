@@ -1555,6 +1555,77 @@ mod tests {
         );
     }
 
+    /// Another extension asking a process something (`docs/specs/protocols.md` §5.5): it reaches
+    /// the protocol as a question saying who asked, and the answer comes back as `app_answer`.
+    /// A page's `app_request` (no `from`) never reaches a protocol.
+    #[tokio::test]
+    async fn a_question_goes_out_with_who_asked_and_its_answer_comes_back() {
+        let pending = Pending::default();
+        let (calls, _calls_rx) = tokio::sync::mpsc::channel(1);
+        let (actions, mut actions_rx) = tokio::sync::mpsc::channel(1);
+        let (out_tx, mut out_rx) = mpsc::channel(STDOUT_QUEUE);
+        let runtime = tokio::runtime::Handle::current();
+
+        let control = handle_host_line(
+            r#"{"type":"app_request","id":3,"method":"automations.list","params":{}}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        assert!(
+            actions_rx.try_recv().is_err(),
+            "a page's question isn't a protocol's"
+        );
+
+        let control = handle_host_line(
+            r#"{"type":"app_request","id":4,"method":"automations.list","params":{"x":1},"from":"automations"}"#,
+            &pending,
+            &calls,
+            &actions,
+            &out_tx,
+            &runtime,
+        );
+        assert_eq!(control, ReadControl::Continue);
+        let crate::Incoming::Ask(asked) = actions_rx.try_recv().expect("queued").sorted() else {
+            panic!("a question arrives as one");
+        };
+        assert_eq!(
+            (asked.from.as_str(), asked.method.as_str(), &asked.params),
+            (
+                "automations",
+                "automations.list",
+                &serde_json::json!({ "x": 1 })
+            )
+        );
+        asked.reply(Ok(serde_json::json!({ "automations": [] })));
+        let line = tokio::task::spawn_blocking(move || out_rx.blocking_recv())
+            .await
+            .expect("joined")
+            .expect("an answer");
+        let FromExt::AppAnswer { id, value, error } =
+            serde_json::from_str(line.trim()).expect("an answer")
+        else {
+            panic!("expected an app_answer, got {line}");
+        };
+        assert_eq!(
+            (id, value, error),
+            (4, Some(serde_json::json!({ "automations": [] })), None)
+        );
+
+        // On the host's side, the answer reaches whoever asked.
+        let (incoming, result) =
+            host::incoming_ask("automations".into(), "m".into(), serde_json::Value::Null);
+        assert_eq!(
+            incoming.asking().map(|(from, ..)| from),
+            Some("automations")
+        );
+        incoming.reply_answer(Ok(serde_json::json!(7)));
+        assert_eq!(result.await.expect("answered"), Ok(serde_json::json!(7)));
+    }
+
     #[test]
     fn hello_round_trips() {
         let msg = ToExt::Hello {

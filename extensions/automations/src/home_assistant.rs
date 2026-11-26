@@ -100,14 +100,15 @@ pub fn start(
                 return;
             }
         };
-        let wanted = request.params["entity_id"].as_str().unwrap_or("").to_owned();
+        let wanted = request.params["entity_id"]
+            .as_str()
+            .unwrap_or("")
+            .to_owned();
         let automation = listed(&list)
             .into_iter()
             .find(|automation| automation.entity_id == wanted);
         let Some(automation) = automation else {
-            request.answer(Err(format!(
-                "Home Assistant has no automation `{wanted}`"
-            )));
+            request.answer(Err(format!("Home Assistant has no automation `{wanted}`")));
             return;
         };
         let setup = match &automation.id {
@@ -151,7 +152,10 @@ pub fn brought(list: &Value) -> BTreeMap<String, String> {
 }
 
 /// The flow brought over from `twin`, if there is one.
-pub fn twin_of<'a>(flows: impl IntoIterator<Item = &'a Flow>, automation: &Listed) -> Option<RuleId> {
+pub fn twin_of<'a>(
+    flows: impl IntoIterator<Item = &'a Flow>,
+    automation: &Listed,
+) -> Option<RuleId> {
     flows
         .into_iter()
         .find(|flow| {
@@ -180,10 +184,14 @@ pub fn free_id(entity_id: &str, taken: impl Fn(&RuleId) -> bool) -> Result<RuleI
         base = base.replace("__", "_");
     }
     let base = base.trim_matches('_');
-    let base: String = if base.is_empty() { "home_assistant" } else { base }
-        .chars()
-        .take(56)
-        .collect();
+    let base: String = if base.is_empty() {
+        "home_assistant"
+    } else {
+        base
+    }
+    .chars()
+    .take(56)
+    .collect();
     let base = base.trim_end_matches('_');
     for n in 1..100 {
         let candidate = if n == 1 {
@@ -441,7 +449,13 @@ fn compact(millis: i64) -> String {
         out.push('-');
     }
     let mut left = millis.unsigned_abs();
-    for (unit, size) in [("d", 86_400_000), ("h", 3_600_000), ("m", 60_000), ("s", 1000), ("ms", 1)] {
+    for (unit, size) in [
+        ("d", 86_400_000),
+        ("h", 3_600_000),
+        ("m", 60_000),
+        ("s", 1000),
+        ("ms", 1),
+    ] {
         if left >= size {
             out.push_str(&format!("{}{unit}", left / size));
             left %= size;
@@ -578,10 +592,18 @@ impl Build<'_, '_> {
             .and_then(Value::as_str)
             .unwrap_or("");
         if templated(trigger) {
-            self.miss(format!("its `{kind}` trigger uses a template, which Irori doesn't run"));
+            self.miss(format!(
+                "its `{kind}` trigger uses a template, which Irori doesn't run"
+            ));
             return Vec::new();
         }
-        for key in ["variables", "attribute", "value_template", "not_to", "not_from"] {
+        for key in [
+            "variables",
+            "attribute",
+            "value_template",
+            "not_to",
+            "not_from",
+        ] {
             if trigger.get(key).is_some_and(|v| !v.is_null()) {
                 self.miss(format!("its `{kind}` trigger's `{key}`"));
                 return Vec::new();
@@ -603,11 +625,15 @@ impl Build<'_, '_> {
                 };
                 let mut nodes = Vec::new();
                 for ha in entity_ids {
-                    let Some(entity) = self.entity(&ha) else { continue };
+                    let Some(entity) = self.entity(&ha) else {
+                        continue;
+                    };
                     let entity = entity.clone();
                     let mut node = json!({ "type": "state", "entity": entity.id });
                     if kind == "state" {
-                        let Some(to) = self.values(&entity, trigger.get("to")) else { continue };
+                        let Some(to) = self.values(&entity, trigger.get("to")) else {
+                            continue;
+                        };
                         let Some(from) = self.values(&entity, trigger.get("from")) else {
                             continue;
                         };
@@ -691,7 +717,9 @@ impl Build<'_, '_> {
                 vec![json!({ "type": "trigger", "trigger": { "type": "startup" } })]
             }
             "time_pattern" => match cron(trigger) {
-                Ok(cron) => vec![json!({ "type": "trigger", "trigger": { "type": "time", "cron": cron } })],
+                Ok(cron) => {
+                    vec![json!({ "type": "trigger", "trigger": { "type": "time", "cron": cron } })]
+                }
                 Err(why) => {
                     self.miss(format!("a time pattern trigger {why}"));
                     Vec::new()
@@ -714,14 +742,16 @@ impl Build<'_, '_> {
                     Some(Some(on)) => Some(json!(on)),
                     Some(None) => None,
                     None => {
-                        self.miss(format!("Home Assistant's `{domain}` device trigger `{event}`"));
+                        self.miss(format!(
+                            "Home Assistant's `{domain}` device trigger `{event}`"
+                        ));
                         return Vec::new();
                     }
                 };
-                if to.is_some()
-                    && entity.capabilities.primary_shape() != Some(ValueShape::Bool)
-                {
-                    self.miss(format!("Home Assistant's `{domain}` device trigger `{event}`"));
+                if to.is_some() && entity.capabilities.primary_shape() != Some(ValueShape::Bool) {
+                    self.miss(format!(
+                        "Home Assistant's `{domain}` device trigger `{event}`"
+                    ));
                     return Vec::new();
                 }
                 let mut node = json!({ "type": "state", "entity": entity.id });
@@ -790,7 +820,9 @@ impl Build<'_, '_> {
                     for (side, op) in [("above", ">"), ("below", "<")] {
                         if let Some(level) = condition.get(side).filter(|v| !v.is_null()) {
                             let Some(level) = number(level) else {
-                                self.miss(format!("a `numeric_state` condition compared with {level}"));
+                                self.miss(format!(
+                                    "a `numeric_state` condition compared with {level}"
+                                ));
                                 return None;
                             };
                             parts.push(format!("num('{}') {op} {level}", entity.id));
@@ -870,14 +902,20 @@ impl Build<'_, '_> {
             "device" => {
                 let domain = condition["domain"].as_str().unwrap_or("");
                 let event = condition["type"].as_str().unwrap_or("");
-                let on = event.strip_prefix("is_").and_then(|rest| switched(domain, rest));
+                let on = event
+                    .strip_prefix("is_")
+                    .and_then(|rest| switched(domain, rest));
                 let (Some(Some(on)), Some(ha)) = (on, condition["entity_id"].as_str()) else {
-                    self.miss(format!("Home Assistant's `{domain}` device condition `{event}`"));
+                    self.miss(format!(
+                        "Home Assistant's `{domain}` device condition `{event}`"
+                    ));
                     return None;
                 };
                 let entity = self.entity(ha)?.clone();
                 if entity.capabilities.primary_shape() != Some(ValueShape::Bool) {
-                    self.miss(format!("Home Assistant's `{domain}` device condition `{event}`"));
+                    self.miss(format!(
+                        "Home Assistant's `{domain}` device condition `{event}`"
+                    ));
                     return None;
                 }
                 Some(json!({ "type": "state", "entity": entity.id, "is": on }))
@@ -912,11 +950,15 @@ impl Build<'_, '_> {
             let domain = action["domain"].as_str().unwrap_or("");
             let event = action["type"].as_str().unwrap_or("");
             let Some(ha) = action["entity_id"].as_str() else {
-                self.miss(format!("a `{domain}` device action `{event}` on the whole device"));
+                self.miss(format!(
+                    "a `{domain}` device action `{event}` on the whole device"
+                ));
                 return tails;
             };
             if !["turn_on", "turn_off", "toggle"].contains(&event) {
-                self.miss(format!("Home Assistant's `{domain}` device action `{event}`"));
+                self.miss(format!(
+                    "Home Assistant's `{domain}` device action `{event}`"
+                ));
                 return tails;
             }
             let call = json!({ "target": { "entity_id": ha } });
@@ -961,9 +1003,14 @@ impl Build<'_, '_> {
             })
             .map_or("an action", String::as_str);
         self.miss(match what {
-            "choose" | "if" => "a choice between actions (`choose`/`if`), which this import can't bring over yet".to_owned(),
+            "choose" | "if" => {
+                "a choice between actions (`choose`/`if`), which this import can't bring over yet"
+                    .to_owned()
+            }
             "repeat" => "a repeat, which Irori flows don't have yet".to_owned(),
-            "wait_for_trigger" | "wait_template" => format!("a `{what}`, which this import can't bring over yet"),
+            "wait_for_trigger" | "wait_template" => {
+                format!("a `{what}`, which this import can't bring over yet")
+            }
             other => format!("Home Assistant's `{other}` action, which Irori flows don't have"),
         });
         tails
@@ -1001,8 +1048,7 @@ impl Build<'_, '_> {
             .cloned()
             .or_else(|| data.remove("entity_id"));
         data.remove("entity_id");
-        let Some(entity_ids) = named.as_ref().and_then(texts).filter(|ids| !ids.is_empty())
-        else {
+        let Some(entity_ids) = named.as_ref().and_then(texts).filter(|ids| !ids.is_empty()) else {
             self.miss(format!("`{service}` on no entity in particular"));
             return tails;
         };
@@ -1013,11 +1059,16 @@ impl Build<'_, '_> {
         let keeps_going = action.get("continue_on_error") == Some(&Value::Bool(true));
         let mut tails = tails;
         for ha in entity_ids {
-            let Some(entity) = self.entity(&ha) else { continue };
+            let Some(entity) = self.entity(&ha) else {
+                continue;
+            };
             let entity = entity.clone();
             let kind = entity.capabilities.kind();
             if domain != "homeassistant" && domain != kind.domain() {
-                self.miss(format!("`{service}` on `{ha}`, which Irori has as a {}", kind.domain()));
+                self.miss(format!(
+                    "`{service}` on `{ha}`, which Irori has as a {}",
+                    kind.domain()
+                ));
                 continue;
             }
             let Some(rule_service) = RuleService::of(kind, name) else {

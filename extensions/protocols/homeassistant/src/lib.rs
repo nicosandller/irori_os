@@ -32,8 +32,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use irori_protocol::{
-    AvailabilityTarget, Health, Incoming, IncomingAsk, IncomingCall, IncomingLive,
-    IncomingPicture, Picture, Protocol, ProtocolContext, ProtocolError, ServiceError,
+    AvailabilityTarget, Health, Incoming, IncomingAsk, IncomingCall, IncomingLive, IncomingPicture,
+    Picture, Protocol, ProtocolContext, ProtocolError, ServiceError,
 };
 use irori_types::{
     Availability, Capabilities, ContextId, DeviceDescription, EntityDescription, SecretRequest,
@@ -1081,13 +1081,15 @@ impl Session<'_> {
                         .request(Outgoing::GetStates, client::READ_TIMEOUT)
                         .await
                         .map(|states| automations::list(&states, &brought))
-                        .map_err(|why| format!("couldn't read Home Assistant's automations: {why}"));
+                        .map_err(|why| {
+                            format!("couldn't read Home Assistant's automations: {why}")
+                        });
                     ask.reply(answer);
                 });
             }
             automations::SETUP => {
-                let path = automations::asked_id(&ask.params)
-                    .and_then(|id| automations::setup_path(&id));
+                let path =
+                    automations::asked_id(&ask.params).and_then(|id| automations::setup_path(&id));
                 let path = match path {
                     Ok(path) => path,
                     Err(why) => {

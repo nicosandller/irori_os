@@ -727,7 +727,37 @@
       ]
     },
     {
-      "description": "The answer to an `app_request` from the extension's page.",
+      "description": "Ask another extension something it answers this one (its manifest names this one in\n`answers`): a protocol bridging another system, say. Answered with `ToExt::Answer`\n(`docs/specs/protocols.md` §5.5). Needs no scope: the one asked decides.",
+      "type": "object",
+      "properties": {
+        "extension": {
+          "$ref": "#/$defs/ExtensionId"
+        },
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "method": {
+          "type": "string"
+        },
+        "params": {
+          "default": null
+        },
+        "type": {
+          "type": "string",
+          "const": "ask_extension"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "extension",
+        "method"
+      ]
+    },
+    {
+      "description": "The answer to an `app_request`: from the extension's page, or from another extension.",
       "type": "object",
       "properties": {
         "error": {
@@ -2603,6 +2633,13 @@
           "const": "button"
         }
       ]
+    },
+    "ExtensionId": {
+      "description": "Format of a slug (extension id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",
+      "type": "string",
+      "maxLength": 64,
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
     "FanDirection": {
       "type": "string",

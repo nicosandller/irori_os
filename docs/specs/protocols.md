@@ -121,6 +121,7 @@ core's process.
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
 | Send a picture | receives a camera or image entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` and `image` entities. §5.2 |
 | Send live video | receives a camera entity's `unique_id`, a quality and the codecs the page plays; sends an init segment, then video, until told to stop | Only for its own `camera` entities that say `live`. §5.3 |
+| Answer another extension | receives a question (a method and its parameters) from an extension its manifest names in `answers`; replies with JSON or why not | Only with `answers` in its manifest. §5.5 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
 
@@ -265,6 +266,25 @@ On the wire the request is `talk_start { stream, unique_id }`, then `talk_audio 
 for each chunk (`data` the bytes as base64) and `talk_stop { stream }`; the protocol answers with
 `talk_ready { stream }` and `talk_end { stream, error }`. In the SDK it is `Incoming::Talk`, whose
 `audio` is the chunks and whose `line` says `ready()` and `end(error)`.
+
+### 5.5 Questions from another extension
+
+A protocol that bridges another system can answer questions about it that aren't devices or
+entities: the Home Assistant extension tells the Automations extension about Home Assistant's
+own automations, so the owner can bring one over as a flow
+([flows.md](flows.md) §8, issue #198).
+
+- **The one asked decides who may ask.** Its manifest names the extensions in `answers`
+  ([extensions.md](extensions.md) §4). The core passes a question on only from one of them,
+  and says which one asked; nobody else's question reaches it, and no API scope is needed.
+- **An engine asks** with `ask_extension { id, extension, method, params }`
+  ([automations.md](automations.md) §B2), answered with `answer` like its other requests.
+- **The protocol receives it as `app_request`** with `from` set to the asker's id, and answers
+  with `app_answer { id, value?, error? }`, the pair an engine's page uses. In the SDK it is
+  `Incoming::Ask`, with `from`, `method` and `params`, answered with `reply`.
+- **It has 20 seconds** to answer, as it may have to read the system it bridges first.
+- **A core older than 1.7.0 doesn't know the message**, so an engine asks only when the home
+  has the protocol it asks: one that does is 1.7.0 or newer.
 
 **What it can't do:** see or change other protocols' devices and entities (without the `api`
 permissions, [extensions.md](extensions.md) §7), touch rules, write history, or set timestamps and
@@ -818,6 +838,7 @@ answered with the same `id`. Sample conversations are in
 | → core | `get_reach` | `id`, `user` | What a person can see and do now. |
 | → core | `subscribe` | `id`, `states`?, `registry`? | Start receiving the two messages below. |
 | → core | `call_service` | `id`, `entity_id`, `command`, `data`?, `run_id`, `parent_id`? | Ask an entity to do something, as a run of the engine. |
+| → core | `ask_extension` | `id`, `extension`, `method`, `params`? | Ask another extension something it answers this one (§5.5). No scope: the one asked names this extension in `answers`. |
 | → core | `note` | `action`, `target`, `detail` | Something the engine did, for the activity log. Not answered. |
 | core → | `answer` | `id`, `value`?, `error`? | The answer to the operations above. |
 | core → | `state_changed` | `entity_id`, `old_state`?, `new_state` | A state changed (after `subscribe` with `states`). |
@@ -827,8 +848,8 @@ answered with the same `id`. Sample conversations are in
 
 | Direction | `type` | Fields | Meaning |
 |---|---|---|---|
-| core → | `app_request` | `id`, `method`, `params`, `caller`?: `{user?, owner}` | The extension's page asked it something. |
-| → core | `app_answer` | `id`, `value`?, `error`? | Its answer. |
+| core → | `app_request` | `id`, `method`, `params`, `caller`?: `{user?, owner}`, `from`? | The extension's page asked it something; with `from`, another extension did (§5.5). |
+| → core | `app_answer` | `id`, `value`?, `error`? | Its answer, to its page or to the extension that asked (§5.5). |
 
 `?` marks a field that may be left out. A test in `crates/irori-protocol/tests/wire.rs` fails
 when a message type is in the code but missing from these tables.

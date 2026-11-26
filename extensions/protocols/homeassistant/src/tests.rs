@@ -939,8 +939,7 @@ impl Running {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let (incoming, answer) =
-            host::incoming_ask(from.to_owned(), method.to_owned(), params);
+        let (incoming, answer) = host::incoming_ask(from.to_owned(), method.to_owned(), params);
         self._actions.send(incoming).await.expect("running");
         tokio::time::timeout(Duration::from_secs(5), answer)
             .await
@@ -959,8 +958,14 @@ async fn automations_and_their_setups_are_read_and_nothing_written() {
         "triggers": [{ "trigger": "sun", "event": "sunset" }],
         "actions": [{ "action": "light.turn_on", "target": { "entity_id": "light.kitchen" } }],
     });
-    home.automation("automation.kitchen_light_at_dusk", "Kitchen light at dusk", true, Some("1700000000001"), setup.clone())
-        .automation("automation.from_yaml", "From YAML", false, None, json!({}));
+    home.automation(
+        "automation.kitchen_light_at_dusk",
+        "Kitchen light at dusk",
+        true,
+        Some("1700000000001"),
+        setup.clone(),
+    )
+    .automation("automation.from_yaml", "From YAML", false, None, json!({}));
     let fake = FakeHa::start(home).await.expect("a fake");
     let world = world(&fake).await;
     world.running().await;
@@ -988,7 +993,11 @@ async fn automations_and_their_setups_are_read_and_nothing_written() {
     assert_eq!(listed["entities"]["light.kitchen"], "e-light");
 
     let read = world
-        .asked("automations", "automation.setup", json!({ "id": "1700000000001" }))
+        .asked(
+            "automations",
+            "automation.setup",
+            json!({ "id": "1700000000001" }),
+        )
         .await
         .expect("a setup");
     assert_eq!(read, setup);
@@ -999,7 +1008,11 @@ async fn automations_and_their_setups_are_read_and_nothing_written() {
         .expect_err("none");
     assert!(missing.contains("no setup"), "{missing}");
     let odd = world
-        .asked("automations", "automation.setup", json!({ "id": "../services" }))
+        .asked(
+            "automations",
+            "automation.setup",
+            json!({ "id": "../services" }),
+        )
         .await
         .expect_err("refused");
     assert!(odd.contains("isn't an automation id"), "{odd}");
@@ -1009,7 +1022,11 @@ async fn automations_and_their_setups_are_read_and_nothing_written() {
         .expect_err("refused");
     assert!(stranger.contains("can't ask"), "{stranger}");
     let other = world
-        .asked("automations", "automation.turn_off", json!({ "id": "1700000000001" }))
+        .asked(
+            "automations",
+            "automation.turn_off",
+            json!({ "id": "1700000000001" }),
+        )
         .await
         .expect_err("refused");
     assert!(other.contains("doesn't answer"), "{other}");
