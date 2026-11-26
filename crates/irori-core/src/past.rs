@@ -269,24 +269,42 @@ mod tests {
             at("2026-11-20T12:00:00Z"),
             false,
             Past {
-                changes: vec![change("2026-11-19T06:00:00Z"), change("2026-11-20T06:00:00Z")],
+                changes: vec![
+                    change("2026-11-19T06:00:00Z"),
+                    change("2026-11-20T06:00:00Z"),
+                ],
                 hours: Vec::new(),
             },
         );
         let cut = cache
-            .get(&id, false, at("2026-11-20T00:00:00Z"), at("2026-11-20T12:00:00Z"))
+            .get(
+                &id,
+                false,
+                at("2026-11-20T00:00:00Z"),
+                at("2026-11-20T12:00:00Z"),
+            )
             .expect("covered");
         assert_eq!(cut.changes.len(), 1);
         // Further back than was asked: not covered, asked again.
         assert!(
             cache
-                .get(&id, false, at("2026-11-18T00:00:00Z"), at("2026-11-20T12:00:00Z"))
+                .get(
+                    &id,
+                    false,
+                    at("2026-11-18T00:00:00Z"),
+                    at("2026-11-20T12:00:00Z")
+                )
                 .is_none()
         );
         cache.forget(&id);
         assert!(
             cache
-                .get(&id, false, at("2026-11-20T00:00:00Z"), at("2026-11-20T12:00:00Z"))
+                .get(
+                    &id,
+                    false,
+                    at("2026-11-20T00:00:00Z"),
+                    at("2026-11-20T12:00:00Z")
+                )
                 .is_none()
         );
     }

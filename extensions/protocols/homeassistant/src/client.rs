@@ -3,7 +3,9 @@
 //!
 //! **This extension never changes Home Assistant** (rule 5 of milestone 11). Everything it sends
 //! is an [`Outgoing`], a closed list: signing in, the reads, subscribing and unsubscribing,
-//! asking for a camera's stream to watch (`camera/stream`, which reads and changes nothing), and
+//! asking for a camera's stream to watch (`camera/stream`, which reads and changes nothing),
+//! reading one entity's recorded history or hourly statistics (`history/history_during_period`,
+//! `recorder/statistics_during_period`: reads, never the recorder's writes), and
 //! `call_service`, which [`crate`] sends only in answer to a command someone gave in Irori. There
 //! is no way to send a registry, area or automation write, and [`Client::request`] checks
 //! every message's type against [`ALLOWED`] once more before it leaves.
@@ -36,7 +38,16 @@ pub const ALLOWED: &[&str] = &[
     "subscribe_events",
     "unsubscribe_events",
     "camera/stream",
+    "history/history_during_period",
+    "recorder/statistics_during_period",
     "call_service",
+];
+
+/// The recorder's reads on [`ALLOWED`], by name. Home Assistant's `recorder/` commands also
+/// import, clear and rewrite statistics, so nothing is allowed by its prefix.
+pub const HISTORY_READS: [&str; 2] = [
+    "history/history_during_period",
+    "recorder/statistics_during_period",
 ];
 
 /// The registry events a re-read follows.
@@ -83,6 +94,20 @@ pub enum Outgoing {
     CameraStream {
         entity_id: String,
     },
+    /// One entity's recorded changes from `start_time` to `end_time` (RFC 3339), compressed,
+    /// with attributes on the first row only.
+    HistoryDuringPeriod {
+        entity_id: String,
+        start_time: String,
+        end_time: String,
+    },
+    /// One entity's hourly statistics from `start_time` to `end_time`: `types` of them.
+    StatisticsDuringPeriod {
+        statistic_id: String,
+        start_time: String,
+        end_time: String,
+        types: Vec<&'static str>,
+    },
     /// Only ever built by [`crate::model::command`], from a command someone gave in Irori.
     CallService {
         domain: String,
@@ -106,6 +131,8 @@ impl Outgoing {
             Self::SubscribeEvents { .. } => "subscribe_events",
             Self::Unsubscribe { .. } => "unsubscribe_events",
             Self::CameraStream { .. } => "camera/stream",
+            Self::HistoryDuringPeriod { .. } => "history/history_during_period",
+            Self::StatisticsDuringPeriod { .. } => "recorder/statistics_during_period",
             Self::CallService { .. } => "call_service",
         }
     }
@@ -119,6 +146,30 @@ impl Outgoing {
             Self::CameraStream { entity_id } => {
                 body["entity_id"] = json!(entity_id);
                 body["format"] = json!("hls");
+            }
+            Self::HistoryDuringPeriod {
+                entity_id,
+                start_time,
+                end_time,
+            } => {
+                body["entity_ids"] = json!([entity_id]);
+                body["start_time"] = json!(start_time);
+                body["end_time"] = json!(end_time);
+                body["minimal_response"] = json!(true);
+                body["include_start_time_state"] = json!(true);
+                body["significant_changes_only"] = json!(true);
+            }
+            Self::StatisticsDuringPeriod {
+                statistic_id,
+                start_time,
+                end_time,
+                types,
+            } => {
+                body["statistic_ids"] = json!([statistic_id]);
+                body["start_time"] = json!(start_time);
+                body["end_time"] = json!(end_time);
+                body["period"] = json!("hour");
+                body["types"] = json!(types);
             }
             Self::CallService {
                 domain,
@@ -553,6 +604,17 @@ mod tests {
             Outgoing::CameraStream {
                 entity_id: "camera.front".into(),
             },
+            Outgoing::HistoryDuringPeriod {
+                entity_id: "sensor.power".into(),
+                start_time: "2026-11-20T00:00:00Z".into(),
+                end_time: "2026-11-21T00:00:00Z".into(),
+            },
+            Outgoing::StatisticsDuringPeriod {
+                statistic_id: "sensor.power".into(),
+                start_time: "2026-11-01T00:00:00Z".into(),
+                end_time: "2026-11-21T00:00:00Z".into(),
+                types: vec!["mean", "min", "max"],
+            },
             Outgoing::CallService {
                 domain: "light".into(),
                 service: "turn_on".into(),
@@ -579,6 +641,8 @@ mod tests {
                 | Outgoing::SubscribeEvents { .. }
                 | Outgoing::Unsubscribe { .. }
                 | Outgoing::CameraStream { .. }
+                | Outgoing::HistoryDuringPeriod { .. }
+                | Outgoing::StatisticsDuringPeriod { .. }
                 | Outgoing::CallService { .. } => {}
             }
             assert!(allowed(message.kind()), "{} isn't allowed", message.kind());
@@ -596,8 +660,15 @@ mod tests {
             let subscribes = kind.starts_with("subscribe_") || kind.starts_with("unsubscribe_");
             // Where to watch a camera: an address to read, nothing changed.
             let watches = *kind == "camera/stream";
+            // Named one by one: the recorder's other commands write.
+            let history = HISTORY_READS.contains(kind);
             assert!(
-                reads || subscribes || watches || *kind == "auth" || *kind == "call_service",
+                reads
+                    || subscribes
+                    || watches
+                    || history
+                    || *kind == "auth"
+                    || *kind == "call_service",
                 "{kind} isn't a read, a subscription or a service call"
             );
         }
@@ -614,6 +685,16 @@ mod tests {
             "execute_script",
             "fire_event",
             "ping",
+            "recorder/import_statistics",
+            "recorder/clear_statistics",
+            "recorder/update_statistics_metadata",
+            "recorder/adjust_sum_statistics",
+            "recorder/change_statistics_unit",
+            "recorder/update_statistics_issues",
+            "recorder/purge",
+            "recorder/enable",
+            "recorder/disable",
+            "history/stream",
         ] {
             assert!(!allowed(write), "{write} is allowed");
         }

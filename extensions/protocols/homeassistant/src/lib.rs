@@ -17,6 +17,7 @@ pub mod http;
 pub mod live;
 pub mod model;
 pub mod network;
+pub mod past;
 pub mod settings;
 pub mod throttle;
 pub mod transport;
@@ -31,8 +32,8 @@ use std::future::Future;
 use std::time::Duration;
 
 use irori_protocol::{
-    AvailabilityTarget, Health, Incoming, IncomingCall, IncomingLive, IncomingPicture, Picture,
-    Protocol, ProtocolContext, ProtocolError, ServiceError,
+    AvailabilityTarget, Health, Incoming, IncomingCall, IncomingHistory, IncomingLive,
+    IncomingPicture, Past, Picture, Protocol, ProtocolContext, ProtocolError, ServiceError,
 };
 use irori_types::{
     Availability, Capabilities, ContextId, DeviceDescription, EntityDescription, SecretRequest,
@@ -522,7 +523,12 @@ struct Session<'a> {
     /// already there, not something happening now.
     heard_first: bool,
     registry_subscriptions: Vec<u64>,
+    /// One history question to Home Assistant at a time: its recorder reads the disk.
+    history_turn: std::sync::Arc<tokio::sync::Semaphore>,
 }
+
+/// How long one history question may take, its turn included. Irori stops waiting soon after.
+const HISTORY_WITHIN: Duration = Duration::from_secs(7);
 
 async fn session(
     settings: &Settings,
@@ -605,6 +611,7 @@ async fn session(
         entities_subscription: None,
         heard_first: false,
         registry_subscriptions,
+        history_turn: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
     };
     if let Err(why) = session.take(ctx, &registry, settings).await {
         return Ended::Lost(why.to_string());
@@ -641,6 +648,7 @@ async fn session(
                 Some(Incoming::Call(call)) => session.call(call, &done_tx),
                 Some(Incoming::Picture(picture)) => session.picture(picture, settings),
                 Some(Incoming::Live(live)) => session.live(live, settings),
+                Some(Incoming::History(history)) => session.history(history),
                 Some(other) => turn_away(other),
                 None => return Ended::Stopped,
             },
@@ -1056,6 +1064,77 @@ impl Session<'_> {
                         }
                     ))
                 }
+            }));
+        });
+    }
+
+    /// An entity's history from before Irori recorded it, read from Home Assistant's recorder.
+    /// Asked only when a page or a backtest wants it, never on connecting; one at a time.
+    fn history(&self, asked: IncomingHistory) {
+        let Some(bridged) = self
+            .by_unique_id
+            .get(&asked.unique_id)
+            .map(|&index| &self.entities[index])
+        else {
+            asked.reply(Err("that isn't one of Home Assistant's entities".into()));
+            return;
+        };
+        let entity_id = bridged.entity_id.clone();
+        let caps = bridged.description.capabilities.clone();
+        let (since, until) = (asked.since, asked.until);
+        // The statistic an hour is drawn from, when hours are what's asked for.
+        let hourly = if asked.hourly {
+            let Some(value) = past::hourly_value(&caps) else {
+                // Home Assistant keeps no statistics for it either.
+                asked.reply(Ok(Past::default()));
+                return;
+            };
+            Some(value)
+        } else {
+            None
+        };
+        let message = if let Some(value) = hourly {
+            Outgoing::StatisticsDuringPeriod {
+                statistic_id: entity_id.clone(),
+                start_time: since.to_string(),
+                end_time: until.to_string(),
+                types: if value == "mean" {
+                    vec!["mean", "min", "max"]
+                } else {
+                    vec![value]
+                },
+            }
+        } else {
+            Outgoing::HistoryDuringPeriod {
+                entity_id: entity_id.clone(),
+                start_time: since.to_string(),
+                end_time: until.to_string(),
+            }
+        };
+        let client = self.client.clone();
+        let turn = self.history_turn.clone();
+        tokio::spawn(async move {
+            let answer = tokio::time::timeout(HISTORY_WITHIN, async {
+                let _turn = turn
+                    .acquire_owned()
+                    .await
+                    .map_err(|_| "stopping".to_owned())?;
+                client
+                    .request(message, HISTORY_WITHIN)
+                    .await
+                    .map_err(|why| format!("Home Assistant didn't say: {why}"))
+            })
+            .await
+            .unwrap_or_else(|_| Err("Home Assistant took too long".into()));
+            asked.reply(answer.map(|answer| match hourly {
+                Some(value) => Past {
+                    changes: Vec::new(),
+                    hours: past::hours(&answer, &entity_id, value, since, until),
+                },
+                None => Past {
+                    changes: past::changes(&answer, &entity_id, &caps, since, until),
+                    hours: Vec::new(),
+                },
             }));
         });
     }

@@ -1496,7 +1496,9 @@ impl Core {
             .and_then(|overview| overview.info.as_ref())
             .filter(|info| info.history)
             .map(|info| info.name.to_string())?;
-        read(&self.0.action_links).contains_key(&extension).then_some(())?;
+        read(&self.0.action_links)
+            .contains_key(&extension)
+            .then_some(())?;
         Some((extension, name, unique_id))
     }
 
@@ -1524,7 +1526,8 @@ impl Core {
         since: Timestamp,
     ) -> Option<past::BorrowedChanges> {
         let (extension, from, unique_id) = self.lender(entity_id)?;
-        let (since, until, open) = self.past_stretch(entity_id, since, false, past::PAST_CHANGES_DAYS)?;
+        let (since, until, open) =
+            self.past_stretch(entity_id, since, false, past::PAST_CHANGES_DAYS)?;
         let answer = self
             .ask_past(&extension, entity_id, unique_id, since, until, open, false)
             .await?;
@@ -1589,7 +1592,8 @@ impl Core {
         since: Timestamp,
     ) -> Option<past::BorrowedHours> {
         let (extension, from, unique_id) = self.lender(entity_id)?;
-        let (since, until, open) = self.past_stretch(entity_id, since, true, past::PAST_HOURS_DAYS)?;
+        let (since, until, open) =
+            self.past_stretch(entity_id, since, true, past::PAST_HOURS_DAYS)?;
         let answer = self
             .ask_past(&extension, entity_id, unique_id, since, until, open, true)
             .await?;

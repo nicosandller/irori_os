@@ -930,3 +930,101 @@ async fn a_picture_comes_over_the_same_checked_connection() {
     assert_eq!(answer.content_type, "image/jpeg");
     assert_eq!(answer.body, b"jpeg");
 }
+
+impl Running {
+    /// Asks for an entity's history from before Irori, as the core does.
+    async fn past(
+        &self,
+        entity: &str,
+        hours: i64,
+        hourly: bool,
+    ) -> Result<irori_protocol::Past, String> {
+        let until = irori_types::Timestamp::from_jiff(jiff::Timestamp::now());
+        let since = irori_types::Timestamp::from_jiff(
+            until.as_jiff() - jiff::SignedDuration::from_hours(hours),
+        );
+        let (incoming, answer) = host::incoming_history(irori_protocol::PastAsk {
+            unique_id: UniqueId::try_from(entity).expect("an id"),
+            since,
+            until,
+            hourly,
+        });
+        self._actions.send(incoming).await.expect("running");
+        tokio::time::timeout(Duration::from_secs(5), answer)
+            .await
+            .expect("an answer in time")
+            .expect("an answer")
+    }
+}
+
+#[tokio::test]
+async fn history_from_before_irori_is_read_only_when_asked() {
+    let fake = FakeHa::start(home()).await.expect("a fake");
+    let mut world = world(&fake).await;
+    world.running().await;
+    world.report("e-temp", |_| true).await;
+    // Connecting asks for no history: nothing is read until a page or a backtest wants it.
+    let types = fake.received_types();
+    assert!(
+        !types
+            .iter()
+            .any(|t| t.starts_with("history/") || t.starts_with("recorder/")),
+        "{types:?}"
+    );
+
+    let day = world.past("e-temp", 24, false).await.expect("a day");
+    assert!(day.changes.len() > 80, "a reading every quarter hour");
+    assert!(day.changes.windows(2).all(|pair| pair[0].at < pair[1].at));
+    assert!(matches!(day.changes[0].state, Some(State::Sensor(_))));
+
+    let light = world.past("e-light", 24, false).await.expect("a day");
+    assert!(
+        (7..=9).contains(&light.changes.len()),
+        "{}",
+        light.changes.len()
+    );
+
+    let week = world.past("e-temp", 24 * 7, true).await.expect("a week");
+    assert!(
+        (166..=168).contains(&week.hours.len()),
+        "{}",
+        week.hours.len()
+    );
+    assert!(week.hours.iter().all(|hour| hour.min.is_some()));
+    // A light has no statistics: none asked for.
+    let none = world
+        .past("e-light", 24 * 7, true)
+        .await
+        .expect("an answer");
+    assert!(none.hours.is_empty());
+    assert!(world.past("nobody", 24, false).await.is_err());
+
+    world.stop().await;
+    let asked: Vec<serde_json::Value> = fake
+        .received()
+        .into_iter()
+        .filter(|message| message["type"] != "auth")
+        .collect();
+    let reads: Vec<&serde_json::Value> = asked
+        .iter()
+        .filter(|m| {
+            let kind = m["type"].as_str().unwrap_or("");
+            kind.starts_with("history/") || kind.starts_with("recorder/")
+        })
+        .collect();
+    assert_eq!(reads.len(), 3, "{reads:?}");
+    // One entity per question, for the stretch asked.
+    for read in &reads {
+        let ids = read
+            .get("entity_ids")
+            .or_else(|| read.get("statistic_ids"))
+            .and_then(|ids| ids.as_array())
+            .expect("ids");
+        assert_eq!(ids.len(), 1);
+        assert!(read["end_time"].is_string());
+    }
+    for message in &asked {
+        let kind = message["type"].as_str().unwrap_or("");
+        assert!(ALLOWED.contains(&kind), "{kind}");
+    }
+}

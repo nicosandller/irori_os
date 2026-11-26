@@ -2427,14 +2427,21 @@ async fn a_bridge_lends_history_from_before_irori_once() {
         .collect();
     // Oldest first, only a light's values, and only before Irori's own record began.
     assert_eq!(ons, [false, true]);
-    assert!(lent.states.iter().all(|state| state.last_updated < lent.borrowed.until));
+    assert!(
+        lent.states
+            .iter()
+            .all(|state| state.last_updated < lent.borrowed.until)
+    );
     assert_eq!(lent.borrowed.from, "Lender");
     assert_eq!(LENT.load(Ordering::SeqCst), 1);
 
     // Asked again: answered from memory, and where Irori's record begins isn't looked up again.
     let again = core.past_changes(&lamp, a_day_ago()).await.expect("kept");
     let when = |states: &[irori_protocol::types::EntityState]| {
-        states.iter().map(|state| state.last_updated).collect::<Vec<_>>()
+        states
+            .iter()
+            .map(|state| state.last_updated)
+            .collect::<Vec<_>>()
     };
     assert_eq!(when(&again.states), when(&lent.states));
     assert_eq!(LENT.load(Ordering::SeqCst), 1);

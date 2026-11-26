@@ -1228,7 +1228,10 @@ pub mod host {
     /// [`ProtocolContext::next`] hands it out as [`Incoming::History`].
     pub fn incoming_history(
         ask: crate::PastAsk,
-    ) -> (IncomingAction, oneshot::Receiver<Result<crate::Past, String>>) {
+    ) -> (
+        IncomingAction,
+        oneshot::Receiver<Result<crate::Past, String>>,
+    ) {
         let (reply, result) = oneshot::channel();
         let incoming = IncomingAction {
             action_id: String::new(),

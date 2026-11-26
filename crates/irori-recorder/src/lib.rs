@@ -849,7 +849,9 @@ fn apply(
                 "SELECT MIN(updated_ns) FROM state_history WHERE entity_id = ?1"
             };
             let first = connection
-                .query_row(sql, [entity_id.as_str()], |row| row.get::<_, Option<i64>>(0))
+                .query_row(sql, [entity_id.as_str()], |row| {
+                    row.get::<_, Option<i64>>(0)
+                })
                 .unwrap_or_else(|error| {
                     tracing::warn!(%error, "where history begins could not be read");
                     None
