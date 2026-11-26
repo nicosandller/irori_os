@@ -422,20 +422,20 @@ fn what_it_is(
 
 /// Pairs each entity of the device stepping aside with the one of the other device that stands
 /// for it, one to one: the same kind, the same class (a temperature with a temperature), the
-/// same standing (a diagnostic with a diagnostic). Where that leaves several of a kind on either
-/// side, the same name decides; where it still doesn't, they're left unpaired rather than
-/// guessed.
+/// same standing (a diagnostic with a diagnostic), else the same kind and class whatever their
+/// standing. Where that leaves several alike on either side, the same name decides; where it
+/// still doesn't, they're left unpaired rather than guessed.
 pub(super) fn pair_up(from: &[Entity], to: &[Entity]) -> BTreeMap<EntityId, EntityId> {
     let mut pairs = BTreeMap::new();
     let mut taken: BTreeSet<EntityId> = BTreeSet::new();
-    // Finest first: the whole description, then the kind and class, then the kind alone.
-    let ways: [fn(&Entity) -> String; 3] = [
+    // Finest first: the whole description, then the kind and class. Never the kind alone: a
+    // temperature left over on one side and a humidity on the other aren't one thing.
+    let ways: [fn(&Entity) -> String; 2] = [
         |entity| format!("{:?}", what_it_is(entity)),
         |entity| {
             let (kind, class, _) = what_it_is(entity);
             format!("{kind:?}{class:?}")
         },
-        |entity| format!("{:?}", entity.id.kind()),
     ];
     for way in ways {
         let mut theirs: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();

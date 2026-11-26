@@ -7,6 +7,10 @@
 //! ```
 //!
 //! Prints `listening <url>` once it serves, then once a second how many changes it has sent.
+//!
+//! `--twin` adds a Zigbee plug in the kitchen (IEEE address `0x00158d0001a2b3c4`), with a switch,
+//! a power sensor and a signal sensor: the same plug Irori's own MQTT extension reaches through
+//! Zigbee2MQTT, for trying a handover (`docs/specs/config.md` §3.11) by hand.
 
 use std::time::Duration;
 
@@ -38,7 +42,10 @@ async fn main() -> std::io::Result<()> {
     let per_device = usize::try_from(arg("--per-device", 10)).unwrap_or(10);
     let rate = arg("--rate", 300);
     let token = text_arg("--token", "load-token");
-    let world = World::home(&token, devices, per_device);
+    let mut world = World::home(&token, devices, per_device);
+    if std::env::args().any(|a| a == "--twin") {
+        twin(&mut world);
+    }
     let sensors: Vec<String> = world
         .states
         .keys()
@@ -70,6 +77,34 @@ async fn main() -> std::io::Result<()> {
             println!("sent {sent} connections {}", fake.connections());
         }
     }
+}
+
+/// A Zigbee plug in the kitchen, as Home Assistant's ZHA would have it.
+fn twin(world: &mut World) {
+    world.device(json!({
+        "id": "kitchenplug",
+        "name": "Kitchen plug",
+        "manufacturer": "TuYa",
+        "model": "TS011F",
+        "area_id": "kitchen",
+        "connections": [["zigbee", "00:15:8d:00:01:a2:b3:c4"]],
+    }));
+    world
+        .entity("twin1", "switch.kitchen_plug", Some("kitchenplug"), "on", json!({}))
+        .entity(
+            "twin2",
+            "sensor.kitchen_plug_power",
+            Some("kitchenplug"),
+            "12.5",
+            json!({ "device_class": "power", "unit_of_measurement": "W", "state_class": "measurement" }),
+        )
+        .entity(
+            "twin3",
+            "sensor.kitchen_plug_rssi",
+            Some("kitchenplug"),
+            "-61",
+            json!({ "device_class": "signal_strength", "unit_of_measurement": "dBm" }),
+        );
 }
 
 /// The next number of a xorshift sequence.

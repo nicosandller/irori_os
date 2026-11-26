@@ -58,6 +58,7 @@ config/
   home.toml       where the home is, and its time zone
   backup.toml     when backups are made and where else they go (docs/specs/backup.md)
   users.toml      the people allowed in, and what each may do
+  handovers.toml  devices handed over to another way of reaching them; only once there is one
   extensions/
     <id>.toml     an extension's settings that aren't secret
 ```
@@ -770,6 +771,46 @@ by somebody who reads the file. Because a cookie goes along with a request whoev
 that made it, every change in a locked home must also carry the `x-irori-ui: 1` header, which only
 Irori's own page sends. Tokens for other programs are kept the same way, beside sessions
 (`docs/specs/api.md`).
+
+### 3.11 `handovers.toml`
+
+Devices that stepped aside for another way of reaching the same hardware: usually a device first
+tried through a bridge (Home Assistant) and then handed over to the extension that reaches it
+directly ([protocols.md](protocols.md) §6.1, [api.md](api.md) §3).
+
+```toml
+[handovers.homeassistant_5f1c0e]
+to = "esphome_aa_bb_cc_dd_ee_ff"
+
+[handovers.homeassistant_5f1c0e.entities]
+"switch.homeassistant_5f1c0e_plug" = "switch.esphome_aa_bb_cc_dd_ee_ff_relay"
+"sensor.homeassistant_5f1c0e_power" = "sensor.esphome_aa_bb_cc_dd_ee_ff_power"
+```
+
+Each key is the device that stepped aside; `to` is the one that took over, and `entities` which
+of its entities stands for which of the other's. The file is written only once a device has been
+handed over, so a home that never did has none, as before. It is its own file rather than a field
+in `devices.toml` so that an earlier Irori, after a rollback, still reads `devices.toml`.
+
+While a device is listed here:
+
+- It is out of the home (it has no row in `devices.toml`) and is not offered under
+  **+ Add device**.
+- Its history is kept rather than deleted, as removing it would ([§3.2](#32-devicestoml)). The
+  history of an entity listed under `entities` is shown before that of the entity standing for
+  it, up to where the latter's own begins.
+- Its row in `entities.toml` stays, so handing it back finds its entities' names.
+
+Handing over writes, in one edit: the device that takes over gets the other's name, description
+and room (the other's win over any it had; a room the other was deliberately in none of stays
+none), and its entities get the other's entity names; the other's spot on the floorplan becomes
+its spot (a marker it had of its own becomes a second marker); the other's row in `devices.toml`
+goes; and the handover is written here. Before that, the automations and helpers that name the
+other's entities are rewritten to name the ones standing for them.
+
+Handing back is the same the other way round, with the pairs written here: the device that took
+over steps aside and is listed here in turn, and the first one's entry goes. It is done from the
+device's page; editing this file by hand changes only what is listed, never the automations.
 
 ## 4. What a decision is attached to
 

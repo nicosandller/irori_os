@@ -314,7 +314,9 @@ says what the device is, and the core recognises it:
 - A copy that isn't in the home isn't held or offered: it is left out of the found list, and "Add
   all" passes it over. The device it copies lists the copy's extension in `also_through`.
 - A copy that was added before its twin was found stays in the home, and both carry the flags.
-  Handing one over to the other is a later step.
+  Its page offers to hand it over to its twin, which keeps its name, room, floorplan spot and
+  history and takes over the automations that used it; it can be handed back
+  ([config.md](config.md) §3.11, [api.md](api.md) §3).
 - When the other device is gone from its extension, the copy is offered again. Taking a device
   out of the home is not that: it is still found, and its copies stay copies.
 - An extension that never sends `connections` changes nothing: until one does, the core builds
