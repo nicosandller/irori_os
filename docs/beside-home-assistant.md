@@ -13,8 +13,10 @@ It needs Irori 1.7.0 or later: the first release with the Home Assistant extensi
 address empty needs that extension's version 0.5.0 or later.
 
 **Home Assistant OS** (a Green, a Yellow, or Home Assistant's own image on a Pi or a VM) runs only
-what its app store installs, so Irori can't be installed beside it this way. Irori as a Home
-Assistant app is #171.
+what its app store installs, so Irori can't be installed beside it this way. Install the Irori
+app instead (`install/home-assistant/irori`, and its `DOCS.md`).
+
+Rather run Irori in Docker too? See [In Docker](#in-docker) below.
 
 ## What stays apart
 
@@ -120,6 +122,22 @@ for the address. That happens when:
 - **Home Assistant Container doesn't publish 8123 on the machine.** Home Assistant's own
   instructions run it with `--network=host` (or `network_mode: host` in compose), which does.
   With `-p 8123:8123` it's reachable too.
+
+## In Docker
+
+Irori's image, `ghcr.io/nicosandller/irori` (published from 1.7.0 on), holds the same program and the official extensions,
+for Intel/AMD and ARM machines. [`install/docker/compose.yaml`](../install/docker/compose.yaml)
+runs it with host networking, the way Home Assistant Container itself runs, and keeps the home in
+a Docker volume:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/nicosandller/irori_os/main/install/docker/compose.yaml
+docker compose up -d
+```
+
+It listens on `127.0.0.1:8480` like the service above, so steps 3 and 4 are the same: a tunnel the
+first time, then the Home Assistant extension with the address left empty. To reach it without a
+tunnel, add the same three variables under `environment:` in the compose file.
 
 ## USB radios and Bluetooth stay Home Assistant's
 

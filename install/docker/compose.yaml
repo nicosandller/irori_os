@@ -1,0 +1,26 @@
+# Irori in Docker, beside a Home Assistant that runs in Docker too (Home Assistant Container).
+# See docs/beside-home-assistant.md. Start it in the folder holding this file:
+#
+#   docker compose up -d
+#
+# Host networking, the way Home Assistant Container itself runs. Irori then finds devices on your
+# network the same way a native install does, and the Home Assistant extension reaches
+# Home Assistant at http://127.0.0.1:8123 with only a token, as a native install beside it does.
+#
+# Irori listens on this machine only (127.0.0.1:8480), like the systemd unit. Open it the first
+# time through an ssh tunnel (`ssh -L 8480:127.0.0.1:8480 you@this-machine`), set up the owner,
+# then open it wider as the guide describes.
+name: irori
+
+services:
+  irori:
+    image: ghcr.io/nicosandller/irori:latest
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      # The whole home: config in /var/lib/irori/config, the database and extensions beside it.
+      - irori:/var/lib/irori
+    stop_grace_period: 10s
+
+volumes:
+  irori:
