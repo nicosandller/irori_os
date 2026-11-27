@@ -2128,6 +2128,9 @@ while read line; do echo \"$line\" >> '{}'; done
         status(&core, "quiet") == Some(ExtensionStatus::Running)
     })
     .await;
+    // "Running" means its hello is in the pipe, not that the shell has started and read it: the
+    // quiet windows are counted from when it has.
+    eventually("it read its hello", || !pids_in(&heard).is_empty()).await;
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(status(&core, "quiet"), Some(ExtensionStatus::Running));
     let heard = pids_in(&heard);
