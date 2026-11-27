@@ -732,6 +732,33 @@ async fn unrepresentable_timings_are_refused() {
     assert!(ExtensionHost::start(&core, vec![], zero).is_err());
 }
 
+/// A ping must go out more often than a process may stay quiet, or one that answers every ping
+/// would still be taken for hung between two of them.
+#[tokio::test]
+async fn pings_must_come_more_often_than_the_quiet_allowed() {
+    let core = Core::new(Arc::new(SystemClock));
+    let refused = "timing: ping_every must be above zero and below quiet_for";
+    let quiet_for = Timing::default().quiet_for;
+    for ping_every in [
+        Duration::ZERO,
+        quiet_for,
+        quiet_for + Duration::from_secs(1),
+    ] {
+        let timing = Timing {
+            ping_every,
+            ..Timing::default()
+        };
+        let err = ExtensionHost::start(&core, vec![], timing).expect_err("refused");
+        assert_eq!(err, refused, "ping_every {ping_every:?}");
+    }
+    let just_below = Timing {
+        ping_every: quiet_for - Duration::from_millis(1),
+        ..Timing::default()
+    };
+    let host = ExtensionHost::start(&core, vec![], just_below).expect("allowed");
+    host.shutdown().await;
+}
+
 /// A package left on disk from before an extension became a builtin (helpers, D45) must not
 /// crash the next start: the id collision is between old state and new code, not a bug to
 /// refuse to boot over.
