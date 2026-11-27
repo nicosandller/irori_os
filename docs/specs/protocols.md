@@ -748,7 +748,7 @@ answered with the same `id`. Sample conversations are in
 | Direction | `type` | Fields | Meaning |
 |---|---|---|---|
 | core → | `app_request` | `id`, `method`, `params`, `caller`?: `{user?, owner}` | The extension's page asked it something. |
-| → core | `app_answer` | `id`, `value`?, `error`? | Its answer. |
+| → core | `app_answer` | `id`, `value`?, `error`? | Its answer. The engine library sends an answer that would be longer than a line can be (Framing) as an `error` saying it was too large, so the core doesn't end the engine for it. |
 
 `?` marks a field that may be left out. A test in `crates/irori-protocol/tests/wire.rs` fails
 when a message type is in the code but missing from these tables.
