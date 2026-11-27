@@ -1,0 +1,7 @@
+{
+  "unique_id": "calendar_family",
+  "name": "Family",
+  "capabilities": {
+    "kind": "calendar"
+  }
+}

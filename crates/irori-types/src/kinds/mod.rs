@@ -11,6 +11,7 @@
 pub(crate) mod alarm_control_panel;
 pub(crate) mod binary_sensor;
 pub(crate) mod button;
+pub(crate) mod calendar;
 pub(crate) mod camera;
 pub(crate) mod climate;
 pub(crate) mod cover;
@@ -18,13 +19,16 @@ pub(crate) mod device_tracker;
 pub(crate) mod event;
 pub(crate) mod fan;
 pub(crate) mod humidifier;
+pub(crate) mod image;
 pub(crate) mod lawn_mower;
 pub(crate) mod light;
 pub(crate) mod lock;
 pub(crate) mod media_player;
 pub(crate) mod moment;
+pub(crate) mod notify;
 pub(crate) mod number;
 pub(crate) mod opening;
+pub(crate) mod remote;
 pub(crate) mod scene;
 pub(crate) mod schedule;
 pub(crate) mod select;
@@ -33,10 +37,12 @@ pub(crate) mod siren;
 pub(crate) mod switch;
 pub(crate) mod text;
 pub mod timer;
+pub(crate) mod todo;
 pub(crate) mod update;
 pub(crate) mod vacuum;
 pub(crate) mod valve;
 pub(crate) mod water_heater;
+pub(crate) mod weather;
 
 use crate::{Capabilities, EntityKind, InvariantError, Service, ServiceName, State};
 
@@ -220,6 +226,7 @@ impl EntityKind {
             Self::WaterHeater => water_heater::toggle(current),
             Self::Lock => lock::toggle(current),
             Self::Camera => camera::toggle(current),
+            Self::Remote => remote::toggle(current),
             Self::Cover | Self::Valve => OpeningCommand::toggle_service(self, current),
             Self::Sensor
             | Self::BinarySensor
@@ -239,7 +246,12 @@ impl EntityKind {
             | Self::Scene
             | Self::DeviceTracker
             | Self::Timer
-            | Self::Schedule => return None,
+            | Self::Schedule
+            | Self::Image
+            | Self::Notify
+            | Self::Weather
+            | Self::Calendar
+            | Self::Todo => return None,
         })
     }
 }
@@ -256,8 +268,10 @@ impl Capabilities {
             | Self::Humidifier(_)
             | Self::Update(_)
             | Self::DeviceTracker(_)
-            | Self::Schedule(_) => ValueShape::Bool,
-            Self::Number(_) => ValueShape::Number,
+            | Self::Schedule(_)
+            | Self::Remote(_)
+            | Self::Calendar(_) => ValueShape::Bool,
+            Self::Number(_) | Self::Todo(_) => ValueShape::Number,
             Self::Select(_)
             | Self::Text(_)
             | Self::Event(_)
@@ -274,12 +288,13 @@ impl Capabilities {
             | Self::Vacuum(_)
             | Self::LawnMower(_)
             | Self::Timer(_)
-            | Self::Camera(_) => ValueShape::Text,
+            | Self::Camera(_)
+            | Self::Weather(_) => ValueShape::Text,
             Self::Sensor(sensor) => match sensor.value_type {
                 SensorValueType::Number => ValueShape::Number,
                 SensorValueType::Text => ValueShape::Text,
             },
-            Self::Button(_) | Self::Scene(_) => return None,
+            Self::Button(_) | Self::Scene(_) | Self::Image(_) | Self::Notify(_) => return None,
         })
     }
 
@@ -300,6 +315,7 @@ impl Capabilities {
             Self::LawnMower(_) => Some(&lawn_mower::ACTIVITIES),
             Self::Vacuum(_) => Some(&vacuum::ACTIVITIES),
             Self::Camera(_) => Some(&camera::CAMERA_STATES),
+            Self::Weather(_) => Some(&weather::CONDITIONS),
             _ => None,
         }
     }
@@ -322,6 +338,9 @@ impl Capabilities {
             Self::Schedule(caps) => schedule::fields(caps),
             Self::Vacuum(caps) => vacuum::fields(caps),
             Self::Camera(caps) => camera::fields(caps),
+            Self::Remote(caps) => remote::fields(caps),
+            Self::Weather(_) => weather::fields(),
+            Self::Calendar(_) => calendar::fields(),
             Self::Switch(_)
             | Self::Sensor(_)
             | Self::BinarySensor(_)
@@ -337,7 +356,10 @@ impl Capabilities {
             | Self::Time(_)
             | Self::Datetime(_)
             | Self::LawnMower(_)
-            | Self::Scene(_) => Vec::new(),
+            | Self::Scene(_)
+            | Self::Image(_)
+            | Self::Notify(_)
+            | Self::Todo(_) => Vec::new(),
         }
     }
 
@@ -408,6 +430,9 @@ impl Capabilities {
             Self::Vacuum(caps) => vacuum::supports_service(caps, service),
             Self::Camera(caps) => camera::supports_service(caps, service),
             Self::AlarmControlPanel(caps) => alarm_control_panel::supports_service(caps, service),
+            Self::Notify(caps) => notify::supports_service(caps, service),
+            Self::Remote(caps) => remote::supports_service(caps, service),
+            Self::Todo(caps) => todo::supports_service(caps, service),
             Self::Switch(_) | Self::Button(_) | Self::Scene(_) => Ok(()),
             // Any day, time or moment that exists is one it can be set to.
             Self::Date(_) | Self::Time(_) | Self::Datetime(_) => Ok(()),
@@ -415,7 +440,10 @@ impl Capabilities {
             | Self::BinarySensor(_)
             | Self::Event(_)
             | Self::DeviceTracker(_)
-            | Self::Schedule(_) => Ok(()),
+            | Self::Schedule(_)
+            | Self::Image(_)
+            | Self::Weather(_)
+            | Self::Calendar(_) => Ok(()),
         }
     }
 }
@@ -452,6 +480,10 @@ impl State {
             Self::Climate(state) => climate::primary(state),
             Self::WaterHeater(state) => water_heater::primary(state),
             Self::Sensor(state) => sensor::primary(state),
+            Self::Remote(state) => remote::primary(state),
+            Self::Weather(state) => weather::primary(state),
+            Self::Calendar(state) => calendar::primary(state),
+            Self::Todo(state) => todo::primary(state),
         }
     }
 
@@ -473,6 +505,9 @@ impl State {
             Self::Schedule(state) => schedule::field(state, name),
             Self::Vacuum(state) => vacuum::field(state, name),
             Self::Camera(state) => camera::field(state, name),
+            Self::Remote(state) => remote::field(state, name),
+            Self::Weather(state) => weather::field(state, name),
+            Self::Calendar(state) => calendar::field(state, name),
             Self::Switch(_)
             | Self::Sensor(_)
             | Self::BinarySensor(_)
@@ -486,7 +521,8 @@ impl State {
             | Self::Date(_)
             | Self::Time(_)
             | Self::Datetime(_)
-            | Self::LawnMower(_) => None,
+            | Self::LawnMower(_)
+            | Self::Todo(_) => None,
         }
     }
 
@@ -547,7 +583,17 @@ impl State {
             )?),
             EntityKind::Vacuum => State::Vacuum(vacuum::with_primary(previous!(Vacuum), value)?),
             EntityKind::Camera => State::Camera(camera::with_primary(previous!(Camera), value)?),
-            EntityKind::Button | EntityKind::Scene => return None,
+            EntityKind::Remote => State::Remote(remote::with_primary(previous!(Remote), value)?),
+            EntityKind::Weather => {
+                State::Weather(weather::with_primary(previous!(Weather), value)?)
+            }
+            EntityKind::Calendar => {
+                State::Calendar(calendar::with_primary(previous!(Calendar), value)?)
+            }
+            EntityKind::Todo => State::Todo(todo::with_primary(value)?),
+            EntityKind::Button | EntityKind::Scene | EntityKind::Image | EntityKind::Notify => {
+                return None;
+            }
         })
     }
 }
@@ -588,11 +634,17 @@ impl Service {
             EntityKind::Humidifier => humidifier::service(name, data),
             EntityKind::MediaPlayer => media_player::service(name, data),
             EntityKind::Update => update::service(name, data),
+            EntityKind::Notify => notify::service(name, data),
+            EntityKind::Remote => remote::service(name, data),
+            EntityKind::Todo => todo::service(name, data),
             EntityKind::Sensor
             | EntityKind::BinarySensor
             | EntityKind::Event
             | EntityKind::DeviceTracker
-            | EntityKind::Schedule => Err(not_mine(name)),
+            | EntityKind::Schedule
+            | EntityKind::Image
+            | EntityKind::Weather
+            | EntityKind::Calendar => Err(not_mine(name)),
         }?;
         service.validate()?;
         Ok(service)
@@ -622,6 +674,9 @@ impl Service {
             Self::MediaPlayerVolumeSet(data) => data.validate(),
             Self::MediaPlayerSeek(data) => data.validate(),
             Self::MediaPlayerPlayMedia(data) => data.validate(),
+            Self::NotifySendMessage(data) => data.validate(),
+            Self::RemoteSendCommand(data) => data.validate(),
+            Self::TodoAddItem(data) => data.validate(),
             _ => Ok(()),
         }
     }
@@ -655,11 +710,17 @@ impl Service {
             // A press leaves nothing for a toggle to go by.
             EntityKind::Button => None,
             EntityKind::Scene => scene::asks_for(self),
+            EntityKind::Notify => notify::asks_for(self),
+            EntityKind::Remote => remote::asks_for(self),
+            EntityKind::Todo => todo::asks_for(self),
             EntityKind::Sensor
             | EntityKind::BinarySensor
             | EntityKind::Event
             | EntityKind::DeviceTracker
-            | EntityKind::Schedule => None,
+            | EntityKind::Schedule
+            | EntityKind::Image
+            | EntityKind::Weather
+            | EntityKind::Calendar => None,
         }
     }
 }
@@ -701,11 +762,17 @@ impl ServiceName {
             EntityKind::Humidifier => humidifier::data_of(self),
             EntityKind::MediaPlayer => media_player::data_of(self),
             EntityKind::Update => update::data_of(self),
+            EntityKind::Notify => notify::data_of(self),
+            EntityKind::Remote => remote::data_of(self),
+            EntityKind::Todo => todo::data_of(self),
             EntityKind::Sensor
             | EntityKind::BinarySensor
             | EntityKind::Event
             | EntityKind::DeviceTracker
-            | EntityKind::Schedule => Data::None,
+            | EntityKind::Schedule
+            | EntityKind::Image
+            | EntityKind::Weather
+            | EntityKind::Calendar => Data::None,
         }
     }
 

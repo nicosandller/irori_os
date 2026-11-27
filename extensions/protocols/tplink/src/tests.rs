@@ -92,6 +92,7 @@ async fn world(settings: Settings) -> World {
                     let _ = reply.send(Ok(()));
                 }
                 host::Op::SetUnmodeled(_)
+                | host::Op::SuggestLayout(_)
                 | host::Op::SetActionOpen(_, _)
                 | host::Op::SetAvailableActions(_)
                 | host::Op::SetNetworks(_) => {}

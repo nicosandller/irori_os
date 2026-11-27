@@ -115,6 +115,7 @@ async fn world_hearing(
                 }
                 host::Op::SetUnmodeled(unmodeled) => log.unmodeled = unmodeled,
                 host::Op::SetWaiting(_)
+                | host::Op::SuggestLayout(_)
                 | host::Op::SetNetworks(_)
                 | host::Op::SetActionOpen(_, _)
                 | host::Op::SetAvailableActions(_) => {}

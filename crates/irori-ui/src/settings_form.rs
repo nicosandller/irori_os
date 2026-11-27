@@ -38,6 +38,66 @@ struct Field {
     /// The schema marks this `"format": "hex"`, like a Thread network's dataset: checked here,
     /// so a bad paste is caught before it's saved and the extension can't start with it.
     hex: bool,
+    /// The schema's `x-irori-warn`: what to say while the value starts with something.
+    warning: Option<Warning>,
+    /// A secret's `x-irori-secret-for`: the setting it belongs to. The server clears the secret
+    /// when that setting changes, so the form says so.
+    secret_for: Option<String>,
+}
+
+/// What a secret tied to a setting needs saying, if anything: the setting's label, what it opened
+/// as and what it says now, and whether a value is saved and whether one has been typed.
+fn tied_secret_notice(
+    label: &str,
+    setting: &str,
+    opened: &str,
+    now: &str,
+    saved: bool,
+    typed: bool,
+) -> Option<String> {
+    if typed || now.trim().is_empty() {
+        return None;
+    }
+    if saved && opened.trim() != now.trim() {
+        Some(format!(
+            "\"{setting}\" changed, so the saved {label} is cleared when you save and is never sent to the new one. Enter it again."
+        ))
+    } else if !saved && !opened.trim().is_empty() {
+        Some(format!("Enter the {label} again for this {setting}."))
+    } else {
+        None
+    }
+}
+
+/// Whether a blank field stops the form being saved. A saved secret never shows its value, so
+/// blank means "keep it".
+fn blank_blocks_save(required: bool, is_secret: bool, saved: bool, text: &str) -> bool {
+    required && text.trim().is_empty() && !(is_secret && saved)
+}
+
+/// A plain warning beside a text field, shown only while its value starts with `starts_with`
+/// (ignoring case and leading spaces): an `http://` address, say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Warning {
+    starts_with: String,
+    text: String,
+}
+
+impl Warning {
+    fn of(field_schema: &serde_json::Value) -> Option<Self> {
+        let warn = field_schema.get(WARN)?;
+        Some(Self {
+            starts_with: warn.get("starts_with")?.as_str()?.to_ascii_lowercase(),
+            text: warn.get("text")?.as_str()?.to_owned(),
+        })
+    }
+
+    fn applies_to(&self, value: &str) -> bool {
+        value
+            .trim_start()
+            .to_ascii_lowercase()
+            .starts_with(&self.starts_with)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,6 +117,8 @@ enum FieldKind {
 
 /// The schema keyword that puts a field in a section with others: `"x-irori-group": "Wi-Fi"`.
 const GROUP: &str = "x-irori-group";
+const WARN: &str = "x-irori-warn";
+const SECRET_FOR: &str = "x-irori-secret-for";
 
 /// One row of a form: the field, what's in it, whether it was changed, and whether it has a value
 /// saved (for a secret, which never comes back, whether one is saved at all).
@@ -67,6 +129,8 @@ struct Row {
     touched: RwSignal<bool>,
     /// A signal, since saving from the add-device form saves it without the form being made again.
     saved: RwSignal<bool>,
+    /// For a secret tied to a setting: that setting's label, its value now, and what it opened as.
+    tied: Option<(String, RwSignal<String>, String)>,
 }
 
 impl Row {
@@ -92,11 +156,19 @@ impl Row {
             value: RwSignal::new(initial),
             touched: RwSignal::new(false),
             saved: RwSignal::new(saved),
+            tied: None,
         }
     }
 
     fn view(&self) -> AnyView {
-        field_row(self.field.clone(), self.value, self.touched, self.saved).into_any()
+        field_row(
+            self.field.clone(),
+            self.value,
+            self.touched,
+            self.saved,
+            self.tied.clone(),
+        )
+        .into_any()
     }
 }
 
@@ -238,6 +310,11 @@ fn fields_from_schema(schema: &serde_json::Value) -> Vec<Field> {
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_owned),
                 default: default_value(field_schema),
+                warning: Warning::of(field_schema),
+                secret_for: field_schema
+                    .get(SECRET_FOR)
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
                 required: required.contains(&key.as_str()),
                 serial_port: field_schema
                     .get("format")
@@ -512,6 +589,7 @@ impl SettingRows {
             value,
             touched,
             saved,
+            ..
         } in &self.0
         {
             if touched.get_untracked() && !value.get_untracked().trim().is_empty() {
@@ -537,10 +615,25 @@ pub fn SettingsForm(
     secrets_set: Vec<String>,
     #[prop(into)] on_close: Callback<()>,
 ) -> impl IntoView {
-    let rows: Vec<Row> = fields_from_schema(&schema)
+    let mut rows: Vec<Row> = fields_from_schema(&schema)
         .into_iter()
         .map(|field| Row::new(field, &current, &secrets_set))
         .collect();
+    let ties: Vec<Option<(String, RwSignal<String>, String)>> = rows
+        .iter()
+        .map(|row| {
+            let setting = row.field.secret_for.as_ref()?;
+            let tied = rows.iter().find(|other| other.field.key == *setting)?;
+            Some((
+                tied.field.label.clone(),
+                tied.value,
+                tied.value.get_untracked(),
+            ))
+        })
+        .collect();
+    for (row, tie) in rows.iter_mut().zip(ties) {
+        row.tied = tie;
+    }
     let saving = RwSignal::new(false);
     let trouble = RwSignal::new(None::<String>);
 
@@ -551,8 +644,20 @@ pub fn SettingsForm(
             // Checked before anything is sent, and regardless of `touched`: a required field
             // left blank must refuse the save, not silently omit the key and report success —
             // the extension would stay unconfigured with no sign anything went wrong.
-            for Row { field, value, .. } in &rows {
-                if field.required && value.get_untracked().trim().is_empty() {
+            for Row {
+                field,
+                value,
+                saved,
+                ..
+            } in &rows
+            {
+                let is_secret = field.kind == FieldKind::Secret;
+                if blank_blocks_save(
+                    field.required,
+                    is_secret,
+                    saved.get_untracked(),
+                    &value.get_untracked(),
+                ) {
                     trouble.set(Some(format!("\"{}\" is required", field.label)));
                     return;
                 }
@@ -665,6 +770,7 @@ fn field_row(
     value: RwSignal<String>,
     touched: RwSignal<bool>,
     saved: RwSignal<bool>,
+    tied: Option<(String, RwSignal<String>, String)>,
 ) -> impl IntoView {
     let label = field.label.clone();
     let required = field
@@ -702,24 +808,40 @@ fn field_row(
             }
             .into_any()
         }
-        FieldKind::Secret => view! {
-            <label class="settings-field">
-                <span>{label}{required}</span>
-                <input
-                    type="password"
-                    autocomplete="off"
-                    spellcheck="false"
-                    placeholder=move || saved.get().then_some("Saved. Leave blank to keep it.")
-                    prop:value=value
-                    on:input:target=move |ev| {
-                        value.set(ev.target().value());
-                        touched.set(true);
-                    }
-                />
-                {note}
-            </label>
+        FieldKind::Secret => {
+            let own_label = label.clone();
+            let notice = move || {
+                let (setting, now, opened) = tied.clone()?;
+                let text = tied_secret_notice(
+                    &own_label,
+                    &setting,
+                    &opened,
+                    &now.get(),
+                    saved.get(),
+                    !value.get().trim().is_empty(),
+                )?;
+                Some(view! { <span class="settings-warning" role="status">{text}</span> })
+            };
+            view! {
+                <label class="settings-field">
+                    <span>{label}{required}</span>
+                    <input
+                        type="password"
+                        autocomplete="off"
+                        spellcheck="false"
+                        placeholder=move || saved.get().then_some("Saved. Leave blank to keep it.")
+                        prop:value=value
+                        on:input:target=move |ev| {
+                            value.set(ev.target().value());
+                            touched.set(true);
+                        }
+                    />
+                    {notice}
+                    {note}
+                </label>
+            }
+            .into_any()
         }
-        .into_any(),
         FieldKind::Integer => view! {
             <label class="settings-field">
                 <span>{label}{required}</span>
@@ -791,21 +913,31 @@ fn field_row(
             <SerialPortField label=label required=required value=value touched=touched note=note key=field.key.clone() />
         }
         .into_any(),
-        FieldKind::Text => view! {
-            <label class="settings-field">
-                <span>{label}{required}</span>
-                <input
-                    type="text"
-                    prop:value=value
-                    on:input:target=move |ev| {
-                        value.set(ev.target().value());
-                        touched.set(true);
-                    }
-                />
-                {note}
-            </label>
+        FieldKind::Text => {
+            let warning = field.warning.clone();
+            let warned = move || {
+                let warning = warning.clone()?;
+                value.with(|text| warning.applies_to(text)).then(|| {
+                    view! { <span class="settings-warning" role="status">{warning.text}</span> }
+                })
+            };
+            view! {
+                <label class="settings-field">
+                    <span>{label}{required}</span>
+                    <input
+                        type="text"
+                        prop:value=value
+                        on:input:target=move |ev| {
+                            value.set(ev.target().value());
+                            touched.set(true);
+                        }
+                    />
+                    {warned}
+                    {note}
+                </label>
+            }
+            .into_any()
         }
-        .into_any(),
     }
 }
 
@@ -957,6 +1089,56 @@ mod tests {
             fields[0].kind,
             FieldKind::Choice(vec!["ember".to_owned(), "zstack".to_owned()])
         );
+    }
+
+    #[test]
+    fn a_saved_secret_left_blank_does_not_stop_the_form() {
+        assert!(!blank_blocks_save(true, true, true, ""));
+        assert!(blank_blocks_save(true, true, false, ""));
+        assert!(blank_blocks_save(true, false, true, " "));
+        assert!(!blank_blocks_save(false, true, false, ""));
+        assert!(!blank_blocks_save(true, false, false, "x"));
+    }
+
+    #[test]
+    fn a_tied_secret_says_when_it_needs_entering_again() {
+        let notice = |opened, now, saved, typed| {
+            tied_secret_notice("Access token", "Address", opened, now, saved, typed)
+        };
+        let changed = notice("http://a", "http://b", true, false).expect("said");
+        assert!(
+            changed.contains("cleared") && changed.contains("Enter it again"),
+            "{changed}"
+        );
+        // Same address, a new token typed, or a first setup: nothing to say.
+        assert_eq!(notice("http://a", "http://a", true, false), None);
+        assert_eq!(notice("http://a", "http://b", true, true), None);
+        assert_eq!(notice("", "http://a", false, false), None);
+        // Reopened after the address changed: the address is saved and the token is gone.
+        let again = notice("http://b", "http://b", false, false).expect("said");
+        assert!(again.contains("again"), "{again}");
+    }
+
+    #[test]
+    fn a_warning_shows_only_while_the_value_starts_as_it_says() {
+        let schema = serde_json::json!({
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "x-irori-warn": { "starts_with": "http://", "text": "Not encrypted." },
+                },
+                "name": { "type": "string" },
+            },
+        });
+        let fields = fields_from_schema(&schema);
+        let by_key = |key: &str| fields.iter().find(|f| f.key == key).expect("present");
+        assert_eq!(by_key("name").warning, None);
+        let warning = by_key("url").warning.clone().expect("a warning");
+        assert_eq!(warning.text, "Not encrypted.");
+        assert!(warning.applies_to("http://homeassistant.local:8123"));
+        assert!(warning.applies_to("  HTTP://192.168.1.20"));
+        assert!(!warning.applies_to("https://homeassistant.local:8123"));
+        assert!(!warning.applies_to(""));
     }
 
     #[test]

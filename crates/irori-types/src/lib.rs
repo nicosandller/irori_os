@@ -19,6 +19,7 @@ pub mod format;
 mod home;
 mod kind;
 mod kinds;
+mod layout;
 mod network;
 mod num;
 mod protocol;
@@ -57,6 +58,7 @@ pub use kinds::alarm_control_panel::{
 };
 pub use kinds::binary_sensor::{BinarySensorCapabilities, BinarySensorClass, BinarySensorState};
 pub use kinds::button::{ButtonCapabilities, ButtonClass};
+pub use kinds::calendar::{CalendarCapabilities, CalendarEvent, CalendarState};
 pub use kinds::camera::{
     CameraCapabilities, CameraGoToPreset, CameraMove, CameraPreset, CameraState, CameraStatus,
     LiveQuality,
@@ -75,6 +77,7 @@ pub use kinds::fan::{
 pub use kinds::humidifier::{
     HumidifierAction, HumidifierCapabilities, HumidifierClass, HumidifierMode, HumidifierState,
 };
+pub use kinds::image::ImageCapabilities;
 pub use kinds::lawn_mower::{LawnMowerCapabilities, LawnMowerState, MowerActivity};
 pub use kinds::light::{ColorMode, ColorTempRange, LightCapabilities, LightState, LightTurnOn};
 pub use kinds::lock::{LockCapabilities, LockCode, LockState, LockStatus};
@@ -86,10 +89,14 @@ pub use kinds::moment::{
     CivilDate, ClockTime, DateSetValue, DateState, DatetimeSetValue, DatetimeState,
     MomentCapabilities, TimeSetValue, TimeState,
 };
+pub use kinds::notify::{
+    MESSAGE_MOST as NOTIFY_MESSAGE_MOST, NotifyCapabilities, NotifySendMessage,
+};
 pub use kinds::number::{
     NumberCapabilities, NumberMode, NumberSetValue, NumberState, NumberStep, stepped,
 };
 pub use kinds::opening::{OpenState, OpeningAbilities, OpeningCommand, OpeningState, SetPosition};
+pub use kinds::remote::{RemoteCapabilities, RemoteSendCommand, RemoteState, RemoteTurnOn};
 pub use kinds::scene::SceneCapabilities;
 pub use kinds::schedule::{ScheduleCapabilities, ScheduleState};
 pub use kinds::select::{SelectCapabilities, SelectOption, SelectState};
@@ -101,6 +108,7 @@ pub use kinds::switch::{SwitchCapabilities, SwitchClass, SwitchState};
 pub use kinds::text::{TextCapabilities, TextMode, TextSetValue, TextState};
 pub use kinds::timer;
 pub use kinds::timer::{TimerCapabilities, TimerChange, TimerStart, TimerState, TimerStatus};
+pub use kinds::todo::{ITEM_MOST as TODO_ITEM_MOST, TodoAddItem, TodoCapabilities, TodoState};
 pub use kinds::update::{UpdateCapabilities, UpdateClass, UpdateState};
 pub use kinds::vacuum::{VacuumActivity, VacuumCapabilities, VacuumFanSpeed, VacuumState};
 pub use kinds::valve::{ValveCapabilities, ValveClass, ValveState};
@@ -108,14 +116,18 @@ pub use kinds::water_heater::{
     WaterHeaterCapabilities, WaterHeaterMode, WaterHeaterOperationMode, WaterHeaterSetTemperature,
     WaterHeaterState,
 };
+pub use kinds::weather::{WeatherCapabilities, WeatherCondition, WeatherState};
 pub use kinds::{Field, Typed, ValueShape, mode_to_turn_on};
+pub use layout::{
+    MAX_LAYOUT_AREAS, MAX_LAYOUT_FLOORS, SuggestedArea, SuggestedFloor, SuggestedLayout, same_name,
+};
 pub use network::{
     LinkQuality, MAX_NETWORK_LINKS, MAX_NETWORK_NODES, MAX_NETWORK_READING, MAX_NETWORKS, Network,
     NetworkLink, NetworkMedium, NetworkNode, NetworkRole, access_point_id, host_name,
 };
 pub use protocol::{
-    DeviceDescription, EntityDescription, SecretRequest, Service, ServiceCall, ServiceName,
-    StateReport, Unmodeled, UsernameRequest, Waiting,
+    Connection, ConnectionKind, DeviceDescription, EntityDescription, SecretRequest, Service,
+    ServiceCall, ServiceName, StateReport, Unmodeled, UsernameRequest, Waiting, normalized_address,
 };
 pub use registry::{Area, Capabilities, Device, Entity, EntityCategory, Floor};
 pub use schema::{SchemaDoc, schemas};

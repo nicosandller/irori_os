@@ -39,6 +39,7 @@ async fn describe_lamp(ctx: &ProtocolContext) -> Result<(), ProtocolError> {
         serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
+        connections: Vec::new(),
     })
     .await?;
     ctx.describe_entity(EntityDescription {
@@ -1641,6 +1642,7 @@ async fn an_inbound_program_connects_and_describes_its_device() {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             },
         })
         .await
@@ -1952,6 +1954,7 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         },
     }) + &line(&FromExt::DescribeEntity {
         id: 2,
@@ -2162,6 +2165,7 @@ async fn a_hung_engine_with_a_full_pipe_is_restarted() {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         },
     }) + &line(&FromExt::DescribeEntity {
         id: 2,
@@ -2415,4 +2419,128 @@ async fn an_extension_that_exits_leaves_nothing_running_behind() {
     for child in pids_in(&pids) {
         eventually("every child is gone", || !running(&child)).await;
     }
+}
+
+static ROOMY_RUNS: AtomicUsize = AtomicUsize::new(0);
+
+/// Proposes a room on its first run and then crashes; every run after that proposes nothing.
+struct Roomy;
+
+impl Protocol for Roomy {
+    type Config = NoSettings;
+    const MANIFEST: &'static str = r#"
+        [extension]
+        id = "roomy"
+        name = "Roomy"
+        version = "0.1.0"
+        irori = ">=0.0.0"
+
+        [[contributes.protocol]]
+        iot_class = "local_push"
+        entity_kinds = ["light"]
+    "#;
+    async fn run(_: NoSettings, mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
+        if ROOMY_RUNS.fetch_add(1, Ordering::SeqCst) == 0 {
+            ctx.suggest_layout(irori_protocol::types::SuggestedLayout {
+                floors: Vec::new(),
+                areas: vec![irori_protocol::types::SuggestedArea {
+                    name: Name::try_from("Kitchen")?,
+                    floor: None,
+                }],
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            panic!("boom");
+        }
+        ctx.stopped().await;
+        Ok(())
+    }
+}
+
+/// A proposal goes when the protocol crashes, as when it stops: the run that comes back after
+/// says nothing about rooms, so a Kitchen still on show would be one nobody is proposing.
+#[tokio::test(start_paused = true)]
+async fn a_proposal_goes_when_its_protocol_crashes() {
+    let core = Core::new(Arc::new(SystemClock));
+    let host = start(&core, builtin::<Roomy>().expect("valid"));
+    let proposed = |core: &Core| {
+        core.extensions()
+            .get(&ExtensionId::try_from("roomy").expect("valid"))
+            .and_then(|overview| overview.suggested_layout.clone())
+    };
+
+    eventually("it proposes a Kitchen", || proposed(&core).is_some()).await;
+    eventually("it crashes and is running again", || {
+        ROOMY_RUNS.load(Ordering::SeqCst) == 2
+            && status(&core, "roomy") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    assert_eq!(proposed(&core), None);
+
+    host.shutdown().await;
+}
+
+/// The same for an extension that runs as its own program, as a bridge to another home system
+/// does: what it proposed goes when the program exits.
+#[tokio::test]
+async fn a_programs_proposal_goes_when_it_exits() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let package = packages_dir.path().join("rooms");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "rooms"
+            name = "Rooms"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.protocol]]
+            iot_class = "local_push"
+            entity_kinds = ["light"]
+            run = { command = "bin/prog" }
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    // Proposes a Kitchen, stays long enough for it to be seen, then gives up.
+    std::fs::write(
+        &program,
+        "#!/bin/sh
+         read hello
+         echo '{\"type\":\"suggest_layout\",\"areas\":[{\"name\":\"Kitchen\"}]}'
+         sleep 1
+         echo 'the other home went away' >&2
+         exit 1
+",
+    )
+    .expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+
+    let host = ExtensionHost::start_with_packages(
+        &core,
+        vec![],
+        Timing::default(),
+        packages_dir.path().to_path_buf(),
+    )
+    .expect("starts");
+    let proposed = |core: &Core| {
+        core.extensions()
+            .get(&ExtensionId::try_from("rooms").expect("valid"))
+            .and_then(|overview| overview.suggested_layout.clone())
+    };
+
+    eventually("it proposes a Kitchen", || proposed(&core).is_some()).await;
+    eventually("it exits, and the Kitchen goes with it", || {
+        matches!(status(&core, "rooms"), Some(ExtensionStatus::Failed { .. }))
+            && proposed(&core).is_none()
+    })
+    .await;
+
+    host.shutdown().await;
 }

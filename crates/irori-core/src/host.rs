@@ -976,6 +976,7 @@ async fn supervise(
                 core.mark_unavailable(&protocol);
                 core.set_waiting(&extension, Vec::new());
                 core.set_unmodeled(&extension, Vec::new());
+                core.set_layout(&extension, irori_types::SuggestedLayout::default());
                 core.set_networks(&extension, Vec::new());
                 core.set_available_actions(&extension, Vec::new());
                 match outcome {
@@ -1707,6 +1708,7 @@ async fn supervise_package(
         }
         core.set_waiting(&extension, Vec::new());
         core.set_unmodeled(&extension, Vec::new());
+        core.set_layout(&extension, irori_types::SuggestedLayout::default());
         core.set_networks(&extension, Vec::new());
         core.set_available_actions(&extension, Vec::new());
         // The pump already asked a process to stop, and may have killed it. Say it once more
@@ -2493,6 +2495,11 @@ async fn apply_from_ext(
         }
         FromExt::SetUnmodeled { unmodeled } => {
             core.apply_op(extension, protocol, kinds, Op::SetUnmodeled(unmodeled));
+            Ok(None)
+        }
+        FromExt::SuggestLayout { floors, areas } => {
+            let layout = irori_types::SuggestedLayout { floors, areas };
+            core.apply_op(extension, protocol, kinds, Op::SuggestLayout(layout));
             Ok(None)
         }
         FromExt::SetNetworks { networks } => {

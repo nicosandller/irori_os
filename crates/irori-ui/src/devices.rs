@@ -23,9 +23,10 @@ mod updates;
 use self::builder::{HELPER_KINDS, HelperBuilder, HelperKind};
 pub(crate) use self::controls::moment::when as controls_when;
 pub(crate) use self::controls::{
-    alarm_words, camera_picture, camera_words, climate_words, fan_words, fill, humidifier_words,
-    lock_words, media_player_words, mower_words, number, opening_words, schedule_words,
-    timer_words, unit_of, update_words, vacuum_words, water_heater_words, wording,
+    alarm_words, calendar_words, camera_picture, camera_words, climate_words, fan_words, fill,
+    humidifier_words, lock_words, media_player_words, mower_words, number, opening_words,
+    remote_words, schedule_words, timer_words, todo_words, unit_of, update_words, vacuum_words,
+    water_heater_words, weather_words, wording,
 };
 pub(crate) use self::controls::{control, kept};
 
@@ -943,6 +944,45 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
         });
     };
 
+    // "Add all" and "Add selected": several found devices in one request, so a bridge that brings
+    // a couple of hundred doesn't take a couple of hundred. They leave the found list together.
+    // `all` sends no list, so the extension's every found device joins, as the button says.
+    let whole = StoredValue::new(id.clone());
+    let add_together = move |ids: Vec<DeviceId>, all: bool| {
+        if ids.len() < 2 {
+            add(ids);
+            return;
+        }
+        busy.update(|busy| busy.extend(ids.iter().cloned()));
+        picked.update(|picked| picked.retain(|id| !ids.contains(id)));
+        trouble.set(None);
+        let extension = whole.get_value();
+        spawn_local(async move {
+            let snapshot: Vec<_> = found.with_untracked(|found| {
+                found
+                    .iter()
+                    .filter(|device| all || ids.contains(&device.id))
+                    .cloned()
+                    .collect()
+            });
+            let chosen = (!all).then_some(ids.as_slice());
+            match crate::api::add_found_devices(&extension, chosen).await {
+                Ok(_) => {
+                    let gone: Vec<DeviceId> = snapshot.iter().map(|d| d.id.clone()).collect();
+                    leaving.update(|leaving| leaving.extend(snapshot));
+                    set_timeout(
+                        move || leaving.update(|leaving| leaving.retain(|d| !gone.contains(&d.id))),
+                        LEAVING_FOR,
+                    );
+                    crate::refresh(live);
+                }
+                Err(why) => trouble.set(Some(format!("Couldn't add them: {why}"))),
+            }
+            busy.update(|busy| busy.retain(|id| !ids.contains(id)));
+        });
+    };
+    let add_all = move || add_together(addable.get_untracked(), true);
+
     let back = move |_| on_back.run(());
     let protocol = id.clone();
     let for_actions = id.clone();
@@ -1005,10 +1045,9 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                     {move || {
                         let count = addable.with(Vec::len);
                         (count > 1).then(|| view! {
-                            <label class="pick-all" title="Select all">
+                            <label class="pick-all">
                                 <input
                                     type="checkbox"
-                                    aria-label="Select all"
                                     prop:checked=move || {
                                         !addable.with(Vec::is_empty)
                                             && chosen.with(Vec::len) == addable.with(Vec::len)
@@ -1021,6 +1060,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                         }
                                     }
                                 />
+                                "Select all"
                             </label>
                         })
                     }}
@@ -1034,7 +1074,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                     <button
                                         type="button"
                                         class="primary"
-                                        on:click=move |_| add(chosen.get_untracked())
+                                        on:click=move |_| add_together(chosen.get_untracked(), false)
                                     >
                                         {format!("Add selected ({count})")}
                                     </button>
@@ -1046,7 +1086,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                                     <button
                                         type="button"
                                         class="primary"
-                                        on:click=move |_| add(addable.get_untracked())
+                                        on:click=move |_| add_all()
                                     >
                                         {format!("Add all ({count})")}
                                     </button>
@@ -1058,6 +1098,7 @@ fn ProtocolStep(id: ExtensionId, #[prop(into)] on_back: Callback<()>) -> impl In
                         }}
                     </span>
                 </div>
+                <crate::layout_offer::LayoutOffer extension=id.clone() />
                 <crate::waiting::WaitingFor extension=id.clone() />
                 {move || {
                     let nothing = drawn.with(Vec::is_empty) && {
@@ -1974,7 +2015,10 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::BinarySensor(_)
         | Capabilities::Event(_)
         | Capabilities::DeviceTracker(_)
-        | Capabilities::Schedule(_) => view! {
+        | Capabilities::Schedule(_)
+        | Capabilities::Image(_)
+        | Capabilities::Weather(_)
+        | Capabilities::Calendar(_) => view! {
             <button
                 type="button"
                 class="unroll reading-unroll"
@@ -2021,6 +2065,9 @@ pub(crate) fn unrolling(entity: &Entity, control: AnyView, unroll: Option<Unroll
         | Capabilities::Humidifier(_)
         | Capabilities::MediaPlayer(_)
         | Capabilities::Camera(_)
+        | Capabilities::Notify(_)
+        | Capabilities::Remote(_)
+        | Capabilities::Todo(_)
         | Capabilities::Update(_) => view! {
             {control}
             <button

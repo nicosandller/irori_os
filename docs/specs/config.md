@@ -121,6 +121,10 @@ a room) is the same decision — that device is in the home. Earlier versions of
 `added = true` for every device already in the home, so a home kept its devices across the change
 to adding them by hand.
 
+**Add all** on an extension's screen adds every device it has found at once, and **Add selected**
+the ones ticked, in one edit of this file (`POST /api/devices/add`, [api.md](api.md) §3): the
+same `added = true`, written once for the lot rather than once per device. It touches no other extension's devices.
+
 **Removing** a device takes everything Irori keeps of it out of these files: its row here, its
 entities' rows, and its spot on the floorplan. The device goes back to being found, listed under
 **+ Add device**.
@@ -799,6 +803,13 @@ now" and "this entry is stale" look identical from here.
 appears on the network. A suggestion that matches a room you already made is used, and a
 suggestion is re-checked whenever areas change, so making a room named "Kitchen" quietly collects
 the devices that were asking for it all along.
+
+An extension can **propose** floors and rooms too ([protocols.md](protocols.md) §6.9): a bridge to
+Home Assistant knows that home's floors and areas. That's still not Irori making them: the owner
+is asked ("Bring over Home Assistant's 13 rooms and 3 floors"), and accepting makes only the ones
+whose names aren't taken, in one edit of `areas.toml`, each room on its proposed floor. Nothing
+that exists is renamed, moved or removed. The new rooms then collect their devices as any room
+does, and a device somebody placed, or said is in no room, stays where it is.
 
 An entity with no name of its own follows its device's name, and keeps following it after a
 rename. Naming the entity stops that.

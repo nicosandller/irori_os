@@ -1965,6 +1965,111 @@
           "data"
         ]
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "notify.send_message"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/NotifySendMessage"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "remote.turn_on"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/RemoteTurnOn"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "remote.turn_off"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "type": "object",
+            "maxProperties": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "remote.send_command"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/RemoteSendCommand"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "service": {
+            "const": "todo.add_item"
+          }
+        },
+        "required": [
+          "service"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/TodoAddItem"
+          }
+        },
+        "required": [
+          "data"
+        ]
+      }
     }
   ],
   "required": [
@@ -2408,6 +2513,31 @@
         "position"
       ]
     },
+    "NotifySendMessage": {
+      "description": "What `notify.send_message` sends.",
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "What it says.",
+          "type": "string",
+          "maxLength": 4096,
+          "minLength": 1
+        },
+        "title": {
+          "description": "A title above it, where it can have one.",
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "message"
+      ]
+    },
     "NumberSetValue": {
       "description": "Data for `number.set_value`.",
       "type": "object",
@@ -2594,6 +2724,56 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
+    "RemoteSendCommand": {
+      "description": "What `remote.send_command` sends.",
+      "type": "object",
+      "properties": {
+        "command": {
+          "description": "The commands, in order, by the names its protocol knows them by (`power`, `volume_up`).",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 32,
+          "minItems": 1
+        },
+        "device": {
+          "description": "Which of the devices it drives they're for, where it drives several.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repeats": {
+          "description": "How many times to send them, once when absent.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 255,
+          "minimum": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "command"
+      ]
+    },
+    "RemoteTurnOn": {
+      "description": "What `remote.turn_on` turns on.",
+      "type": "object",
+      "properties": {
+        "activity": {
+          "description": "One of its `activities`, to start.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "SelectOption": {
       "description": "Data for `select.select_option`.",
       "type": "object",
@@ -2706,7 +2886,12 @@
         "timer.pause",
         "timer.cancel",
         "timer.finish",
-        "timer.change"
+        "timer.change",
+        "notify.send_message",
+        "remote.turn_on",
+        "remote.turn_off",
+        "remote.send_command",
+        "todo.add_item"
       ]
     },
     "SetHumidity": {
@@ -2856,6 +3041,21 @@
       "type": "string",
       "format": "date-time",
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{1,9})?(Z|[+-]([01][0-9]|2[0-3]):[0-5][0-9])$"
+    },
+    "TodoAddItem": {
+      "description": "What `todo.add_item` adds.",
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string",
+          "maxLength": 255,
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item"
+      ]
     },
     "TokenId": {
       "description": "Format of a slug (token id): lowercase letters a-z and digits, in words separated by single `_`. 1-64 characters.",

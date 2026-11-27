@@ -139,6 +139,10 @@ pub struct Extension {
     /// What it found that Irori has no entity kind for yet, listed on its devices.
     #[serde(default)]
     pub unmodeled: Vec<irori_types::Unmodeled>,
+    /// The floors and rooms it proposes that the home doesn't have yet. Absent when there are
+    /// none, which is every extension that doesn't bridge another home system.
+    #[serde(default)]
+    pub suggested_layout: Option<irori_types::SuggestedLayout>,
     /// Whether it has an icon, at `/api/extensions/<id>/icon.svg`.
     #[serde(default)]
     pub has_icon: bool,
@@ -629,6 +633,45 @@ pub async fn edit_device(device_id: &DeviceId, edit: &DeviceEdit) -> Result<(), 
         .await
         .map_err(unreachable)?;
     checked(response).await
+}
+
+/// Adds every device `extension` has found and is holding ("Add all"), or only `chosen` of them
+/// ("Add selected"), in one request. Answers how many joined the home.
+pub async fn add_found_devices(
+    extension: &ExtensionId,
+    chosen: Option<&[DeviceId]>,
+) -> Result<usize, String> {
+    #[derive(Serialize)]
+    struct AddFound<'a> {
+        protocol: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        devices: Option<&'a [DeviceId]>,
+    }
+    #[derive(Deserialize)]
+    struct Added {
+        added: usize,
+    }
+    let response = post("/api/devices/add")
+        .json(&AddFound {
+            protocol: extension.as_str(),
+            devices: chosen,
+        })
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    if response.ok() {
+        return response
+            .json::<Added>()
+            .await
+            .map(|added| added.added)
+            .map_err(|e| e.to_string());
+    }
+    let status = response.status();
+    Err(match response.json::<Refused>().await {
+        Ok(refused) => refused.error,
+        Err(_) => format!("Irori refused that ({status})"),
+    })
 }
 
 /// Why a device wasn't removed.
@@ -1148,6 +1191,21 @@ pub async fn set_extension_settings(
 ) -> Result<(), String> {
     let response = post(&format!("/api/extensions/{id}/settings"))
         .json(settings)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(unreachable)?;
+    checked(response).await
+}
+
+/// Makes the floors and rooms `extension` proposes that the home doesn't have yet, of those in
+/// `shown`: what the owner was looking at when they said yes.
+pub async fn accept_layout(
+    extension: &ExtensionId,
+    shown: &irori_types::SuggestedLayout,
+) -> Result<(), String> {
+    let response = post(&format!("/api/extensions/{extension}/layout"))
+        .json(shown)
         .map_err(|e| e.to_string())?
         .send()
         .await

@@ -1,0 +1,1 @@
+a remote sends 1 to 32 commands at a time

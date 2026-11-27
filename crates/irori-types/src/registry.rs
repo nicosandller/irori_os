@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::kinds::alarm_control_panel::AlarmCapabilities;
 use crate::kinds::binary_sensor::BinarySensorCapabilities;
 use crate::kinds::button::ButtonCapabilities;
+use crate::kinds::calendar::CalendarCapabilities;
 use crate::kinds::camera::CameraCapabilities;
 use crate::kinds::climate::ClimateCapabilities;
 use crate::kinds::cover::CoverCapabilities;
@@ -14,12 +15,15 @@ use crate::kinds::device_tracker::TrackerCapabilities;
 use crate::kinds::event::EventCapabilities;
 use crate::kinds::fan::FanCapabilities;
 use crate::kinds::humidifier::HumidifierCapabilities;
+use crate::kinds::image::ImageCapabilities;
 use crate::kinds::lawn_mower::LawnMowerCapabilities;
 use crate::kinds::light::LightCapabilities;
 use crate::kinds::lock::LockCapabilities;
 use crate::kinds::media_player::MediaPlayerCapabilities;
 use crate::kinds::moment::MomentCapabilities;
+use crate::kinds::notify::NotifyCapabilities;
 use crate::kinds::number::NumberCapabilities;
+use crate::kinds::remote::RemoteCapabilities;
 use crate::kinds::scene::SceneCapabilities;
 use crate::kinds::schedule::ScheduleCapabilities;
 use crate::kinds::select::SelectCapabilities;
@@ -28,10 +32,12 @@ use crate::kinds::siren::SirenCapabilities;
 use crate::kinds::switch::SwitchCapabilities;
 use crate::kinds::text::TextCapabilities;
 use crate::kinds::timer::TimerCapabilities;
+use crate::kinds::todo::TodoCapabilities;
 use crate::kinds::update::UpdateCapabilities;
 use crate::kinds::vacuum::VacuumCapabilities;
 use crate::kinds::valve::ValveCapabilities;
 use crate::kinds::water_heater::WaterHeaterCapabilities;
+use crate::kinds::weather::WeatherCapabilities;
 use crate::{
     AreaId, Description, DeviceId, EntityId, EntityKind, FloorId, InvariantError, Name, ProtocolId,
     UniqueId,
@@ -102,6 +108,15 @@ pub struct Device {
     /// The device this one is reached through, e.g. a Zigbee coordinator or a bridge.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub via_device_id: Option<DeviceId>,
+    /// The device this one is a second way to: the same hardware, found by another extension
+    /// that names its connections, such as a bridge to another hub. Set by the core
+    /// (`docs/specs/protocols.md` §6.1), and only on a device that was added before its twin
+    /// was found; a duplicate that isn't in the home yet isn't offered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duplicate_of: Option<DeviceId>,
+    /// The other extensions that reach this same device, whose copies are its duplicates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub also_through: Vec<ProtocolId>,
 }
 
 /// The registry entry for an entity: its identity and what it can do. Its current value lives
@@ -232,6 +247,12 @@ pub enum Capabilities {
     Timer(TimerCapabilities),
     Schedule(ScheduleCapabilities),
     Camera(CameraCapabilities),
+    Image(ImageCapabilities),
+    Notify(NotifyCapabilities),
+    Remote(RemoteCapabilities),
+    Weather(WeatherCapabilities),
+    Calendar(CalendarCapabilities),
+    Todo(TodoCapabilities),
 }
 
 impl Capabilities {
@@ -267,6 +288,12 @@ impl Capabilities {
             Self::Timer(_) => EntityKind::Timer,
             Self::Schedule(_) => EntityKind::Schedule,
             Self::Camera(_) => EntityKind::Camera,
+            Self::Image(_) => EntityKind::Image,
+            Self::Notify(_) => EntityKind::Notify,
+            Self::Remote(_) => EntityKind::Remote,
+            Self::Weather(_) => EntityKind::Weather,
+            Self::Calendar(_) => EntityKind::Calendar,
+            Self::Todo(_) => EntityKind::Todo,
         }
     }
 

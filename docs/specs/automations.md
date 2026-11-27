@@ -153,7 +153,7 @@ instead:
 |---|---|
 | `answer { id, value?, error? }` | Reply to any request above |
 | `state_changed { entity_id, old_state?, new_state }` | After `subscribe { states: true }`, for every state change in the home |
-| `registry_changed { missed? }` | After `subscribe { registry: true }`, when an entity or device is added, changed or removed; and after any subscription, when the engine fell too far behind and missed events, with `missed` the number it wasn't sent. A nudge: the engine asks again with `get_registry` and `get_states`. What changed in between is gone, so a trigger that needed it didn't fire: the automations engine logs a `missed` near-miss on each flow whose triggers watch an entity ([flows.md](flows.md) §6) |
+| `registry_changed { missed? }` | After `subscribe { registry: true }`, when an entity or device is added, changed or removed; and after any subscription, when the engine fell too far behind and missed events, with `missed` the number it wasn't sent. A nudge: the engine asks again with `get_registry` and `get_states`. What changed in between is gone, so a trigger that needed it didn't fire: the automations engine logs a `missed` near-miss on each flow whose triggers watch an entity ([flows.md](flows.md) §6). An extension describing a big network sends thousands at once, so the automations engine reads a burst once, a quarter second after the last (at most a second after the first), while it takes state changes as they come. It reads at once when an old reading would be wrong: after `missed`, for a page's question, and for a state that a turned-on flow that can't arm yet watches. |
 | `app_request { id, method, params, caller? }` | The engine's page asked it something (§B3). `caller` is `{ user?, owner }`, put there by the core, never by the page. It is left out when the home's own owner asks. A regular user's question is sent only to an extension with `users = true` that the home trusts with it; an engine that reads no `caller` is therefore never one that could take a regular user for the owner |
 | `registry_changed {}` | (also) whenever a person's rooms or role change, or someone is added or removed: what a flow of theirs may touch is not what it was |
 
@@ -213,9 +213,11 @@ For each running extension with an `app` contribution, the core:
 What the core promises about the static files:
 
 - `Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src
-  'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self'`, with
-  the server's own address (from the request's `Host`) added beside each `'self'`: in the
-  sandboxed frame Safari and Firefox match `'self'` against the opaque origin, i.e. nothing.
+  'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'self';
+  sandbox allow-scripts`, with the server's own address (from the request's `Host`) added beside
+  each `'self'`: in the sandboxed frame Safari and Firefox match `'self'` against the opaque
+  origin, i.e. nothing. `sandbox allow-scripts` repeats the frame's own sandbox, so the page has
+  an origin of its own however it was opened.
 - `Access-Control-Allow-Origin: *` **on these files only** — the page runs in a sandboxed frame
   with an opaque origin, so its own script, wasm and stylesheet fetches are cross-origin. Never
   on `/api/…`. The API is not open to other websites (`docs/specs/api.md`).

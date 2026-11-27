@@ -761,6 +761,45 @@ mod tests {
     }
 
     #[test]
+    fn the_weather_a_calendar_and_a_to_do_list_can_be_asked_about() {
+        let weather: State = serde_json::from_value(serde_json::json!({
+            "kind": "weather", "condition": "rainy", "temperature": 5.5
+        }))
+        .unwrap();
+        let calendar: State = serde_json::from_value(serde_json::json!({
+            "kind": "calendar", "on": true,
+            "event": { "summary": "Bins out", "start": "2026-11-19", "end": "2026-11-20" }
+        }))
+        .unwrap();
+        let todo: State =
+            serde_json::from_value(serde_json::json!({ "kind": "todo", "open": 3 })).unwrap();
+        let home = Snapshot {
+            states: Arc::new(BTreeMap::from([
+                state("weather.home", weather, Availability::Available),
+                state("calendar.home", calendar, Availability::Available),
+                state("todo.shopping", todo, Availability::Available),
+            ])),
+            vars: BTreeMap::new(),
+            now: at(),
+        };
+        let mut eval = Evaluator::default();
+        for (source, expected) in [
+            ("text('weather.home') == 'rainy'", true),
+            ("num('weather.home', 'temperature') < 10", true),
+            ("on('calendar.home')", true),
+            ("text('calendar.home', 'event') == 'Bins out'", true),
+            ("num('todo.shopping') > 2", true),
+        ] {
+            assert_eq!(eval.boolean(source, &home).result, Ok(expected), "{source}");
+        }
+        let condition: Condition = serde_json::from_value(serde_json::json!({
+            "type": "state", "entity": "weather.home", "is": "rainy"
+        }))
+        .unwrap();
+        assert_eq!(eval.condition(&condition, &home).result, Ok(true));
+    }
+
+    #[test]
     fn an_unavailable_sensor_is_an_error_not_a_value() {
         let mut eval = Evaluator::default();
         let outcome = eval.boolean("num('sensor.lux') < 30", &home(8.0, false));

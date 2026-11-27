@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kinds::alarm_control_panel::AlarmState;
 use crate::kinds::binary_sensor::BinarySensorState;
+use crate::kinds::calendar::CalendarState;
 use crate::kinds::camera::CameraState;
 use crate::kinds::climate::ClimateState;
 use crate::kinds::cover::CoverState;
@@ -21,6 +22,7 @@ use crate::kinds::lock::LockState;
 use crate::kinds::media_player::MediaPlayerState;
 use crate::kinds::moment::{DateState, DatetimeState, TimeState};
 use crate::kinds::number::NumberState;
+use crate::kinds::remote::RemoteState;
 use crate::kinds::schedule::ScheduleState;
 use crate::kinds::select::SelectState;
 use crate::kinds::sensor::SensorState;
@@ -28,10 +30,12 @@ use crate::kinds::siren::SirenState;
 use crate::kinds::switch::SwitchState;
 use crate::kinds::text::TextState;
 use crate::kinds::timer::TimerState;
+use crate::kinds::todo::TodoState;
 use crate::kinds::update::UpdateState;
 use crate::kinds::vacuum::VacuumState;
 use crate::kinds::valve::ValveState;
 use crate::kinds::water_heater::WaterHeaterState;
+use crate::kinds::weather::WeatherState;
 use crate::{AttributeKey, Context, EntityId, EntityKind, InvariantError, Timestamp};
 
 /// Free-form extra data from the protocol, e.g. Zigbee link quality. Readable by rules, but
@@ -174,6 +178,10 @@ pub enum State {
     Timer(TimerState),
     Schedule(ScheduleState),
     Camera(CameraState),
+    Remote(RemoteState),
+    Weather(WeatherState),
+    Calendar(CalendarState),
+    Todo(TodoState),
 }
 
 impl State {
@@ -209,6 +217,9 @@ impl State {
             | Self::LawnMower(_)
             | Self::Schedule(_) => Ok(()),
             Self::Camera(camera) => camera.validate(),
+            Self::Weather(weather) => weather.validate(),
+            Self::Calendar(calendar) => calendar.validate(),
+            Self::Remote(_) | Self::Todo(_) => Ok(()),
         }
     }
 
@@ -242,6 +253,10 @@ impl State {
             Self::Timer(_) => EntityKind::Timer,
             Self::Schedule(_) => EntityKind::Schedule,
             Self::Camera(_) => EntityKind::Camera,
+            Self::Remote(_) => EntityKind::Remote,
+            Self::Weather(_) => EntityKind::Weather,
+            Self::Calendar(_) => EntityKind::Calendar,
+            Self::Todo(_) => EntityKind::Todo,
         }
     }
 }

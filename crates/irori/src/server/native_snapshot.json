@@ -1,0 +1,873 @@
+{
+  "device_page": {
+    "device": {
+      "id": "demo_living_room_lamp",
+      "manufacturer": "Irori",
+      "model": "Virtual colour lamp",
+      "name": "Living room lamp",
+      "protocol": "demo",
+      "suggested_area": "Living room",
+      "sw_version": "0.0.0",
+      "unique_id": "living-room-lamp"
+    },
+    "entities": [
+      {
+        "capabilities": {
+          "brightness": true,
+          "color_temp_kelvin": {
+            "max": 6500,
+            "min": 2200
+          },
+          "kind": "light",
+          "rgb": true
+        },
+        "device_id": "demo_living_room_lamp",
+        "id": "light.living_room_lamp",
+        "name": "Living room lamp",
+        "protocol": "demo",
+        "unique_id": "living-room-lamp-light"
+      }
+    ],
+    "states": [
+      {
+        "availability": "available",
+        "context": {
+          "id": "<id>",
+          "origin": {
+            "protocol": "demo",
+            "type": "device"
+          }
+        },
+        "entity_id": "light.living_room_lamp",
+        "last_changed": "<time>",
+        "last_reported": "<time>",
+        "last_updated": "<time>",
+        "state": {
+          "brightness": 180,
+          "color_mode": "color_temp",
+          "color_temp_kelvin": 2700,
+          "kind": "light",
+          "on": false
+        }
+      }
+    ]
+  },
+  "held": [
+    {
+      "id": "demo_approach_doorbell",
+      "manufacturer": "Irori",
+      "model": "Virtual video doorbell",
+      "name": "Doorbell",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "camera": 1,
+        "event": 1,
+        "select": 1
+      }
+    },
+    {
+      "id": "demo_basement_boiler",
+      "manufacturer": "Irori",
+      "model": "Virtual electric water boiler",
+      "name": "Water boiler",
+      "protocol": "demo",
+      "provides": {
+        "water_heater": 1
+      }
+    },
+    {
+      "id": "demo_dining_room_door_1",
+      "manufacturer": "Irori",
+      "model": "Virtual contact sensor",
+      "name": "Dining room door 1",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_dining_room_door_2",
+      "manufacturer": "Irori",
+      "model": "Virtual contact sensor",
+      "name": "Dining room door 2",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_dining_room_presence",
+      "manufacturer": "Irori",
+      "model": "Virtual mmWave presence sensor",
+      "name": "Dining room presence sensor",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_dining_room_vibration",
+      "manufacturer": "Irori",
+      "model": "Virtual vibration sensor",
+      "name": "Dining room vibration sensor",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_dishwasher_plug",
+      "manufacturer": "Irori",
+      "model": "Virtual smart plug with power meter",
+      "name": "Dishwasher plug",
+      "protocol": "demo",
+      "provides": {
+        "sensor": 4,
+        "switch": 1
+      }
+    },
+    {
+      "id": "demo_foyer_ceiling_light",
+      "manufacturer": "Irori",
+      "model": "Virtual dimmable light",
+      "name": "Foyer ceiling light",
+      "protocol": "demo",
+      "provides": {
+        "light": 1
+      }
+    },
+    {
+      "id": "demo_foyer_lock",
+      "manufacturer": "Irori",
+      "model": "Virtual smart lock with door sensor",
+      "name": "Foyer door lock",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "lock": 1,
+        "number": 1,
+        "sensor": 1,
+        "update": 1
+      }
+    },
+    {
+      "id": "demo_foyer_movement",
+      "manufacturer": "Irori",
+      "model": "Virtual PIR movement sensor",
+      "name": "Foyer movement sensor",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_fridge_plug",
+      "manufacturer": "Irori",
+      "model": "Virtual smart plug with power meter",
+      "name": "Fridge plug",
+      "protocol": "demo",
+      "provides": {
+        "sensor": 4,
+        "switch": 1
+      }
+    },
+    {
+      "id": "demo_garage_camera",
+      "manufacturer": "Irori",
+      "model": "Virtual security camera",
+      "name": "Garage camera",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "camera": 1
+      }
+    },
+    {
+      "id": "demo_garage_ceiling_light",
+      "manufacturer": "Irori",
+      "model": "Virtual light on a relay",
+      "name": "Garage ceiling light",
+      "protocol": "demo",
+      "provides": {
+        "light": 1
+      }
+    },
+    {
+      "id": "demo_garage_door",
+      "manufacturer": "Irori",
+      "model": "Virtual garage door opener",
+      "name": "Garage door",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "cover": 1
+      }
+    },
+    {
+      "id": "demo_garden_camera_1",
+      "manufacturer": "Irori",
+      "model": "Virtual security camera",
+      "name": "Garden camera 1",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "camera": 1
+      }
+    },
+    {
+      "id": "demo_garden_camera_2",
+      "manufacturer": "Irori",
+      "model": "Virtual security camera",
+      "name": "Garden camera 2",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "camera": 1
+      }
+    },
+    {
+      "id": "demo_garden_climate",
+      "manufacturer": "Irori",
+      "model": "Virtual temperature and humidity sensor",
+      "name": "Garden climate sensor",
+      "protocol": "demo",
+      "provides": {
+        "sensor": 3
+      }
+    },
+    {
+      "id": "demo_garden_light",
+      "manufacturer": "Irori",
+      "model": "Virtual light sensor",
+      "name": "Garden light sensor",
+      "protocol": "demo",
+      "provides": {
+        "sensor": 2
+      }
+    },
+    {
+      "id": "demo_garden_soil",
+      "manufacturer": "Irori",
+      "model": "Virtual plant sensor",
+      "name": "Soil sensor",
+      "protocol": "demo",
+      "provides": {
+        "sensor": 4
+      }
+    },
+    {
+      "id": "demo_kitchen_ceiling_light",
+      "manufacturer": "Irori",
+      "model": "Virtual dimmable light",
+      "name": "Kitchen ceiling light",
+      "protocol": "demo",
+      "provides": {
+        "light": 1
+      }
+    },
+    {
+      "id": "demo_kitchen_leak",
+      "manufacturer": "Irori",
+      "model": "Virtual water leak sensor",
+      "name": "Water leak sensor",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_kitchen_smoke",
+      "manufacturer": "Irori",
+      "model": "Virtual smoke detector",
+      "name": "Smoke detector",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "button": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_kitchen_thermostat",
+      "manufacturer": "Irori",
+      "model": "Virtual smart thermostat",
+      "name": "Thermostat",
+      "protocol": "demo",
+      "provides": {
+        "climate": 1,
+        "update": 1
+      }
+    },
+    {
+      "id": "demo_living_room_camera",
+      "manufacturer": "Irori",
+      "model": "Virtual security camera",
+      "name": "Living room camera",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "camera": 1
+      }
+    },
+    {
+      "id": "demo_living_room_ceiling_light",
+      "manufacturer": "Irori",
+      "model": "Virtual light on a relay",
+      "name": "Living room ceiling light",
+      "protocol": "demo",
+      "provides": {
+        "light": 1
+      }
+    },
+    {
+      "id": "demo_living_room_climate",
+      "manufacturer": "Irori",
+      "model": "Virtual temperature and humidity sensor",
+      "name": "Living room climate sensor",
+      "protocol": "demo",
+      "provides": {
+        "sensor": 3
+      }
+    },
+    {
+      "id": "demo_living_room_door",
+      "manufacturer": "Irori",
+      "model": "Virtual contact sensor",
+      "name": "Living room door",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_living_room_presence",
+      "manufacturer": "Irori",
+      "model": "Virtual mmWave presence sensor",
+      "name": "Living room presence sensor",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_living_room_tv",
+      "manufacturer": "Irori",
+      "model": "Virtual TV",
+      "name": "TV",
+      "protocol": "demo",
+      "provides": {
+        "media_player": 1
+      }
+    },
+    {
+      "id": "demo_living_room_wall_light",
+      "manufacturer": "Irori",
+      "model": "Virtual dimmable light",
+      "name": "Living room wall light",
+      "protocol": "demo",
+      "provides": {
+        "light": 1
+      }
+    },
+    {
+      "id": "demo_mailbox_vibration",
+      "manufacturer": "Irori",
+      "model": "Virtual vibration sensor",
+      "name": "Mailbox sensor",
+      "protocol": "demo",
+      "provides": {
+        "binary_sensor": 1,
+        "sensor": 1
+      }
+    },
+    {
+      "id": "demo_outdoor_lights",
+      "manufacturer": "Irori",
+      "model": "Virtual smart wall switch",
+      "name": "Outdoor lights",
+      "protocol": "demo",
+      "provides": {
+        "switch": 1
+      }
+    }
+  ],
+  "home": {
+    "areas": [],
+    "devices": [
+      {
+        "id": "demo_living_room_lamp",
+        "manufacturer": "Irori",
+        "model": "Virtual colour lamp",
+        "name": "Living room lamp",
+        "protocol": "demo",
+        "suggested_area": "Living room",
+        "sw_version": "0.0.0",
+        "unique_id": "living-room-lamp"
+      }
+    ],
+    "entities": [
+      {
+        "capabilities": {
+          "brightness": true,
+          "color_temp_kelvin": {
+            "max": 6500,
+            "min": 2200
+          },
+          "kind": "light",
+          "rgb": true
+        },
+        "device_id": "demo_living_room_lamp",
+        "id": "light.living_room_lamp",
+        "name": "Living room lamp",
+        "protocol": "demo",
+        "unique_id": "living-room-lamp-light"
+      }
+    ],
+    "extensions": {
+      "demo": {
+        "actions": [
+          {
+            "id": "scan_network",
+            "label": "Scan network",
+            "place": "network"
+          }
+        ],
+        "available_actions": [
+          "scan_network"
+        ],
+        "config_schema": {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Settings for the demo protocol.",
+          "properties": {
+            "sensor_interval_secs": {
+              "default": 2,
+              "description": "Seconds between sensor readings.",
+              "format": "uint64",
+              "maximum": 3600,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "title": "Config",
+          "type": "object"
+        },
+        "description": "A whole demo house for trying Irori without hardware, living a day every minute: door, presence, vibration and leak sensors; a garage door, a smart lock and a video doorbell; lights, a TV and metered plugs; cameras indoors and in the garden; climate, soil and light sensors; a thermostat, a smoke detector and a water boiler.",
+        "dropped_reports": 0,
+        "entity_kinds": [
+          "light",
+          "switch",
+          "sensor",
+          "binary_sensor",
+          "number",
+          "select",
+          "button",
+          "event",
+          "cover",
+          "lock",
+          "climate",
+          "water_heater",
+          "media_player",
+          "update",
+          "camera"
+        ],
+        "has_icon": true,
+        "iot_class": "local_push",
+        "name": "Demo",
+        "rejected_reports": 0,
+        "starts": 1,
+        "state": "running",
+        "version": "0.9.0"
+      }
+    },
+    "held": [
+      {
+        "id": "demo_approach_doorbell",
+        "manufacturer": "Irori",
+        "model": "Virtual video doorbell",
+        "name": "Doorbell",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "camera": 1,
+          "event": 1,
+          "select": 1
+        }
+      },
+      {
+        "id": "demo_basement_boiler",
+        "manufacturer": "Irori",
+        "model": "Virtual electric water boiler",
+        "name": "Water boiler",
+        "protocol": "demo",
+        "provides": {
+          "water_heater": 1
+        }
+      },
+      {
+        "id": "demo_dining_room_door_1",
+        "manufacturer": "Irori",
+        "model": "Virtual contact sensor",
+        "name": "Dining room door 1",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_dining_room_door_2",
+        "manufacturer": "Irori",
+        "model": "Virtual contact sensor",
+        "name": "Dining room door 2",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_dining_room_presence",
+        "manufacturer": "Irori",
+        "model": "Virtual mmWave presence sensor",
+        "name": "Dining room presence sensor",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_dining_room_vibration",
+        "manufacturer": "Irori",
+        "model": "Virtual vibration sensor",
+        "name": "Dining room vibration sensor",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_dishwasher_plug",
+        "manufacturer": "Irori",
+        "model": "Virtual smart plug with power meter",
+        "name": "Dishwasher plug",
+        "protocol": "demo",
+        "provides": {
+          "sensor": 4,
+          "switch": 1
+        }
+      },
+      {
+        "id": "demo_foyer_ceiling_light",
+        "manufacturer": "Irori",
+        "model": "Virtual dimmable light",
+        "name": "Foyer ceiling light",
+        "protocol": "demo",
+        "provides": {
+          "light": 1
+        }
+      },
+      {
+        "id": "demo_foyer_lock",
+        "manufacturer": "Irori",
+        "model": "Virtual smart lock with door sensor",
+        "name": "Foyer door lock",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "lock": 1,
+          "number": 1,
+          "sensor": 1,
+          "update": 1
+        }
+      },
+      {
+        "id": "demo_foyer_movement",
+        "manufacturer": "Irori",
+        "model": "Virtual PIR movement sensor",
+        "name": "Foyer movement sensor",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_fridge_plug",
+        "manufacturer": "Irori",
+        "model": "Virtual smart plug with power meter",
+        "name": "Fridge plug",
+        "protocol": "demo",
+        "provides": {
+          "sensor": 4,
+          "switch": 1
+        }
+      },
+      {
+        "id": "demo_garage_camera",
+        "manufacturer": "Irori",
+        "model": "Virtual security camera",
+        "name": "Garage camera",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "camera": 1
+        }
+      },
+      {
+        "id": "demo_garage_ceiling_light",
+        "manufacturer": "Irori",
+        "model": "Virtual light on a relay",
+        "name": "Garage ceiling light",
+        "protocol": "demo",
+        "provides": {
+          "light": 1
+        }
+      },
+      {
+        "id": "demo_garage_door",
+        "manufacturer": "Irori",
+        "model": "Virtual garage door opener",
+        "name": "Garage door",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "cover": 1
+        }
+      },
+      {
+        "id": "demo_garden_camera_1",
+        "manufacturer": "Irori",
+        "model": "Virtual security camera",
+        "name": "Garden camera 1",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "camera": 1
+        }
+      },
+      {
+        "id": "demo_garden_camera_2",
+        "manufacturer": "Irori",
+        "model": "Virtual security camera",
+        "name": "Garden camera 2",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "camera": 1
+        }
+      },
+      {
+        "id": "demo_garden_climate",
+        "manufacturer": "Irori",
+        "model": "Virtual temperature and humidity sensor",
+        "name": "Garden climate sensor",
+        "protocol": "demo",
+        "provides": {
+          "sensor": 3
+        }
+      },
+      {
+        "id": "demo_garden_light",
+        "manufacturer": "Irori",
+        "model": "Virtual light sensor",
+        "name": "Garden light sensor",
+        "protocol": "demo",
+        "provides": {
+          "sensor": 2
+        }
+      },
+      {
+        "id": "demo_garden_soil",
+        "manufacturer": "Irori",
+        "model": "Virtual plant sensor",
+        "name": "Soil sensor",
+        "protocol": "demo",
+        "provides": {
+          "sensor": 4
+        }
+      },
+      {
+        "id": "demo_kitchen_ceiling_light",
+        "manufacturer": "Irori",
+        "model": "Virtual dimmable light",
+        "name": "Kitchen ceiling light",
+        "protocol": "demo",
+        "provides": {
+          "light": 1
+        }
+      },
+      {
+        "id": "demo_kitchen_leak",
+        "manufacturer": "Irori",
+        "model": "Virtual water leak sensor",
+        "name": "Water leak sensor",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_kitchen_smoke",
+        "manufacturer": "Irori",
+        "model": "Virtual smoke detector",
+        "name": "Smoke detector",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "button": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_kitchen_thermostat",
+        "manufacturer": "Irori",
+        "model": "Virtual smart thermostat",
+        "name": "Thermostat",
+        "protocol": "demo",
+        "provides": {
+          "climate": 1,
+          "update": 1
+        }
+      },
+      {
+        "id": "demo_living_room_camera",
+        "manufacturer": "Irori",
+        "model": "Virtual security camera",
+        "name": "Living room camera",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "camera": 1
+        }
+      },
+      {
+        "id": "demo_living_room_ceiling_light",
+        "manufacturer": "Irori",
+        "model": "Virtual light on a relay",
+        "name": "Living room ceiling light",
+        "protocol": "demo",
+        "provides": {
+          "light": 1
+        }
+      },
+      {
+        "id": "demo_living_room_climate",
+        "manufacturer": "Irori",
+        "model": "Virtual temperature and humidity sensor",
+        "name": "Living room climate sensor",
+        "protocol": "demo",
+        "provides": {
+          "sensor": 3
+        }
+      },
+      {
+        "id": "demo_living_room_door",
+        "manufacturer": "Irori",
+        "model": "Virtual contact sensor",
+        "name": "Living room door",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_living_room_presence",
+        "manufacturer": "Irori",
+        "model": "Virtual mmWave presence sensor",
+        "name": "Living room presence sensor",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_living_room_tv",
+        "manufacturer": "Irori",
+        "model": "Virtual TV",
+        "name": "TV",
+        "protocol": "demo",
+        "provides": {
+          "media_player": 1
+        }
+      },
+      {
+        "id": "demo_living_room_wall_light",
+        "manufacturer": "Irori",
+        "model": "Virtual dimmable light",
+        "name": "Living room wall light",
+        "protocol": "demo",
+        "provides": {
+          "light": 1
+        }
+      },
+      {
+        "id": "demo_mailbox_vibration",
+        "manufacturer": "Irori",
+        "model": "Virtual vibration sensor",
+        "name": "Mailbox sensor",
+        "protocol": "demo",
+        "provides": {
+          "binary_sensor": 1,
+          "sensor": 1
+        }
+      },
+      {
+        "id": "demo_outdoor_lights",
+        "manufacturer": "Irori",
+        "model": "Virtual smart wall switch",
+        "name": "Outdoor lights",
+        "protocol": "demo",
+        "provides": {
+          "switch": 1
+        }
+      }
+    ],
+    "states": [
+      {
+        "availability": "available",
+        "context": {
+          "id": "<id>",
+          "origin": {
+            "protocol": "demo",
+            "type": "device"
+          }
+        },
+        "entity_id": "light.living_room_lamp",
+        "last_changed": "<time>",
+        "last_reported": "<time>",
+        "last_updated": "<time>",
+        "state": {
+          "brightness": 180,
+          "color_mode": "color_temp",
+          "color_temp_kelvin": 2700,
+          "kind": "light",
+          "on": false
+        }
+      }
+    ]
+  },
+  "session": {
+    "locked": false,
+    "owner": true,
+    "setup": {
+      "owner": false,
+      "place": false
+    },
+    "user": null
+  }
+}
