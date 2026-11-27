@@ -177,6 +177,7 @@ async fn run(mut ctx: ProtocolContext) -> Result<(), ProtocolError> {
         serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
+        connections: Vec::new(),
     })
     .await?;
     for reading in &READINGS {

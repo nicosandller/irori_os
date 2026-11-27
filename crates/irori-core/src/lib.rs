@@ -241,6 +241,11 @@ pub struct ExtensionOverview {
     /// across its devices. Cleared when it stops, like `waiting`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unmodeled: Vec<irori_types::Unmodeled>,
+    /// The floors and rooms it proposes (`docs/specs/protocols.md` §6.9). Kept as it was said;
+    /// [`Core::extensions`] answers with only those the home doesn't have yet, and leaves it out
+    /// when that's nothing. Cleared when it stops, like `waiting`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggested_layout: Option<irori_types::SuggestedLayout>,
     /// Which of its manifest-declared actions are usable right now, as the protocol itself
     /// says (`set_available_actions`). Empty by default, and cleared when it stops — same
     /// reasoning as `waiting`: a list from a stopped protocol is out of date.
@@ -536,6 +541,18 @@ impl Core {
         self.0.events.subscribe()
     }
 
+    /// How many events some listener has yet to read. Work that publishes a great many at once
+    /// (adding a couple of hundred devices) waits for this to fall before publishing more, so no
+    /// listener falls far enough behind to miss any. Reading it changes nothing.
+    pub fn events_waiting(&self) -> usize {
+        self.0.events.len()
+    }
+
+    /// How many events a listener can fall behind before it starts missing them.
+    pub const fn event_buffer() -> usize {
+        EVENT_BUFFER
+    }
+
     /// Devices their protocol removed for good (`docs/specs/protocols.md` §4, *Remove a
     /// device*), for the config files to forget as they would a device a person removed.
     /// Taking a device out of the home, which puts it back among what was found, isn't this.
@@ -581,7 +598,34 @@ impl Core {
                 }
             }
         }
+        // Only a proposal sends this looking at the home; a home whose extensions propose
+        // nothing is answered as before.
+        if extensions
+            .values()
+            .any(|overview| overview.suggested_layout.is_some())
+        {
+            let home = read(&self.0.home);
+            for overview in extensions.values_mut() {
+                overview.suggested_layout = overview
+                    .suggested_layout
+                    .take()
+                    .map(|layout| layout.missing_from(home.settings()))
+                    .filter(|missing| !missing.is_empty());
+            }
+        }
         extensions
+    }
+
+    /// The floors and rooms `extension` proposes and the home doesn't have yet, by name.
+    /// `None` for an extension Irori doesn't know; an empty layout when it proposes nothing
+    /// new.
+    pub fn missing_layout(&self, extension: &ExtensionId) -> Option<irori_types::SuggestedLayout> {
+        let layout = read(&self.0.extensions)
+            .get(extension)?
+            .suggested_layout
+            .clone()
+            .unwrap_or_default();
+        Some(layout.missing_from(read(&self.0.home).settings()))
     }
 
     /// An extension's icon, if it has one.
@@ -1268,16 +1312,17 @@ impl Core {
         self.ask(&extension, asked, UNPAIR_TIMEOUT).await
     }
 
-    /// A picture of what a camera sees now, from its protocol (`docs/specs/protocols.md` §5.2).
+    /// A picture of what a camera sees now, or the one an image keeps, from its protocol
+    /// (`docs/specs/protocols.md` §5.2).
     /// Checked before it's passed on: an image type a page can show and nothing bigger than
     /// [`irori_protocol::MAX_PICTURE`].
     pub async fn camera_picture(
         &self,
         entity_id: &EntityId,
     ) -> Result<irori_protocol::Picture, CallActionError> {
-        if entity_id.kind() != EntityKind::Camera {
+        if !matches!(entity_id.kind(), EntityKind::Camera | EntityKind::Image) {
             return Err(CallActionError::Failed(format!(
-                "`{entity_id}` isn't a camera"
+                "`{entity_id}` isn't a camera or an image"
             )));
         }
         let (protocol, unique_id) = {
@@ -1560,6 +1605,10 @@ impl Core {
                 self.set_unmodeled(extension, unmodeled);
                 return;
             }
+            Op::SuggestLayout(layout) => {
+                self.set_layout(extension, layout);
+                return;
+            }
             Op::SetNetworks(networks) => {
                 match irori_types::Network::validate_all(&networks) {
                     Ok(()) => self.set_networks(extension, networks),
@@ -1704,6 +1753,7 @@ impl Core {
                         dropped_reports: 0,
                         waiting: Vec::new(),
                         unmodeled: Vec::new(),
+                        suggested_layout: None,
                         available_actions: Vec::new(),
                         open_actions: BTreeMap::new(),
                         starts: 0,
@@ -1753,6 +1803,28 @@ impl Core {
                 return;
             }
             overview.unmodeled = unmodeled;
+            overview.status.clone()
+        };
+        self.publish(vec![Event::ExtensionStatusChanged {
+            extension_id: extension.clone(),
+            status,
+        }]);
+    }
+
+    /// Keeps the floors and rooms an extension proposes, replacing what it proposed before. A
+    /// name said twice is kept once; an empty proposal withdraws it. Published as a status
+    /// change, like `waiting`, so the owner's page shows it.
+    pub(crate) fn set_layout(&self, extension: &ExtensionId, layout: irori_types::SuggestedLayout) {
+        let layout = Some(layout.tidied()).filter(|layout| !layout.is_empty());
+        let status = {
+            let mut extensions = write(&self.0.extensions);
+            let Some(overview) = extensions.get_mut(extension) else {
+                return;
+            };
+            if overview.suggested_layout == layout {
+                return;
+            }
+            overview.suggested_layout = layout;
             overview.status.clone()
         };
         self.publish(vec![Event::ExtensionStatusChanged {
@@ -1873,6 +1945,7 @@ impl Core {
                             dropped_reports: 0,
                             waiting: Vec::new(),
                             unmodeled: Vec::new(),
+                            suggested_layout: None,
                             available_actions: Vec::new(),
                             open_actions: BTreeMap::new(),
                             starts: u64::from(status == ExtensionStatus::Starting),

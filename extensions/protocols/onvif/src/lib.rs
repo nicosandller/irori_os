@@ -1176,6 +1176,7 @@ fn describe(
         serial_number: info.serial.clone(),
         suggested_area: None,
         via_device_unique_id: None,
+        connections: Vec::new(),
     };
     let entity = EntityDescription {
         unique_id: camera_entity(&found.id)?,

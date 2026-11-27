@@ -22,6 +22,40 @@ use tokio::sync::Mutex;
 /// file feels live, and slow enough that the cost is three `stat` calls.
 const POLL: Duration = Duration::from_secs(2);
 
+/// About how many events one step of adding devices publishes ([`Config::add_devices`]): a
+/// quarter of what a listener can fall behind by.
+const ADD_STEP_EVENTS: usize = Core::event_buffer() / 4;
+
+/// How long a listener may go without reading before adding devices stops waiting for it.
+const STALLED: Duration = Duration::from_millis(500);
+
+/// The pause between steps once a listener has stopped reading, when how far behind the others
+/// are can no longer be told. A step is a few hundred events, and this gives a listener that
+/// reads, on a small machine too, the time to take them.
+const PAUSE_ONCE_STALLED: Duration = Duration::from_millis(50);
+
+/// Waits until the listeners have read all but a step's worth of what has been published, or
+/// until none of them has read anything for [`STALLED`]. Answers whether they kept up.
+async fn drained(core: &Core) -> bool {
+    let mut waiting = core.events_waiting();
+    let mut since = tokio::time::Instant::now();
+    while waiting > ADD_STEP_EVENTS {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let now = core.events_waiting();
+        if now < waiting {
+            since = tokio::time::Instant::now();
+        } else if since.elapsed() >= STALLED {
+            tracing::warn!(
+                waiting = now,
+                "a listener isn't reading; adding devices goes on"
+            );
+            return false;
+        }
+        waiting = now;
+    }
+    true
+}
+
 /// The config directory. Cheap to clone; all clones share one lock, so edits happen one at a
 /// time and never interleave with a reload.
 #[derive(Debug, Clone)]
@@ -124,6 +158,65 @@ impl Config {
         }
         core.apply_settings(settings);
         Ok(made)
+    }
+
+    /// Adds found devices to the home ("Add all"), each with how many entities it brings.
+    ///
+    /// `devices.toml` is written once, for all of them. The core is then told in steps: each
+    /// device that joins publishes an event for itself and two for each of its entities, and a
+    /// couple of hundred devices told at once would be thousands of events, more than a
+    /// listener (the history, the event log, an automation engine) can fall behind by before it
+    /// misses some. So each step is a few hundred events, and the next waits until the listeners
+    /// have read most of the last. A listener that has stopped reading altogether doesn't hold
+    /// the rest up for long: after a moment without progress, the rest go a short pause apart
+    /// instead of waiting on it, so the listeners that do read still keep up.
+    ///
+    /// A step is cut between devices, never inside one, so a single device that brings more
+    /// than about 380 entities is told in one go and can still outrun a listener by itself.
+    ///
+    /// The lock is held throughout, so the watch loop doesn't hand the core the whole file at
+    /// once in the middle of it.
+    pub async fn add_devices(
+        &self,
+        core: &Core,
+        devices: &[(DeviceId, usize)],
+    ) -> Result<(), EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+        let before = store.settings();
+        let mut settings = before.clone();
+        for (id, _) in devices {
+            settings.devices.entry(id.clone()).or_default().added = true;
+        }
+        let written = store.save(&settings).map_err(EditError::Io)?;
+        if !written.is_empty() {
+            let files: Vec<&str> = written.iter().map(|file| file.name()).collect();
+            tracing::info!(files = ?files, "config written");
+        }
+        // The steps: the settings as they were, with one more batch of devices added each time.
+        let mut step = before;
+        let mut events = 0;
+        // Once a listener has stopped reading, waiting for it again at every step would only
+        // keep the lock (and the person) waiting half a second a step. The steps still go a
+        // short pause apart, for the listeners that do read.
+        let mut keeping_up = true;
+        for (at, (id, entities)) in devices.iter().enumerate() {
+            step.devices.entry(id.clone()).or_default().added = true;
+            events += 1 + 2 * entities;
+            let last = at + 1 == devices.len();
+            if events >= ADD_STEP_EVENTS && !last {
+                core.apply_settings(step.clone());
+                events = 0;
+                if keeping_up {
+                    keeping_up = drained(core).await;
+                } else {
+                    tokio::time::sleep(PAUSE_ONCE_STALLED).await;
+                }
+            }
+        }
+        // The last step is the file as written, so the core ends up agreeing with the disk.
+        core.apply_settings(settings);
+        Ok(())
     }
 
     /// Removes a device from the home (`docs/specs/config.md` §3.2): everything Irori keeps of it
@@ -496,6 +589,48 @@ impl Config {
         );
         core.apply_extension_settings(store.extension_settings());
         Ok(made)
+    }
+
+    /// [`Self::edit_extension_with_secrets`] for a save that touches a setting a secret is tied
+    /// to (`x-irori-secret-for`). `ties` is each `(secret, setting)`. A secret whose setting had
+    /// a value and now has another is removed, unless this same save gives it a new value, so it
+    /// is never handed to whatever the setting now points at. Compared under the lock, against
+    /// what's on disk.
+    pub async fn edit_extension_clearing_tied_secrets(
+        &self,
+        core: &Core,
+        extension: &irori_types::ExtensionId,
+        change_file: impl FnOnce(&mut serde_json::Map<String, serde_json::Value>),
+        secrets_to_set: &[(String, String)],
+        ties: &[(String, String)],
+    ) -> Result<(), EditError> {
+        let mut store = self.0.lock().await;
+        report(&store.reload());
+
+        let mut file = store.extension_file(extension);
+        let before = file.clone();
+        change_file(&mut file);
+        let mut secrets = store.secrets();
+        for (secret, setting) in ties {
+            let changed = before.contains_key(setting) && before.get(setting) != file.get(setting);
+            if changed && !secrets_to_set.iter().any(|(key, _)| key == secret) {
+                secrets.remove(extension, std::slice::from_ref(secret));
+            }
+        }
+        for (key, text) in secrets_to_set {
+            secrets
+                .set(extension, std::slice::from_ref(key), text.clone())
+                .map_err(|e| EditError::Refused(Refused(e.to_string())))?;
+        }
+        store
+            .save_extension_and_secrets(extension, &file, &secrets)
+            .map_err(EditError::Io)?;
+        tracing::info!(
+            files = %format!("extensions/{extension}.toml, secrets.toml"),
+            "config written"
+        );
+        core.apply_extension_settings(store.extension_settings());
+        Ok(())
     }
 
     /// Picks up edits made outside Irori. Runs until the process ends. A change to `[recorder]`

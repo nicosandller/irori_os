@@ -668,7 +668,7 @@ pub fn Why() -> impl IntoView {
 
     #[derive(Clone)]
     enum Row {
-        Change(irori_types::EntityState),
+        Change(Box<irori_types::EntityState>),
         Miss(NearMiss),
         Run(RunSummary),
     }
@@ -687,7 +687,7 @@ pub fn Why() -> impl IntoView {
             Err(why) => view! { <div class="problem">{why}</div> }.into_any(),
             Ok(timeline) => {
                 let mut rows: Vec<(irori_types::Timestamp, Row)> = Vec::new();
-                rows.extend(timeline.changes.into_iter().map(|c| (c.last_updated, Row::Change(c))));
+                rows.extend(timeline.changes.into_iter().map(|c| (c.last_updated, Row::Change(Box::new(c)))));
                 rows.extend(timeline.near_misses.into_iter().map(|m| (m.at, Row::Miss(m))));
                 rows.extend(timeline.runs.into_iter().map(|r| (r.started_at, Row::Run(r))));
                 rows.sort_by_key(|(at, _)| std::cmp::Reverse(*at));

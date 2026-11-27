@@ -1,0 +1,17 @@
+{
+  "service": "remote.send_command",
+  "unique_id": "hub_remote",
+  "data": {
+    "command": [
+      "volume_up"
+    ],
+    "repeats": 3
+  },
+  "context": {
+    "id": "01K5B2Q9A1B2C3D4E5F6G7H8J9",
+    "origin": {
+      "type": "user",
+      "user_id": "nico"
+    }
+  }
+}

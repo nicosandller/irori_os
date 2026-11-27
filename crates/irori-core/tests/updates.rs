@@ -78,6 +78,7 @@ impl Protocol for Plugs {
                 serial_number: None,
                 suggested_area: None,
                 via_device_unique_id: None,
+                connections: Vec::new(),
             })
             .await?;
             ctx.describe_entity(EntityDescription {

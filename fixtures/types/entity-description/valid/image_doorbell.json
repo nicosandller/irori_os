@@ -1,0 +1,7 @@
+{
+  "unique_id": "doorbell_visitor",
+  "name": "Last visitor",
+  "capabilities": {
+    "kind": "image"
+  }
+}

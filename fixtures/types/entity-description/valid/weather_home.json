@@ -1,0 +1,7 @@
+{
+  "unique_id": "weather_home",
+  "name": "Forecast",
+  "capabilities": {
+    "kind": "weather"
+  }
+}

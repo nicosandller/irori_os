@@ -1,0 +1,31 @@
+[extension]
+id = "homeassistant"
+name = "Home Assistant"
+version = "0.4.1"
+irori = ">=1.7.0"
+# 1.7.0 is the first core that takes rooms and floors an extension proposes (`suggest_layout`) and
+# a device's `connections`, and the first with images, notify targets, remotes, weather, calendars
+# and to-do lists; an older one would drop this extension's link at its first message.
+description = "Try Irori on the home your Home Assistant already runs: its devices, rooms and floors, while Home Assistant keeps running them. By default Irori can control your devices through it; turn that off in its settings for a read-only try. Use an https:// address if you can: over http://, your Home Assistant administrator's access token travels unencrypted on your local network."
+config_schema = "config.schema.json"
+icon = "icon.svg"
+
+# Everything goes through Home Assistant's WebSocket API, on the local network. Home Assistant
+# keeps running the devices: this extension reads its registries and states, and calls a service
+# only when someone gives a command in Irori, unless the owner turned commands off. It never
+# changes Home Assistant's devices, areas, entities or automations.
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = [
+    "light", "switch", "sensor", "binary_sensor", "button", "number", "select", "cover", "lock",
+    "fan", "event", "valve", "siren", "climate", "media_player", "camera", "device_tracker",
+    "update", "alarm_control_panel", "vacuum", "water_heater", "humidifier", "lawn_mower", "scene",
+    "text", "date", "time", "datetime", "image", "notify", "remote", "weather", "calendar", "todo",
+    "timer", "schedule",
+]
+run = { command = "bin/irori-ext-homeassistant" }
+
+# Home Assistant's address is checked when the settings are read: a local address, or a public
+# name over https:// that the owner says resolves locally, connected to only if it does.
+[permissions]
+lan = true

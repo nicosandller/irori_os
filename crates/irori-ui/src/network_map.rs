@@ -1556,6 +1556,8 @@ mod tests {
             area_id: None,
             suggested_area: None,
             via_device_id: None,
+            duplicate_of: None,
+            also_through: Vec::new(),
         }
     }
 

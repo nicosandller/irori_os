@@ -86,6 +86,67 @@
       "minLength": 1,
       "pattern": "^[a-z0-9]+(_[a-z0-9]+)*$"
     },
+    "CalendarEvent": {
+      "description": "One event, in the home's own time.",
+      "type": "object",
+      "properties": {
+        "description": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "end": {
+          "description": "The day it ends: for an all-day event, the day after its last.",
+          "$ref": "#/$defs/CivilDate"
+        },
+        "end_time": {
+          "description": "When on that day, unless it lasts all day.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClockTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "start": {
+          "description": "The day it starts.",
+          "$ref": "#/$defs/CivilDate"
+        },
+        "start_time": {
+          "description": "When on that day, unless it lasts all day.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClockTime"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "description": "What it is.",
+          "type": "string",
+          "maxLength": 255
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "start",
+        "end"
+      ]
+    },
     "CameraPreset": {
       "description": "A position saved on a camera, which it can be sent back to.",
       "type": "object",
@@ -1245,6 +1306,195 @@
             "kind",
             "state"
           ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "activity": {
+              "description": "The activity going now, for one that has activities.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "remote"
+            },
+            "on": {
+              "description": "What it drives is on.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "apparent_temperature": {
+              "description": "What it feels like, °C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "cloud_coverage": {
+              "description": "How much of the sky is cloud, %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 100.0,
+              "minimum": 0.0
+            },
+            "condition": {
+              "$ref": "#/$defs/WeatherCondition"
+            },
+            "dew_point": {
+              "description": "°C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "humidity": {
+              "description": "Relative humidity, %.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 100.0,
+              "minimum": 0.0
+            },
+            "kind": {
+              "type": "string",
+              "const": "weather"
+            },
+            "pressure": {
+              "description": "Air pressure, hPa.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "temperature": {
+              "description": "°C.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double"
+            },
+            "uv_index": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "visibility": {
+              "description": "How far one can see, km.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "wind_bearing": {
+              "description": "Where the wind comes from, degrees from north.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "maximum": 360.0,
+              "minimum": 0.0
+            },
+            "wind_gust_speed": {
+              "description": "km/h.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            },
+            "wind_speed": {
+              "description": "km/h.",
+              "type": [
+                "number",
+                "null"
+              ],
+              "format": "double",
+              "minimum": 0.0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "condition"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "event": {
+              "description": "The event that is on, or the next one. Absent when it has none coming.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/CalendarEvent"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "kind": {
+              "type": "string",
+              "const": "calendar"
+            },
+            "on": {
+              "description": "An event is on now.",
+              "type": "boolean"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "on"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "todo"
+            },
+            "open": {
+              "description": "How many items are still to do.",
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "open"
+          ]
         }
       ]
     },
@@ -1319,6 +1569,39 @@
         "heat_pump",
         "high_demand",
         "performance"
+      ]
+    },
+    "WeatherCondition": {
+      "description": "The weather's condition. Home Assistant's, in its spelling.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "clear-night",
+            "cloudy",
+            "fog",
+            "hail",
+            "lightning",
+            "lightning-rainy",
+            "partlycloudy",
+            "pouring",
+            "rainy",
+            "snowy",
+            "snowy-rainy",
+            "sunny",
+            "windy"
+          ]
+        },
+        {
+          "description": "Something out of the ordinary: a storm warning, extreme heat.",
+          "type": "string",
+          "const": "exceptional"
+        },
+        {
+          "description": "Windy and cloudy.",
+          "type": "string",
+          "const": "windy-variant"
+        }
       ]
     }
   }

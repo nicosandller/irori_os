@@ -218,6 +218,7 @@ fn device(
         serial_number: None,
         suggested_area: Some(Name::try_from(room)?),
         via_device_unique_id: None,
+        connections: Vec::new(),
     })
 }
 
