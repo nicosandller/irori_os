@@ -1411,6 +1411,16 @@ mod tests {
         assert!(error.contains("longer than"), "{error}");
     }
 
+    /// A line that fits but isn't UTF-8 is refused as an invalid message.
+    #[tokio::test]
+    async fn a_line_that_fits_but_isnt_utf8_is_an_invalid_message() {
+        let mut reader = BufReader::new(&b"\"x\xffx\"\n"[..]);
+        let error = read_json::<serde_json::Value>(&mut reader)
+            .await
+            .expect_err("not UTF-8");
+        assert!(error.starts_with("invalid message"), "{error}");
+    }
+
     /// What an automations package built before kinds could take any action sends, byte for
     /// byte: a core that reads any action must still read it, and write it back the same way.
     #[test]

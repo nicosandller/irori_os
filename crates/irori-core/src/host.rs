@@ -2592,6 +2592,15 @@ mod tests {
         assert!(error.contains("longer than"), "{error}");
     }
 
+    /// A line that fits but isn't UTF-8 is refused as an invalid message.
+    #[tokio::test]
+    async fn a_line_that_fits_but_isnt_utf8_is_an_invalid_message() {
+        let mut stdout =
+            BufReader::new(&b"{\"type\":\"app_answer\",\"id\":1,\"error\":\"\xff\"}\n"[..]);
+        let error = read_message(&mut stdout).await.expect_err("not UTF-8");
+        assert!(error.starts_with("invalid message"), "{error}");
+    }
+
     #[test]
     fn an_extension_line_keeps_its_own_level_and_loses_its_own_timestamp() {
         assert_eq!(
