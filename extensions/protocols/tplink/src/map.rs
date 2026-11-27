@@ -190,6 +190,7 @@ pub fn describe(mac: &str, snapshot: &Snapshot) -> Result<Described, String> {
         serial_number: None,
         suggested_area: None,
         via_device_unique_id: None,
+        connections: Vec::new(),
     }];
     let mut entities = Vec::new();
     if info.on.is_some() {
@@ -229,6 +230,7 @@ pub fn describe(mac: &str, snapshot: &Snapshot) -> Result<Described, String> {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: Some(parent.clone()),
+            connections: Vec::new(),
         });
         if child.info.on.is_some() {
             entities.push(relay(&device, &key)?);

@@ -636,6 +636,7 @@ fn device(
         serial_number: text(15),
         suggested_area: None,
         via_device_unique_id: via,
+        connections: Vec::new(),
     }
 }
 

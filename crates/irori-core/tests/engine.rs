@@ -57,6 +57,7 @@ impl Protocol for Lamp {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         })
         .await?;
         ctx.describe_entity(EntityDescription {
@@ -299,6 +300,7 @@ impl Protocol for DiagnosticLamp {
             serial_number: None,
             suggested_area: None,
             via_device_unique_id: None,
+            connections: Vec::new(),
         })
         .await?;
         ctx.describe_entity(EntityDescription {

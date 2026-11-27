@@ -708,6 +708,19 @@ pub fn state_words(state: &EntityState, home: &Home) -> String {
         Some(State::Camera(camera)) => camera.state.as_str().to_owned(),
         Some(State::DeviceTracker(tracker)) => if tracker.home { "home" } else { "away" }.into(),
         Some(State::LawnMower(mower)) => mower.activity.as_str().to_owned(),
+        Some(State::Remote(remote)) => match (&remote.activity, remote.on) {
+            (Some(activity), true) => format!("on · {activity}"),
+            (_, on) => if on { "on" } else { "off" }.into(),
+        },
+        Some(State::Weather(weather)) => match weather.temperature {
+            Some(temperature) => format!("{} {temperature}°", weather.condition.as_str()),
+            None => weather.condition.as_str().to_owned(),
+        },
+        Some(State::Calendar(calendar)) => match (&calendar.event, calendar.on) {
+            (Some(event), true) => format!("on · {}", event.summary),
+            (_, on) => if on { "on" } else { "off" }.into(),
+        },
+        Some(State::Todo(todo)) => format!("{} to do", todo.open),
         Some(State::Date(date)) => date.value.to_string(),
         Some(State::Time(time)) => time.value.to_string(),
         Some(State::Datetime(moment)) => serde_json::to_value(moment.value)

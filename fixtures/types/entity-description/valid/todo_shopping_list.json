@@ -1,0 +1,8 @@
+{
+  "unique_id": "todo_shopping",
+  "name": "Shopping list",
+  "capabilities": {
+    "kind": "todo",
+    "add": true
+  }
+}

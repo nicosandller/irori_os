@@ -601,6 +601,16 @@ impl ProtocolContext {
         let _ = self.ops.send(host::Op::SetUnmodeled(unmodeled)).await;
     }
 
+    /// Proposes floors and rooms for the home (spec §6.9): how the system it bridges divides the
+    /// house, by name. The whole proposal, replacing the last one; an empty one withdraws it.
+    ///
+    /// Nothing is made until the owner accepts it, and then only the floors and rooms Irori
+    /// doesn't have by those names yet. A device whose `suggested_area` names one of them lands
+    /// in it once it exists. Send it when the layout changes, not on every turn of a loop.
+    pub async fn suggest_layout(&self, layout: irori_types::SuggestedLayout) {
+        let _ = self.ops.send(host::Op::SuggestLayout(layout)).await;
+    }
+
     /// Draws its network (spec §6.8): what's on it and what reaches what, replacing the last
     /// map. The Devices page's network map draws it beside every other protocol's.
     ///
@@ -994,6 +1004,8 @@ pub mod host {
         SetHealth(Health),
         SetWaiting(Vec<Waiting>),
         SetUnmodeled(Vec<Unmodeled>),
+        /// The floors and rooms it proposes; an empty one withdraws it.
+        SuggestLayout(irori_types::SuggestedLayout),
         SetNetworks(Vec<irori_types::Network>),
         SetAvailableActions(Vec<String>),
         /// An action's window: open for this much longer, or `None` once closed.

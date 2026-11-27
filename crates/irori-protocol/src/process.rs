@@ -62,6 +62,14 @@ pub enum FromExt {
     SetUnmodeled {
         unmodeled: Vec<Unmodeled>,
     },
+    /// The floors and rooms it proposes (`docs/specs/protocols.md` §6.9), replacing the last
+    /// proposal. Both lists empty withdraws it.
+    SuggestLayout {
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        floors: Vec<irori_types::SuggestedFloor>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        areas: Vec<irori_types::SuggestedArea>,
+    },
     SetNetworks {
         networks: Vec<irori_types::Network>,
     },
@@ -1043,6 +1051,10 @@ impl Pending {
             Op::SetHealth(health) => Some(FromExt::SetHealth { health }),
             Op::SetWaiting(waiting) => Some(FromExt::SetWaiting { waiting }),
             Op::SetUnmodeled(unmodeled) => Some(FromExt::SetUnmodeled { unmodeled }),
+            Op::SuggestLayout(layout) => Some(FromExt::SuggestLayout {
+                floors: layout.floors,
+                areas: layout.areas,
+            }),
             Op::SetNetworks(networks) => Some(FromExt::SetNetworks { networks }),
             Op::SetAvailableActions(actions) => Some(FromExt::SetAvailableActions { actions }),
             Op::SetActionOpen(action_id, remaining) => Some(FromExt::SetActionOpen {
@@ -1355,6 +1367,47 @@ impl ExtProcess {
 mod tests {
     use super::*;
     use irori_types::PackagePath;
+
+    /// A proposal of floors and rooms goes out as one `suggest_layout` line, and the core reads
+    /// it back as it was sent. A name that isn't one is refused with the line.
+    #[test]
+    fn a_layout_goes_out_as_one_line() {
+        let layout = irori_types::SuggestedLayout {
+            floors: vec![irori_types::SuggestedFloor {
+                name: "Ground".parse().expect("a name"),
+                level: Some(0),
+            }],
+            areas: vec![irori_types::SuggestedArea {
+                name: "Kitchen".parse().expect("a name"),
+                floor: Some("Ground".parse().expect("a name")),
+            }],
+        };
+        let sent = Pending::default()
+            .encode_op(Op::SuggestLayout(layout.clone()))
+            .expect("it goes out");
+        let line = serde_json::to_value(&sent).expect("ser");
+        assert_eq!(
+            line,
+            serde_json::json!({
+                "type": "suggest_layout",
+                "floors": [{"name": "Ground", "level": 0}],
+                "areas": [{"name": "Kitchen", "floor": "Ground"}],
+            })
+        );
+        let FromExt::SuggestLayout { floors, areas } =
+            serde_json::from_value(line).expect("read back")
+        else {
+            panic!("not a layout");
+        };
+        assert_eq!(irori_types::SuggestedLayout { floors, areas }, layout);
+        assert!(
+            serde_json::from_value::<FromExt>(serde_json::json!({
+                "type": "suggest_layout",
+                "areas": [{"name": " "}],
+            }))
+            .is_err()
+        );
+    }
 
     /// The biggest fragment of video there can be fits on one line; a line longer than any
     /// message ends the link without being held whole.

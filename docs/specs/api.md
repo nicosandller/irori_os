@@ -100,6 +100,47 @@ A service call made with a token is recorded as `origin.type = "api"` and that t
 areas, floors, held devices, the floorplan when one has been drawn, and `installs`: the updates
 waiting their turn to install, each with its `entity_id` and how many are `ahead` of it.
 
+`POST /api/devices/add` is `{ "protocol": "<extension id>" }`, for an owner: it adds every device
+that extension has found and is holding (the `held` list; "Add all"), or, with
+`"devices": ["<device id>", …]`, only those of them ("Add selected"; an id that isn't among that
+extension's held devices is passed over), as `PATCH /api/devices/<id>
+{ "added": true }` would one at a time, in a single edit of `devices.toml`
+([config.md](config.md) §3.2). The devices join the home a few hundred events' worth at a time,
+each step waiting for the listeners on the event stream to catch up, so none of them (the history,
+the websocket, an automation engine) falls far enough behind to miss events. A listener that has
+stopped reading altogether is waited for once, for half a second; the remaining steps then go a
+short pause apart instead of waiting on it. That listener misses events, as it would anyway; the
+ones that are reading still miss none. The answer comes once all of them have
+joined. The answer is `{ "added": <how many> }`. Devices of other
+extensions are left as they are. An extension that holds nothing answers `{ "added": 0 }` and
+writes nothing; one that isn't installed is `404`. It is written in the activity log as
+`devices_added`, with the extension as its target and the count as its detail.
+
+A device that another extension already reaches ([protocols.md](protocols.md) §6.1) is not in
+`held` and is never added this way. In `devices`, the device it copies carries `also_through`,
+the extensions that reach it too, and a copy that was added before its twin was found carries
+`duplicate_of`. Both are left out when they don't apply, so a home where no extension names
+connections is served exactly as before.
+
+An extension that proposes floors and rooms ([protocols.md](protocols.md) §6.9) carries them in
+`GET /api/home` as `suggested_layout`: `{ "floors"?: [{ "name", "level"? }], "areas"?: [{ "name",
+"floor"? }] }`, holding only the ones the home doesn't have by those names (trimmed, ignoring
+case). Like the rest of `extensions`, it is shown only to someone who sees the whole home, and
+only the owner can accept it. It is left out when there's nothing to bring over, so a home whose
+extensions propose nothing reads as it always did.
+
+`POST /api/extensions/<id>/layout`, with the `suggested_layout` the owner was shown as its body, is
+the owner accepting it. Only what is both in that body and still proposed counts (the same floor at
+the same level, the same room on the same floor), so an extension that changes its proposal after
+the page drew it can't add to what the owner agreed to. It makes those missing
+floors, then those missing rooms, each on the floor it was proposed on, in one edit of `areas.toml`
+([config.md](config.md) §5), and answers `{ "floors": [Floor…], "areas": [Area…] }` with what it
+made. A floor or room that's there already is left exactly as it is. With nothing missing it
+answers both lists empty and writes nothing; an extension that isn't installed is `404`. Devices
+whose `suggested_area` names a new room land in it at once. It is written in the activity log as
+`layout_brought_over`, with the extension as its target and what was made ("2 rooms, 1 floor") as
+its detail.
+
 `GET /api/network` is every running protocol's network map ([protocols.md](protocols.md) §6.8):
 `{ "networks": [{ "extension", "name"?, "detail"?, "scanned_at"?, "nodes", "links" }…] }`, by
 extension id. A person with only some rooms gets `403` (`docs/specs/access.md` §2.3), and so does

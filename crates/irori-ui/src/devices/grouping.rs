@@ -444,6 +444,12 @@ fn kind_label(kind: EntityKind) -> &'static str {
         EntityKind::Timer => "Timers",
         EntityKind::Schedule => "Schedules",
         EntityKind::Camera => "Cameras",
+        EntityKind::Image => "Images",
+        EntityKind::Notify => "Notifications",
+        EntityKind::Remote => "Remotes",
+        EntityKind::Weather => "Weather",
+        EntityKind::Calendar => "Calendars",
+        EntityKind::Todo => "To-do lists",
         EntityKind::Fan => "Fans",
         EntityKind::Valve => "Valves",
         EntityKind::Siren => "Sirens",
@@ -492,6 +498,8 @@ mod tests {
             area_id: area.map(|area| area.parse().expect("valid")),
             suggested_area: None,
             via_device_id: None,
+            duplicate_of: None,
+            also_through: Vec::new(),
         }
     }
 

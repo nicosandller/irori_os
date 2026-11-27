@@ -113,12 +113,13 @@ core's process.
 | Set health | `running`, or `degraded` with a reason | §6.5 |
 | Set waiting | what it found but can't use until a person helps, replacing the last list | §6.6 |
 | Set unmodeled | what it found that Irori has no entity kind for yet, replacing the last list | §6.7 |
+| Suggest a layout | floors and rooms, by name, that the owner can bring over; replacing the last proposal | §6.9 |
 | Handle service calls | receives `ServiceCall` (§7), replies with a result | For its own entities only |
 | Offer actions | which of its manifest's `actions` can be used right now, replacing the last list | §5.1 |
 | Say an action is open | an action id, and how long it has left, or that it has closed | §5.1 |
 | Handle actions | receives an action id, and whether to start it or stop it early; replies with a result | §5.1 |
 | Unpair a device | receives a device `unique_id` and `force`; replies with a result | Only with `unpairs` in its manifest. §5.1 |
-| Send a picture | receives a camera entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` entities. §5.2 |
+| Send a picture | receives a camera or image entity's `unique_id`; replies with a picture or why there's none | Only for its own `camera` and `image` entities. §5.2 |
 | Send live video | receives a camera entity's `unique_id`, a quality and the codecs the page plays; sends an init segment, then video, until told to stop | Only for its own `camera` entities that say `live`. §5.3 |
 | Store small data | key (1–128 characters) → JSON value, up to 64 KB each; load, store, forget | Private to the protocol, kept across restarts of it and of Irori, in the data directory's database. E.g. pairing keys, a cloud token refresh, the value a helper was left at. Not for settings (a person's decisions go in the config directory) and not for history |
 | Log | leveled, structured log lines | Tagged with the protocol id |
@@ -188,7 +189,7 @@ On the wire these are `action_call { id, action_id, stop, way, fields }` and
 
 A camera's picture isn't state: it would fill history and mean nothing to a flow. A page asks for
 one when it wants it (`GET /api/entities/{id}/picture`, [api.md](api.md)), and the core asks the
-camera's protocol.
+camera's protocol. An `image` entity's picture is asked for the same way: the one it keeps now.
 
 - The protocol replies with the picture as it is now: its type (`image/jpeg`, `image/png`,
   `image/webp` or `image/svg+xml`) and its bytes, at most 2 MB. Anything else is refused.
@@ -283,6 +284,41 @@ Schemas: `schemas/device-description.schema.json`, `entity-description`, `state-
 | `manufacturer`, `model`, `sw_version`, `hw_version`, `serial_number` | string | no | Informational, updated every time |
 | `suggested_area` | `Name` | no | An area name the device reports for itself (ESPHome's `area`). Used only when the device is new and has no area; the core matches it to an existing area by name |
 | `via_device_unique_id` | `UniqueId` | no | The bridge or hub it's reached through. Not its own `unique_id` |
+| `connections` | `[{ "kind": "mac" \| "ieee" \| "serial", "value": string }]` | no | What hardware it is, for an extension that reaches devices another extension may reach too (a bridge to another hub). Left out by an extension that talks to its devices directly. An empty `value` is refused |
+
+**One device, two extensions.** A `unique_id` belongs to its extension, so a plug reached both
+through a bridge to another hub and by its own extension would be two devices. `connections`
+says what the device is, and the core recognises it:
+
+- Values are kept in one spelling. A `mac` (EUI-48) or `ieee` (EUI-64) address is lowercase,
+  without `:`, `-`, `.`, spaces or a leading `0x`: `AA:BB:CC:DD:EE:FF` is `aabbccddeeff`. A
+  `serial` is trimmed and otherwise kept as it is.
+- A device with connections is compared with the devices of *other* extensions, by their
+  `connections`, their `serial_number`, and their `unique_id` when it is an address: 12 hex
+  digits is a MAC (ESPHome, TP-Link, SwitchBot), 16 an IEEE address (Zigbee: `0x…`, and
+  Zigbee2MQTT's `zigbee2mqtt_0x…`). A serial number only ever matches a serial number. A
+  `unique_id` that isn't an address, like Matter's fabric and node or a Cast or ONVIF uuid,
+  matches by serial number alone. A serial number is only unique within one maker, so two
+  devices match on it only when their `manufacturer` is the same, ignoring case, or one of them
+  doesn't name one.
+- An identifier one extension gives to more than one of its devices (a maker's placeholder
+  serial number, say) tells nothing apart and matches nothing. Nor does a serial number that
+  is a placeholder on its face: fewer than four letters or digits, one character repeated,
+  counting digits (`123456789`), or, ignoring case and punctuation, one of `unknown`, `none`,
+  `null`, `n/a`, `default`, `serial`, `serial number`, `not available`, `test` or `test_sn`.
+- On a match, the device that named connections is the copy: its `duplicate_of` is the other
+  device's id ([entities.md](entities.md) §4.3). Of several matches, it is a copy of the first in
+  id order that named no connections. When every match named some, the one to keep is the one
+  in the home, then the one seen first in this run, then the first by id; the others are its
+  copies, so two copies never point at each other.
+- A copy that isn't in the home isn't held or offered: it is left out of the found list, and "Add
+  all" passes it over. The device it copies lists the copy's extension in `also_through`.
+- A copy that was added before its twin was found stays in the home, and both carry the flags.
+  Handing one over to the other is a later step.
+- When the other device is gone from its extension, the copy is offered again. Taking a device
+  out of the home is not that: it is still found, and its copies stay copies.
+- An extension that never sends `connections` changes nothing: until one does, the core builds
+  no index and compares nothing.
 
 ### 6.2 EntityDescription
 
@@ -456,7 +492,47 @@ What draws a map today:
 - **ONVIF Cameras**: each camera, wired straight to Irori or on the home's Wi-Fi. A Reolink says which
   through its own API; another camera through ONVIF's network interfaces when it gives their
   type, and one that doesn't say is drawn on Wi-Fi.
+- **Home Assistant**: Irori, then Home Assistant on the home's network, then each device that comes
+  over, straight from Home Assistant or from the device it's reached through (a bulb through its
+  Hue bridge, a Zigbee device through Zigbee2MQTT). A device is on Zigbee, Bluetooth or the home's
+  network when Home Assistant knows its address there, and an online service it lists as a device
+  (the weather, the sun) is reached over the internet.
 - **Demo**: all three, made up, so the map can be seen without hardware.
+
+### 6.9 Suggested layout
+
+How the home is divided, as a protocol knows it: a bridge to another home system (Home Assistant)
+has that system's floors and areas. The protocol proposes them with `suggest_layout`, and the
+owner brings them over in one step. Nothing is made until they do, and nothing that exists is
+ever renamed, moved or removed: a proposal only adds what's missing.
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `floors[].name` | `Name` | yes | |
+| `floors[].level` | integer, -128 to 127 | no | 0 is the entrance level, negative is below ground. Left out is 0 |
+| `areas[].name` | `Name` | yes | A room |
+| `areas[].floor` | `Name` | no | The floor it's on: one in the same proposal, or one Irori already has. A name that's neither leaves the room on no floor |
+
+The protocol sends the **whole proposal** whenever it changes; an empty one withdraws it. The core
+keeps the latest, in memory, until the protocol stops, crashes or is removed, like waiting
+(§6.6). A name said twice (compared trimmed and ignoring case) is kept once, the first time, and
+a proposal keeps at most 256 floors and 1024 rooms.
+
+The owner's home (`GET /api/home`, [api.md](api.md) §3) shows the proposal on the extension as
+`suggested_layout`, holding only the floors and rooms the home doesn't have by those names yet,
+matched as a `suggested_area` is (trimmed, ignoring case; [config.md](config.md) §5). Once the home
+has them all the field is gone, so an extension that never proposes anything looks exactly as it
+did. A room the owner removes later is proposed again while the protocol still names it.
+
+Accepting (`POST /api/extensions/{id}/layout`) carries what the owner was shown, and makes the
+missing floors and rooms that are both in it and still proposed, in one edit of `areas.toml`, each
+room on the floor it was proposed on. One added or changed after the page drew it stays on offer. Devices whose `suggested_area` names one
+of the new rooms land in it at once, unless a person has said where they are (config.md §5).
+
+A core from before `suggest_layout` doesn't know the message, and an unknown message ends the
+protocol's link, as does a name that isn't a valid `Name`. A protocol that proposes a layout
+requires a core that knows it in its manifest's `irori`, and sends only names it has trimmed and
+checked.
 
 ## 7. Service calls
 
@@ -497,6 +573,11 @@ manifest's `entity_kinds`.
 | `timer.start` | `duration` (optional), seconds above 0, at most a year | Left out: its own `duration`, or what was left when it was paused |
 | `timer.pause`, `timer.cancel`, `timer.finish` | none | |
 | `timer.change` | `by`, seconds to add, or to take away when negative | Taken past its end, it finishes |
+| `notify.send_message` | `message`, 1–4096 characters; `title` (optional), 1–255 | A title only for one with `title` |
+| `remote.turn_on` | `activity` (optional), one of its `activities` | `remote.toggle` resolves to `turn_on` or `turn_off` |
+| `remote.turn_off` | none | |
+| `remote.send_command` | `command`, 1–32 names its protocol knows (`volume_up`); `device` (optional), which of the devices it drives; `repeats` (optional), 1–255 | |
+| `todo.add_item` | `item`, 1–255 characters | Needs `add` |
 | `date.set_value` | `date`, a calendar day (`2026-10-14`) | Home Assistant's field names, here and below |
 | `time.set_value` | `time`, a time of day (`06:45:00`, or `06:45`) | |
 | `datetime.set_value` | `datetime`, a `Timestamp` | An ESPHome device counts seconds from 1970 to 2106, and refuses a moment outside that |
@@ -690,6 +771,7 @@ answered with the same `id`. Sample conversations are in
 | → core | `state_report` | `report`: `StateReport` | A new state (§6.3). Not answered. |
 | core → | `reply` | `id`, `error`? | The answer to the messages above, and to `store`. |
 | → core | `set_waiting`, `set_unmodeled`, `set_networks` | `waiting` / `unmodeled` / `networks` (lists) | Devices waiting to be added, what it found but doesn't model, the networks it sees (§6.6–§6.8). Each replaces the last. Not answered. |
+| → core | `suggest_layout` | `floors`?, `areas`? (lists) | Floors and rooms it proposes (§6.9). Replaces the last proposal; both empty withdraws it. Not answered. |
 
 **Calls and actions**
 
