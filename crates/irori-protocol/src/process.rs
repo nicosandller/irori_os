@@ -1110,21 +1110,23 @@ pub(crate) async fn read_json<T: for<'de> Deserialize<'de>>(
     reader: &mut BufReader<impl tokio::io::AsyncRead + Unpin>,
 ) -> Result<T, String> {
     use tokio::io::AsyncReadExt as _;
-    let mut line = String::new();
+    // Bytes, so a line cut at the bound inside a character is too long rather than bad UTF-8;
+    // the JSON reader checks the UTF-8 of a line that fits.
+    let mut line = Vec::new();
     // One byte past the bound: the newline after a line of exactly the bound, or the first byte
     // that makes a line too long.
     let n = (&mut *reader)
         .take(MAX_LINE as u64 + 1)
-        .read_line(&mut line)
+        .read_until(b'\n', &mut line)
         .await
         .map_err(|e| e.to_string())?;
     if n == 0 {
         return Err("the host closed the connection".into());
     }
-    if n > MAX_LINE && !line.ends_with('\n') {
+    if n > MAX_LINE && line.last() != Some(&b'\n') {
         return Err(format!("a message longer than {MAX_LINE} bytes"));
     }
-    serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}"))
+    serde_json::from_slice(line.trim_ascii()).map_err(|e| format!("invalid message: {e}"))
 }
 
 pub(crate) async fn write_json<T: Serialize>(
@@ -1390,6 +1392,18 @@ mod tests {
         assert_eq!(read.as_str().map(str::len), Some(MAX_LINE - 2));
 
         let over = format!("\"{}\"\n", "x".repeat(MAX_LINE - 1));
+        let mut reader = BufReader::new(over.as_bytes());
+        let error = read_json::<serde_json::Value>(&mut reader)
+            .await
+            .expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+    }
+
+    /// A line cut at the bound in the middle of a character is too long, not bad UTF-8.
+    #[tokio::test]
+    async fn a_line_cut_inside_a_character_is_too_long() {
+        // `é` is two bytes; the bound falls between them.
+        let over = format!("\"{}é\"\n", "x".repeat(MAX_LINE - 1));
         let mut reader = BufReader::new(over.as_bytes());
         let error = read_json::<serde_json::Value>(&mut reader)
             .await

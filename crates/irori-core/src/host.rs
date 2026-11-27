@@ -1835,19 +1835,23 @@ async fn read_message(
     stdout: &mut BufReader<impl tokio::io::AsyncRead + Unpin>,
 ) -> Result<FromExt, String> {
     use tokio::io::AsyncReadExt as _;
-    let mut line = String::new();
+    // Bytes, so a line cut at the bound inside a character is too long rather than bad UTF-8;
+    // the JSON reader checks the UTF-8 of a line that fits.
+    let mut line = Vec::new();
     // One byte past the bound: the newline after a line of exactly the bound, or the first byte
     // that makes a line too long.
     match (&mut *stdout)
         .take(MAX_LINE as u64 + 1)
-        .read_line(&mut line)
+        .read_until(b'\n', &mut line)
         .await
     {
         Ok(0) => Err(OUTPUT_CLOSED.to_owned()),
-        Ok(n) if n > MAX_LINE && !line.ends_with('\n') => {
+        Ok(n) if n > MAX_LINE && line.last() != Some(&b'\n') => {
             Err(format!("a message longer than {MAX_LINE} bytes"))
         }
-        Ok(_) => serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}")),
+        Ok(_) => {
+            serde_json::from_slice(line.trim_ascii()).map_err(|e| format!("invalid message: {e}"))
+        }
         Err(error) => Err(error.to_string()),
     }
 }
@@ -2572,6 +2576,18 @@ mod tests {
 
         let over = line_of(MAX_LINE + 1);
         let mut stdout = BufReader::new(over.as_slice());
+        let error = read_message(&mut stdout).await.expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+    }
+
+    /// A line cut at the bound in the middle of a character is too long, not bad UTF-8.
+    #[tokio::test]
+    async fn a_line_cut_inside_a_character_is_too_long() {
+        let mut line = br#"{"type":"app_answer","id":1,"error":""#.to_vec();
+        line.resize(MAX_LINE, b'x');
+        // `é` is two bytes; the bound falls between them.
+        line.extend_from_slice("é\"}\n".as_bytes());
+        let mut stdout = BufReader::new(line.as_slice());
         let error = read_message(&mut stdout).await.expect_err("too long");
         assert!(error.contains("longer than"), "{error}");
     }
