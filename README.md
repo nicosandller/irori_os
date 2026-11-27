@@ -10,24 +10,37 @@
   <a href="dev/README.md"><b>Try it on a Mac</b></a>
 </p>
 
-> Status: the core's registry, live state, and extension host run; a Devices page shows everything and switches it (M0.8, M1.6 first slice); **ESPHome devices on your network are found and connected automatically**, sensors and all (D26); and a **Floorplan** page draws the home — walls, doors and windows — with the devices live on it. Automations are an extension you install: flows drawn on a canvas, with every run traced, near-misses kept, dry runs and a 24-hour backtest (`docs/specs/flows.md`). A first run asks who you are, with a password that locks the home to you, and what time zone it is in (`docs/specs/config.md` §3.10); `--tls` serves it over https. Give a person only some rooms and the rest of the home does not exist for them, on every page and address; every change and every refusal goes in an activity log only an owner reads, and a regular user can write automations of their own that stay inside their rooms (`docs/specs/access.md`). A program that isn't the page uses a scoped token, and the page hears changes over `/api/ws` (`docs/specs/api.md`). The same binary talks to a running Irori: devices, extensions, tokens, and the rest (`docs/specs/cli.md`).
+## What it does today
+
+- **Devices:** a registry with live state, and a Devices page that shows everything and switches it.
+  Devices come from extensions, such as ESPHome, which finds devices on your network and connects to
+  them, sensors and all.
+- **Floorplan:** a page that draws the home (walls, doors and windows) with the devices live on it.
+- **Automations:** an extension you install. Flows are drawn on a canvas, every run is traced,
+  near-misses are kept, and you get dry runs and a 24-hour backtest
+  ([flows](docs/specs/flows.md)).
+- **People and rooms:** the first run asks who you are, with a password that locks the home to
+  you, and the home's time zone ([config §3.10](docs/specs/config.md)). Give a person only some
+  rooms and the rest of the home doesn't exist for them, on every page and address. A regular user
+  can write automations that stay inside their rooms, and an owner-only activity log records every
+  change and every refusal ([access](docs/specs/access.md)).
+- **API and command line:** other programs use scoped tokens, and the page hears changes over
+  `/api/ws` ([API](docs/specs/api.md)). The same binary talks to a running Irori
+  ([CLI](docs/specs/cli.md)).
 
 ## Install
-
-One command, into `~/.irori`:
 
 ```sh
 curl -fsSL https://github.com/nicosandller/irori_os/releases/latest/download/install.sh | bash
 ```
 
-It detects your OS and CPU, downloads the latest [release](https://github.com/nicosandller/irori_os/releases)
-for it, verifies the SHA-256 against the release's `SHA256SUMS`, and installs `irori` under
-`~/.irori/bin`. The installer adds that to your shell config, so a new shell finds `irori`; the
-command above uses the full path because the installer runs in its own process and can't change
-the shell you're in. Releases carry `linux-x64`, `linux-arm64` (both static musl), `darwin-x64`
-and `darwin-arm64`, and the installer itself as `install.sh`. The one-liner installs the latest
-release; to build it yourself instead, use the source build below. Options go after
-`bash -s --`:
+The installer picks the [release](https://github.com/nicosandller/irori_os/releases) for your OS
+and CPU, checks its SHA-256 against the release's `SHA256SUMS`, installs `irori` in
+`~/.irori/bin` and adds that folder to your shell config. Open a new shell to pick it up.
+Releases are built for `linux-x64` and `linux-arm64` (both static musl), `darwin-x64` and
+`darwin-arm64`.
+
+Options go after `bash -s --`:
 
 ```sh
 url=https://github.com/nicosandller/irori_os/releases/latest/download/install.sh
@@ -36,62 +49,43 @@ curl -fsSL "$url" | bash -s -- --system           # /usr/local/bin (needs root)
 curl -fsSL "$url" | bash -s -- --binary ./target/release/irori   # a local build
 ```
 
-`releases/latest` skips pre-releases, so a tag with a `-` in it (for example `0.3.0-beta.1`)
-won't be picked up by the one-liner; install it by name with `--version` instead.
+`releases/latest` skips pre-releases (tags with a `-`, such as `0.3.0-beta.1`); install those
+with `--version`. For a `--system` install, [install/irori.service](install/irori.service) is a
+systemd unit that runs Irori as an unprivileged `irori` user with its data in `/var/lib/irori`.
+`irori uninstall` removes what the installer put down, and leaves a development binary where it
+is.
 
-`install/irori.service` is a systemd unit for a `--system` install; it runs as an unprivileged
-`irori` user with its data in `/var/lib/irori` (see the header of that file).
-
-## Build from source
-
-Requires stable Rust (pinned via `rust-toolchain.toml`). One command builds the UI and installs
-the binary, after which Irori runs from anywhere:
-
-```sh
-rustup target add wasm32-unknown-unknown   # once: what the UI compiles to
-cargo install trunk --locked               # once: builds the UI
-cargo xtask install                        # build the UI, install `irori`
-irori run                                  # http://127.0.0.1:8480
-```
-
-`cargo xtask install` copies a binary; it isn't a link to the checkout. **After pulling or
-changing anything, run it again** — the running `irori` is whatever was installed last. Which
-build that is isn't a guess: `irori version` and the Settings page show the commit it was built from,
-with `-modified` when the tree had uncommitted changes. A build made at a release tag reports
-that version; any other build is the next release's development build, e.g. `0.7.0-dev`.
-
-```sh
-irori version                              # irori 0.7.0-dev (359d176), built 2026-09-16 07:30 UTC
-```
-
-Everything the installed binary does:
+## First run
 
 ```sh
 irori run                                  # http://127.0.0.1:8480
-irori run --log-level debug                # log every device and state change as it happens
-irori run --config ~/.config/irori         # your rooms, names, keys and irori.toml (default ./config)
+```
+
+Open the page. The welcome asks who you are and for a password; from then on Irori asks who is
+there before it shows anything. Until that owner is set up the home is open, so Irori listens
+only on `127.0.0.1`. To reach it from another device, such as your phone, pass both
+`--bind 0.0.0.0:8480` and `--allow-unauthenticated-lan`: the first makes Irori listen beyond
+this machine, and the second says you accept that while the home is open. Add `--tls` to serve
+https so the password travels encrypted: Irori makes its own certificate the first time (your
+browser asks about it once), or uses `tls/cert.pem` and `tls/key.pem` from the data directory.
+
+## Running it
+
+```sh
+irori run --log-level debug                # log every device and state change
+irori run --config ~/.config/irori         # rooms, names, keys and irori.toml (default ./config)
 irori run --data /var/lib/irori            # where the database lives (default ./data)
-irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan   # reachable from your phone; see below
-irori version --json
-irori help run
+irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan
+irori version                              # irori 0.7.0-dev (359d176), built 2026-09-16 07:30 UTC
+irori version --json                       # the same, as JSON
+irori help run                             # every option, its environment variable and default
 ```
-
-The same binary talks to an Irori that is already running. `irori status` is the short
-check, `irori login` keeps a session the way the page does, and `irori --help` lists the
-rest: devices, entities, extensions, tokens, automations. `--json` is one JSON document.
-`docs/specs/cli.md` is the whole command. `irori uninstall` removes what the installer
-put down, and leaves a development binary where it is.
 
 `run` and `serve` are the same command. Every option is also an environment variable
-(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_BIND_FALLBACK`, `IRORI_LOG_LEVEL`,
-`IRORI_ALLOW_UNAUTHENTICATED_LAN`), which is what the container uses. `irori help run` lists them
-with their defaults. If 8480 is already taken, Irori doesn't fail: it listens on
-`--bind-fallback` if you set one, otherwise on the next free port just above 8480, and logs where.
-That helps a hand-run install. A deployment with a fixed published and health-checked port — such
-as the container — must not let it wander: set `IRORI_BIND_FALLBACK` equal to `IRORI_BIND`, which
-locks the port and makes a taken one fail loudly instead of stepping.
-
-Or put them in `irori.toml` in the config directory, where a flag still wins:
+(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_BIND_FALLBACK`, `IRORI_TLS`,
+`IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), and most can also go in `irori.toml` in
+the config directory
+([config §3.5](docs/specs/config.md)). A flag wins over the file:
 
 ```toml
 [server]
@@ -103,101 +97,112 @@ log_level = "info"
 disabled = ["demo"]          # applies while Irori runs; [server] needs a restart
 ```
 
-Or straight from the checkout, without installing — the same commands after `cargo run --`:
+If the port is taken, Irori uses `--bind-fallback` (`bind_fallback`) when one is set. With none
+set, it takes the next free port above the taken one. Either way it logs where it ended up. A
+deployment with a fixed, health-checked port (such as a container) should set
+`IRORI_BIND_FALLBACK` equal to `IRORI_BIND`, so a taken port fails loudly instead.
 
-```sh
-cargo run -- run                                # http://127.0.0.1:8480
-cargo run -- run --log-level debug
-cargo run --no-default-features -- run          # barebones: no extensions, no UI
-```
+**Command line.** The same binary talks to a running Irori. `irori status` is the quick check,
+`irori login` keeps a session the way the page does, and `irori --help` lists the rest (devices,
+entities, extensions, `token`, automations and more). `--json` prints one JSON document. See
+[docs/specs/cli.md](docs/specs/cli.md).
 
-The HTTP API, for looking at the home without the page. An unlocked home answers without a
-token. Once the home has a password, a program sends the token from Settings → Programs:
+**HTTP API.** An unlocked home answers without a token. Once the home has a password, send a
+token made in Settings → Programs:
 
 ```sh
 curl -s http://127.0.0.1:8480/api/home
 curl -s -H "Authorization: Bearer irori_…" http://127.0.0.1:8480/api/states
 ```
 
-The **web UI** is a separate wasm crate, so `cargo build` alone doesn't need a wasm toolchain and
-serves a placeholder page at `/`. `cargo xtask install` above builds it; `cargo xtask ui` builds
-it without installing. It has a folding sidebar whose IroriOS mark opens the assistant once a
-model is set, and the pages are Devices (devices grouped by extension, entities with their
-switches, and an **Add device** panel), Extensions, and Settings (the IroriOS wordmark and what
-the instance holds, then the instance, areas & floors, users, programs, and the machine itself). `/` goes
-to Settings.
+## Devices, rooms and extensions
 
-See [crates/irori-ui/README.md](crates/irori-ui/README.md) for working on the UI itself (live
-reload, no binary rebuild). CI builds it, so downloaded release binaries always have it.
+The web page has Floorplan, Devices, Extensions and Settings pages, plus the assistant once a
+model is set; `/` opens Settings. No extension is built into the binary: install the ones you
+want on the **Extensions** page.
 
-### Rooms, and what to call things
+**Adding devices.** Nothing joins the home on its own. Open **+ Add device**, pick the extension,
+and it lists what it has found and what each device would bring, with **Add** on each or
+**Add all**. Removing a device deletes everything Irori keeps about it (name, room, entities,
+floorplan spot, history) and puts it back in that list. Uninstalling an extension removes its
+devices the same way.
 
-Every device has **one id, one name and one description**. The id is made from the protocol
-and the device's hardware address (`esphome_00_11_22_33_44_55`) and never changes. The name
-starts as whatever the firmware calls the device, and once you rename it, yours is the only name —
-there's no second one kept in step somewhere else. Names, descriptions and rooms survive restarts,
-because they're written to a directory of plain TOML files:
+**ESPHome.** Once the ESPHome extension is installed there is nothing to configure: it listens
+for ESPHome devices announcing themselves on the network and connects to each one. A device with
+encryption (`api: encryption: key:` in its YAML) is listed with a field for its key; paste it and
+the device connects. The key goes into `secrets.toml`, readable only by Irori, and is never shown
+again. See [extensions/protocols/esphome/README.md](extensions/protocols/esphome/README.md),
+which also shows how to try both kinds of device without hardware.
 
+**Names and rooms.** Every device has one id, one name and one description. The id comes from
+the protocol and the hardware address (`esphome_00_11_22_33_44_55`) and never changes. The name
+starts as the firmware's; once you rename it, yours is the only name. Make floors and rooms on
+the Settings page, and name, describe, place or remove a device on its own page. A device that
+reports a room of its own (ESPHome's `area:`) never creates that room, but making a room by that
+name collects every device asking for it.
+
+**Helpers** are switches Irori keeps itself, such as "guests are over". Make them on the Devices
+page's **Helpers** tab; they keep their state through restarts.
+
+**Config files.** Everything you set (rooms, device and entity names, extension settings, keys)
+is kept in plain TOML files in the config directory, and the page writes the same files you
+would. Never commit `secrets.toml`. Edit the files by hand if you like: Irori picks up changes
+within a couple of seconds. A file that doesn't parse is ignored, with the reason in the log, and
+the last good version keeps running. [docs/specs/config.md](docs/specs/config.md) describes each
+file.
+
+## Development
+
+### Build from source
+
+Needs stable Rust (pinned in `rust-toolchain.toml`):
+
+```sh
+rustup target add wasm32-unknown-unknown   # once: what the UI compiles to
+cargo install trunk --locked               # once: builds the UI
+cargo xtask install                        # build the UI and install `irori`
 ```
-config/
-  areas.toml      the floors and rooms of your home
-  devices.toml    what you've called a device, and which room it's in
-  entities.toml   what you've called an individual entity
-  secrets.toml    keys for devices that encrypt their connection — never commit this one
-  irori.toml      Irori's own settings
-  extensions/     settings for each extension, like your helpers
+
+`cargo xtask install` copies the binary rather than linking to the checkout, so **run it again
+after pulling or changing anything**. `irori version` and the Settings page show the commit it
+was built from, with `-modified` if the tree had uncommitted changes. A build at a release tag
+reports that version; any other build is the next release's development build, such as
+`0.7.0-dev`.
+
+To run from the checkout without installing, put the same commands after `cargo run --`:
+
+```sh
+cargo run -- run                                # http://127.0.0.1:8480
+cargo run -- run --log-level debug              # log every device and state change
+cargo run --no-default-features -- run          # barebones: no web UI, no assistant
 ```
 
-Make areas and floors on the Settings page; name, describe or place a device on its own page, where you can
-also **remove** it. Or open the files in an editor — Irori picks up changes within a couple of
-seconds, and a file that doesn't parse is ignored with an explanation in the log while the last
-good version keeps running. There is no second copy in the database: the UI writes the same files
-you would.
+The web UI is a separate wasm crate, so `cargo build` alone needs no wasm toolchain and serves a
+placeholder page at `/`. `cargo xtask ui` builds the UI without installing. To work on the UI
+with live reload, see [crates/irori-ui/README.md](crates/irori-ui/README.md). Release binaries
+always include it.
 
-Nothing joins the home on its own, so installing an extension never means whatever is on the
-network is now yours. Open **+ Add device**, pick the extension, and it lists everything it has
-found — what each device is and what it would bring — with **Add** on each, or **Add all**.
-Removing a device deletes everything Irori keeps about it (name, room, entities, floorplan spot,
-history); it goes back to that list, ready to be added again. Uninstalling an extension removes
-its devices the same way.
+### Try it in a Pi-like container
 
-**Helpers** are switches Irori keeps itself, like "guests are over": make them on the Devices
-page's **Helpers** tab. They stay as you left them through restarts, and rules will be able to use
-them.
-
-A device that reports which room it thinks it's in (ESPHome's `area:`) never creates that room —
-but making a room by that name collects every device that was asking for one.
-
-See [docs/specs/config.md](docs/specs/config.md).
-
-### ESPHome devices
-
-Nothing to configure: Irori listens for ESPHome devices announcing themselves on the local
-network, and connects to each one. Everything it finds is listed under **+ Add device** → ESPHome;
-the ones you add appear on the Devices page, where lights and switches can be switched.
-
-A device with **encryption** (`api: encryption: key:` in its YAML) is found but not connected to
-until Irori has its key. The Devices page says so; **Add device** lists it by name with a field
-for the key. Paste it and the device connects. The key goes into `secrets.toml`, readable only by
-Irori, and is never shown again.
-
-If your ESPHome config has an `area:`, Irori notices it but doesn't act on it by itself: make a
-room by that name and the device walks into it (see above).
-
-See [extensions/protocols/esphome/README.md](extensions/protocols/esphome/README.md), which
-also explains how to try both kinds of device without hardware.
-
-## Run it like a Raspberry Pi (Docker)
-
-`dev/pi` runs Irori in a Pi-like `linux/arm64` Debian container and runs the CI checks on
-Linux arm64. It's the way to try a pull request on a Mac before approving it:
+`dev/pi` runs Irori in a Raspberry Pi-like `linux/arm64` Debian container. It is the way to try a
+pull request on a Mac before approving it:
 
 ```sh
 dev/pi up                             # http://127.0.0.1:8480
-dev/pi review <pr-number>             # checkout, check, run, smoke test
+dev/pi review <pr-number>             # check out, check, run, smoke test
 ```
 
 See [dev/README.md](dev/README.md).
+
+### Static binary for a Raspberry Pi
+
+```sh
+cargo install cargo-zigbuild          # also needs zig on PATH
+rustup target add aarch64-unknown-linux-musl
+cargo zigbuild --release -p irori --target aarch64-unknown-linux-musl
+scp target/aarch64-unknown-linux-musl/release/irori pi@raspberrypi.local:
+ssh pi@raspberrypi.local ./irori serve --bind 0.0.0.0:8480 --allow-unauthenticated-lan
+```
 
 ## Checks (same as CI)
 
@@ -212,35 +217,19 @@ cargo xtask check-docs                # the docs' default-feature claims match t
 cargo xtask schemas --check           # schemas/ matches irori-types (run without --check to update)
 ```
 
-`dev/pi check` runs exactly this list on Linux arm64 in Docker.
+`dev/pi check` runs exactly this list on Linux arm64 in Docker. CI also checks the shell scripts
+with `bash -n`, and in a job of its own formats, lints, tests and builds the web UI
+(`cargo xtask ui`) and checks its download size against a budget. That job needs `trunk`, which
+the Pi container doesn't carry, so run `cargo xtask ui` on the host after changing the UI.
 
-CI also runs `cargo xtask ui` in a job of its own and checks the UI's download size against the
-budget. It needs `trunk`, which the Pi container doesn't carry, so it isn't part of the list
-above; run it on the host after changing the UI.
-
-## Static binary for a Raspberry Pi
-
-```sh
-cargo install cargo-zigbuild          # also needs zig on PATH
-rustup target add aarch64-unknown-linux-musl
-cargo zigbuild --release -p irori --target aarch64-unknown-linux-musl
-scp target/aarch64-unknown-linux-musl/release/irori pi@raspberrypi.local:
-ssh pi@raspberrypi.local ./irori serve --bind 0.0.0.0:8480 --allow-unauthenticated-lan
-```
-
-Until its owner is set up, a home is open, so Irori only listens on `127.0.0.1` unless you pass
-`--allow-unauthenticated-lan`. Open the page and the welcome asks who you are, with a password;
-from then on Irori asks who is there before it shows anything. Add `--tls` to serve https, so
-that password travels encrypted: Irori makes its own certificate the first time (your browser
-will ask about it once), or uses `tls/cert.pem` and `tls/key.pem` from the data directory.
-
-CI runs on every pull request (and on every push to `main`). It builds `x86_64` and `aarch64` musl binaries, smoke-tests the `aarch64` one under QEMU, and uploads them as workflow artifacts.
+CI runs on every pull request and every push to `main`. It also builds `x86_64` and `aarch64`
+musl binaries, smoke-tests the `aarch64` one under QEMU, and uploads them as workflow artifacts.
 
 ## Layout
 
 ```
 assets/        brand: logo marks, banner, favicon, social card (see assets/README.md)
-docs/specs/    specifications: entities.md, extensions.md, protocols.md, config.md
+docs/specs/    specifications: entities, extensions, protocols, config, flows, access, api, cli, …
 schemas/       JSON Schemas generated from irori-types (`cargo xtask schemas`)
 fixtures/      golden examples, valid and invalid, checked by the tests
 crates/        irori-types, irori-core, irori-protocol, irori-rules, irori-recorder,
@@ -249,7 +238,7 @@ crates/        irori-types, irori-core, irori-protocol, irori-rules, irori-recor
                irori (the binary), and irori-ui
                (the Leptos web UI: wasm, built by `cargo xtask ui`, outside the workspace)
 extensions/    first-party extensions: automations, demo, and protocols/{cast, esphome,
-               homeassistant, matter, mqtt, switchbot, tplink, zigbee}
+               homeassistant, matter, mqtt, onvif, switchbot, tplink, zigbee}
 extras/        irori-assist (providers and prompts; the control plane is in the default build, weights are not)
 xtask/         repository automation (`cargo xtask …`)
 ```
