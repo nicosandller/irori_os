@@ -63,10 +63,11 @@ irori run                                  # http://127.0.0.1:8480
 
 Open the page. The welcome asks who you are and for a password; from then on Irori asks who is
 there before it shows anything. Until that owner is set up the home is open, so Irori listens
-only on `127.0.0.1` unless you pass `--allow-unauthenticated-lan` (for example to reach it from
-your phone). Add `--tls` to serve https so the password travels encrypted: Irori makes its own
-certificate the first time (your browser asks about it once), or uses `tls/cert.pem` and
-`tls/key.pem` from the data directory.
+only on `127.0.0.1`. To reach it from another device, such as your phone, pass both
+`--bind 0.0.0.0:8480` and `--allow-unauthenticated-lan`: the first makes Irori listen beyond
+this machine, and the second says you accept that while the home is open. Add `--tls` to serve
+https so the password travels encrypted: Irori makes its own certificate the first time (your
+browser asks about it once), or uses `tls/cert.pem` and `tls/key.pem` from the data directory.
 
 ## Running it
 
@@ -76,12 +77,14 @@ irori run --config ~/.config/irori         # rooms, names, keys and irori.toml (
 irori run --data /var/lib/irori            # where the database lives (default ./data)
 irori run --bind 0.0.0.0:8480 --allow-unauthenticated-lan
 irori version                              # irori 0.7.0-dev (359d176), built 2026-09-16 07:30 UTC
+irori version --json                       # the same, as JSON
 irori help run                             # every option, its environment variable and default
 ```
 
 `run` and `serve` are the same command. Every option is also an environment variable
-(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_BIND_FALLBACK`, `IRORI_LOG_LEVEL`,
-`IRORI_ALLOW_UNAUTHENTICATED_LAN`), and most can also go in `irori.toml` in the config directory
+(`IRORI_DATA`, `IRORI_CONFIG`, `IRORI_BIND`, `IRORI_BIND_FALLBACK`, `IRORI_TLS`,
+`IRORI_LOG_LEVEL`, `IRORI_ALLOW_UNAUTHENTICATED_LAN`), and most can also go in `irori.toml` in
+the config directory
 ([config §3.5](docs/specs/config.md)). A flag wins over the file:
 
 ```toml
@@ -94,8 +97,9 @@ log_level = "info"
 disabled = ["demo"]          # applies while Irori runs; [server] needs a restart
 ```
 
-If the port is taken, Irori uses `--bind-fallback` (`bind_fallback`), or else the next free port
-above it, and logs where. A deployment with a fixed, health-checked port (such as a container) should set
+If the port is taken, Irori uses `--bind-fallback` (`bind_fallback`) when one is set. With none
+set, it takes the next free port above the taken one. Either way it logs where it ended up. A
+deployment with a fixed, health-checked port (such as a container) should set
 `IRORI_BIND_FALLBACK` equal to `IRORI_BIND`, so a taken port fails loudly instead.
 
 **Command line.** The same binary talks to a running Irori. `irori status` is the quick check,
@@ -169,6 +173,7 @@ To run from the checkout without installing, put the same commands after `cargo 
 
 ```sh
 cargo run -- run                                # http://127.0.0.1:8480
+cargo run -- run --log-level debug              # log every device and state change
 cargo run --no-default-features -- run          # barebones: no web UI, no assistant
 ```
 
