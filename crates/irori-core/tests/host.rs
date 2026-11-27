@@ -732,6 +732,33 @@ async fn unrepresentable_timings_are_refused() {
     assert!(ExtensionHost::start(&core, vec![], zero).is_err());
 }
 
+/// A ping must go out more often than a process may stay quiet, or one that answers every ping
+/// would still be taken for hung between two of them.
+#[tokio::test]
+async fn pings_must_come_more_often_than_the_quiet_allowed() {
+    let core = Core::new(Arc::new(SystemClock));
+    let refused = "timing: ping_every must be above zero and below quiet_for";
+    let quiet_for = Timing::default().quiet_for;
+    for ping_every in [
+        Duration::ZERO,
+        quiet_for,
+        quiet_for + Duration::from_secs(1),
+    ] {
+        let timing = Timing {
+            ping_every,
+            ..Timing::default()
+        };
+        let err = ExtensionHost::start(&core, vec![], timing).expect_err("refused");
+        assert_eq!(err, refused, "ping_every {ping_every:?}");
+    }
+    let just_below = Timing {
+        ping_every: quiet_for - Duration::from_millis(1),
+        ..Timing::default()
+    };
+    let host = ExtensionHost::start(&core, vec![], just_below).expect("allowed");
+    host.shutdown().await;
+}
+
 /// A package left on disk from before an extension became a builtin (helpers, D45) must not
 /// crash the next start: the id collision is between old state and new code, not a bug to
 /// refuse to boot over.
@@ -1313,6 +1340,7 @@ async fn a_settings_change_during_retry_restarts_without_waiting_out_the_delay()
             max_retry: Duration::from_secs(300),
             healthy_after: Duration::from_secs(600),
             stop_grace: Duration::from_secs(1),
+            ..Timing::default()
         },
     )
     .expect("unique ids");
@@ -2052,6 +2080,355 @@ async fn a_long_message_interrupted_by_a_call_still_arrives_whole() {
         status(&core, "lamp")
     );
     assert!(arrived(), "the long message arrived whole");
+
+    host.shutdown().await;
+}
+
+/// Pings fast enough for a test: a process that says nothing for 400 ms is hung.
+fn quick_pings() -> Timing {
+    Timing {
+        ping_every: Duration::from_millis(100),
+        quiet_for: Duration::from_millis(400),
+        ..Timing::default()
+    }
+}
+
+/// A process that said it answers pings and then stops answering is ended, reported and
+/// restarted, not left "running" with stale values (issue #98).
+#[tokio::test]
+async fn a_process_that_stops_answering_pings_is_restarted() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    let starts = dir.join("starts");
+    // Says it answers pings, then hangs: it neither reads nor writes again.
+    script_package(
+        dir,
+        "hangs",
+        &format!(
+            "#!/bin/sh
+echo started >> '{}'
+read hello
+echo '{{\"type\":\"pong\"}}'
+sleep 1000
+",
+            starts.display()
+        ),
+    );
+    let host = ExtensionHost::start_with_packages(&core, vec![], quick_pings(), dir.to_path_buf())
+        .expect("starts");
+
+    eventually("it's reported as stopped answering", || {
+        matches!(
+            status(&core, "hangs"),
+            Some(ExtensionStatus::Failed { reason, .. }) if reason.contains("stopped answering")
+        )
+    })
+    .await;
+    eventually("it's restarted", || pids_in(&starts).len() >= 2).await;
+
+    host.shutdown().await;
+}
+
+/// An extension that never said it answers pings, one built before them or written without
+/// them, is never pinged and never taken for hung, however quiet it is.
+#[tokio::test]
+async fn a_process_that_never_said_it_answers_pings_is_left_alone() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    let heard = dir.join("heard");
+    script_package(
+        dir,
+        "quiet",
+        &format!(
+            "#!/bin/sh
+while read line; do echo \"$line\" >> '{}'; done
+",
+            heard.display()
+        ),
+    );
+    let host = ExtensionHost::start_with_packages(&core, vec![], quick_pings(), dir.to_path_buf())
+        .expect("starts");
+
+    eventually("it's running", || {
+        status(&core, "quiet") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    // "Running" means its hello is in the pipe, not that the shell has started and read it: the
+    // quiet windows are counted from when it has.
+    eventually("it read its hello", || !pids_in(&heard).is_empty()).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(status(&core, "quiet"), Some(ExtensionStatus::Running));
+    let heard = pids_in(&heard);
+    assert_eq!(heard.len(), 1, "only its hello: {heard:?}");
+    assert!(heard[0].contains("\"pings\":true"), "it was offered pings");
+
+    host.shutdown().await;
+}
+
+/// A package `lamp` that reports, as fast as the shell can, a light whose state flips each time:
+/// every report is a change for an engine subscribed to states to hear about. Each report
+/// carries 1 KB of padding, so the changes fill an engine's pipe quickly.
+fn flooding_lamp(dir: &std::path::Path) {
+    use irori_protocol::FromExt;
+    use irori_protocol::types::AttributeKey;
+
+    let line = |message: &FromExt| serde_json::to_string(message).expect("serializes") + "\n";
+    let head = line(&FromExt::DescribeDevice {
+        id: 1,
+        device: DeviceDescription {
+            unique_id: uid("lamp"),
+            name: Name::try_from("Lamp").expect("valid"),
+            manufacturer: None,
+            model: None,
+            sw_version: None,
+            hw_version: None,
+            serial_number: None,
+            suggested_area: None,
+            via_device_unique_id: None,
+            connections: Vec::new(),
+        },
+    }) + &line(&FromExt::DescribeEntity {
+        id: 2,
+        entity: EntityDescription {
+            unique_id: uid("lamp-light"),
+            name: None,
+            device_unique_id: Some(uid("lamp")),
+            suggested_object_id: None,
+            capabilities: Capabilities::Light(LightCapabilities {
+                brightness: true,
+                color_temp_kelvin: None,
+                rgb: false,
+            }),
+            entity_category: None,
+        },
+    });
+    let report = |on: bool| {
+        let mut report = light(on, Some(100), None);
+        report.attributes.insert(
+            AttributeKey::try_from("padding").expect("valid"),
+            serde_json::Value::String("x".repeat(1_000)),
+        );
+        line(&FromExt::StateReport { report })
+    };
+    std::fs::write(dir.join("head.jsonl"), head).expect("wrote");
+    std::fs::write(dir.join("on.jsonl"), report(true)).expect("wrote");
+    std::fs::write(dir.join("off.jsonl"), report(false)).expect("wrote");
+    script_package(
+        dir,
+        "lamp",
+        &format!(
+            "#!/bin/sh
+read hello
+cat '{dir}/head.jsonl'
+while true; do cat '{dir}/on.jsonl' '{dir}/off.jsonl'; done
+",
+            dir = dir.display()
+        ),
+    );
+}
+
+/// An engine package `engine` allowed to hear the home's events, whose program is the shell
+/// `script`. `dir/subscribe.jsonl` holds the line that subscribes it to state changes.
+fn engine_package(dir: &std::path::Path, script: &str) {
+    use irori_protocol::FromExt;
+    use std::os::unix::fs::PermissionsExt;
+
+    let subscribe = serde_json::to_string(&FromExt::Subscribe {
+        id: 1,
+        states: true,
+        registry: false,
+    })
+    .expect("serializes")
+        + "\n";
+    std::fs::write(dir.join("subscribe.jsonl"), subscribe).expect("wrote");
+    let package = dir.join("engine");
+    std::fs::create_dir_all(package.join("bin")).expect("made the package dir");
+    std::fs::write(
+        package.join("irori-extension.toml"),
+        r#"
+            [extension]
+            id = "engine"
+            name = "Engine"
+            version = "0.1.0"
+            irori = ">=0.0.0"
+
+            [[contributes.automation]]
+            run = { command = "bin/prog" }
+
+            [permissions]
+            api = ["events:read"]
+        "#,
+    )
+    .expect("wrote the manifest");
+    let program = package.join("bin/prog");
+    std::fs::write(&program, script).expect("wrote the program");
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755))
+        .expect("made it executable");
+}
+
+/// An engine that said it answers pings, subscribed to state changes and then hung, is still
+/// restarted while the changes keep coming. Once its pipe is full, the next change written to it
+/// would wait for good, and the ping that would notice the hang would never get its turn.
+#[tokio::test]
+async fn a_hung_engine_with_a_full_pipe_is_restarted() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    flooding_lamp(dir);
+
+    // The engine: says it answers pings, subscribes to state changes, then hangs. It never
+    // reads or writes again.
+    let starts = dir.join("starts");
+    engine_package(
+        dir,
+        &format!(
+            "#!/bin/sh
+echo started >> '{starts}'
+read hello
+echo '{{\"type\":\"pong\"}}'
+cat '{dir}/subscribe.jsonl'
+sleep 1000
+",
+            starts = starts.display(),
+            dir = dir.display()
+        ),
+    );
+
+    let host = ExtensionHost::start_with_packages(&core, vec![], quick_pings(), dir.to_path_buf())
+        .expect("starts");
+
+    eventually("the engine is restarted", || pids_in(&starts).len() >= 2).await;
+
+    host.shutdown().await;
+}
+
+/// A healthy engine stays up while the home's changes come faster than it reads them. Changes
+/// always waiting to go out must not keep its pings from going out or its answers from being
+/// heard: it would look silent, and the next write to its full pipe would end it as hung.
+#[tokio::test]
+async fn a_healthy_engine_under_a_flood_of_changes_stays_up() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    flooding_lamp(dir);
+
+    // The engine reads every line, one at a time as a shell does, so it's slower than the lamp
+    // and its pipe stays full. It answers every ping, noting how many lines it had read by then.
+    let starts = dir.join("starts");
+    let pongs = dir.join("pongs");
+    engine_package(
+        dir,
+        &format!(
+            "#!/bin/sh
+echo started >> '{starts}'
+read hello
+echo '{{\"type\":\"pong\"}}'
+cat '{dir}/subscribe.jsonl'
+n=0
+while read line; do
+  n=$((n + 1))
+  case \"$line\" in *'\"type\":\"ping\"'*) echo $n >> '{pongs}'; echo '{{\"type\":\"pong\"}}';; esac
+done
+",
+            starts = starts.display(),
+            pongs = pongs.display(),
+            dir = dir.display()
+        ),
+    );
+    // Slower than `quick_pings`. The engine answers a ping only once it has read the changes
+    // queued ahead of it, a byte at a time, and pings go out only every other tick: its answers
+    // come about 500 ms apart here, under load too. Five seconds leaves ten times that for a
+    // slower or busier machine; this test is about the host, not the shell's speed.
+    let timing = Timing {
+        ping_every: Duration::from_millis(250),
+        quiet_for: Duration::from_secs(5),
+        ..Timing::default()
+    };
+    let host = ExtensionHost::start_with_packages(&core, vec![], timing, dir.to_path_buf())
+        .expect("starts");
+
+    eventually("it's running", || {
+        status(&core, "engine") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    // Two quiet windows of flood, answering pings all the while: a host that left the answers
+    // unread would end it after the first. Watched all along, so a restart's reason is caught
+    // before it's replaced.
+    let watched = std::time::Instant::now();
+    let mut ended = None;
+    eventually(
+        "two quiet windows, pinged and heard under the flood",
+        || {
+            if let Some(ExtensionStatus::Failed { reason, .. }) = status(&core, "engine") {
+                ended.get_or_insert(reason);
+            }
+            let windows = watched.elapsed() >= 2 * timing.quiet_for && pids_in(&pongs).len() >= 3;
+            windows || pids_in(&starts).len() > 1
+        },
+    )
+    .await;
+    assert_eq!(
+        pids_in(&starts).len(),
+        1,
+        "started once, never restarted: {ended:?}"
+    );
+    assert_eq!(ended, None, "never ended");
+    assert_eq!(status(&core, "engine"), Some(ExtensionStatus::Running));
+    // The flood was real: between its first and last answer it read changes too, more of them
+    // than pings. Counted against its own answers, not a fixed number, so a slow machine that
+    // gets through fewer lines doesn't fail a host that did its part.
+    let read: Vec<usize> = pids_in(&pongs)
+        .iter()
+        .map(|n| n.parse().expect("a count"))
+        .collect();
+    assert!(
+        read[read.len() - 1] - read[0] >= 2 * (read.len() - 1),
+        "it was kept busy: {read:?}"
+    );
+
+    host.shutdown().await;
+}
+
+/// An extension that answers its pings stays up, and is pinged while it's quiet.
+#[tokio::test]
+async fn a_process_that_answers_pings_stays_up() {
+    let core = Core::new(Arc::new(SystemClock));
+    let packages_dir = tempfile::tempdir().expect("temp dir");
+    let dir = packages_dir.path();
+    let pings = dir.join("pings");
+    let starts = dir.join("starts");
+    script_package(
+        dir,
+        "answers",
+        &format!(
+            "#!/bin/sh
+echo $$ >> '{}'
+read hello
+echo '{{\"type\":\"pong\"}}'
+\
+             while read line; do case \"$line\" in *'\"ping\"'*) \
+             echo ping >> '{}'; echo '{{\"type\":\"pong\"}}';; esac; done
+",
+            starts.display(),
+            pings.display()
+        ),
+    );
+    let timing = quick_pings();
+    let host = ExtensionHost::start_with_packages(&core, vec![], timing, dir.to_path_buf())
+        .expect("starts");
+
+    eventually("it's running", || {
+        status(&core, "answers") == Some(ExtensionStatus::Running)
+    })
+    .await;
+    // Wait for pings, not a fixed time: enough of them to span more than one quiet window,
+    // so a host that ended a process that answers would have done it by now.
+    let enough = (timing.quiet_for.as_millis() / timing.ping_every.as_millis()) as usize + 2;
+    eventually("pinged while quiet", || pids_in(&pings).len() >= enough).await;
+    assert_eq!(status(&core, "answers"), Some(ExtensionStatus::Running));
+    assert_eq!(pids_in(&starts).len(), 1, "started once, never restarted");
 
     host.shutdown().await;
 }

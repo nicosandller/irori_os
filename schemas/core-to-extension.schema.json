@@ -6,6 +6,10 @@
     {
       "type": "object",
       "properties": {
+        "pings": {
+          "description": "The core will ping this extension if it answers `pong`. Absent from a core that\ndoesn't ping, and ignored by an extension that doesn't answer, so neither side has\nto be the newer one.",
+          "type": "boolean"
+        },
         "settings": true,
         "type": {
           "type": "string",
@@ -15,6 +19,19 @@
       "required": [
         "type",
         "settings"
+      ]
+    },
+    {
+      "description": "Are you still there? Answered with `pong`. Sent only to an extension that said, after\n`hello`, that it answers.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "ping"
+        }
+      },
+      "required": [
+        "type"
       ]
     },
     {

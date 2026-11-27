@@ -336,7 +336,7 @@ where
 {
     let mut reader = BufReader::new(reader);
     let hello = read_json::<ToExt>(&mut reader).await.map_err(EngineError)?;
-    let ToExt::Hello { settings } = hello else {
+    let ToExt::Hello { settings, pings } = hello else {
         return Err(EngineError(
             "first message from the host must be hello".into(),
         ));
@@ -352,6 +352,10 @@ where
         }
     });
 
+    if pings {
+        // Tells the core this engine answers pings, so it may start sending them.
+        let _ = out_tx.send(FromExt::Pong {});
+    }
     let out = Outbox(out_tx);
     let client = EngineClient {
         out: out.clone(),
@@ -437,6 +441,12 @@ async fn read_incoming<R>(
                 id,
                 out: out.clone(),
             }),
+            ToExt::Ping {} => {
+                // From this reader, a task on the engine's runtime: the answer says the
+                // runtime still runs tasks.
+                out.send(FromExt::Pong {});
+                continue;
+            }
             ToExt::Stop => {
                 let _ = in_tx.send(Incoming::Stop);
                 return;
@@ -466,8 +476,32 @@ mod tests {
     use super::*;
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
 
-    /// The client's requests go out as the spec's messages, and answers find their way back to
-    /// the request that asked.
+    /// Offered pings, an engine says it answers them, then answers each (issue #98). Not
+    /// offered, it says nothing: `a_request_is_answered_by_its_own_id` reads its first line.
+    #[tokio::test]
+    async fn an_engine_offered_pings_answers_them() {
+        let (core_side, engine_side) = tokio::io::duplex(64 * 1024);
+        let (engine_read, engine_write) = tokio::io::split(engine_side);
+        let (core_read, mut core_write) = tokio::io::split(core_side);
+
+        core_write
+            .write_all(b"{\"type\":\"hello\",\"settings\":{},\"pings\":true}\n")
+            .await
+            .expect("write hello");
+        let (_settings, _client, _incoming) =
+            connect(engine_read, engine_write).await.expect("connects");
+        let mut lines = tokio::io::BufReader::new(core_read).lines();
+        let line = lines.next_line().await.expect("read").expect("a line");
+        assert_eq!(line, r#"{"type":"pong"}"#, "it says it answers pings");
+
+        core_write
+            .write_all(b"{\"type\":\"ping\"}\n")
+            .await
+            .expect("write");
+        let line = lines.next_line().await.expect("read").expect("a line");
+        assert_eq!(line, r#"{"type":"pong"}"#, "it answers one");
+    }
+
     /// A nudge after falling behind says how much was missed, before the nudge itself; an
     /// ordinary one doesn't (issue #97).
     #[tokio::test]
@@ -502,6 +536,8 @@ mod tests {
         ));
     }
 
+    /// The client's requests go out as the spec's messages, and answers find their way back to
+    /// the request that asked.
     #[tokio::test]
     async fn a_request_is_answered_by_its_own_id() {
         let (core_side, engine_side) = tokio::io::duplex(64 * 1024);

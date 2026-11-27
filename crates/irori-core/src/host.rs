@@ -40,6 +40,11 @@ pub struct Timing {
     pub healthy_after: Duration,
     /// How long a protocol gets to finish after being told to stop.
     pub stop_grace: Duration,
+    /// How often a process that answers pings is pinged.
+    pub ping_every: Duration,
+    /// How long a process that answers pings may say nothing, pongs included, before it's taken
+    /// for hung, its entities are marked unavailable and it's restarted.
+    pub quiet_for: Duration,
 }
 
 impl Timing {
@@ -53,12 +58,17 @@ impl Timing {
             ("max_retry", self.max_retry),
             ("healthy_after", self.healthy_after),
             ("stop_grace", self.stop_grace),
+            ("ping_every", self.ping_every),
+            ("quiet_for", self.quiet_for),
         ];
         if let Some((name, _)) = named.iter().find(|(_, d)| *d > Self::MAX) {
             return Err(format!("timing: {name} must be at most 24 hours"));
         }
         if self.first_retry.is_zero() || self.first_retry > self.max_retry {
             return Err("timing: first_retry must be above zero and at most max_retry".into());
+        }
+        if self.ping_every.is_zero() || self.ping_every >= self.quiet_for {
+            return Err("timing: ping_every must be above zero and below quiet_for".into());
         }
         Ok(())
     }
@@ -71,6 +81,8 @@ impl Default for Timing {
             max_retry: Duration::from_secs(5 * 60),
             healthy_after: Duration::from_secs(10 * 60),
             stop_grace: Duration::from_secs(5),
+            ping_every: Duration::from_secs(30),
+            quiet_for: Duration::from_secs(90),
         }
     }
 }
@@ -1537,6 +1549,8 @@ async fn supervise_package(
                 .outgoing
                 .send(ToExt::Hello {
                     settings: ready.started_with.clone(),
+                    // The websocket has pings of its own.
+                    pings: false,
                 })
                 .await
                 .is_err()
@@ -1597,6 +1611,7 @@ async fn supervise_package(
             if let Err(reason) = outgoing
                 .deliver(ToExt::Hello {
                     settings: started_with.clone(),
+                    pings: true,
                 })
                 .await
             {
@@ -1867,6 +1882,79 @@ impl Outgoing {
     }
 }
 
+/// Writes `message` to the extension from `drive`, waiting at most `within` when it's set.
+///
+/// A process that has stopped reading fills its pipe, and a write with no deadline would then
+/// wait for good: `drive` would hear nothing more and never get to the ping that notices the
+/// hang (issue #98). A write that waits out its deadline ends the process as hung.
+async fn send(
+    outgoing: &mut Outgoing,
+    group: &mut Option<ProcessGroup>,
+    child: &mut Option<Child>,
+    message: ToExt,
+    within: Option<Duration>,
+) -> Result<(), Outcome> {
+    let Some(within) = within else {
+        return outgoing.deliver(message).await.map_err(Outcome::Ended);
+    };
+    match tokio::time::timeout(within, outgoing.deliver(message)).await {
+        Ok(sent) => sent.map_err(Outcome::Ended),
+        Err(_) => Err(end_hung(
+            group,
+            child,
+            format!(
+                "the extension stopped reading: a message to it waited {} s",
+                within.as_secs()
+            ),
+        )),
+    }
+}
+
+/// Ends a process taken for hung, at once. Asking it to stop would go down the same stuck
+/// pipe. Its entities go unavailable and it restarts, as after a crash.
+fn end_hung(
+    group: &mut Option<ProcessGroup>,
+    child: &mut Option<Child>,
+    reason: String,
+) -> Outcome {
+    if let Some(group) = group.as_mut() {
+        group.kill();
+    }
+    if let Some(child) = child.as_mut() {
+        let _ = child.start_kill();
+    }
+    Outcome::Ended(reason)
+}
+
+/// How long one write to the extension may wait before the process is taken for hung, or
+/// `None` to wait as long as it takes.
+///
+/// `timing` is `None` for a program that dialed in, which has the websocket's own pings.
+/// `answers_pings` is false for an extension that never said it answers them: one built before
+/// pings, or in another language without them. `heard_at` is when it last said anything.
+fn write_deadline(
+    timing: Option<Timing>,
+    answers_pings: bool,
+    heard_at: Instant,
+) -> Option<Duration> {
+    // Only for one that said it answers pings: the others behave as before.
+    let timing = timing.filter(|_| answers_pings)?;
+    // What's left of its quiet window: the loop hears nothing while a write waits, so this is
+    // the same "nothing from it for `quiet_for`" the ping checks. But never less than
+    // `ping_every`: a write is taken for a hang only once it has itself waited, on a process
+    // that read nothing in that time. How long the process has been quiet is the ping's to
+    // judge, and a write that met a briefly full pipe the moment the window ran out would
+    // otherwise end a process that was still reading. A hung process with a full pipe is then
+    // ended at most two `ping_every` after its window: the ping's own tick can come up to one
+    // late, and a write started just before it waits one more.
+    Some(
+        timing
+            .quiet_for
+            .saturating_sub(heard_at.elapsed())
+            .max(timing.ping_every),
+    )
+}
+
 impl Incoming {
     async fn take(&mut self) -> Result<FromExt, String> {
         match self {
@@ -2064,6 +2152,21 @@ async fn drive(
     let mut next_call: u64 = 0;
     let mut next_action: u64 = 0;
     let child = &mut link.child;
+    // A process that answers pings is pinged, and taken for hung once it has said nothing,
+    // pongs included, for `quiet_for` (issue #98). One that never said it answers is left
+    // alone: an extension built before pings, or written in another language without them.
+    // A program that dialed in has the websocket's pings instead (`timing` is `None`).
+    let mut answers_pings = false;
+    let mut heard_at = Instant::now();
+    let ping_every = timing.map_or(Timing::MAX, |timing| timing.ping_every);
+    let mut ping = tokio::time::interval_at(Instant::now() + ping_every, ping_every);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // After anything is written, the next turn is the extension's: what it has said is read
+    // before anything more is written and before the ping weighs how long it has been quiet.
+    // Without it, changes always waiting to go out to an engine would leave its pongs unread,
+    // and it would be taken for hung while it was answering. Outside that turn writes come
+    // first, as before, so an extension that talks without pause can't hold up commands either.
+    let mut listen = false;
 
     let why = loop {
         tokio::select! {
@@ -2087,16 +2190,45 @@ async fn drive(
             () = async {
                 let _ = disabled.wait_for(|disabled| disabled.contains(extension)).await;
             } => break Outcome::Disabled,
-            Some(incoming) = calls.recv() => {
+            // Before the writes: a timer, it can't hold them up, and below them a steady stream
+            // of changes would keep it from ever running.
+            _ = ping.tick(), if answers_pings && !listen => {
+                let Some(timing) = timing else { continue };
+                let quiet = heard_at.elapsed();
+                // One that has spoken lately has shown it's there; only a quiet one is asked.
+                if quiet < timing.ping_every {
+                    continue;
+                }
+                // Not stale: the turn before this one read whatever it had said.
+                if quiet >= timing.quiet_for {
+                    return end_hung(&mut link.group, child, format!(
+                        "the extension stopped answering: nothing from it for {} s",
+                        timing.quiet_for.as_secs()
+                    ));
+                }
+                listen = true;
+                // A hung process stops reading too: the deadline keeps a full pipe from
+                // holding this write for good.
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, ToExt::Ping {}, write_deadline(Some(timing), answers_pings, heard_at),
+                ).await {
+                    return outcome;
+                }
+            }
+            Some(incoming) = calls.recv(), if !listen => {
+                listen = true;
                 let id = next_call;
                 next_call += 1;
                 let call = incoming.call.clone();
                 pending_calls.insert(id, incoming);
-                if let Err(reason) = link.outgoing.deliver(ToExt::ServiceCall { id, call }).await {
-                    return Outcome::Ended(reason);
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, ToExt::ServiceCall { id, call }, write_deadline(timing, answers_pings, heard_at),
+                ).await {
+                    return outcome;
                 }
             }
-            Some(incoming) = actions.recv() => {
+            Some(incoming) = actions.recv(), if !listen => {
+                listen = true;
                 let id = next_action;
                 next_action += 1;
                 let message = if incoming.talking() {
@@ -2122,11 +2254,14 @@ async fn drive(
                     pending_actions.insert(id, incoming);
                     message
                 };
-                if let Err(reason) = link.outgoing.deliver(message).await {
-                    return Outcome::Ended(reason);
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, message, write_deadline(timing, answers_pings, heard_at),
+                ).await {
+                    return outcome;
                 }
             }
-            _ = sweep.tick(), if !live_feeds.is_empty() => {
+            _ = sweep.tick(), if !listen && !live_feeds.is_empty() => {
+                listen = true;
                 let unwatched: Vec<u64> = live_feeds
                     .iter()
                     .filter(|(_, feed)| feed.is_closed())
@@ -2134,29 +2269,43 @@ async fn drive(
                     .collect();
                 for stream in unwatched {
                     live_feeds.remove(&stream);
-                    if let Err(reason) = link.outgoing.deliver(ToExt::LiveStop { stream }).await {
-                        return Outcome::Ended(reason);
+                    if let Err(outcome) = send(
+                        &mut link.outgoing, &mut link.group, child, ToExt::LiveStop { stream }, write_deadline(timing, answers_pings, heard_at),
+                    ).await {
+                        return outcome;
                     }
                 }
             }
-            Some(message) = talk_out.recv() => {
+            Some(message) = talk_out.recv(), if !listen => {
+                listen = true;
                 if let ToExt::TalkStop { stream } = &message {
                     talk_lines.remove(stream);
                 }
-                if let Err(reason) = link.outgoing.deliver(message).await {
-                    return Outcome::Ended(reason);
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, message, write_deadline(timing, answers_pings, heard_at),
+                ).await {
+                    return outcome;
                 }
             }
-            message = engine.next_outgoing(core) => {
+            message = engine.next_outgoing(core), if !listen => {
+                listen = true;
                 if let Some(message) = message
-                    && let Err(reason) = link.outgoing.deliver(message).await
+                    && let Err(outcome) = send(
+                        &mut link.outgoing, &mut link.group, child, message, write_deadline(timing, answers_pings, heard_at),
+                    ).await
                 {
-                    return Outcome::Ended(reason);
+                    return outcome;
                 }
             }
             msg = link.incoming.take() => {
+                listen = false;
                 match msg {
+                    Ok(FromExt::Pong {}) => {
+                        heard_at = Instant::now();
+                        answers_pings = true;
+                    }
                     Ok(from) => {
+                        heard_at = Instant::now();
                         let from = match engine.handle(core, extension, from) {
                             Some(from) => from,
                             None => continue,
@@ -2166,8 +2315,11 @@ async fn drive(
                             &mut pending_actions, &mut live_feeds, &mut talk_lines,
                         ).await {
                             Ok(Some(reply)) => {
-                                if let Err(reason) = link.outgoing.deliver(reply).await {
-                                    return Outcome::Ended(reason);
+                                listen = true;
+                                if let Err(outcome) = send(
+                                    &mut link.outgoing, &mut link.group, child, reply, write_deadline(timing, answers_pings, heard_at),
+                                ).await {
+                                    return outcome;
                                 }
                             }
                             Ok(None) => {}
@@ -2177,6 +2329,8 @@ async fn drive(
                     Err(reason) => return Outcome::Ended(exited_instead(child, reason).await),
                 }
             }
+            // The extension's turn, and it had nothing to say: writes may go again.
+            () = std::future::ready(()), if listen => listen = false,
         }
     };
 
@@ -2488,6 +2642,8 @@ async fn apply_from_ext(
         | FromExt::Subscribe { .. }
         | FromExt::CallService { .. }
         | FromExt::AppAnswer { .. } => Ok(None),
+        // Counted by `drive` before it gets here; one that arrives late has nothing to answer.
+        FromExt::Pong {} => Ok(None),
     }
 }
 
@@ -2518,6 +2674,35 @@ async fn reply_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// However long a process that answers pings has been quiet, a write to it gets at least
+    /// `ping_every` before it's taken for hung: being quiet is the ping's to judge, and a write
+    /// with no time at all would end a process that is reading, the moment its pipe was briefly
+    /// full ("a message to it waited 0 s").
+    #[tokio::test(start_paused = true)]
+    async fn a_write_waits_at_least_ping_every_however_quiet_the_process() {
+        let timing = Timing::default();
+        let heard_at = Instant::now();
+        assert_eq!(
+            write_deadline(Some(timing), true, heard_at),
+            Some(timing.quiet_for),
+            "just heard: the whole quiet window"
+        );
+        tokio::time::advance(timing.quiet_for - timing.ping_every / 2).await;
+        assert_eq!(
+            write_deadline(Some(timing), true, heard_at),
+            Some(timing.ping_every),
+            "what's left of the window, but not less than ping_every"
+        );
+        tokio::time::advance(timing.quiet_for * 10).await;
+        assert_eq!(
+            write_deadline(Some(timing), true, heard_at),
+            Some(timing.ping_every),
+            "the window long spent: still ping_every, never zero"
+        );
+        assert_eq!(write_deadline(Some(timing), false, heard_at), None);
+        assert_eq!(write_deadline(None, true, heard_at), None);
+    }
 
     #[test]
     fn an_extension_line_keeps_its_own_level_and_loses_its_own_timestamp() {
