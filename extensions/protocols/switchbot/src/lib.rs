@@ -126,10 +126,35 @@ struct Ledger {
 
 const LEDGER_KEY: &str = "ledger";
 const DEVICES_KEY: &str = "devices";
+const LET_BACK_KEY: &str = "let_back";
 /// A device only Bluetooth knows, unheard for this long (seconds), is forgotten by the extension:
 /// it's not replayed at start, and a neighbour's device passing through doesn't stay for good.
 /// The home keeps a device someone added; it's just unavailable until heard again.
 const FORGET_UNHEARD_AFTER: u64 = 86_400;
+
+/// The most devices kept that only Bluetooth knows. Adverts aren't signed, so anything in range
+/// can announce as many "devices" as it likes; a home has a few dozen at most.
+const MAX_HEARD: usize = 256;
+
+/// The most addresses of forgotten devices kept so they're let back in when the list is full.
+const MAX_LET_BACK: usize = MAX_HEARD;
+
+/// The most devices remembered only so that something is said about each once.
+const MAX_NOTED: usize = 4096;
+
+/// Notes `mac` in a set kept so a device is spoken of once, and answers whether to speak of it:
+/// whether it is new there. A full set takes no more, and that is said once, naming `what` it
+/// holds: past [`MAX_NOTED`], made-up addresses get neither memory nor a line each, and a real
+/// device first heard after them isn't logged.
+fn noted(set: &mut BTreeSet<String>, mac: &str, what: &str) -> bool {
+    if set.len() >= MAX_NOTED || !set.insert(mac.to_owned()) {
+        return false;
+    }
+    if set.len() == MAX_NOTED {
+        tracing::warn!("heard {MAX_NOTED} {what}; no longer logging each");
+    }
+    true
+}
 
 /// A device as the last run knew it: enough to describe it and report its states before
 /// SwitchBot answers, which on a day whose calls are spent is after midnight UTC.
@@ -275,6 +300,12 @@ struct World {
     strangers: std::collections::BTreeSet<String>,
     /// Devices whose MAC came in an advert from another address, each logged once.
     impostors: BTreeSet<String>,
+    /// Said once each time the list fills: more devices were heard than are kept.
+    full_said: bool,
+    /// Devices only Bluetooth knew that were forgotten after a day unheard, oldest first: one
+    /// heard again is let back in even when [`MAX_HEARD`] are kept, since it may be one someone
+    /// added. Kept between runs.
+    let_back: VecDeque<String>,
     done: mpsc::Sender<Done>,
 }
 
@@ -298,6 +329,10 @@ pub(crate) async fn drive(
         worked_on: ledger.and_then(|l| l.worked_on),
     };
     let saved: Vec<Saved> = load(&ctx, DEVICES_KEY).await.unwrap_or_default();
+    let mut let_back: VecDeque<String> = load(&ctx, LET_BACK_KEY).await.unwrap_or_default();
+    while let_back.len() > MAX_LET_BACK {
+        let_back.pop_front();
+    }
     let (done, mut finished) = mpsc::channel(64);
     let mut world = World {
         ctx,
@@ -324,6 +359,8 @@ pub(crate) async fn drive(
         map_dirty: false,
         strangers: std::collections::BTreeSet::new(),
         impostors: BTreeSet::new(),
+        full_said: false,
+        let_back,
         done,
     };
     world.restore(saved).await;
@@ -489,10 +526,12 @@ impl World {
     async fn restore(&mut self, saved: Vec<Saved>) {
         let now = self.now();
         let before = saved.len();
-        let saved: Vec<Saved> = saved
+        let (saved, gone): (Vec<Saved>, Vec<Saved>) = saved
             .into_iter()
-            .filter(|s| s.from_cloud || !forgotten(s.heard_at, now))
-            .collect();
+            .partition(|s| s.from_cloud || !forgotten(s.heard_at, now));
+        for s in gone {
+            self.let_back_later(s.listed.id);
+        }
         // Forgetting one is saved, so it doesn't come back.
         self.readings_dirty |= saved.len() != before;
         let listed: Vec<Listed> = saved.iter().map(|s| s.listed.clone()).collect();
@@ -566,6 +605,9 @@ impl World {
             .collect();
         for id in forget {
             self.devices.remove(&id);
+            self.let_back_later(id.clone());
+            // There's room again: say so again the next time the list fills.
+            self.full_said = false;
             self.readings_dirty = true;
             self.map_dirty = true;
         }
@@ -590,6 +632,34 @@ impl World {
         }
     }
 
+    /// Remembers that the device `id`, only Bluetooth knew, was forgotten, so it's let back in if
+    /// heard again; the oldest goes when [`MAX_LET_BACK`] are remembered. Only an address that
+    /// held a place for a day gets here, so made-up ones can push a real device out of this list
+    /// only after it has been quiet for a day of theirs.
+    fn let_back_later(&mut self, id: String) {
+        self.let_back.retain(|known| *known != id);
+        if self.let_back.len() >= MAX_LET_BACK {
+            self.let_back.pop_front();
+        }
+        self.let_back.push_back(id);
+    }
+
+    /// Whether one more device that only Bluetooth knows may be kept, [`MAX_HEARD`] being the
+    /// most. Called for an advert from a device not seen before, when there is no account.
+    ///
+    /// Full, a new one is left out rather than an old one dropped to make room: the extension
+    /// can't tell a device someone added from one merely heard, and a stream of made-up
+    /// addresses mustn't be able to push a real device out. Room comes back as devices that
+    /// have gone quiet are forgotten. One forgotten that way is let back in regardless.
+    fn room_for_heard(&self) -> bool {
+        let heard = self
+            .devices
+            .values()
+            .filter(|known| !known.from_cloud)
+            .count();
+        heard < MAX_HEARD
+    }
+
     /// Takes in a Bluetooth advert: a device the account lists, or with no account, any
     /// SwitchBot device nearby (the core keeps a new one aside until someone adds it).
     async fn hear(&mut self, advert: &ble::Advert) {
@@ -597,7 +667,11 @@ impl World {
             return;
         };
         if advert.claims_another_address() {
-            if self.impostors.insert(mac.clone()) {
+            if noted(
+                &mut self.impostors,
+                &mac,
+                "SwitchBot devices named in adverts from another address",
+            ) {
                 tracing::warn!(
                     "heard an advert naming SwitchBot device {mac} from a different Bluetooth address; ignoring adverts like it"
                 );
@@ -616,7 +690,11 @@ impl World {
             // With an account, only its devices: a neighbour's SwitchBot is the neighbour's. Said
             // once per device, so one whose Bluetooth address isn't its cloud id can be spotted.
             if self.cloud.is_some() {
-                if self.strangers.insert(mac.clone()) {
+                if noted(
+                    &mut self.strangers,
+                    &mac,
+                    "SwitchBot devices the account doesn't list",
+                ) {
                     tracing::info!(
                         "heard a SwitchBot {} ({mac}) over Bluetooth that the account doesn't list; leaving it be",
                         crate::model::readable(heard.device_type)
@@ -627,6 +705,16 @@ impl World {
             let Some(family) = Family::of(heard.device_type) else {
                 return;
             };
+            let returning = self.let_back.contains(&mac);
+            if !returning && !self.room_for_heard() {
+                if !self.full_said {
+                    self.full_said = true;
+                    tracing::warn!(
+                        "heard more than {MAX_HEARD} SwitchBot devices over Bluetooth; leaving the rest be"
+                    );
+                }
+                return;
+            }
             let listed = Listed {
                 name: format!(
                     "{} {}",
@@ -644,6 +732,9 @@ impl World {
             }
             self.devices.insert(mac.clone(), known);
             self.readings_dirty = true;
+            if returning {
+                self.let_back.retain(|known| *known != mac);
+            }
         }
         let ear = Ear {
             at: Instant::now(),
@@ -1234,6 +1325,8 @@ impl World {
             .collect();
         if let Ok(value) = serde_json::to_value(&saved)
             && self.ctx.store(DEVICES_KEY, value).await.is_ok()
+            && let Ok(value) = serde_json::to_value(&self.let_back)
+            && self.ctx.store(LET_BACK_KEY, value).await.is_ok()
         {
             self.readings_dirty = false;
         }

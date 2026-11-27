@@ -38,10 +38,15 @@ because its Bluetooth broadcast carries the same MAC address the cloud uses as i
   go to what's out of range.
 - **With an account**, only the account's devices are taken; a neighbour's meter heard through
   the wall is ignored. A device removed from the account but still heard stays, over Bluetooth.
-- **Without an account**, every SwitchBot device heard is found and named after its type and the
-  end of its address ("Contact Sensor 5E1F"). One that falls quiet for 10 minutes is unavailable.
-  After a day unheard the extension forgets it, so a neighbour's device passing through doesn't
-  stay; one you added stays in the home, unavailable until it's heard again.
+- **Without an account**, SwitchBot devices heard are found and named after their type and the
+  end of their address ("Contact Sensor 5E1F"), up to 256 at a time. One that falls quiet for 10
+  minutes is unavailable. After a day unheard the extension forgets it, so a neighbour's device
+  passing through doesn't stay; one you added stays in the home, unavailable until it's heard
+  again.
+- **With 256 kept**, a new device heard is left out, and the log says so once each time the list
+  fills. None is dropped to make room, so made-up addresses can't push yours out; room comes back
+  as quiet devices are forgotten after a day. A device the extension forgot (the last 256 of
+  them) is let back in when heard again even with the list full, so one you added comes back.
 - **Commands go through the cloud** for now: without an account, devices are read but not
   controlled.
 - **No adapter, or Bluetooth off**: with an account, the extension carries on through the cloud
