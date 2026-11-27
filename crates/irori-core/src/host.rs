@@ -1940,10 +1940,19 @@ fn write_deadline(
     // Only for one that said it answers pings: the others behave as before.
     let timing = timing.filter(|_| answers_pings)?;
     // What's left of its quiet window: the loop hears nothing while a write waits, so this is
-    // the same "nothing from it for `quiet_for`" the ping checks. Once that's spent, zero: a
-    // write that goes straight through still goes (the timeout tries it first), one that would
-    // wait ends the process.
-    Some(timing.quiet_for.saturating_sub(heard_at.elapsed()))
+    // the same "nothing from it for `quiet_for`" the ping checks. But never less than
+    // `ping_every`: a write is taken for a hang only once it has itself waited, on a process
+    // that read nothing in that time. How long the process has been quiet is the ping's to
+    // judge, and a write that met a briefly full pipe the moment the window ran out would
+    // otherwise end a process that was still reading. A hung process with a full pipe is then
+    // ended at most two `ping_every` after its window: the ping's own tick can come up to one
+    // late, and a write started just before it waits one more.
+    Some(
+        timing
+            .quiet_for
+            .saturating_sub(heard_at.elapsed())
+            .max(timing.ping_every),
+    )
 }
 
 impl Incoming {
@@ -2665,6 +2674,35 @@ async fn reply_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// However long a process that answers pings has been quiet, a write to it gets at least
+    /// `ping_every` before it's taken for hung: being quiet is the ping's to judge, and a write
+    /// with no time at all would end a process that is reading, the moment its pipe was briefly
+    /// full ("a message to it waited 0 s").
+    #[tokio::test(start_paused = true)]
+    async fn a_write_waits_at_least_ping_every_however_quiet_the_process() {
+        let timing = Timing::default();
+        let heard_at = Instant::now();
+        assert_eq!(
+            write_deadline(Some(timing), true, heard_at),
+            Some(timing.quiet_for),
+            "just heard: the whole quiet window"
+        );
+        tokio::time::advance(timing.quiet_for - timing.ping_every / 2).await;
+        assert_eq!(
+            write_deadline(Some(timing), true, heard_at),
+            Some(timing.ping_every),
+            "what's left of the window, but not less than ping_every"
+        );
+        tokio::time::advance(timing.quiet_for * 10).await;
+        assert_eq!(
+            write_deadline(Some(timing), true, heard_at),
+            Some(timing.ping_every),
+            "the window long spent: still ping_every, never zero"
+        );
+        assert_eq!(write_deadline(Some(timing), false, heard_at), None);
+        assert_eq!(write_deadline(None, true, heard_at), None);
+    }
 
     #[test]
     fn an_extension_line_keeps_its_own_level_and_loses_its_own_timestamp() {
