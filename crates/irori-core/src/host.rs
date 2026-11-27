@@ -2152,6 +2152,12 @@ async fn drive(
     let ping_every = timing.map_or(Timing::MAX, |timing| timing.ping_every);
     let mut ping = tokio::time::interval_at(Instant::now() + ping_every, ping_every);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // After anything is written, the next turn is the extension's: what it has said is read
+    // before anything more is written and before the ping weighs how long it has been quiet.
+    // Without it, changes always waiting to go out to an engine would leave its pongs unread,
+    // and it would be taken for hung while it was answering. Outside that turn writes come
+    // first, as before, so an extension that talks without pause can't hold up commands either.
+    let mut listen = false;
 
     let why = loop {
         tokio::select! {
@@ -2175,7 +2181,33 @@ async fn drive(
             () = async {
                 let _ = disabled.wait_for(|disabled| disabled.contains(extension)).await;
             } => break Outcome::Disabled,
-            Some(incoming) = calls.recv() => {
+            // Before the writes: a timer, it can't hold them up, and below them a steady stream
+            // of changes would keep it from ever running.
+            _ = ping.tick(), if answers_pings && !listen => {
+                let Some(timing) = timing else { continue };
+                let quiet = heard_at.elapsed();
+                // One that has spoken lately has shown it's there; only a quiet one is asked.
+                if quiet < timing.ping_every {
+                    continue;
+                }
+                // Not stale: the turn before this one read whatever it had said.
+                if quiet >= timing.quiet_for {
+                    return end_hung(&mut link.group, child, format!(
+                        "the extension stopped answering: nothing from it for {} s",
+                        timing.quiet_for.as_secs()
+                    ));
+                }
+                listen = true;
+                // A hung process stops reading too: the deadline keeps a full pipe from
+                // holding this write for good.
+                if let Err(outcome) = send(
+                    &mut link.outgoing, &mut link.group, child, ToExt::Ping {}, write_deadline(Some(timing), answers_pings, heard_at),
+                ).await {
+                    return outcome;
+                }
+            }
+            Some(incoming) = calls.recv(), if !listen => {
+                listen = true;
                 let id = next_call;
                 next_call += 1;
                 let call = incoming.call.clone();
@@ -2186,7 +2218,8 @@ async fn drive(
                     return outcome;
                 }
             }
-            Some(incoming) = actions.recv() => {
+            Some(incoming) = actions.recv(), if !listen => {
+                listen = true;
                 let id = next_action;
                 next_action += 1;
                 let message = if incoming.talking() {
@@ -2218,7 +2251,8 @@ async fn drive(
                     return outcome;
                 }
             }
-            _ = sweep.tick(), if !live_feeds.is_empty() => {
+            _ = sweep.tick(), if !listen && !live_feeds.is_empty() => {
+                listen = true;
                 let unwatched: Vec<u64> = live_feeds
                     .iter()
                     .filter(|(_, feed)| feed.is_closed())
@@ -2233,7 +2267,8 @@ async fn drive(
                     }
                 }
             }
-            Some(message) = talk_out.recv() => {
+            Some(message) = talk_out.recv(), if !listen => {
+                listen = true;
                 if let ToExt::TalkStop { stream } = &message {
                     talk_lines.remove(stream);
                 }
@@ -2243,7 +2278,8 @@ async fn drive(
                     return outcome;
                 }
             }
-            message = engine.next_outgoing(core) => {
+            message = engine.next_outgoing(core), if !listen => {
+                listen = true;
                 if let Some(message) = message
                     && let Err(outcome) = send(
                         &mut link.outgoing, &mut link.group, child, message, write_deadline(timing, answers_pings, heard_at),
@@ -2252,33 +2288,8 @@ async fn drive(
                     return outcome;
                 }
             }
-            _ = ping.tick(), if answers_pings => {
-                let Some(timing) = timing else { continue };
-                let quiet = heard_at.elapsed();
-                // One that has spoken lately has shown it's there; only a quiet one is asked.
-                if quiet < timing.ping_every {
-                    continue;
-                }
-                // A hung process stops reading too, and once its pipe is full this write would
-                // wait for good, with nothing left to notice.
-                let sent = match timing.quiet_for.checked_sub(quiet) {
-                    Some(left) if !left.is_zero() => {
-                        tokio::time::timeout(left, link.outgoing.deliver(ToExt::Ping {})).await
-                    }
-                    _ => Ok(Ok(())),
-                };
-                match sent {
-                    Ok(Ok(())) if quiet < timing.quiet_for => {}
-                    Ok(Err(reason)) => return Outcome::Ended(reason),
-                    Ok(Ok(())) | Err(_) => {
-                        return end_hung(&mut link.group, child, format!(
-                            "the extension stopped answering: nothing from it for {} s",
-                            timing.quiet_for.as_secs()
-                        ));
-                    }
-                }
-            }
             msg = link.incoming.take() => {
+                listen = false;
                 match msg {
                     Ok(FromExt::Pong {}) => {
                         heard_at = Instant::now();
@@ -2295,6 +2306,7 @@ async fn drive(
                             &mut pending_actions, &mut live_feeds, &mut talk_lines,
                         ).await {
                             Ok(Some(reply)) => {
+                                listen = true;
                                 if let Err(outcome) = send(
                                     &mut link.outgoing, &mut link.group, child, reply, write_deadline(timing, answers_pings, heard_at),
                                 ).await {
@@ -2308,6 +2320,8 @@ async fn drive(
                     Err(reason) => return Outcome::Ended(exited_instead(child, reason).await),
                 }
             }
+            // The extension's turn, and it had nothing to say: writes may go again.
+            () = std::future::ready(()), if listen => listen = false,
         }
     };
 
