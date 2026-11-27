@@ -283,7 +283,9 @@ watches through a throw-away engine, in the order of the states' own timestamps,
 runs it would have made. Next to them, the runs the saved flow actually made in that window. The
 answer names the window it really covered: the core keeps at most 2,000 changes per entity, so a
 chatty sensor may cover less than a day. Calls in a backtest don't feed back into state (the
-history already holds what really happened).
+history already holds what really happened). A backtest that finds more runs than one answer can carry (8 MiB,
+`docs/specs/protocols.md` Framing; thousands of runs) answers with an error saying it was too
+large, and the engine and its flows carry on; the timeline does the same.
 
 ---
 

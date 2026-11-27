@@ -30,7 +30,7 @@ use tokio::sync::{mpsc, oneshot};
 /// history read; past it, the core is taken to have lost the request.
 pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-use crate::process::{FromExt, ToExt, WireCommand, read_json, write_json};
+use crate::process::{FromExt, MAX_LINE, ToExt, WireCommand, read_json, write_json};
 
 /// What `get_registry` answers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -135,17 +135,54 @@ pub struct AppRequest {
 
 impl AppRequest {
     /// Answers the page. `Err` is shown to the person, so say what went wrong in their terms.
+    ///
+    /// An answer longer than the core reads ([`MAX_LINE`]) would end the engine, and every flow
+    /// with it; it goes back as an error saying it was too large instead.
     pub fn answer(self, result: Result<serde_json::Value, String>) {
         let (value, error) = match result {
             Ok(value) => (Some(value), None),
             Err(error) => (None, Some(error)),
         };
-        self.out.send(FromExt::AppAnswer {
+        let mut message = FromExt::AppAnswer {
             id: self.id,
             value,
             error,
-        });
+        };
+        let size = encoded_len(&message);
+        if size > MAX_LINE {
+            const MIB: f64 = 1024.0 * 1024.0;
+            message = FromExt::AppAnswer {
+                id: self.id,
+                value: None,
+                error: Some(format!(
+                    "the answer to `{}` is too large to send ({:.1} MiB; an answer can be at most \
+                     {:.0} MiB), so it wasn't sent. Try asking for less at a time.",
+                    self.method,
+                    size as f64 / MIB,
+                    MAX_LINE as f64 / MIB,
+                )),
+            };
+        }
+        self.out.send(message);
     }
+}
+
+/// How many bytes `value` takes as JSON, without holding them.
+fn encoded_len(value: &impl Serialize) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0 += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    // Counting can't fail; a value that can't be written fails again, the same way, when sent.
+    let _ = serde_json::to_writer(&mut count, value);
+    count.0
 }
 
 /// What the core pushes to the engine.
@@ -540,6 +577,49 @@ mod tests {
         request.answer(Ok(serde_json::json!({"flows": []})));
         let line = lines.next_line().await.expect("read").expect("a line");
         assert_eq!(line, r#"{"type":"app_answer","id":7,"value":{"flows":[]}}"#);
+    }
+
+    /// An answer too long for the pipe goes back as an error to the same request, saying so,
+    /// rather than as a line the core refuses by ending the engine; one at the bound goes as is.
+    #[test]
+    fn an_answer_longer_than_the_pipe_takes_goes_back_as_an_error() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let request = |id| AppRequest {
+            method: "backtest".into(),
+            params: serde_json::Value::Null,
+            caller: Caller::owner(),
+            id,
+            out: Outbox(tx.clone()),
+        };
+        // A string answer whose message, newline not counted, is `len` bytes.
+        let answer_of = |id, len: usize| {
+            let empty = FromExt::AppAnswer {
+                id,
+                value: Some(serde_json::json!("")),
+                error: None,
+            };
+            let shell = serde_json::to_string(&empty).expect("ser").len();
+            serde_json::json!("x".repeat(len - shell))
+        };
+
+        request(1).answer(Ok(answer_of(1, MAX_LINE)));
+        let Some(FromExt::AppAnswer { id, value, error }) = rx.try_recv().ok() else {
+            panic!("an answer should go out");
+        };
+        assert_eq!((id, error), (1, None));
+        assert!(value.is_some());
+
+        request(2).answer(Ok(answer_of(2, MAX_LINE + 1)));
+        let Some(FromExt::AppAnswer { id, value, error }) = rx.try_recv().ok() else {
+            panic!("an answer should go out");
+        };
+        assert_eq!(id, 2);
+        assert!(value.is_none(), "the answer itself shouldn't be sent");
+        let error = error.expect("an error instead");
+        assert!(
+            error.contains("`backtest`") && error.contains("too large"),
+            "{error}"
+        );
     }
 
     /// Once the core says stop nothing more is read, so a request still waiting fails at once,

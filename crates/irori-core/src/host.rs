@@ -12,7 +12,7 @@ use std::time::Duration;
 use irori_protocol::Builtin;
 use irori_protocol::host::{HostEnd, Op, Reports, connect};
 use irori_protocol::{
-    ExtProcess, FromExt, IncomingAction, IncomingCall, ProcessGroup, ToExt, spawn,
+    ExtProcess, FromExt, IncomingAction, IncomingCall, MAX_LINE, ProcessGroup, ToExt, spawn,
 };
 
 use crate::engine::EngineLink;
@@ -1830,11 +1830,30 @@ impl Reader {
 const OUTPUT_CLOSED: &str = "the extension closed its output";
 
 /// Reads one line of an extension's stdout as a message, in the host's words when it fails.
-async fn read_message(stdout: &mut BufReader<ChildStdout>) -> Result<FromExt, String> {
-    let mut line = String::new();
-    match stdout.read_line(&mut line).await {
+///
+/// No further than [`MAX_LINE`], the same bound the extension's side reads to: a line longer
+/// than any message ends the extension rather than being held whole in the core's memory.
+async fn read_message(
+    stdout: &mut BufReader<impl tokio::io::AsyncRead + Unpin>,
+) -> Result<FromExt, String> {
+    use tokio::io::AsyncReadExt as _;
+    // Bytes, so a line cut at the bound inside a character is too long rather than bad UTF-8;
+    // the JSON reader checks the UTF-8 of a line that fits.
+    let mut line = Vec::new();
+    // One byte past the bound: the newline after a line of exactly the bound, or the first byte
+    // that makes a line too long.
+    match (&mut *stdout)
+        .take(MAX_LINE as u64 + 1)
+        .read_until(b'\n', &mut line)
+        .await
+    {
         Ok(0) => Err(OUTPUT_CLOSED.to_owned()),
-        Ok(_) => serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}")),
+        Ok(n) if n > MAX_LINE && line.last() != Some(&b'\n') => {
+            Err(format!("a message longer than {MAX_LINE} bytes"))
+        }
+        Ok(_) => {
+            serde_json::from_slice(line.trim_ascii()).map_err(|e| format!("invalid message: {e}"))
+        }
         Err(error) => Err(error.to_string()),
     }
 }
@@ -2518,6 +2537,76 @@ async fn reply_message(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A line longer than any message is refused as too long, not read whole and then found
+    /// not to be a message; what comes before it and the pipe's end read as they did.
+    #[tokio::test]
+    async fn a_line_longer_than_any_message_is_refused_without_being_held() {
+        let mut said = br#"{"type":"remove_device","id":1,"unique_id":"lamp"}"#.to_vec();
+        said.push(b'\n');
+        said.extend(vec![b'x'; MAX_LINE + 10]);
+        let mut stdout = BufReader::new(said.as_slice());
+        assert!(matches!(
+            read_message(&mut stdout).await,
+            Ok(FromExt::RemoveDevice { .. })
+        ));
+        let error = read_message(&mut stdout).await.expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+
+        let mut ended = BufReader::new(&b""[..]);
+        assert_eq!(
+            read_message(&mut ended).await.expect_err("closed"),
+            OUTPUT_CLOSED
+        );
+    }
+
+    /// A message of exactly `MAX_LINE` bytes, its newline not counted, is read; one byte more
+    /// is refused as too long.
+    #[tokio::test]
+    async fn a_message_of_exactly_max_line_is_read_and_one_byte_more_is_not() {
+        fn line_of(len: usize) -> Vec<u8> {
+            let (start, end) = (r#"{"type":"app_answer","id":1,"error":""#, r#""}"#);
+            let mut line = start.as_bytes().to_vec();
+            line.resize(len - end.len(), b'x');
+            line.extend_from_slice(end.as_bytes());
+            line.push(b'\n');
+            line
+        }
+        let at_limit = line_of(MAX_LINE);
+        let mut stdout = BufReader::new(at_limit.as_slice());
+        let read = read_message(&mut stdout).await;
+        assert!(
+            matches!(read, Ok(FromExt::AppAnswer { .. })),
+            "{:.200}",
+            format!("{read:?}")
+        );
+
+        let over = line_of(MAX_LINE + 1);
+        let mut stdout = BufReader::new(over.as_slice());
+        let error = read_message(&mut stdout).await.expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+    }
+
+    /// A line cut at the bound in the middle of a character is too long, not bad UTF-8.
+    #[tokio::test]
+    async fn a_line_cut_inside_a_character_is_too_long() {
+        let mut line = br#"{"type":"app_answer","id":1,"error":""#.to_vec();
+        line.resize(MAX_LINE, b'x');
+        // `é` is two bytes; the bound falls between them.
+        line.extend_from_slice("é\"}\n".as_bytes());
+        let mut stdout = BufReader::new(line.as_slice());
+        let error = read_message(&mut stdout).await.expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+    }
+
+    /// A line that fits but isn't UTF-8 is refused as an invalid message.
+    #[tokio::test]
+    async fn a_line_that_fits_but_isnt_utf8_is_an_invalid_message() {
+        let mut stdout =
+            BufReader::new(&b"{\"type\":\"app_answer\",\"id\":1,\"error\":\"\xff\"}\n"[..]);
+        let error = read_message(&mut stdout).await.expect_err("not UTF-8");
+        assert!(error.starts_with("invalid message"), "{error}");
+    }
 
     #[test]
     fn an_extension_line_keeps_its_own_level_and_loses_its_own_timestamp() {

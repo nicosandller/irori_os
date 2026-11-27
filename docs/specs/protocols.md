@@ -741,7 +741,9 @@ External protocols are separate processes, in any language. They do the **same o
 as JSON messages over a connection to the core, with the payloads defined in §6–§7.
 
 **Framing.** A child process speaks on stdin and stdout: one JSON object per line, each tagged
-by its `"type"`. Its stderr is its log, shown on its card. There is no `log` message. Every
+by its `"type"`. A line is at most 8 MiB (`MAX_LINE`), not counting its newline; either side
+ends the link on a longer one, so the core stops and restarts an extension that sends one. Its
+stderr is its log, shown on its card. There is no `log` message. Every
 message is one of two enums in `crates/irori-protocol/src/process.rs`: `FromExt` (extension
 → core) and `ToExt` (core → extension). Their JSON Schemas are
 [`schemas/extension-to-core.schema.json`](../../schemas/extension-to-core.schema.json) and
@@ -828,7 +830,7 @@ answered with the same `id`. Sample conversations are in
 | Direction | `type` | Fields | Meaning |
 |---|---|---|---|
 | core → | `app_request` | `id`, `method`, `params`, `caller`?: `{user?, owner}` | The extension's page asked it something. |
-| → core | `app_answer` | `id`, `value`?, `error`? | Its answer. |
+| → core | `app_answer` | `id`, `value`?, `error`? | Its answer. The engine library sends an answer that would be longer than a line can be (Framing) as an `error` saying it was too large, so the core doesn't end the engine for it. |
 
 `?` marks a field that may be left out. A test in `crates/irori-protocol/tests/wire.rs` fails
 when a message type is in the code but missing from these tables.
