@@ -1098,9 +1098,10 @@ impl Pending {
     }
 }
 
-/// The longest line either side reads off the pipe. The biggest message there is a fragment of
-/// live video, base64 inside JSON; the room left over is for anything a fragment's own fields or
-/// a future message need. A longer line ends the link rather than being held in memory whole.
+/// The longest line either side reads off the pipe, in bytes, not counting the newline that ends
+/// it. The biggest message there is a fragment of live video, base64 inside JSON; the room left
+/// over is for anything a fragment's own fields or a future message need. A longer line ends the
+/// link rather than being held in memory whole.
 pub const MAX_LINE: usize = 8 * 1024 * 1024;
 const _: () = assert!(crate::live::MAX_FRAGMENT.div_ceil(3) * 4 + 64 * 1024 <= MAX_LINE);
 const _: () = assert!(crate::MAX_PICTURE.div_ceil(3) * 4 + 64 * 1024 <= MAX_LINE);
@@ -1110,6 +1111,8 @@ pub(crate) async fn read_json<T: for<'de> Deserialize<'de>>(
 ) -> Result<T, String> {
     use tokio::io::AsyncReadExt as _;
     let mut line = String::new();
+    // One byte past the bound: the newline after a line of exactly the bound, or the first byte
+    // that makes a line too long.
     let n = (&mut *reader)
         .take(MAX_LINE as u64 + 1)
         .read_line(&mut line)
@@ -1118,7 +1121,7 @@ pub(crate) async fn read_json<T: for<'de> Deserialize<'de>>(
     if n == 0 {
         return Err("the host closed the connection".into());
     }
-    if n > MAX_LINE {
+    if n > MAX_LINE && !line.ends_with('\n') {
         return Err(format!("a message longer than {MAX_LINE} bytes"));
     }
     serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}"))
@@ -1371,6 +1374,24 @@ mod tests {
         let long = vec![b'x'; MAX_LINE + 10];
         let mut reader = BufReader::new(long.as_slice());
         let error = read_json::<FromExt>(&mut reader)
+            .await
+            .expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
+    }
+
+    /// A line of exactly `MAX_LINE` bytes, newline not counted, is read; one byte more is
+    /// refused as too long.
+    #[tokio::test]
+    async fn a_line_of_exactly_max_line_is_read_and_one_byte_more_is_not() {
+        let at_limit = format!("\"{}\"\n", "x".repeat(MAX_LINE - 2));
+        assert_eq!(at_limit.len(), MAX_LINE + 1);
+        let mut reader = BufReader::new(at_limit.as_bytes());
+        let read: serde_json::Value = read_json(&mut reader).await.expect("it fits");
+        assert_eq!(read.as_str().map(str::len), Some(MAX_LINE - 2));
+
+        let over = format!("\"{}\"\n", "x".repeat(MAX_LINE - 1));
+        let mut reader = BufReader::new(over.as_bytes());
+        let error = read_json::<serde_json::Value>(&mut reader)
             .await
             .expect_err("too long");
         assert!(error.contains("longer than"), "{error}");

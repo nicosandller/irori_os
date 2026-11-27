@@ -1836,14 +1836,17 @@ async fn read_message(
 ) -> Result<FromExt, String> {
     use tokio::io::AsyncReadExt as _;
     let mut line = String::new();
-    // One byte past the bound, so a line of exactly the bound is told from a longer one.
+    // One byte past the bound: the newline after a line of exactly the bound, or the first byte
+    // that makes a line too long.
     match (&mut *stdout)
         .take(MAX_LINE as u64 + 1)
         .read_line(&mut line)
         .await
     {
         Ok(0) => Err(OUTPUT_CLOSED.to_owned()),
-        Ok(n) if n > MAX_LINE => Err(format!("a message longer than {MAX_LINE} bytes")),
+        Ok(n) if n > MAX_LINE && !line.ends_with('\n') => {
+            Err(format!("a message longer than {MAX_LINE} bytes"))
+        }
         Ok(_) => serde_json::from_str(line.trim()).map_err(|e| format!("invalid message: {e}")),
         Err(error) => Err(error.to_string()),
     }
@@ -2544,6 +2547,33 @@ mod tests {
             read_message(&mut ended).await.expect_err("closed"),
             OUTPUT_CLOSED
         );
+    }
+
+    /// A message of exactly `MAX_LINE` bytes, its newline not counted, is read; one byte more
+    /// is refused as too long.
+    #[tokio::test]
+    async fn a_message_of_exactly_max_line_is_read_and_one_byte_more_is_not() {
+        fn line_of(len: usize) -> Vec<u8> {
+            let (start, end) = (r#"{"type":"app_answer","id":1,"error":""#, r#""}"#);
+            let mut line = start.as_bytes().to_vec();
+            line.resize(len - end.len(), b'x');
+            line.extend_from_slice(end.as_bytes());
+            line.push(b'\n');
+            line
+        }
+        let at_limit = line_of(MAX_LINE);
+        let mut stdout = BufReader::new(at_limit.as_slice());
+        let read = read_message(&mut stdout).await;
+        assert!(
+            matches!(read, Ok(FromExt::AppAnswer { .. })),
+            "{:.200}",
+            format!("{read:?}")
+        );
+
+        let over = line_of(MAX_LINE + 1);
+        let mut stdout = BufReader::new(over.as_slice());
+        let error = read_message(&mut stdout).await.expect_err("too long");
+        assert!(error.contains("longer than"), "{error}");
     }
 
     #[test]
