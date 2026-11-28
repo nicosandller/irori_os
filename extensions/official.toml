@@ -73,6 +73,16 @@ crate = "irori-protocol-tplink"
 bin = "irori-ext-tplink"
 
 [[extension]]
+id = "bambu"
+name = "Bambu Lab"
+category = "protocol"
+description = "Bambu Lab printers on the local network: print state, progress, remaining time, layers, nozzle and bed temperatures, and the filament in each slot. Read-only for now."
+version = "0.1.0"
+source = "extensions/protocols/bambu"
+crate = "irori-protocol-bambu"
+bin = "irori-ext-bambu"
+
+[[extension]]
 id = "zigbee"
 name = "Zigbee"
 category = "protocol"
