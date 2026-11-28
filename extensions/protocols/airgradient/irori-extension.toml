@@ -1,0 +1,19 @@
+[extension]
+id = "airgradient"
+name = "AirGradient"
+version = "0.1.0"
+irori = ">=1.4.0"
+description = "AirGradient air monitors on the local network: particulates, carbon dioxide, temperature, humidity, and the VOC and NOx indexes, read from each monitor's own local API."
+icon = "icon.svg"
+config_schema = "config.schema.json"
+
+[[contributes.protocol]]
+iot_class = "local_polling"
+entity_kinds = ["sensor"]
+run = { command = "bin/irori-ext-airgradient" }
+
+# Each monitor's own HTTP API (port 80) on the local network, and nothing else: nothing talks to
+# AirGradient's cloud. A known host is checked when the settings are read, and the address its
+# name resolves to is checked again before each reading: only a local address is asked.
+[permissions]
+lan = true

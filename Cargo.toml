@@ -25,6 +25,7 @@ members = [
     "extensions/protocols/switchbot",
     "extensions/protocols/homeassistant",
     "extensions/protocols/tplink",
+    "extensions/protocols/airgradient",
     "extensions/protocols/zigbee",
     "extras/irori-assist",
     "xtask",
@@ -65,6 +66,7 @@ irori-protocol-cast = { path = "extensions/protocols/cast" }
 irori-protocol-esphome = { path = "extensions/protocols/esphome" }
 irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
 irori-protocol-tplink = { path = "extensions/protocols/tplink" }
+irori-protocol-airgradient = { path = "extensions/protocols/airgradient" }
 irori-protocol-matter = { path = "extensions/protocols/matter" }
 irori-protocol-switchbot = { path = "extensions/protocols/switchbot" }
 irori-protocol-homeassistant = { path = "extensions/protocols/homeassistant" }

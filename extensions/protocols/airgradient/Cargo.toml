@@ -1,0 +1,26 @@
+[package]
+name = "irori-protocol-airgradient"
+description = "AirGradient air monitors on the local network, read over their local HTTP API."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+irori-types.workspace = true
+irori-protocol.workspace = true
+
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[[bin]]
+name = "irori-ext-airgradient"
+path = "src/main.rs"
+
+[lints]
+workspace = true
