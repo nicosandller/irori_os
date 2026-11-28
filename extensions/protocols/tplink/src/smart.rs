@@ -2,7 +2,8 @@
 //! parameters, several batched as `multipleRequest`, and a strip's outlets reached through
 //! `control_child`.
 //!
-//! Only reading methods are built here. The extension is read-only until switching is tested.
+//! One method changes a device: `set_device_info` with `device_on`, which turns a relay on or
+//! off. Nothing else here writes.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +18,9 @@ pub const LED_INFO: &str = "get_led_info";
 pub const CHILD_LIST: &str = "get_child_device_list";
 pub const COMPONENTS: &str = "component_nego";
 pub const CHILD_COMPONENTS: &str = "get_child_device_component_list";
+
+/// The one writing method: with `device_on` it turns a relay on or off.
+pub const SET_DEVICE_INFO: &str = "set_device_info";
 
 /// The error code a device gives for a method it doesn't have.
 pub const UNKNOWN_METHOD: i64 = -1002;
@@ -42,6 +46,41 @@ pub fn control_child(child: &str, inner: Value) -> Value {
         "control_child",
         json!({ "device_id": child, "requestData": inner }),
     )
+}
+
+/// Turns a plug's relay on or off. Sent on its own, not batched, as python-kasa's
+/// `SmartDevice.set_state` sends it.
+pub fn switch(on: bool) -> Value {
+    request(SET_DEVICE_INFO, json!({ "device_on": on }))
+}
+
+/// Turns one outlet of a strip on or off: the same method, on its own inside `control_child`, as
+/// python-kasa's `_ChildProtocolWrapper` sends a single request.
+pub fn switch_child(child: &str, on: bool) -> Value {
+    control_child(
+        child,
+        json!({ "method": SET_DEVICE_INFO, "params": { "device_on": on } }),
+    )
+}
+
+/// Whether the device took a [`switch`] (or, with `child`, a [`switch_child`]): the `Err` is its
+/// error code. A set request answers with no result, only the code.
+pub fn accepted(response: &Value, child: bool) -> Result<(), i64> {
+    let code = |value: &Value| value.get("error_code").and_then(Value::as_i64);
+    match code(response) {
+        Some(0) => {}
+        other => return Err(other.unwrap_or(-1)),
+    }
+    if !child {
+        return Ok(());
+    }
+    let inner = response.pointer("/result/responseData").ok_or(-1)?;
+    // A strip leaves the inner code out of a batch it answered (see `child_answers`); the same
+    // is allowed here, and the reading taken straight after says what the outlet did.
+    match code(inner).unwrap_or(0) {
+        0 => Ok(()),
+        code => Err(code),
+    }
 }
 
 /// What one method answered: its result, or the device's error code.
@@ -253,6 +292,39 @@ mod tests {
         let request = multiple(&[(DEVICE_INFO, Value::Null), (LED_INFO, Value::Null)]);
         assert_eq!(request["method"], "multipleRequest");
         assert_eq!(request["params"]["requests"][1]["method"], LED_INFO);
+    }
+
+    #[test]
+    fn a_switch_is_one_request_on_its_own() {
+        let plug = switch(false);
+        assert_eq!(plug["method"], "set_device_info");
+        assert_eq!(plug["params"], json!({ "device_on": false }));
+
+        let outlet = switch_child("8022AAAA", true);
+        assert_eq!(outlet["method"], "control_child");
+        assert_eq!(outlet["params"]["device_id"], "8022AAAA");
+        assert_eq!(
+            outlet["params"]["requestData"],
+            json!({ "method": "set_device_info", "params": { "device_on": true } })
+        );
+    }
+
+    #[test]
+    fn a_switch_is_accepted_only_with_no_error_at_either_level() {
+        assert_eq!(accepted(&json!({ "error_code": 0 }), false), Ok(()));
+        assert_eq!(accepted(&json!({ "error_code": -1301 }), false), Err(-1301));
+        assert_eq!(accepted(&json!({}), false), Err(-1));
+
+        let outlet = |inner: Value| json!({ "error_code": 0, "result": { "responseData": inner } });
+        assert_eq!(accepted(&outlet(json!({ "error_code": 0 })), true), Ok(()));
+        assert_eq!(accepted(&outlet(json!({})), true), Ok(()));
+        assert_eq!(
+            accepted(&outlet(json!({ "error_code": -1008 })), true),
+            Err(-1008)
+        );
+        // The strip itself refused, or answered without the outlet's part.
+        assert_eq!(accepted(&json!({ "error_code": -1001 }), true), Err(-1001));
+        assert_eq!(accepted(&json!({ "error_code": 0 }), true), Err(-1));
     }
 
     #[test]

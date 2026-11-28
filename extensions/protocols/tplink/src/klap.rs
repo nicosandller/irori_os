@@ -207,6 +207,8 @@ pub struct Session {
     address: SocketAddr,
     cookie: String,
     keys: Keys,
+    /// The device proved it holds the account in the settings, not one of the [`FALLBACKS`].
+    proven: bool,
 }
 
 impl std::fmt::Debug for Session {
@@ -233,7 +235,8 @@ impl Session {
         let mut remote = [0u8; 16];
         remote.copy_from_slice(&first.body[..16]);
         let proven = |auth: &AuthHash| first.body[16..] == server_proof(&local, &remote, auth);
-        let auth = if proven(auth) {
+        let knows_account = proven(auth);
+        let auth = if knows_account {
             *auth
         } else {
             let (label, fallback) = FALLBACKS
@@ -263,7 +266,14 @@ impl Session {
             address,
             cookie,
             keys: Keys::derive(&local, &remote, auth),
+            proven: knows_account,
         })
+    }
+
+    /// Whether the device proved it holds the account in the settings. `false` when it was
+    /// logged in with a setup or blank login, which anything on the network can answer to.
+    pub fn proved_account(&self) -> bool {
+        self.proven
     }
 
     /// One request and its answer, as JSON.

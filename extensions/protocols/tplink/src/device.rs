@@ -3,12 +3,21 @@
 //! What it reads becomes a [`Snapshot`]; the protocol loop turns that into descriptions and
 //! state. A device that misses two readings in a row is reported offline. One that refuses the
 //! account is reported once and retried slowly, so a wrong password doesn't flood it.
+//!
+//! The same task switches the device. A session numbers its requests and a second login ends the
+//! first, so a command can't have a connection of its own: it waits in this task's queue, is sent
+//! between readings, and is followed at once by a reading that says what the device did.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use irori_protocol::{IncomingCall, ServiceError};
+use irori_types::{ContextId, UniqueId};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 use crate::discover::Found;
 use crate::klap::{AuthHash, KlapError, Session};
@@ -62,12 +71,37 @@ impl Metered {
     }
 }
 
+/// A relay to turn on or off, and the call waiting to hear how it went.
+#[derive(Debug)]
+pub struct Command {
+    pub call: IncomingCall,
+    /// The outlet's own id on a strip; `None` for a plug's relay.
+    pub child: Option<String>,
+    pub on: bool,
+    /// When the caller stops waiting. Past this the command is answered with an error and not
+    /// sent: a relay must not switch after its caller was told it didn't.
+    pub deadline: Instant,
+}
+
+/// An entity a command switched and the call that asked, for the reading taken straight after.
+pub type Answer = (UniqueId, ContextId);
+
 #[derive(Debug)]
 pub enum Event {
     Read {
         generation: u64,
         mac: String,
         snapshot: Box<Snapshot>,
+        /// The commands this reading follows, when the device took any.
+        answers: Vec<Answer>,
+        /// The device proved it holds the account, rather than answering a setup login.
+        proven: bool,
+    },
+    /// A device already read with the account was found at another address, and was asked there
+    /// to prove it holds the account.
+    Moved {
+        found: Found,
+        proven: bool,
     },
     Offline {
         generation: u64,
@@ -91,57 +125,85 @@ struct Plan {
 /// The meter values a device has given. Kept beside `misses`, not in the session: a session is
 /// dropped on any error, and one bad reading right after the next login must not take the sensors
 /// (and with them their history) away. Only a device saying it has no meter clears them.
+///
+/// Shared with the protocol loop, which hands the same record to the task that reads the device
+/// after it moves to a new address: its first reading there may miss too.
 #[derive(Debug, Default)]
-struct Seen {
+pub struct Seen {
     metered: Metered,
     child_metered: BTreeMap<String, Metered>,
 }
 
+/// What a device's task is started with.
+#[derive(Debug)]
+pub struct Reader {
+    pub found: Found,
+    pub auth: AuthHash,
+    pub poll: Duration,
+    pub generation: u64,
+    pub seen: Arc<Mutex<Seen>>,
+    /// The device has proved the account before, so a setup login is turned down.
+    pub must_prove: bool,
+}
+
 pub fn spawn(
-    found: Found,
-    auth: AuthHash,
-    poll: Duration,
-    generation: u64,
+    reader: Reader,
     events: mpsc::Sender<Event>,
+    mut commands: mpsc::Receiver<Command>,
 ) -> tokio::task::JoinHandle<()> {
+    let Reader {
+        found,
+        auth,
+        poll,
+        generation,
+        seen,
+        must_prove,
+    } = reader;
     tokio::spawn(async move {
         let mac = found.mac.clone();
         let mut session: Option<(Session, Plan)> = None;
         let mut misses = 0u32;
-        let mut seen = Seen::default();
+        let mut answers: Vec<Answer> = Vec::new();
         loop {
             // Only a session from an earlier poll can have expired; a fresh one that's refused is
             // a miss like any other, so it waits instead of logging in again at once.
             let reused = session.is_some();
             let outcome = match session.as_mut() {
-                Some((session, plan)) => read(session, plan, &mut seen).await,
-                None => match Session::connect(found.address, &auth).await {
-                    Ok(mut fresh) => match learn(&mut fresh).await {
-                        Ok(plan) => {
-                            let (fresh, plan) = session.insert((fresh, plan));
-                            read(fresh, plan, &mut seen).await
-                        }
-                        Err(error) => Err(error),
-                    },
+                Some((session, plan)) => read(session, plan, &seen).await,
+                None => match login(found.address, &auth, must_prove).await {
+                    Ok(fresh) => {
+                        let (fresh, plan) = session.insert(fresh);
+                        read(fresh, plan, &seen).await
+                    }
                     Err(error) => Err(error),
                 },
             };
-            match outcome {
+            // Only the reading straight after a command answers it. The core forgets a call
+            // after five minutes and drops a report naming one it forgot, so a reading that
+            // misses lets go of the call instead of naming it later.
+            let answering = std::mem::take(&mut answers);
+            let wait = match outcome {
                 Ok(snapshot) => {
                     misses = 0;
                     let event = Event::Read {
                         generation,
                         mac: mac.clone(),
                         snapshot: Box::new(snapshot),
+                        answers: answering,
+                        proven: session
+                            .as_ref()
+                            .is_some_and(|(session, _)| session.proved_account()),
                     };
                     if events.send(event).await.is_err() {
                         return;
                     }
-                    tokio::time::sleep(poll).await;
+                    poll
                 }
                 Err(KlapError::Expired) if reused => {
                     // A session ends after a day; log in again straight away.
                     session = None;
+                    answers = answering;
+                    continue;
                 }
                 Err(KlapError::Account) => {
                     session = None;
@@ -152,7 +214,7 @@ pub fn spawn(
                     if events.send(event).await.is_err() {
                         return;
                     }
-                    tokio::time::sleep(REFUSED_RETRY).await;
+                    REFUSED_RETRY
                 }
                 Err(error) => {
                     session = None;
@@ -167,12 +229,158 @@ pub fn spawn(
                             return;
                         }
                     }
-                    let wait = poll.saturating_mul(misses).min(MAX_BACKOFF);
-                    tokio::time::sleep(wait).await;
+                    poll.saturating_mul(misses).min(MAX_BACKOFF)
                 }
+            };
+            // Whatever it is waiting for, a command is taken at once, and the device is read
+            // again straight after: that reading, not the request, is what gets shown.
+            let mut next = rest(wait, &mut commands).await;
+            // Every command already waiting goes before that reading, so one behind a device
+            // that has stopped answering is told so now, not after the reading gives up too.
+            while let Some(command) = next {
+                let login = (found.address, &auth, must_prove);
+                answers.extend(switch(command, &mut session, login).await);
+                next = commands.try_recv().ok();
             }
         }
     })
+}
+
+/// Waits out `wait`, or until a command arrives.
+async fn rest(wait: Duration, commands: &mut mpsc::Receiver<Command>) -> Option<Command> {
+    let sleep = tokio::time::sleep(wait);
+    tokio::pin!(sleep);
+    tokio::select! {
+        () = &mut sleep => None,
+        // A closed queue has nothing more to say: the wait runs to its end.
+        Some(command) = commands.recv() => Some(command),
+    }
+}
+
+/// Where and how to log in: the address, the account, and whether a setup login is turned down.
+type Login<'a> = (SocketAddr, &'a AuthHash, bool);
+
+/// Asks the device at `found`'s address whether it holds the account, and says so as an
+/// [`Event::Moved`]. Nothing is read from it and nothing is sent to it beyond the handshake.
+pub fn probe(found: Found, auth: AuthHash, events: mpsc::Sender<Event>) {
+    tokio::spawn(async move {
+        let proven = Session::connect(found.address, &auth)
+            .await
+            .is_ok_and(|session| session.proved_account());
+        let _ = events.send(Event::Moved { found, proven }).await;
+    });
+}
+
+async fn login(
+    address: SocketAddr,
+    auth: &AuthHash,
+    must_prove: bool,
+) -> Result<(Session, Plan), KlapError> {
+    let mut session = Session::connect(address, auth).await?;
+    // A device that has proved the account before is not read or switched on a setup login:
+    // whatever answers that way at its address may not be it.
+    if must_prove && !session.proved_account() {
+        return Err(KlapError::Account);
+    }
+    let plan = learn(&mut session).await?;
+    Ok((session, plan))
+}
+
+/// Carries out one command and answers its call. Gives back what the next reading answers, when
+/// the device took the command.
+async fn switch(
+    command: Command,
+    session: &mut Option<(Session, Plan)>,
+    login: Login<'_>,
+) -> Option<Answer> {
+    let Command {
+        call,
+        child,
+        on,
+        deadline,
+    } = command;
+    if Instant::now() >= deadline {
+        call.reply(Err(ServiceError::unavailable(
+            "the TP-Link device was busy for too long; nothing was sent to it",
+        )));
+        return None;
+    }
+    let sent =
+        tokio::time::timeout_at(deadline, send_switch(session, login, child.as_deref(), on)).await;
+    match sent {
+        Ok(Ok(())) => {
+            let answers = (call.call.unique_id.clone(), call.call.context.id.clone());
+            call.reply(Ok(()));
+            Some(answers)
+        }
+        Ok(Err(error)) => {
+            call.reply(Err(error));
+            None
+        }
+        Err(_) => {
+            // Cut off mid-exchange: this session's numbering can't be trusted any more.
+            *session = None;
+            call.reply(Err(ServiceError::unavailable(
+                "the TP-Link device didn't answer in time",
+            )));
+            None
+        }
+    }
+}
+
+async fn send_switch(
+    session: &mut Option<(Session, Plan)>,
+    (address, auth, must_prove): Login<'_>,
+    child: Option<&str>,
+    on: bool,
+) -> Result<(), ServiceError> {
+    let request = match child {
+        Some(child) => smart::switch_child(child, on),
+        None => smart::switch(on),
+    };
+    let mut fresh = false;
+    loop {
+        if session.is_none() {
+            fresh = true;
+            *session = Some(login(address, auth, must_prove).await.map_err(unanswered)?);
+        }
+        let Some((current, _)) = session.as_mut() else {
+            continue;
+        };
+        match current.request(&request).await {
+            Ok(response) => {
+                return smart::accepted(&response, child.is_some()).map_err(|code| {
+                    ServiceError::failed(format!(
+                        "the TP-Link device refused to switch (its error {code})"
+                    ))
+                });
+            }
+            // The one failure that is sent again: the device turned an old session away, so it
+            // didn't take the request. After any other, it may have switched, and sending twice
+            // could switch a relay the caller was told had failed.
+            Err(KlapError::Expired) if !fresh => *session = None,
+            Err(error) => {
+                *session = None;
+                return Err(unanswered(error));
+            }
+        }
+    }
+}
+
+/// Why a command got no answer from the device, for the person who asked.
+fn unanswered(error: KlapError) -> ServiceError {
+    match error {
+        KlapError::Io(error) => {
+            ServiceError::unavailable(format!("the TP-Link device can't be reached: {error}"))
+        }
+        KlapError::Account => ServiceError::failed(
+            "the device doesn't accept the TP-Link account in this extension's settings",
+        ),
+        KlapError::Expired => {
+            ServiceError::unavailable("the TP-Link device turned the request away; try again")
+        }
+        KlapError::Device(message) => ServiceError::failed(message),
+    }
 }
 
 async fn call(
@@ -257,7 +465,7 @@ fn no_meter(answers: &BTreeMap<String, smart::Answer>) -> bool {
 async fn read(
     session: &mut Session,
     plan: &mut Plan,
-    seen: &mut Seen,
+    seen: &Mutex<Seen>,
 ) -> Result<Snapshot, KlapError> {
     let mut methods = vec![(smart::DEVICE_INFO, Value::Null)];
     if plan.energy {
@@ -283,13 +491,17 @@ async fn read(
         None
     };
     // Any other miss is one bad reading: its values are unknown until the next.
-    if plan.energy && meter.is_none() && no_meter(&answers) {
-        plan.energy = false;
-        seen.metered = Metered::default();
-    }
-    if let Some(meter) = &meter {
-        seen.metered.add(meter);
-    }
+    let metered = {
+        let mut seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+        if plan.energy && meter.is_none() && no_meter(&answers) {
+            plan.energy = false;
+            seen.metered = Metered::default();
+        }
+        if let Some(meter) = &meter {
+            seen.metered.add(meter);
+        }
+        seen.metered
+    };
     let led = answers
         .get(smart::LED_INFO)
         .and_then(|answer| answer.as_ref().ok())
@@ -316,6 +528,12 @@ async fn read(
         let mut ids = BTreeSet::new();
         listed.retain(|info| ids.insert(info.device_id.clone()));
         listed.truncate(MAX_CHILDREN);
+        // What an outlet has metered is kept only while the strip lists it: an outlet that has
+        // gone takes its record with it, so the record can't grow past the strip's sockets.
+        seen.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .child_metered
+            .retain(|id, _| listed.iter().any(|info| info.device_id == *id));
         for info in listed {
             let mut meter = None;
             if plan.child_energy.contains(&info.device_id) {
@@ -330,17 +548,23 @@ async fn read(
                 meter = answers.as_ref().and_then(meter_of);
                 if meter.is_none() && answers.as_ref().is_some_and(no_meter) {
                     plan.child_energy.remove(&info.device_id);
-                    seen.child_metered.remove(&info.device_id);
+                    seen.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .child_metered
+                        .remove(&info.device_id);
                 }
             }
-            let metered = seen
-                .child_metered
-                .entry(info.device_id.clone())
-                .or_default();
-            if let Some(meter) = &meter {
-                metered.add(meter);
-            }
-            let metered = *metered;
+            let metered = {
+                let mut seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+                let metered = seen
+                    .child_metered
+                    .entry(info.device_id.clone())
+                    .or_default();
+                if let Some(meter) = &meter {
+                    metered.add(meter);
+                }
+                *metered
+            };
             children.push(Child {
                 info,
                 meter,
@@ -353,7 +577,7 @@ async fn read(
     Ok(Snapshot {
         info,
         meter,
-        metered: seen.metered,
+        metered,
         led,
         children,
     })

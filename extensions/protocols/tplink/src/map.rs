@@ -242,6 +242,37 @@ pub fn describe(mac: &str, snapshot: &Snapshot) -> Result<Described, String> {
     Ok(Described { devices, entities })
 }
 
+/// What a switch entity is on the device, for a command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// A relay: the plug's own (`None`), or the outlet with this device id on a strip.
+    Relay(Option<String>),
+    /// Shown, not changed.
+    Led,
+}
+
+/// Every switch entity of this reading and what it is on the device, under the same ids
+/// [`describe`] gives them.
+pub fn targets(mac: &str, snapshot: &Snapshot) -> Result<BTreeMap<UniqueId, Target>, String> {
+    let mut out = BTreeMap::new();
+    if snapshot.info.on.is_some() {
+        out.insert(id(format!("{mac}-switch"))?, Target::Relay(None));
+    }
+    if snapshot.led.is_some() {
+        out.insert(id(format!("{mac}-led"))?, Target::Led);
+    }
+    for (index, child) in snapshot.children.iter().enumerate() {
+        if child.info.on.is_some() {
+            let key = outlet_key(mac, child, index);
+            out.insert(
+                id(format!("{key}-switch"))?,
+                Target::Relay(Some(child.info.device_id.clone())),
+            );
+        }
+    }
+    Ok(out)
+}
+
 fn number(value: f64) -> State {
     State::Sensor(SensorState {
         value: SensorValue::Number(value),
@@ -362,6 +393,37 @@ mod tests {
                 "02:00:00:00:00:03-outlet2-energy_today",
                 "02:00:00:00:00:03-outlet1-switch",
             ]
+        );
+    }
+
+    #[test]
+    fn every_switch_described_has_a_target() {
+        let mac = "02:00:00:00:00:03";
+        let mut snapshot = strip();
+        snapshot.children[0].info.device_id = "FIRST".into();
+        snapshot.children[1].info.device_id = "SECOND".into();
+        let targets = targets(mac, &snapshot).expect("valid");
+        let described = describe(mac, &snapshot).expect("valid");
+        let switches: Vec<&UniqueId> = described
+            .entities
+            .iter()
+            .filter(|entity| matches!(entity.capabilities, Capabilities::Switch(_)))
+            .map(|entity| &entity.unique_id)
+            .collect();
+        assert_eq!(switches.len(), targets.len());
+        for id in switches {
+            assert!(targets.contains_key(id), "{}", id.as_str());
+        }
+        let target = |id: &str| targets[&UniqueId::try_from(id).expect("id")].clone();
+        assert_eq!(target("02:00:00:00:00:03-led"), Target::Led);
+        // An outlet is reached by its own device id, wherever it sits on the strip.
+        assert_eq!(
+            target("02:00:00:00:00:03-outlet2-switch"),
+            Target::Relay(Some("FIRST".into()))
+        );
+        assert_eq!(
+            target("02:00:00:00:00:03-outlet1-switch"),
+            Target::Relay(Some("SECOND".into()))
         );
     }
 
