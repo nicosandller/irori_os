@@ -22,6 +22,7 @@ mod fake;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use irori_protocol::{
@@ -83,6 +84,8 @@ struct Device {
     /// Its switch entities, and what each is on the device.
     targets: BTreeMap<UniqueId, Target>,
     commands: mpsc::Sender<Command>,
+    /// What it has metered, kept across a move to a new address.
+    seen: Arc<Mutex<device::Seen>>,
 }
 
 #[derive(Default)]
@@ -299,6 +302,14 @@ fn adopt(
         // A new address: start reading it there.
         device.handle.abort();
     }
+    // Which sensors a device has comes from what it has metered, and removing one deletes its
+    // history: a device read before keeps that record at its new address, where the first
+    // reading may miss.
+    let previous = devices.by_mac.remove(&found.mac);
+    let seen = previous
+        .as_ref()
+        .map(|device| Arc::clone(&device.seen))
+        .unwrap_or_default();
     devices.generations += 1;
     let generation = devices.generations;
     let (commands, queued) = mpsc::channel(COMMANDS);
@@ -309,8 +320,8 @@ fn adopt(
         generation,
         events.clone(),
         queued,
+        Arc::clone(&seen),
     );
-    let previous = devices.by_mac.remove(&found.mac);
     devices.by_mac.insert(
         found.mac.clone(),
         Device {
@@ -329,6 +340,7 @@ fn adopt(
                 .unwrap_or_default(),
             states: previous.map(|device| device.states).unwrap_or_default(),
             commands,
+            seen,
         },
     );
 }

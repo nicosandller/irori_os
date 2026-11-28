@@ -876,6 +876,34 @@ async fn an_outlet_the_strip_stops_listing_is_forgotten_with_what_it_metered() {
 }
 
 #[tokio::test]
+async fn a_plug_at_a_new_address_keeps_its_sensors_when_its_first_reading_there_misses() {
+    let world = world(settings(true)).await;
+    let before = a_plug_in(&world).await;
+    let power = "02:00:00:00:00:01-power";
+    let described = world.log.lock().expect("log").entities.len();
+
+    // The same plug, found at another address, where its first reading misses its meter.
+    let after = fake::start(Kind::Plug, auth()).await;
+    {
+        let mut state = after.state.lock().expect("state");
+        state.meter_misses = 1;
+        state.power_mw = 3_000;
+    }
+    drop(before);
+    world.see(&after, PLUG, "PP1(EU)").await;
+    world.until_state(power, Option::is_none).await;
+    world
+        .until_state(power, |state| state.is_some() && number(state) == 3.0)
+        .await;
+    {
+        let log = world.log.lock().expect("log");
+        assert_eq!(log.entities.len(), described);
+        assert!(log.removed.is_empty(), "{:?}", log.removed);
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_plug_that_says_it_has_no_meter_loses_its_sensors() {
     let fake = fake::start(Kind::Plug, auth()).await;
     let world = world(settings(true)).await;

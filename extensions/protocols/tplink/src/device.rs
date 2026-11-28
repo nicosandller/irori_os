@@ -10,6 +10,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use irori_protocol::{IncomingCall, ServiceError};
@@ -116,8 +117,11 @@ struct Plan {
 /// The meter values a device has given. Kept beside `misses`, not in the session: a session is
 /// dropped on any error, and one bad reading right after the next login must not take the sensors
 /// (and with them their history) away. Only a device saying it has no meter clears them.
+///
+/// Shared with the protocol loop, which hands the same record to the task that reads the device
+/// after it moves to a new address: its first reading there may miss too.
 #[derive(Debug, Default)]
-struct Seen {
+pub struct Seen {
     metered: Metered,
     child_metered: BTreeMap<String, Metered>,
 }
@@ -129,23 +133,23 @@ pub fn spawn(
     generation: u64,
     events: mpsc::Sender<Event>,
     mut commands: mpsc::Receiver<Command>,
+    seen: Arc<Mutex<Seen>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mac = found.mac.clone();
         let mut session: Option<(Session, Plan)> = None;
         let mut misses = 0u32;
-        let mut seen = Seen::default();
         let mut answers: Vec<Answer> = Vec::new();
         loop {
             // Only a session from an earlier poll can have expired; a fresh one that's refused is
             // a miss like any other, so it waits instead of logging in again at once.
             let reused = session.is_some();
             let outcome = match session.as_mut() {
-                Some((session, plan)) => read(session, plan, &mut seen).await,
+                Some((session, plan)) => read(session, plan, &seen).await,
                 None => match login(found.address, &auth).await {
                     Ok(fresh) => {
                         let (fresh, plan) = session.insert(fresh);
-                        read(fresh, plan, &mut seen).await
+                        read(fresh, plan, &seen).await
                     }
                     Err(error) => Err(error),
                 },
@@ -415,7 +419,7 @@ fn no_meter(answers: &BTreeMap<String, smart::Answer>) -> bool {
 async fn read(
     session: &mut Session,
     plan: &mut Plan,
-    seen: &mut Seen,
+    seen: &Mutex<Seen>,
 ) -> Result<Snapshot, KlapError> {
     let mut methods = vec![(smart::DEVICE_INFO, Value::Null)];
     if plan.energy {
@@ -441,13 +445,17 @@ async fn read(
         None
     };
     // Any other miss is one bad reading: its values are unknown until the next.
-    if plan.energy && meter.is_none() && no_meter(&answers) {
-        plan.energy = false;
-        seen.metered = Metered::default();
-    }
-    if let Some(meter) = &meter {
-        seen.metered.add(meter);
-    }
+    let metered = {
+        let mut seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+        if plan.energy && meter.is_none() && no_meter(&answers) {
+            plan.energy = false;
+            seen.metered = Metered::default();
+        }
+        if let Some(meter) = &meter {
+            seen.metered.add(meter);
+        }
+        seen.metered
+    };
     let led = answers
         .get(smart::LED_INFO)
         .and_then(|answer| answer.as_ref().ok())
@@ -476,7 +484,9 @@ async fn read(
         listed.truncate(MAX_CHILDREN);
         // What an outlet has metered is kept only while the strip lists it: an outlet that has
         // gone takes its record with it, so the record can't grow past the strip's sockets.
-        seen.child_metered
+        seen.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .child_metered
             .retain(|id, _| listed.iter().any(|info| info.device_id == *id));
         for info in listed {
             let mut meter = None;
@@ -492,17 +502,23 @@ async fn read(
                 meter = answers.as_ref().and_then(meter_of);
                 if meter.is_none() && answers.as_ref().is_some_and(no_meter) {
                     plan.child_energy.remove(&info.device_id);
-                    seen.child_metered.remove(&info.device_id);
+                    seen.lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .child_metered
+                        .remove(&info.device_id);
                 }
             }
-            let metered = seen
-                .child_metered
-                .entry(info.device_id.clone())
-                .or_default();
-            if let Some(meter) = &meter {
-                metered.add(meter);
-            }
-            let metered = *metered;
+            let metered = {
+                let mut seen = seen.lock().unwrap_or_else(PoisonError::into_inner);
+                let metered = seen
+                    .child_metered
+                    .entry(info.device_id.clone())
+                    .or_default();
+                if let Some(meter) = &meter {
+                    metered.add(meter);
+                }
+                *metered
+            };
             children.push(Child {
                 info,
                 meter,
@@ -515,7 +531,7 @@ async fn read(
     Ok(Snapshot {
         info,
         meter,
-        metered: seen.metered,
+        metered,
         led,
         children,
     })
