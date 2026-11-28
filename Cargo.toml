@@ -18,6 +18,7 @@ members = [
     "extensions/demo",
     "extensions/automations",
     "extensions/protocols/onvif",
+    "extensions/protocols/bambu",
     "extensions/protocols/cast",
     "extensions/protocols/esphome",
     "extensions/protocols/matter",
@@ -66,6 +67,7 @@ irori-protocol-esphome = { path = "extensions/protocols/esphome" }
 irori-protocol-zigbee = { path = "extensions/protocols/zigbee" }
 irori-protocol-tplink = { path = "extensions/protocols/tplink" }
 irori-protocol-matter = { path = "extensions/protocols/matter" }
+irori-protocol-bambu = { path = "extensions/protocols/bambu" }
 irori-protocol-switchbot = { path = "extensions/protocols/switchbot" }
 irori-protocol-homeassistant = { path = "extensions/protocols/homeassistant" }
 irori-assist = { path = "extras/irori-assist" }

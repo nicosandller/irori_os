@@ -1,0 +1,22 @@
+[extension]
+id = "bambu"
+name = "Bambu Lab"
+version = "0.1.0"
+# The core after 1.6.0 is the first that clears a secret when the address it was entered for
+# changes (`x-irori-secret-for`), so the access code is never sent to another address. The
+# Home Assistant bridge asks for 1.7.0 for the same reason.
+irori = ">=1.7.0"
+description = "Bambu Lab printers on the local network: print state, progress, remaining time, layers, nozzle and bed temperatures, and the filament in each slot. Read-only for now."
+icon = "icon.svg"
+config_schema = "config.schema.json"
+
+[[contributes.protocol]]
+iot_class = "local_push"
+entity_kinds = ["sensor"]
+run = { command = "bin/irori-ext-bambu" }
+
+# The printer's own MQTT (port 8883, TLS), on the local network. Nothing goes to Bambu Lab's
+# cloud and no account is used. The printer's address is typed in later, so it is checked when
+# the settings are read: only a local address is accepted.
+[permissions]
+lan = true

@@ -69,6 +69,10 @@ fn extension_config_schemas() -> Vec<(&'static str, schemars::Schema)> {
             schemars::schema_for!(irori_protocol_onvif::settings::Settings),
         ),
         (
+            "extensions/protocols/bambu",
+            schemars::schema_for!(irori_protocol_bambu::settings::Settings),
+        ),
+        (
             "extensions/protocols/cast",
             schemars::schema_for!(irori_protocol_cast::settings::Settings),
         ),

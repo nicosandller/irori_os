@@ -2038,6 +2038,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-protocol-bambu"
+version = "0.0.0"
+dependencies = [
+ "bytes",
+ "irori-protocol",
+ "irori-types",
+ "rcgen",
+ "rumqttc",
+ "rustls",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "irori-protocol-cast"
 version = "0.0.0"
 dependencies = [
@@ -5285,6 +5305,7 @@ dependencies = [
  "flate2",
  "irori-flow-types",
  "irori-protocol",
+ "irori-protocol-bambu",
  "irori-protocol-cast",
  "irori-protocol-homeassistant",
  "irori-protocol-matter",
