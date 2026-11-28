@@ -221,3 +221,44 @@ pub fn readings(serial: &str, status: &Status) -> Result<Vec<Reading>, String> {
     }
     Ok(readings)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use irori_types::StateReport;
+
+    /// The test host takes anything, so what is described and reported is checked here against
+    /// the rules the core applies.
+    #[test]
+    fn what_is_described_and_reported_passes_the_cores_own_checks() {
+        let mut status = Status::default();
+        assert!(status.merge(
+            br##"{"print":{"command":"push_status","gcode_state":"RUNNING","mc_percent":40,
+            "nozzle_temper":219.5,"ams":{"ams":[{"id":"0","tray":[{"id":"0","tray_type":"PLA",
+            "tray_color":"00AE42FF","remain":80},{"id":"1"}]},{"id":"128","tray":[{"id":"0",
+            "tray_type":""}]}]}}}"##
+        ));
+        let described = describe("00TEST0000000001", &status).expect("described");
+        described.device.validate().expect("a valid device");
+        let readings = readings("00TEST0000000001", &status).expect("readings");
+        assert_eq!(described.entities.len(), readings.len());
+        let names: Vec<_> = described.entities.iter().map(|e| e.name.clone()).collect();
+        assert_eq!(names.iter().filter(|name| name.is_none()).count(), 1);
+        assert_eq!(
+            names[9].as_ref().map(Name::as_str),
+            Some("Filament unit HT 1")
+        );
+        for (entity, (unique_id, state, attributes)) in described.entities.iter().zip(readings) {
+            entity.validate().expect("a valid entity");
+            assert_eq!(entity.unique_id, unique_id);
+            let report = StateReport {
+                unique_id,
+                state,
+                attributes,
+                caused_by: None,
+                replayed: false,
+            };
+            report.validate().expect("a valid report");
+        }
+    }
+}
