@@ -22,6 +22,7 @@ mod fake;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -86,6 +87,13 @@ struct Device {
     commands: mpsc::Sender<Command>,
     /// What it has metered, kept across a move to a new address.
     seen: Arc<Mutex<device::Seen>>,
+    /// It has proved it holds the account. From then on it isn't followed to an address where
+    /// only a setup login is answered.
+    proven: bool,
+    /// The address it is being asked to prove the account at, before it is followed there.
+    probing: Option<SocketAddr>,
+    /// The last address that claimed to be it and couldn't prove the account. Logged once.
+    distrusted: Option<SocketAddr>,
 }
 
 #[derive(Default)]
@@ -195,6 +203,11 @@ pub(crate) async fn drive(
                 None => break Err(ProtocolError::new("stopped finding TP-Link devices")),
             },
             event = events.recv() => match event {
+                Some(Event::Moved { found, proven }) => {
+                    if let Some(auth) = auth {
+                        moved(found, proven, auth, &settings, &mut devices, &events_tx);
+                    }
+                }
                 Some(event) => apply(&ctx, &mut devices, event).await,
                 None => break Err(ProtocolError::new("stopped reading TP-Link devices")),
             },
@@ -299,13 +312,67 @@ fn adopt(
             device.found.known_host = found.known_host;
             return;
         }
-        // A new address: start reading it there.
-        device.handle.abort();
+        // A device that has proved the account is asked to prove it at the new address before
+        // anything moves. A setup login is published, so without this anything on the network
+        // could answer discovery with a plug's MAC and take over its readings and its commands.
+        if device.proven {
+            if device.probing != Some(found.address) {
+                device.probing = Some(found.address);
+                device::probe(found, auth, events.clone());
+            }
+            return;
+        }
     }
+    start(found, auth, settings, devices, events);
+}
+
+/// What the device at a new address answered when asked to prove the account.
+fn moved(
+    found: Found,
+    proven: bool,
+    auth: AuthHash,
+    settings: &Settings,
+    devices: &mut Devices,
+    events: &mpsc::Sender<Event>,
+) {
+    let Some(device) = devices.by_mac.get_mut(&found.mac) else {
+        return;
+    };
+    // An answer about an address it is no longer being asked at.
+    if device.probing != Some(found.address) {
+        return;
+    }
+    device.probing = None;
+    if proven {
+        start(found, auth, settings, devices, events);
+    } else if device.distrusted != Some(found.address) {
+        device.distrusted = Some(found.address);
+        tracing::warn!(
+            "something at {} says it is the TP-Link device {} and doesn't prove the account; it stays at {}",
+            found.address,
+            found.mac,
+            device.found.address
+        );
+    }
+}
+
+/// Starts reading a device at the address it was found at, in place of any task reading it at
+/// another.
+fn start(
+    found: Found,
+    auth: AuthHash,
+    settings: &Settings,
+    devices: &mut Devices,
+    events: &mpsc::Sender<Event>,
+) {
     // Which sensors a device has comes from what it has metered, and removing one deletes its
     // history: a device read before keeps that record at its new address, where the first
     // reading may miss.
     let previous = devices.by_mac.remove(&found.mac);
+    if let Some(previous) = &previous {
+        previous.handle.abort();
+    }
+    let proven = previous.as_ref().is_some_and(|device| device.proven);
     let seen = previous
         .as_ref()
         .map(|device| Arc::clone(&device.seen))
@@ -313,15 +380,15 @@ fn adopt(
     devices.generations += 1;
     let generation = devices.generations;
     let (commands, queued) = mpsc::channel(COMMANDS);
-    let handle = device::spawn(
-        found.clone(),
+    let reader = device::Reader {
+        found: found.clone(),
         auth,
-        settings.poll(),
+        poll: settings.poll(),
         generation,
-        events.clone(),
-        queued,
-        Arc::clone(&seen),
-    );
+        seen: Arc::clone(&seen),
+        must_prove: proven,
+    };
+    let handle = device::spawn(reader, events.clone(), queued);
     devices.by_mac.insert(
         found.mac.clone(),
         Device {
@@ -341,6 +408,9 @@ fn adopt(
             states: previous.map(|device| device.states).unwrap_or_default(),
             commands,
             seen,
+            proven,
+            probing: None,
+            distrusted: None,
         },
     );
 }
@@ -352,6 +422,7 @@ async fn apply(ctx: &ProtocolContext, devices: &mut Devices, event: Event) {
             mac,
             snapshot,
             answers,
+            proven,
         } => {
             let Some(device) = devices.by_mac.get_mut(&mac) else {
                 return;
@@ -361,6 +432,7 @@ async fn apply(ctx: &ProtocolContext, devices: &mut Devices, event: Event) {
             }
             device.refused = false;
             device.offline = false;
+            device.proven |= proven;
             let described = match map::describe(&mac, &snapshot) {
                 Ok(described) => described,
                 Err(error) => {
@@ -430,6 +502,8 @@ async fn apply(ctx: &ProtocolContext, devices: &mut Devices, event: Event) {
             device.offline = true;
             mark_unavailable(ctx, device).await;
         }
+        // Handled by the loop, which has what starting a task needs.
+        Event::Moved { .. } => {}
         Event::Refused { generation, mac } => {
             let Some(device) = devices.by_mac.get_mut(&mac) else {
                 return;

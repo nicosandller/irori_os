@@ -74,6 +74,12 @@ flood it.
 A device with no account set on it (reset, or never added in the app) still answers TP-Link's
 setup login or a blank one; those are tried when the account doesn't match, as python-kasa does.
 
+Those logins are published, so anything on the network can answer to them. A device that has
+proved it holds the account is therefore never followed to a new address on a setup login: it is
+asked to prove the account there first, and until it does it stays where it was, with a line in
+the log. A plug that was reset on purpose and now sits at a new address is picked up again when
+it is added back to the account, or when the extension restarts.
+
 ## Tested on
 
 Tapo metering plugs and power strips on current firmware, read alongside Home Assistant's

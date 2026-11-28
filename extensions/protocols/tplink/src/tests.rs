@@ -904,6 +904,59 @@ async fn a_plug_at_a_new_address_keeps_its_sensors_when_its_first_reading_there_
 }
 
 #[tokio::test]
+async fn a_plug_isnt_followed_to_an_address_that_only_answers_a_setup_login() {
+    let world = world(settings(true)).await;
+    let real = a_plug_in(&world).await;
+
+    // Something else on the network answers discovery with the plug's MAC. It doesn't hold the
+    // account, only TP-Link's published setup login, which a plug with no account answers to.
+    let other = fake::start(Kind::Plug, AuthHash::new("test@tp-link.net", "test")).await;
+    world.see(&other, PLUG, "PP1(EU)").await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while other.state.lock().expect("state").handshakes == 0 {
+        assert!(tokio::time::Instant::now() < deadline, "never asked");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // The plug is still the one at its own address: a command goes there and nowhere else.
+    let (reply, _) = world.switch(PLUG_SWITCH, false).await;
+    assert_eq!(reply, Ok(()));
+    assert!(!on(&world.report(PLUG_SWITCH).await.state));
+    assert_eq!(writes(&real).len(), 1);
+    assert_eq!(writes(&other), []);
+    assert!(other.state.lock().expect("state").on);
+    assert!(
+        !world
+            .log
+            .lock()
+            .expect("log")
+            .availability
+            .contains(&Availability::Unavailable)
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plug_that_proves_the_account_at_a_new_address_is_switched_there() {
+    let world = world(settings(true)).await;
+    let before = a_plug_in(&world).await;
+    let after = fake::start(Kind::Plug, auth()).await;
+    after.state.lock().expect("state").power_mw = 4_000;
+    world.see(&after, PLUG, "PP1(EU)").await;
+    world
+        .until_state("02:00:00:00:00:01-power", |state| {
+            state.is_some() && number(state) == 4.0
+        })
+        .await;
+
+    let (reply, _) = world.switch(PLUG_SWITCH, false).await;
+    assert_eq!(reply, Ok(()));
+    assert_eq!(writes(&after).len(), 1);
+    assert_eq!(writes(&before), []);
+    world.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_plug_that_says_it_has_no_meter_loses_its_sensors() {
     let fake = fake::start(Kind::Plug, auth()).await;
     let world = world(settings(true)).await;

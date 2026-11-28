@@ -94,6 +94,14 @@ pub enum Event {
         snapshot: Box<Snapshot>,
         /// The commands this reading follows, when the device took any.
         answers: Vec<Answer>,
+        /// The device proved it holds the account, rather than answering a setup login.
+        proven: bool,
+    },
+    /// A device already read with the account was found at another address, and was asked there
+    /// to prove it holds the account.
+    Moved {
+        found: Found,
+        proven: bool,
     },
     Offline {
         generation: u64,
@@ -126,15 +134,31 @@ pub struct Seen {
     child_metered: BTreeMap<String, Metered>,
 }
 
+/// What a device's task is started with.
+#[derive(Debug)]
+pub struct Reader {
+    pub found: Found,
+    pub auth: AuthHash,
+    pub poll: Duration,
+    pub generation: u64,
+    pub seen: Arc<Mutex<Seen>>,
+    /// The device has proved the account before, so a setup login is turned down.
+    pub must_prove: bool,
+}
+
 pub fn spawn(
-    found: Found,
-    auth: AuthHash,
-    poll: Duration,
-    generation: u64,
+    reader: Reader,
     events: mpsc::Sender<Event>,
     mut commands: mpsc::Receiver<Command>,
-    seen: Arc<Mutex<Seen>>,
 ) -> tokio::task::JoinHandle<()> {
+    let Reader {
+        found,
+        auth,
+        poll,
+        generation,
+        seen,
+        must_prove,
+    } = reader;
     tokio::spawn(async move {
         let mac = found.mac.clone();
         let mut session: Option<(Session, Plan)> = None;
@@ -146,7 +170,7 @@ pub fn spawn(
             let reused = session.is_some();
             let outcome = match session.as_mut() {
                 Some((session, plan)) => read(session, plan, &seen).await,
-                None => match login(found.address, &auth).await {
+                None => match login(found.address, &auth, must_prove).await {
                     Ok(fresh) => {
                         let (fresh, plan) = session.insert(fresh);
                         read(fresh, plan, &seen).await
@@ -166,6 +190,9 @@ pub fn spawn(
                         mac: mac.clone(),
                         snapshot: Box::new(snapshot),
                         answers: answering,
+                        proven: session
+                            .as_ref()
+                            .is_some_and(|(session, _)| session.proved_account()),
                     };
                     if events.send(event).await.is_err() {
                         return;
@@ -211,7 +238,8 @@ pub fn spawn(
             // Every command already waiting goes before that reading, so one behind a device
             // that has stopped answering is told so now, not after the reading gives up too.
             while let Some(command) = next {
-                answers.extend(switch(command, &mut session, found.address, &auth).await);
+                let login = (found.address, &auth, must_prove);
+                answers.extend(switch(command, &mut session, login).await);
                 next = commands.try_recv().ok();
             }
         }
@@ -229,8 +257,31 @@ async fn rest(wait: Duration, commands: &mut mpsc::Receiver<Command>) -> Option<
     }
 }
 
-async fn login(address: SocketAddr, auth: &AuthHash) -> Result<(Session, Plan), KlapError> {
+/// Where and how to log in: the address, the account, and whether a setup login is turned down.
+type Login<'a> = (SocketAddr, &'a AuthHash, bool);
+
+/// Asks the device at `found`'s address whether it holds the account, and says so as an
+/// [`Event::Moved`]. Nothing is read from it and nothing is sent to it beyond the handshake.
+pub fn probe(found: Found, auth: AuthHash, events: mpsc::Sender<Event>) {
+    tokio::spawn(async move {
+        let proven = Session::connect(found.address, &auth)
+            .await
+            .is_ok_and(|session| session.proved_account());
+        let _ = events.send(Event::Moved { found, proven }).await;
+    });
+}
+
+async fn login(
+    address: SocketAddr,
+    auth: &AuthHash,
+    must_prove: bool,
+) -> Result<(Session, Plan), KlapError> {
     let mut session = Session::connect(address, auth).await?;
+    // A device that has proved the account before is not read or switched on a setup login:
+    // whatever answers that way at its address may not be it.
+    if must_prove && !session.proved_account() {
+        return Err(KlapError::Account);
+    }
     let plan = learn(&mut session).await?;
     Ok((session, plan))
 }
@@ -240,8 +291,7 @@ async fn login(address: SocketAddr, auth: &AuthHash) -> Result<(Session, Plan), 
 async fn switch(
     command: Command,
     session: &mut Option<(Session, Plan)>,
-    address: SocketAddr,
-    auth: &AuthHash,
+    login: Login<'_>,
 ) -> Option<Answer> {
     let Command {
         call,
@@ -255,11 +305,8 @@ async fn switch(
         )));
         return None;
     }
-    let sent = tokio::time::timeout_at(
-        deadline,
-        send_switch(session, address, auth, child.as_deref(), on),
-    )
-    .await;
+    let sent =
+        tokio::time::timeout_at(deadline, send_switch(session, login, child.as_deref(), on)).await;
     match sent {
         Ok(Ok(())) => {
             let answers = (call.call.unique_id.clone(), call.call.context.id.clone());
@@ -283,8 +330,7 @@ async fn switch(
 
 async fn send_switch(
     session: &mut Option<(Session, Plan)>,
-    address: SocketAddr,
-    auth: &AuthHash,
+    (address, auth, must_prove): Login<'_>,
     child: Option<&str>,
     on: bool,
 ) -> Result<(), ServiceError> {
@@ -296,7 +342,7 @@ async fn send_switch(
     loop {
         if session.is_none() {
             fresh = true;
-            *session = Some(login(address, auth).await.map_err(unanswered)?);
+            *session = Some(login(address, auth, must_prove).await.map_err(unanswered)?);
         }
         let Some((current, _)) = session.as_mut() else {
             continue;
