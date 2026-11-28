@@ -63,6 +63,8 @@ pub struct State {
     pub ignore_switch: bool,
     /// Every connection is taken and never answered, as a device that has hung does.
     pub stall: bool,
+    /// A switch is taken and acted on, and the connection closes before the answer is sent.
+    pub lose_switch_answer: bool,
 }
 
 pub struct Fake {
@@ -115,6 +117,7 @@ pub async fn start(kind: Kind, auth: AuthHash) -> Fake {
         refuse_switch: None,
         ignore_switch: false,
         stall: false,
+        lose_switch_answer: false,
     }));
     let shared = Arc::clone(&state);
     let session = Arc::new(Mutex::new(Session {
@@ -153,6 +156,9 @@ async fn serve(
     }
     let (path, body) = read_request(&mut stream).await?;
     let (status, cookie, answer) = respond(&path, &body, kind, &auth, &state, &session);
+    if status == LOST {
+        return Ok(());
+    }
     let mut head = format!(
         "HTTP/1.1 {status} OK\r\nContent-Length: {}\r\n",
         answer.len()
@@ -165,6 +171,9 @@ async fn serve(
     stream.write_all(&answer).await?;
     stream.shutdown().await
 }
+
+/// Stands in for a status when the connection is to close with nothing sent.
+const LOST: u16 = 0;
 
 fn respond(
     path: &str,
@@ -209,7 +218,11 @@ fn respond(
         session.keys = None;
         return (403, false, Vec::new());
     }
+    let before = state.writes.len();
     let response = handle(kind, &request, &mut state);
+    if state.lose_switch_answer && state.writes.len() > before {
+        return (LOST, false, Vec::new());
+    }
     let reads_meter = request["params"]["requests"]
         .as_array()
         .is_some_and(|requests| requests.iter().any(|r| r["method"] == "get_emeter_data"));

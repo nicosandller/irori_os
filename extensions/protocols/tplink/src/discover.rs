@@ -42,9 +42,11 @@ impl Found {
         self.encryption == "KLAP" && self.device_type.starts_with("SMART.")
     }
 
-    /// Plugs and strips (a strip announces itself as a plug) are the only devices switched.
-    /// Anything else that answers the same API, a bulb or a wall switch, is read and left alone:
-    /// switching has only been written for these two.
+    /// Plugs and strips are the only devices switched. A strip announces itself as a plug: in
+    /// python-kasa's recorded discovery answers (`tests/fixtures/smart`) Tapo strips say
+    /// `SMART.TAPOPLUG` and Kasa ones `SMART.KASAPLUG`, while wall switches say `…SWITCH` and
+    /// bulbs `…BULB`. Those answer the same API and are read and left alone: switching has only
+    /// been written for plugs and strips.
     pub fn switchable(&self) -> bool {
         matches!(
             self.device_type.as_str(),

@@ -629,6 +629,32 @@ async fn a_plug_that_cant_be_reached_is_an_error_and_nothing_is_reported() {
 }
 
 #[tokio::test]
+async fn a_command_whose_answer_is_lost_is_an_error_and_is_not_sent_again() {
+    let world = world(settings(true)).await;
+    let fake = a_plug_in(&world).await;
+    fake.state.lock().expect("state").lose_switch_answer = true;
+
+    // The plug switches off and the connection drops before it says so.
+    let (reply, _) = world.switch(PLUG_SWITCH, false).await;
+    let error = reply.expect_err("no answer");
+    assert_eq!(error.code, ServiceErrorCode::Unavailable);
+    // What it did shows in the next reading, as the device's own news, not the call's.
+    let report = world.report(PLUG_SWITCH).await;
+    assert!(!on(&report.state));
+    assert_eq!(report.caused_by, None);
+    // Sent once. Sending again would switch a relay whose caller was told it failed.
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert_eq!(
+        writes(&fake),
+        [Write {
+            child: None,
+            on: false
+        }]
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_command_on_an_ended_session_logs_in_again_and_is_sent_once() {
     let world = world(settings(true)).await;
     let fake = a_plug_in(&world).await;
