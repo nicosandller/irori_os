@@ -41,6 +41,16 @@ impl Found {
     pub fn readable(&self) -> bool {
         self.encryption == "KLAP" && self.device_type.starts_with("SMART.")
     }
+
+    /// Plugs and strips (a strip announces itself as a plug) are the only devices switched.
+    /// Anything else that answers the same API, a bulb or a wall switch, is read and left alone:
+    /// switching has only been written for these two.
+    pub fn switchable(&self) -> bool {
+        matches!(
+            self.device_type.as_str(),
+            "SMART.TAPOPLUG" | "SMART.KASAPLUG"
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,9 +1,7 @@
 # irori-protocol-tplink
 
-TP-Link Tapo plugs and power strips, and Kasa firmware that speaks the same local API, read on
-the local network. Nothing talks to TP-Link's cloud. **Read-only for now:** switches show what the
-device says, and turning one on or off is refused with a message until switching has been tested
-on real devices.
+TP-Link Tapo plugs and power strips, and Kasa firmware that speaks the same local API, read and
+switched on the local network. Nothing talks to TP-Link's cloud.
 
 ## What it does
 
@@ -19,10 +17,33 @@ on real devices.
 - **A strip** is a device with its LED and signal, and each outlet is a device reached through it,
   with its own switch and meter. A strip's own reading is left out: on Tapo strips it repeats
   its first outlet's.
+- **Switches a plug, and each outlet of a strip**, on and off: see below.
 - **Ids come from the MAC**, and an outlet's from its position on the strip, so they survive
   renaming in the app, a new address, and re-adding.
 - **A device that misses two readings** is marked unavailable, and comes back on its next
   reading. An expired session logs in again without going unavailable.
+
+## Switching
+
+| | Turned on and off from Irori |
+|---|---|
+| A plug's relay | yes |
+| Each outlet of a strip | yes, one at a time, through the strip |
+| A strip as a whole | no: it has no relay of its own, so switch its outlets |
+| The LED | no: it is shown, and set in the Tapo or Kasa app |
+| Anything that isn't a plug or a strip (a bulb, a wall switch) | no: it is read if it answers, and never sent a command |
+
+- **What is shown is what the device says.** A command goes to the device, and the device is read
+  again straight away; that reading is what Irori shows, whether or not it matches what was asked
+  for. Nothing is shown as switched because it was asked to.
+- **A device that refuses** gives the command an error with the device's own error code, and
+  stays shown as it last reported.
+- **A device that can't be reached, or doesn't answer within 8 seconds,** gives the command an
+  error. A command that ran out of time is never sent late or sent twice: the only request tried
+  again is one the device turned away because its session had ended, which it didn't act on. A
+  command cut off mid-answer may still have reached the device; the next reading shows which.
+- **Commands wait their turn** behind the device's readings, one device at a time, so a command
+  sent while a device has hung can wait up to 5 seconds before it is answered.
 
 ## Settings
 
@@ -59,9 +80,13 @@ Tapo metering plugs and power strips on current firmware, read alongside Home As
 TP-Link integration: the same relay states, today's energy to the watt-hour, and power, voltage
 and current within a reading's drift.
 
+**Switching has not been tried on a real device.** It is tested against a fake device in this
+package's tests, and the request it sends (`set_device_info` with `device_on`, on its own, and
+inside `control_child` for a strip's outlet) is the one python-kasa sends.
+
 ## Left out
 
-- **Switching**, until it has been tested.
+- **Switching the LED**, a strip as a whole, and any device that isn't a plug or a strip.
 - **The older Kasa protocol** (TCP 9999, XOR "encryption") used by HS100, HS110, KP303 and
   older Kasa firmware, and Tapo's older AES transport. Such a device is found and logged, not
   read.

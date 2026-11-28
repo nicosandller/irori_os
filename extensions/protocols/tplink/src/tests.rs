@@ -8,13 +8,13 @@ use irori_protocol::host::{self, Reports};
 use irori_protocol::{IncomingCall, ProtocolError, ServiceError, ServiceErrorCode};
 use irori_types::{
     Availability, Context, ContextId, DeviceDescription, EntityDescription, Origin, SensorValue,
-    Service, ServiceCall, State, UniqueId, Waiting,
+    Service, ServiceCall, State, StateReport, UniqueId, Waiting,
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::discover::{Discovery, Found};
 use crate::drive;
-use crate::fake::{self, Fake, Kind};
+use crate::fake::{self, Fake, Kind, Write};
 use crate::klap::{AuthHash, KlapError, Session};
 use crate::settings::Settings;
 
@@ -49,12 +49,18 @@ struct World {
     calls: mpsc::Sender<IncomingCall>,
     reports: Reports,
     log: Arc<Mutex<Log>>,
+    asked: std::sync::atomic::AtomicU32,
     /// Kept so `next_call` doesn't see the stop channel close and end the run.
     _stop: watch::Sender<bool>,
     drive: tokio::task::JoinHandle<Result<(), ProtocolError>>,
 }
 
 async fn world(settings: Settings) -> World {
+    world_with(settings, Duration::from_secs(8)).await
+}
+
+/// A world whose commands have `budget` to be taken by the device.
+async fn world_with(settings: Settings, budget: Duration) -> World {
     let (ctx, host) = irori_protocol::host::connect();
     let log = Arc::new(Mutex::new(Log::default()));
     let recorded = Arc::clone(&log);
@@ -106,12 +112,13 @@ async fn world(settings: Settings) -> World {
         }
     });
     let (discovery, incoming) = mpsc::channel(8);
-    let drive = tokio::spawn(drive(settings, ctx, incoming));
+    let drive = tokio::spawn(drive(settings, ctx, incoming, budget));
     World {
         discovery,
         calls: host.calls,
         reports: host.reports,
         log,
+        asked: std::sync::atomic::AtomicU32::new(0),
         _stop: host.stop,
         drive,
     }
@@ -119,11 +126,15 @@ async fn world(settings: Settings) -> World {
 
 impl World {
     async fn see(&self, fake: &Fake, mac: &str, model: &str) {
+        self.see_as(fake, mac, model, "SMART.TAPOPLUG").await;
+    }
+
+    async fn see_as(&self, fake: &Fake, mac: &str, model: &str, device_type: &str) {
         let found = Found {
             mac: mac.to_owned(),
             address: fake.address,
             model: model.to_owned(),
-            device_type: "SMART.TAPOPLUG".to_owned(),
+            device_type: device_type.to_owned(),
             encryption: "KLAP".to_owned(),
             known_host: None,
         };
@@ -182,6 +193,79 @@ impl World {
                 _ = tokio::time::sleep_until(deadline) => panic!("{id} never reported as wanted"),
             }
         }
+    }
+
+    /// Asks for a switch to be turned on or off, without waiting for the answer. The second
+    /// value is the call's context, which the report that answers it names.
+    async fn ask(
+        &self,
+        id: &str,
+        on: bool,
+    ) -> (
+        tokio::sync::oneshot::Receiver<Result<(), ServiceError>>,
+        ContextId,
+    ) {
+        // A context per call, as the core gives each its own.
+        let count = self
+            .asked
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let context = ContextId::try_from(format!("01K5B2Q9A1B2C3D4E5F6G7H8{count:02}").as_str())
+            .expect("context");
+        let (incoming, answer) = irori_protocol::host::incoming_call(ServiceCall {
+            unique_id: UniqueId::try_from(id).expect("id"),
+            service: if on {
+                Service::SwitchTurnOn
+            } else {
+                Service::SwitchTurnOff
+            },
+            context: Context {
+                id: context.clone(),
+                parent_id: None,
+                origin: Origin::System,
+            },
+        });
+        self.calls.send(incoming).await.expect("running");
+        (answer, context)
+    }
+
+    /// Asks for a switch to be turned on or off and waits for the answer, which has to come
+    /// before the core would stop waiting.
+    async fn switch(&self, id: &str, on: bool) -> (Result<(), ServiceError>, ContextId) {
+        let (answer, context) = self.ask(id, on).await;
+        let reply = tokio::time::timeout(Duration::from_secs(10), answer)
+            .await
+            .expect("answered before the core gives up")
+            .expect("answered, not dropped");
+        (reply, context)
+    }
+
+    /// The next report for `id`, whatever it says.
+    async fn report(&self, id: &str) -> StateReport {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(report) = self
+                .reports
+                .drain()
+                .into_iter()
+                .find(|report| report.unique_id.as_str() == id)
+            {
+                return report;
+            }
+            tokio::select! {
+                _ = self.reports.ready() => {}
+                _ = tokio::time::sleep_until(deadline) => panic!("{id} was never reported"),
+            }
+        }
+    }
+
+    /// Every report for `id` over the next `wait`.
+    async fn reports_for(&self, id: &str, wait: Duration) -> Vec<StateReport> {
+        tokio::time::sleep(wait).await;
+        self.reports
+            .drain()
+            .into_iter()
+            .filter(|report| report.unique_id.as_str() == id)
+            .collect()
     }
 
     async fn shutdown(self) {
@@ -363,26 +447,243 @@ async fn an_outlet_that_cant_be_read_doesnt_list_the_next_one_twice() {
     world.shutdown().await;
 }
 
+const PLUG: &str = "02:00:00:00:00:01";
+const PLUG_SWITCH: &str = "02:00:00:00:00:01-switch";
+const STRIP: &str = "02:00:00:00:00:03";
+
+/// A plug, read once, in a world where the next reading is a second away.
+async fn a_plug_in(world: &World) -> Fake {
+    let fake = fake::start(Kind::Plug, auth()).await;
+    world.see(&fake, PLUG, "PP1(EU)").await;
+    world.states(&[PLUG_SWITCH]).await;
+    fake
+}
+
+fn writes(fake: &Fake) -> Vec<Write> {
+    fake.state.lock().expect("state").writes.clone()
+}
+
 #[tokio::test]
-async fn switching_is_refused_while_read_only() {
+async fn a_plug_is_switched_off_and_on_and_shows_what_it_then_says() {
     let world = world(settings(true)).await;
-    let (incoming, answer) = irori_protocol::host::incoming_call(ServiceCall {
-        unique_id: UniqueId::try_from("02:00:00:00:00:01-switch").expect("id"),
-        service: Service::SwitchTurnOff,
-        context: Context {
-            id: ContextId::try_from("01K5B2Q9A1B2C3D4E5F6G7H8J9").expect("context"),
-            parent_id: None,
-            origin: Origin::System,
-        },
-    });
-    world.calls.send(incoming).await.expect("running");
-    let reply: Result<(), ServiceError> = tokio::time::timeout(Duration::from_secs(5), answer)
-        .await
-        .expect("in time")
-        .expect("sent");
+    let fake = a_plug_in(&world).await;
+
+    let (reply, call) = world.switch(PLUG_SWITCH, false).await;
+    assert_eq!(reply, Ok(()));
+    let report = world.report(PLUG_SWITCH).await;
+    assert!(!on(&report.state));
+    assert_eq!(report.caused_by, Some(call));
+    assert!(!fake.state.lock().expect("state").on);
+
+    let (reply, call) = world.switch(PLUG_SWITCH, true).await;
+    assert_eq!(reply, Ok(()));
+    let report = world.report(PLUG_SWITCH).await;
+    assert!(on(&report.state));
+    assert_eq!(report.caused_by, Some(call));
+    assert!(fake.state.lock().expect("state").on);
+
+    let sent = |on| Write { child: None, on };
+    assert_eq!(writes(&fake), [sent(false), sent(true)]);
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_strips_second_socket_is_switched_through_the_strip() {
+    let fake = fake::start(Kind::Strip, auth()).await;
+    let world = world(settings(true)).await;
+    world.see(&fake, STRIP, "PS4(EU)").await;
+    let (first, second) = (
+        "02:00:00:00:00:03-outlet1-switch",
+        "02:00:00:00:00:03-outlet2-switch",
+    );
+    world.states(&[first, second]).await;
+
+    let (reply, call) = world.switch(second, false).await;
+    assert_eq!(reply, Ok(()));
+    let report = world.report(second).await;
+    assert!(!on(&report.state));
+    assert_eq!(report.caused_by, Some(call));
+    // The socket in position 2, by its own id, and only that one.
+    assert_eq!(
+        writes(&fake),
+        [Write {
+            child: Some("8022AAAA".to_owned()),
+            on: false
+        }]
+    );
+    {
+        let state = fake.state.lock().expect("state");
+        assert!(!state.outlets[0].on);
+        assert!(!state.outlets[1].on);
+    }
+
+    // The first socket was off and is turned on; the second stays off.
+    let (reply, _) = world.switch(first, true).await;
+    assert_eq!(reply, Ok(()));
+    assert!(on(&world.report(first).await.state));
+    {
+        let state = fake.state.lock().expect("state");
+        assert!(!state.outlets[0].on);
+        assert!(state.outlets[1].on);
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plug_that_takes_a_command_and_stays_as_it_was_is_shown_as_it_is() {
+    let world = world(settings(true)).await;
+    let fake = a_plug_in(&world).await;
+    fake.state.lock().expect("state").ignore_switch = true;
+
+    let (reply, call) = world.switch(PLUG_SWITCH, false).await;
+    assert_eq!(reply, Ok(()));
+    // The device's answer to the call: still on, whatever was asked for.
+    let report = world.report(PLUG_SWITCH).await;
+    assert!(on(&report.state));
+    assert_eq!(report.caused_by, Some(call));
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_refused_command_says_so_and_the_plug_is_shown_as_it_was() {
+    let world = world(settings(true)).await;
+    let fake = a_plug_in(&world).await;
+    fake.state.lock().expect("state").refuse_switch = Some(-1301);
+
+    let (reply, _) = world.switch(PLUG_SWITCH, false).await;
     let error = reply.expect_err("refused");
     assert_eq!(error.code, ServiceErrorCode::Failed);
-    assert!(error.message.contains("only reads"), "{}", error.message);
+    assert!(error.message.contains("refused"), "{}", error.message);
+    assert!(error.message.contains("-1301"), "{}", error.message);
+    assert_eq!(writes(&fake).len(), 1);
+    assert!(fake.state.lock().expect("state").on);
+    // Over the next readings nothing says the plug is off, and nothing names the call.
+    for report in world
+        .reports_for(PLUG_SWITCH, Duration::from_millis(1500))
+        .await
+    {
+        assert!(on(&report.state));
+        assert_eq!(report.caused_by, None);
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plug_that_doesnt_answer_in_time_is_an_error_and_is_never_switched_late() {
+    let world = world_with(settings(true), Duration::from_millis(300)).await;
+    let fake = a_plug_in(&world).await;
+    fake.state.lock().expect("state").stall = true;
+
+    // Two commands at once: the first runs out of time at the device, the second behind it.
+    let (first, _) = world.ask(PLUG_SWITCH, false).await;
+    let (second, _) = world.ask(PLUG_SWITCH, false).await;
+    for answer in [first, second] {
+        let reply = tokio::time::timeout(Duration::from_secs(2), answer)
+            .await
+            .expect("answered soon after the time ran out")
+            .expect("answered, not dropped");
+        let error = reply.expect_err("timed out");
+        assert_eq!(error.code, ServiceErrorCode::Unavailable);
+    }
+
+    // The plug answers again. Neither command is sent now that its caller has been told no.
+    fake.state.lock().expect("state").stall = false;
+    for report in world
+        .reports_for(PLUG_SWITCH, Duration::from_millis(2500))
+        .await
+    {
+        assert!(on(&report.state));
+        assert_eq!(report.caused_by, None);
+    }
+    assert_eq!(writes(&fake), []);
+    assert!(fake.state.lock().expect("state").on);
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_plug_that_cant_be_reached_is_an_error_and_nothing_is_reported() {
+    let world = world(settings(true)).await;
+    let fake = a_plug_in(&world).await;
+    fake.state.lock().expect("state").gone = true;
+
+    let (reply, _) = world.switch(PLUG_SWITCH, false).await;
+    let error = reply.expect_err("unreachable");
+    assert_eq!(error.code, ServiceErrorCode::Unavailable);
+    assert!(
+        error.message.contains("can't be reached"),
+        "{}",
+        error.message
+    );
+    assert_eq!(writes(&fake), []);
+    // Nothing says it turned off: it is left as last read, until it goes unavailable.
+    for report in world
+        .reports_for(PLUG_SWITCH, Duration::from_millis(1500))
+        .await
+    {
+        assert_ne!(
+            report.state.as_ref().map(|_| on(&report.state)),
+            Some(false)
+        );
+    }
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_command_on_an_ended_session_logs_in_again_and_is_sent_once() {
+    let world = world(settings(true)).await;
+    let fake = a_plug_in(&world).await;
+    fake.state.lock().expect("state").expire_next = true;
+
+    let (reply, _) = world.switch(PLUG_SWITCH, false).await;
+    assert_eq!(reply, Ok(()));
+    assert!(!on(&world.report(PLUG_SWITCH).await.state));
+    assert_eq!(
+        writes(&fake),
+        [Write {
+            child: None,
+            on: false
+        }]
+    );
+    assert_eq!(fake.state.lock().expect("state").handshakes, 2);
+    world.shutdown().await;
+}
+
+#[tokio::test]
+async fn nothing_is_sent_for_a_switch_that_isnt_a_plugs_relay() {
+    let world = world(settings(true)).await;
+    let plug = a_plug_in(&world).await;
+    let strip = fake::start(Kind::Strip, auth()).await;
+    world.see(&strip, STRIP, "PS4(EU)").await;
+    world.states(&["02:00:00:00:00:03-led"]).await;
+    // Something that answers like a plug and says it is another kind of device.
+    let other = fake::start(Kind::Plug, auth()).await;
+    let other_mac = "02:00:00:00:00:05";
+    world
+        .see_as(&other, other_mac, "PB1(EU)", "SMART.TAPOBULB")
+        .await;
+    world.states(&["02:00:00:00:00:05-switch"]).await;
+
+    for (id, reason) in [
+        // The LED is shown, not changed.
+        ("02:00:00:00:00:01-led", "LED"),
+        ("02:00:00:00:00:03-led", "LED"),
+        // A strip has no relay of its own, and no such entity.
+        ("02:00:00:00:00:03-switch", "no TP-Link device"),
+        // A device nobody has seen. Before switching existed every call was refused; one for
+        // an entity that isn't there still is.
+        ("02:00:00:00:00:09-switch", "no TP-Link device"),
+        ("02:00:00:00:00:05-switch", "plugs and power strips only"),
+    ] {
+        for turn_on in [false, true] {
+            let (reply, _) = world.switch(id, turn_on).await;
+            let error = reply.expect_err("refused");
+            assert_eq!(error.code, ServiceErrorCode::Failed, "{id}");
+            assert!(error.message.contains(reason), "{id}: {}", error.message);
+        }
+    }
+    for fake in [&plug, &strip, &other] {
+        assert_eq!(writes(fake), []);
+    }
     world.shutdown().await;
 }
 

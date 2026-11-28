@@ -1,6 +1,7 @@
 //! A Tapo device on a loopback port: KLAP's two handshakes, signed and encrypted requests, and
-//! the reading methods of a metering plug or a metering strip. Shaped after what real devices answer,
-//! including an error code for each method they don't have.
+//! the reading methods of a metering plug or a metering strip, and the one that switches a relay.
+//! Shaped after what real devices answer, including an error code for each method they don't
+//! have. Every switch it is sent is kept, so a test can say that nothing was.
 
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
@@ -26,6 +27,14 @@ pub struct Outlet {
     pub position: u64,
 }
 
+/// A switch the device was sent, whether or not it took it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Write {
+    /// The outlet it was for; `None` for the device's own relay.
+    pub child: Option<String>,
+    pub on: bool,
+}
+
 #[derive(Debug)]
 pub struct State {
     pub on: bool,
@@ -46,6 +55,14 @@ pub struct State {
     /// The strip lists an entry first that has no `device_id`, so it can't be read.
     pub unreadable_outlet: bool,
     pub handshakes: u32,
+    /// Every switch received, in order.
+    pub writes: Vec<Write>,
+    /// A switch is answered with this error code and changes nothing.
+    pub refuse_switch: Option<i64>,
+    /// A switch is accepted and the relay stays as it was.
+    pub ignore_switch: bool,
+    /// Every connection is taken and never answered, as a device that has hung does.
+    pub stall: bool,
 }
 
 pub struct Fake {
@@ -94,6 +111,10 @@ pub async fn start(kind: Kind, auth: AuthHash) -> Fake {
         no_meter: false,
         unreadable_outlet: false,
         handshakes: 0,
+        writes: Vec::new(),
+        refuse_switch: None,
+        ignore_switch: false,
+        stall: false,
     }));
     let shared = Arc::clone(&state);
     let session = Arc::new(Mutex::new(Session {
@@ -126,6 +147,9 @@ async fn serve(
 ) -> std::io::Result<()> {
     if state.lock().expect("state").gone {
         return Ok(());
+    }
+    if state.lock().expect("state").stall {
+        std::future::pending::<()>().await;
     }
     let (path, body) = read_request(&mut stream).await?;
     let (status, cookie, answer) = respond(&path, &body, kind, &auth, &state, &session);
@@ -185,7 +209,7 @@ fn respond(
         session.keys = None;
         return (403, false, Vec::new());
     }
-    let response = handle(kind, &request, &state);
+    let response = handle(kind, &request, &mut state);
     let reads_meter = request["params"]["requests"]
         .as_array()
         .is_some_and(|requests| requests.iter().any(|r| r["method"] == "get_emeter_data"));
@@ -248,13 +272,58 @@ fn batch(kind: Kind, child: Option<&str>, request: &Value, state: &State) -> Val
     json!({ "error_code": 0, "result": { "responses": responses } })
 }
 
-fn handle(kind: Kind, request: &Value, state: &State) -> Value {
+/// A switch: kept, then taken, refused or (with `ignore_switch`) taken and not acted on. The
+/// `Err` is the error code the device answers with.
+fn switch(kind: Kind, child: Option<&str>, params: &Value, state: &mut State) -> Result<(), i64> {
+    let Some(on) = params["device_on"].as_bool() else {
+        return Err(-1008);
+    };
+    state.writes.push(Write {
+        child: child.map(str::to_owned),
+        on,
+    });
+    if let Some(code) = state.refuse_switch {
+        return Err(code);
+    }
+    let relay = match (kind, child) {
+        (Kind::Plug, None) => Some(&mut state.on),
+        (Kind::Strip, Some(child)) => state
+            .outlets
+            .iter_mut()
+            .find(|outlet| outlet.id == child)
+            .map(|outlet| &mut outlet.on),
+        // A strip has no relay of its own.
+        _ => None,
+    };
+    let relay = relay.ok_or(-1008)?;
+    if !state.ignore_switch {
+        *relay = on;
+    }
+    Ok(())
+}
+
+fn handle(kind: Kind, request: &Value, state: &mut State) -> Value {
     match request["method"].as_str().unwrap_or_default() {
         "multipleRequest" => batch(kind, None, request, state),
+        // On its own, never in a batch: how it is sent.
+        "set_device_info" => match switch(kind, None, &request["params"], state) {
+            Ok(()) => json!({ "error_code": 0 }),
+            Err(code) => json!({ "error_code": code }),
+        },
         "control_child" => {
             let child = request["params"]["device_id"].as_str().unwrap_or_default();
             if kind != Kind::Strip || !state.outlets.iter().any(|outlet| outlet.id == child) {
                 return json!({ "error_code": -1001 });
+            }
+            let inner = &request["params"]["requestData"];
+            if inner["method"] == "set_device_info" {
+                let code = match switch(kind, Some(child), &inner["params"], state) {
+                    Ok(()) => 0,
+                    Err(code) => code,
+                };
+                return json!({
+                    "error_code": 0, "result": { "responseData": { "error_code": code } }
+                });
             }
             let mut inner = batch(kind, Some(child), &request["params"]["requestData"], state);
             // Real strips leave the inner batch's `error_code` out.

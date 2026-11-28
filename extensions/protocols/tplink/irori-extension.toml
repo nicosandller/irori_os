@@ -1,7 +1,7 @@
 [extension]
 id = "tplink"
 name = "TP-Link Tapo and Kasa"
-version = "0.1.1"
+version = "0.2.0"
 irori = ">=1.4.0"
 description = "TP-Link Tapo and Kasa plugs and power strips on the local network: each outlet, and power, voltage, current and energy where the device meters."
 icon = "icon.svg"

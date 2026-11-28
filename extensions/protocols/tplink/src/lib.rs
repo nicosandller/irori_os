@@ -4,8 +4,9 @@
 //! Each plug is a device with its relay, meter, LED and signal; a strip's outlets are devices
 //! reached through it.
 //!
-//! **Read-only for now.** Switches report what the device says; turning one on or off is refused
-//! with a message, until switching has been tested against real devices.
+//! A plug's relay and each outlet of a strip can be turned on and off. The command goes to the
+//! device, and what is shown afterwards is what the device then says, never what was asked for.
+//! The LED is shown and not changed, and a device that isn't a plug or a strip is only read.
 
 mod device;
 mod discover;
@@ -21,18 +22,19 @@ mod fake;
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use irori_protocol::{
     AvailabilityTarget, Health, IncomingCall, Protocol, ProtocolContext, ProtocolError,
     ServiceError,
 };
-use irori_types::{Availability, Name, State, StateReport, UniqueId, Waiting};
+use irori_types::{Availability, Name, Service, State, StateReport, UniqueId, Waiting};
 use tokio::sync::mpsc;
 
-use crate::device::Event;
+use crate::device::{Command, Event};
 use crate::discover::{Discovery, Found};
 use crate::klap::AuthHash;
-use crate::map::Described;
+use crate::map::{Described, Target};
 use crate::settings::Settings;
 
 /// The TP-Link protocol.
@@ -47,7 +49,7 @@ impl Protocol for Tplink {
     async fn run(settings: Settings, ctx: ProtocolContext) -> Result<(), ProtocolError> {
         let (found, incoming) = mpsc::channel(32);
         let discovery = discover::start(&settings, found);
-        let outcome = drive(settings, ctx, incoming).await;
+        let outcome = drive(settings, ctx, incoming, COMMAND).await;
         discovery.abort();
         outcome
     }
@@ -55,9 +57,18 @@ impl Protocol for Tplink {
 
 const EVENTS: usize = 64;
 
-/// Refused while switching is untested.
-const READ_ONLY: &str =
-    "the TP-Link extension only reads devices for now; switch this one in the Tapo or Kasa app";
+/// Commands one device can have waiting. More than this and it isn't keeping up.
+const COMMANDS: usize = 8;
+/// How long a command has, from the call's arrival, to be taken by the device. The core stops
+/// waiting after ten seconds, and one exchange with a device can take five, so a login and the
+/// switch together could outlast it: the call is answered here first.
+const COMMAND: Duration = Duration::from_secs(8);
+
+const NO_SUCH_SWITCH: &str = "no TP-Link device has that switch";
+const LED_IS_READ: &str =
+    "the TP-Link extension shows the LED and doesn't change it; set it in the Tapo or Kasa app";
+const NOT_A_PLUG: &str = "the TP-Link extension switches plugs and power strips only; switch this device in the Tapo or Kasa app";
+const BUSY: &str = "the TP-Link device has too many commands waiting; nothing was sent to it";
 
 struct Device {
     generation: u64,
@@ -69,6 +80,9 @@ struct Device {
     refused: bool,
     described: Option<Described>,
     states: BTreeMap<UniqueId, Option<State>>,
+    /// Its switch entities, and what each is on the device.
+    targets: BTreeMap<UniqueId, Target>,
+    commands: mpsc::Sender<Command>,
 }
 
 #[derive(Default)]
@@ -145,6 +159,7 @@ pub(crate) async fn drive(
     settings: Settings,
     mut ctx: ProtocolContext,
     mut discovery: mpsc::Receiver<Discovery>,
+    budget: Duration,
 ) -> Result<(), ProtocolError> {
     let auth = settings
         .account()
@@ -159,7 +174,7 @@ pub(crate) async fn drive(
         tokio::select! {
             call = ctx.next_call() => {
                 let Some(call) = call else { break Ok(()) };
-                refuse(call);
+                command(call, &devices, budget);
             }
             found = discovery.recv() => match found {
                 Some(Discovery::Seen(found)) => {
@@ -203,8 +218,51 @@ pub(crate) async fn drive(
     outcome
 }
 
-fn refuse(call: IncomingCall) {
-    call.reply(Err(ServiceError::failed(READ_ONLY)));
+/// Hands a call to the task of the device it's for. Nothing here waits on a device: the task
+/// answers the call once the device has.
+fn command(call: IncomingCall, devices: &Devices, budget: Duration) {
+    let on = match call.call.service {
+        Service::SwitchTurnOn => true,
+        Service::SwitchTurnOff => false,
+        _ => {
+            call.reply(Err(ServiceError::failed(
+                "a TP-Link switch only turns on and off",
+            )));
+            return;
+        }
+    };
+    let found = devices.by_mac.values().find_map(|device| {
+        let target = device.targets.get(&call.call.unique_id)?;
+        Some((device, target))
+    });
+    let Some((device, target)) = found else {
+        call.reply(Err(ServiceError::failed(NO_SUCH_SWITCH)));
+        return;
+    };
+    let child = match target {
+        Target::Led => {
+            call.reply(Err(ServiceError::failed(LED_IS_READ)));
+            return;
+        }
+        Target::Relay(child) => child.clone(),
+    };
+    if !device.found.switchable() {
+        call.reply(Err(ServiceError::failed(NOT_A_PLUG)));
+        return;
+    }
+    let command = Command {
+        call,
+        child,
+        on,
+        deadline: tokio::time::Instant::now() + budget,
+    };
+    if let Err(error) = device.commands.try_send(command) {
+        let command = match error {
+            mpsc::error::TrySendError::Full(command)
+            | mpsc::error::TrySendError::Closed(command) => command,
+        };
+        command.call.reply(Err(ServiceError::unavailable(BUSY)));
+    }
 }
 
 fn adopt(
@@ -243,12 +301,14 @@ fn adopt(
     }
     devices.generations += 1;
     let generation = devices.generations;
+    let (commands, queued) = mpsc::channel(COMMANDS);
     let handle = device::spawn(
         found.clone(),
         auth,
         settings.poll(),
         generation,
         events.clone(),
+        queued,
     );
     let previous = devices.by_mac.remove(&found.mac);
     devices.by_mac.insert(
@@ -263,7 +323,12 @@ fn adopt(
             described: previous
                 .as_ref()
                 .and_then(|device| device.described.clone()),
+            targets: previous
+                .as_ref()
+                .map(|device| device.targets.clone())
+                .unwrap_or_default(),
             states: previous.map(|device| device.states).unwrap_or_default(),
+            commands,
         },
     );
 }
@@ -274,6 +339,7 @@ async fn apply(ctx: &ProtocolContext, devices: &mut Devices, event: Event) {
             generation,
             mac,
             snapshot,
+            answers,
         } => {
             let Some(device) = devices.by_mac.get_mut(&mac) else {
                 return;
@@ -308,6 +374,12 @@ async fn apply(ctx: &ProtocolContext, devices: &mut Devices, event: Event) {
                 }
                 device.online = true;
             }
+            match map::targets(&mac, &snapshot) {
+                Ok(targets) => device.targets = targets,
+                Err(error) => {
+                    tracing::warn!("a TP-Link device's switches couldn't be read: {error}")
+                }
+            }
             let states = match map::states(&mac, &snapshot) {
                 Ok(states) => states,
                 Err(error) => {
@@ -316,14 +388,20 @@ async fn apply(ctx: &ProtocolContext, devices: &mut Devices, event: Event) {
                 }
             };
             for (unique_id, state) in states {
-                if device.states.get(&unique_id) == Some(&state) {
+                // The switch a command was for is reported even when it didn't change: the
+                // device's answer to the call, which is what the core is waiting to hear.
+                let caused_by = answers
+                    .iter()
+                    .rfind(|(switched, _)| *switched == unique_id)
+                    .map(|(_, call)| call.clone());
+                if caused_by.is_none() && device.states.get(&unique_id) == Some(&state) {
                     continue;
                 }
                 ctx.report_state(StateReport {
                     unique_id: unique_id.clone(),
                     state: state.clone(),
                     attributes: BTreeMap::new(),
-                    caused_by: None,
+                    caused_by,
                     replayed: false,
                 });
                 device.states.insert(unique_id, state);
