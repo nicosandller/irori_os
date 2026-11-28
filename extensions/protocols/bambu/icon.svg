@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="Bambu Lab">
+  <!-- A plain drawing of a printer made for Irori: a frame, a nozzle and a part on the bed. Not Bambu Lab's logo. -->
+  <path fill="none" stroke="#00AE42" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M4 20V4h16v16M4 8h16M12 8v4M2 20h20"/>
+  <path fill="#00AE42" d="M10.5 12h3l-1.5 2.5zM9 16h6v3H9z"/>
+</svg>

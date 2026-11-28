@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "access_code": {
+      "title": "Access code",
+      "description": "The access code the network settings on the printer's screen show. It is the\nprinter's local password, and it is only ever sent to the address above.\n\nThe printer shows a certificate of its own. On the first connection the extension takes\nthe certificate it is shown, sends the access code, and remembers that certificate: it\ndoes not check that Bambu Lab issued it. From then on the access code only goes to a\nprinter showing the same certificate.",
+      "$ref": "#/$defs/Secret",
+      "x-irori-secret-for": "host"
+    },
+    "certificate": {
+      "title": "Trust only this certificate",
+      "description": "Optional. The SHA-256 fingerprint of the printer's certificate, 64 hex digits. With it,\nthe access code is only ever sent to a printer showing that certificate, from the first\nconnection on. It is also how to accept a new certificate after the printer's changed:\nthe extension's card shows the fingerprint it was offered.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "default": null
+    },
+    "host": {
+      "title": "Printer address",
+      "description": "The printer's address on the local network, as the network settings on its screen show\nit. A private, loopback or link-local IP is accepted, as is a name under `.local`,\n`.home.arpa`, `.internal`, `.lan` or `.home`. A public address or an internet hostname\nis refused.",
+      "type": "string"
+    },
+    "port": {
+      "description": "The printer's MQTT port. 8883 unless something in between changes it.",
+      "type": "integer",
+      "format": "uint16",
+      "default": 8883,
+      "maximum": 65535,
+      "minimum": 0
+    },
+    "serial": {
+      "title": "Serial number",
+      "description": "The printer's serial number, as its screen or its label shows it.",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "host",
+    "serial",
+    "access_code"
+  ],
+  "$defs": {
+    "Secret": {
+      "type": "string",
+      "writeOnly": true
+    }
+  }
+}
