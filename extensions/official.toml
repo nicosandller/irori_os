@@ -73,6 +73,16 @@ crate = "irori-protocol-tplink"
 bin = "irori-ext-tplink"
 
 [[extension]]
+id = "airgradient"
+name = "AirGradient"
+category = "protocol"
+description = "AirGradient air monitors on the local network: particulates, carbon dioxide, temperature, humidity, and the VOC and NOx indexes, read from each monitor's own local API."
+version = "0.1.0"
+source = "extensions/protocols/airgradient"
+crate = "irori-protocol-airgradient"
+bin = "irori-ext-airgradient"
+
+[[extension]]
 id = "zigbee"
 name = "Zigbee"
 category = "protocol"

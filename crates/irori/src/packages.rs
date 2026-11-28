@@ -75,6 +75,7 @@ pub fn official_icon(id: &ExtensionId) -> Option<&'static str> {
         "cast" => include_str!("../../../extensions/protocols/cast/icon.svg"),
         "mqtt" => include_str!("../../../extensions/protocols/mqtt/icon.svg"),
         "tplink" => include_str!("../../../extensions/protocols/tplink/icon.svg"),
+        "airgradient" => include_str!("../../../extensions/protocols/airgradient/icon.svg"),
         "zigbee" => include_str!("../../../extensions/protocols/zigbee/icon.svg"),
         "matter" => include_str!("../../../extensions/protocols/matter/icon.svg"),
         "switchbot" => include_str!("../../../extensions/protocols/switchbot/icon.svg"),

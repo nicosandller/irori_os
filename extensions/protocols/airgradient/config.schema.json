@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Settings",
+  "type": "object",
+  "properties": {
+    "known_hosts": {
+      "description": "The monitors to read, at most 32. Each one is a private, loopback, or link-local IPv4\naddress, or a name under `.local`, `.home.arpa`, `.internal`, `.lan`, or `.home`, such as\nthe `airgradient_<serial number>.local` a monitor gives itself. A port, a bare name, an\nIPv6 address, a public address, or an internet hostname is refused.",
+      "type": "array",
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 32
+    },
+    "poll_seconds": {
+      "description": "Seconds between readings of each monitor, 10 to 3600. 60 when left out.",
+      "type": [
+        "integer",
+        "null"
+      ],
+      "format": "uint32",
+      "default": null,
+      "maximum": 3600,
+      "minimum": 10
+    }
+  },
+  "additionalProperties": false
+}

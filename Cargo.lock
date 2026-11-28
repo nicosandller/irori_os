@@ -2038,6 +2038,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "irori-protocol-airgradient"
+version = "0.0.0"
+dependencies = [
+ "irori-protocol",
+ "irori-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "irori-protocol-cast"
 version = "0.0.0"
 dependencies = [
@@ -5285,6 +5299,7 @@ dependencies = [
  "flate2",
  "irori-flow-types",
  "irori-protocol",
+ "irori-protocol-airgradient",
  "irori-protocol-cast",
  "irori-protocol-homeassistant",
  "irori-protocol-matter",
