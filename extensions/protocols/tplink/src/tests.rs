@@ -837,6 +837,45 @@ async fn a_missed_outlet_reading_is_unknown_until_the_next() {
 }
 
 #[tokio::test]
+async fn an_outlet_the_strip_stops_listing_is_forgotten_with_what_it_metered() {
+    let fake = fake::start(Kind::Strip, auth()).await;
+    let world = world(settings(true)).await;
+    world.see(&fake, STRIP, "PS4(EU)").await;
+    let power = "02:00:00:00:00:03-outlet2-power";
+    world.states(&[power]).await;
+
+    // The socket in position 2 goes: its entities are taken away.
+    let gone = fake.state.lock().expect("state").outlets.remove(0);
+    world
+        .until("the outlet's power sensor removed", |log| {
+            log.removed.iter().any(|id| id.as_str() == power)
+        })
+        .await;
+
+    // It comes back while its meter isn't answering. Nothing is remembered of what it metered
+    // before it went, so it has its switch and no power sensor until it meters again.
+    let described = world.log.lock().expect("log").entities.len();
+    {
+        let mut state = fake.state.lock().expect("state");
+        state.outlet_meter_misses = u32::MAX;
+        state.outlets.insert(0, gone);
+    }
+    world
+        .until("the outlet described again", |log| {
+            log.entities[described..]
+                .iter()
+                .any(|entity| entity.unique_id.as_str() == "02:00:00:00:00:03-outlet2-switch")
+        })
+        .await;
+    assert!(
+        !world.log.lock().expect("log").entities[described..]
+            .iter()
+            .any(|entity| entity.unique_id.as_str() == power)
+    );
+    world.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_plug_that_says_it_has_no_meter_loses_its_sensors() {
     let fake = fake::start(Kind::Plug, auth()).await;
     let world = world(settings(true)).await;

@@ -474,6 +474,10 @@ async fn read(
         let mut ids = BTreeSet::new();
         listed.retain(|info| ids.insert(info.device_id.clone()));
         listed.truncate(MAX_CHILDREN);
+        // What an outlet has metered is kept only while the strip lists it: an outlet that has
+        // gone takes its record with it, so the record can't grow past the strip's sockets.
+        seen.child_metered
+            .retain(|id, _| listed.iter().any(|info| info.device_id == *id));
         for info in listed {
             let mut meter = None;
             if plan.child_energy.contains(&info.device_id) {
